@@ -238,6 +238,139 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
     }
 }
 
+/// Returns a valid scheduler but the *wrong* request id, standing in for a
+/// non-conforming externally-implemented `PlacementPolicy` (the
+/// `kv-router-placement` path injects one through
+/// `create_disaggregated_placements`).
+struct MismatchedDisaggPlacement {
+    scheduler_id: usize,
+}
+
+impl MismatchedDisaggPlacement {
+    fn new(topology: Vec<WorkerTopology>) -> Self {
+        Self {
+            scheduler_id: topology
+                .first()
+                .and_then(|worker| worker.scheduler_ids.first().copied())
+                .expect("disagg test topology always exposes a scheduler"),
+        }
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for MismatchedDisaggPlacement {
+    type Metadata = ();
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        _request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        Ok(PlacementEffects {
+            decision: PlacementDecision::Immediate(Placement {
+                request_id: Uuid::from_u128(999_999),
+                scheduler_id: self.scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }),
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _observation: (), _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, _request_id: Uuid) -> bool {
+        false
+    }
+
+    fn request_terminal(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+
+    fn worker_ready(
+        &mut self,
+        _worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_draining(
+        &mut self,
+        _worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(
+        &mut self,
+        _worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+/// `route_prefill`/`route_destination` validated the scheduler id a policy
+/// returned but not the request id. `agg.rs` bails on exactly this. Without the
+/// check, another request's routing metadata and `cache_sample` were stamped
+/// onto `uuid` and the real owner stayed queued forever, surfacing only as
+/// "reached a dead end with N in-flight requests remaining" -- a symptom that
+/// names neither the policy nor the request.
+#[test]
+fn a_placement_naming_another_request_is_refused_at_the_routing_boundary() {
+    let config = disagg_config();
+    let runtime_config = config.runtime_config(false).unwrap();
+    let pending =
+        crate::replay::normalize_trace_requests(vec![request(9_401, 64, 1, 0.0)], 1.0).unwrap();
+    let error = DisaggRuntimeImpl::<MismatchedDisaggPlacement, NoEngineEvents, ()>::new_composed(
+        &runtime_config,
+        AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                MismatchedDisaggPlacement::new(prefill_topology),
+                MismatchedDisaggPlacement::new(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .run()
+    .expect_err("a placement naming another request must be refused")
+    .to_string();
+
+    assert!(
+        error.contains("returned request") && error.contains("while placing"),
+        "unexpected error: {error}"
+    );
+}
+
 impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
     fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
         Ok(0.1)

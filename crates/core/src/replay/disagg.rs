@@ -1481,6 +1481,22 @@ where
         self.dispatch_prefill_placements(effects.released)?;
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
+                // `PlacementPolicy` is externally implementable (the
+                // `kv-router-placement` path injects one through
+                // `create_disaggregated_placements`), so the returned request id
+                // is untrusted input. Without this, a non-conforming policy
+                // stamps another request's routing metadata onto `uuid`, feeds
+                // another request's `cache_sample` into the hit-rate sum, and
+                // leaves the real owner queued forever -- surfacing only as
+                // "reached a dead end with N in-flight requests remaining".
+                // `agg.rs` already bails here; the scheduler-id half is checked
+                // below via `rank_identity`, the request-id half was missing.
+                if placement.request_id != uuid {
+                    bail!(
+                        "offline prefill placement returned request {} while placing {uuid}",
+                        placement.request_id
+                    );
+                }
                 self.state_mut(uuid)?.prefill_routed = true;
                 let (logical_worker_id, dp_rank) = self
                     .prefill_engine
@@ -1536,6 +1552,13 @@ where
         self.dispatch_decode_placements(effects.released)?;
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
+                // Same untrusted-policy boundary as `route_prefill`.
+                if placement.request_id != uuid {
+                    bail!(
+                        "offline decode placement returned request {} while placing {uuid}",
+                        placement.request_id
+                    );
+                }
                 self.state_mut(uuid)?.destination_routed = true;
                 let (logical_worker_id, dp_rank) = self
                     .decode_engine
@@ -2446,12 +2469,35 @@ where
                 pressure.event,
             );
         }
-        self.apply_prefill_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
-        for payload in effects.immediate_completions {
-            self.process_worker_completion_payload(payload)?;
-        }
+        // `scheduled_completion` describes a pass the engine has *already*
+        // committed to, so it must be armed even when an earlier fallible step
+        // in this batch fails: through the steppable seam the caller owns the
+        // loop and may keep stepping, and an unarmed committed pass leaves
+        // `has_runnable_worker()` permanently true and
+        // `is_request_work_drained()` permanently false.
+        //
+        // Armed *after* the fallible steps, not before. `seq_no` allocation
+        // order is observable -- `execute_action` reaches
+        // `push_transfer_complete` from inside `process_worker_completion_payload`
+        // -- so hoisting this push would renumber same-timestamp events and
+        // move replayed output. Deferring the failure instead is byte-exact on
+        // every run that succeeds, which is every run that produces a report.
+        let applied = self
+            .apply_prefill_pass_effects(effects.pass_start_events, effects.immediate_completions);
         if let Some(scheduled) = effects.scheduled_completion {
             push_worker_completions(&mut self.events, &mut self.next_event_seq, scheduled);
+        }
+        applied
+    }
+
+    fn apply_prefill_pass_effects(
+        &mut self,
+        pass_start_events: Observation::Batch,
+        immediate_completions: Vec<WorkerCompletionPayload<Observation::Batch>>,
+    ) -> Result<()> {
+        self.apply_prefill_observations(pass_start_events, KvIngestBoundary::PassStart)?;
+        for payload in immediate_completions {
+            self.process_worker_completion_payload(payload)?;
         }
         Ok(())
     }
@@ -2519,15 +2565,23 @@ where
                 pressure.event,
             );
         }
-        self.apply_auxiliary_decode_observations(
-            effects.pass_start_events,
-            KvIngestBoundary::PassStart,
-        )?;
-        for payload in effects.immediate_completions {
-            self.process_worker_completion_payload(payload)?;
-        }
+        // Same committed-pass contract as `handle_prefill_engine_effects`.
+        let applied = self
+            .apply_decode_pass_effects(effects.pass_start_events, effects.immediate_completions);
         if let Some(scheduled) = effects.scheduled_completion {
             push_worker_completions(&mut self.events, &mut self.next_event_seq, scheduled);
+        }
+        applied
+    }
+
+    fn apply_decode_pass_effects(
+        &mut self,
+        pass_start_events: Observation::Batch,
+        immediate_completions: Vec<WorkerCompletionPayload<Observation::Batch>>,
+    ) -> Result<()> {
+        self.apply_auxiliary_decode_observations(pass_start_events, KvIngestBoundary::PassStart)?;
+        for payload in immediate_completions {
+            self.process_worker_completion_payload(payload)?;
         }
         Ok(())
     }
