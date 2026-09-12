@@ -184,15 +184,34 @@ impl ReplayTelemetryRuntime {
             ));
         }
         if at_ms <= self.interval_start_ms {
+            // The same condition fires for two different causes: a cadence too
+            // small to advance the virtual clock, and a legitimate multi-sample
+            // clock jump that carried `interval_start_ms` past the next
+            // scheduled sample. Naming only the first made the run die with the
+            // wrong explanation, so state the observed values instead.
             return Err(anyhow::anyhow!(
-                "replay telemetry cadence is below virtual-clock precision at {} ms",
-                self.interval_start_ms
+                "replay telemetry sample {} would land at {at_ms} ms, at or before the \
+                 current interval start {} ms (sample_interval_ms = {})",
+                self.next_sample_ordinal,
+                self.interval_start_ms,
+                self.sample_interval_ms
             ));
         }
         Ok(at_ms)
     }
 
     pub(crate) fn publish(&mut self, snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        // The runtime builds the snapshot and this type owns the ordinal
+        // sequence, but nothing tied the two together: a snapshot stamped out
+        // of sequence would publish as an ordinary sample and the observer
+        // would see a gap or a repeat with no signal.
+        if snapshot.sample_ordinal != self.next_sample_ordinal {
+            return Err(anyhow::anyhow!(
+                "replay telemetry sample ordinal {} does not match the expected {}",
+                snapshot.sample_ordinal,
+                self.next_sample_ordinal
+            ));
+        }
         self.observer.on_sample(snapshot)?;
         self.next_sample_ordinal = self
             .next_sample_ordinal
@@ -282,7 +301,36 @@ mod tests {
             ))
             .unwrap();
 
-        let error = runtime.next_periodic_at_ms().unwrap_err();
-        assert!(error.to_string().contains("below virtual-clock precision"));
+        let error = runtime.next_periodic_at_ms().unwrap_err().to_string();
+        assert!(
+            error.contains("at or before the current interval start"),
+            "{error}"
+        );
+        // The message must state the observed values: the identical condition
+        // also fires for a legitimate multi-sample clock jump, so it cannot
+        // name one cause.
+        assert!(error.contains("sample_interval_ms = 0.1"), "{error}");
+    }
+
+    /// This type owns the ordinal sequence but the runtime builds the
+    /// snapshot, and nothing tied the two together -- a snapshot stamped out
+    /// of sequence published as an ordinary sample, leaving the observer with
+    /// a silent gap or repeat.
+    #[test]
+    fn publish_rejects_a_snapshot_stamped_out_of_sequence() {
+        let mut runtime = ReplayTelemetryRuntime::new(1.0, Box::new(NoopObserver));
+        runtime.start_at(0.0);
+
+        let error = runtime
+            .publish(sample(7, ReplayTelemetrySampleKind::Baseline, 0.0, 0.0))
+            .expect_err("an out-of-sequence ordinal must be refused");
+        assert!(error.to_string().contains("does not match the expected"));
+
+        // The refusal did not consume the ordinal, so the correct sample still
+        // publishes.
+        runtime
+            .publish(sample(0, ReplayTelemetrySampleKind::Baseline, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(runtime.next_sample_ordinal(), 1);
     }
 }
