@@ -729,8 +729,10 @@ where
             let output_length = request.metadata().effective_max_output_tokens();
             // Clone only when there is a turn index to pair it with; `session_id`
             // itself is moved into `assign_request` below.
-            let session_metadata =
-                turn_index.and_then(|index| session_id.clone().map(|id| (id, index)));
+            let session_metadata = session_id
+                .as_ref()
+                .zip(turn_index)
+                .map(|(id, index)| (id.clone(), index));
             let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
             if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
                 self.collector
