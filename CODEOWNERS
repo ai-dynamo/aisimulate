@@ -84,6 +84,7 @@
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_ci_qualification.py                      @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
