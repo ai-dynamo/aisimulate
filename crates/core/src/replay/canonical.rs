@@ -99,14 +99,24 @@ impl CanonicalReplayRecord {
         let records = per_request
             .as_array_mut()
             .context("serialized per-request replay details must be an array")?;
-        records.sort_unstable_by(|left, right| {
-            let left_uuid = left.get("uuid").and_then(Value::as_str).unwrap_or_default();
-            let right_uuid = right
+        // Surface a missing `uuid` rather than defaulting it: every key would
+        // become `""`, and `sort_unstable` would then yield an
+        // implementation-defined permutation in the one record whose entire
+        // purpose is byte-stability. Sort on extracted keys so the comparator
+        // itself stays total and infallible.
+        let mut keyed = Vec::with_capacity(records.len());
+        for record in records.drain(..) {
+            let uuid = record
                 .get("uuid")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            left_uuid.cmp(right_uuid)
-        });
+                .context("serialized per-request replay detail must carry a uuid")?
+                .to_string();
+            keyed.push((uuid, record));
+        }
+        // `sort_by`, not `sort_unstable_by`: two records sharing a uuid would
+        // otherwise be ordered arbitrarily.
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        records.extend(keyed.into_iter().map(|(_, record)| record));
 
         if let Some(planner_object) = planner.as_object_mut() {
             planner_object.remove("html_report_path");
