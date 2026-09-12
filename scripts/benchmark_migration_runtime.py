@@ -329,6 +329,11 @@ def controller(args):
                         evidence["samples"].append(row)
                         output.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
                     print(f"{round_number}: {variant['label']} {case}/{requests}: {wall:.3f}s", flush=True)
+    for variant in variants:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(str(Path(p).resolve()) for p in variant["sources"])
+        if attest(variant, env) != variant["attestation"]:
+            raise RuntimeError(f"{variant['label']} source/native identity changed during measurement")
     comparisons = []
     for case, count in (
         ("estimate", 0),

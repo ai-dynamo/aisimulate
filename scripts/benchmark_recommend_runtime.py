@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import signal
@@ -176,10 +177,13 @@ def main():
                 if report["counts"]["failed"] or report["counts"]["timed_out"] or not report["views"]["top_n"]:
                     raise RuntimeError(f"{label} did not produce a successful recommendation")
                 row["counts"] = report["counts"]
-                row["best_score"] = max(r["score"] for r in report["candidates"] if r["score"] is not None)
+                scores = [r["score"] for r in report["candidates"] if r["score"] is not None]
+                if not scores or not all(math.isfinite(score) for score in scores):
+                    raise RuntimeError(f"{label} produced invalid candidate scores")
+                row["best_score"] = max(scores)
                 row["report"] = report
             evidence["samples"].append(row)
-            (output / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
+            (output / "results.json").write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
             print(label, round(elapsed, 3), flush=True)
     for variant, algorithm, _, env in cases:
         if attest(variant, env) != variant["attestation"]:
