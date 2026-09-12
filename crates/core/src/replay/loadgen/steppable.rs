@@ -51,7 +51,8 @@ use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleF
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{
-    OfflineDisaggReplayConfig, ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage,
+    OfflineDisaggReplayConfig, ReplayCaptureOptions, ReplayReport, ReplayTerminalStatus,
+    SlaThresholds, WorkerStage,
 };
 
 /// One per-request event produced by a [`SteppableReplay`] step.
@@ -276,6 +277,32 @@ where
         num_workers: usize,
         make_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<DynPlacement<O, M>>,
     ) -> anyhow::Result<Self> {
+        Self::with_placement_and_capture_options(
+            engine,
+            factory,
+            num_workers,
+            ReplayCaptureOptions::default(),
+            make_placement,
+        )
+    }
+
+    /// As [`Self::with_placement`], additionally selecting the detailed
+    /// capture the report carries.
+    ///
+    /// Without this the steppable seam could not enable canonical or
+    /// lifecycle evidence at all, so every report through it had
+    /// `runtime_evidence.pressure` and `.kv_ingest` unset. Both are
+    /// `skip_serializing_if = "Option::is_none"`, so the canonical JSON
+    /// changed shape rather than erroring, and a byte-exact comparison
+    /// against a `Replayer::run()` result -- which can set these -- compared
+    /// a record with evidence against one without.
+    pub fn with_placement_and_capture_options(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_workers: usize,
+        capture: ReplayCaptureOptions,
+        make_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<DynPlacement<O, M>>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
         let role_factory = aggregated_role_factory::<O>(factory, &engine)?;
         let runtime = AggRuntimeImpl::<DynPlacement<O, M>, O, M>::new_composed(
@@ -301,6 +328,7 @@ where
                 Ok(placement)
             },
         )?
+        .with_capture_options(capture)
         .into_steppable();
         Ok(Self {
             runtime,
@@ -315,6 +343,23 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
         engine: ReplayEngineConfig,
         factory: &ReplayEngineFactory,
         num_workers: usize,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_capture_options(
+            engine,
+            factory,
+            num_workers,
+            ReplayCaptureOptions::default(),
+        )
+    }
+
+    /// As [`Self::new`], additionally selecting the detailed capture the
+    /// report carries. See
+    /// [`SteppableAgg::with_placement_and_capture_options`].
+    pub fn new_with_capture_options(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_workers: usize,
+        capture: ReplayCaptureOptions,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
         let role_factory = aggregated_role_factory::<NoEngineEvents>(factory, &engine)?;
@@ -333,6 +378,7 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
             // is why `with_placement` calls it explicitly.
             |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
         )?
+        .with_capture_options(capture)
         .into_steppable();
         Ok(Self {
             runtime,
@@ -458,8 +504,19 @@ pub struct SteppableEngine {
 impl SteppableEngine {
     /// Build a one-worker aggregated runtime.
     pub fn new(engine: ReplayEngineConfig, factory: &ReplayEngineFactory) -> anyhow::Result<Self> {
+        Self::new_with_capture_options(engine, factory, ReplayCaptureOptions::default())
+    }
+
+    /// As [`Self::new`], additionally selecting the detailed capture the
+    /// report carries. See
+    /// [`SteppableAgg::with_placement_and_capture_options`].
+    pub fn new_with_capture_options(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        capture: ReplayCaptureOptions,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            inner: SteppableAgg::new(engine, factory, 1)?,
+            inner: SteppableAgg::new_with_capture_options(engine, factory, 1, capture)?,
         })
     }
 }
@@ -536,6 +593,25 @@ impl SteppableDisagg {
         prefill_workers: usize,
         decode_workers: usize,
     ) -> anyhow::Result<Self> {
+        Self::new_with_capture_options(
+            engine,
+            factory,
+            prefill_workers,
+            decode_workers,
+            ReplayCaptureOptions::default(),
+        )
+    }
+
+    /// As [`Self::new`], additionally selecting the detailed capture the
+    /// report carries. See
+    /// [`SteppableAgg::with_placement_and_capture_options`].
+    pub fn new_with_capture_options(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        prefill_workers: usize,
+        decode_workers: usize,
+        capture: ReplayCaptureOptions,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
         anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
         // `false`, not `O::capture_engine_kv_events(..)` the way `with_placement`
@@ -565,6 +641,7 @@ impl SteppableDisagg {
                 ))
             },
         )?
+        .with_capture_options(capture)
         .into_steppable();
         Ok(Self {
             runtime,
@@ -1289,19 +1366,24 @@ mod tests {
 
     #[test]
     fn report_epochs_preserve_runtime_evidence_capture() {
-        let mut engine = SteppableAgg::new(
+        // Through the public constructor, not by assigning the private
+        // `runtime` field: this test used to assert a property the public API
+        // could not produce, and it only compiled because `mod tests` is
+        // in-module. Every report through the seam therefore had
+        // `runtime_evidence.pressure`/`.kv_ingest` unset, and because both are
+        // `skip_serializing_if = "Option::is_none"` the canonical JSON changed
+        // shape rather than erroring.
+        let mut engine = SteppableAgg::new_with_capture_options(
             ReplayEngineConfig::default(),
             &ReplayEngineFactory::new(),
             1,
-        )
-        .unwrap();
-        engine.runtime = engine
-            .runtime
-            .with_capture_options(crate::replay::ReplayCaptureOptions {
+            ReplayCaptureOptions {
                 capture_canonical_evidence: true,
                 capture_lifecycle_evidence: true,
                 ..Default::default()
-            });
+            },
+        )
+        .unwrap();
         for ordinal in 1..=2 {
             engine.submit(request(ordinal, 128, 1)).unwrap();
             drain(&mut engine);
@@ -1309,6 +1391,38 @@ mod tests {
             assert!(report.runtime_evidence.pressure.is_some());
             assert!(report.runtime_evidence.kv_ingest.is_some());
         }
+    }
+
+    /// Every topology must be able to enable evidence capture, and the
+    /// default constructors must keep it off.
+    #[test]
+    fn capture_options_are_reachable_from_every_steppable_constructor() {
+        fn assert_captures(engine: &mut dyn SteppableReplay, uuid: u128, expected: bool) {
+            engine.submit(request(uuid, 128, 1)).unwrap();
+            drain(engine);
+            let report = engine.take_report(0.0).unwrap();
+            assert_eq!(report.runtime_evidence.pressure.is_some(), expected);
+            assert_eq!(report.runtime_evidence.kv_ingest.is_some(), expected);
+        }
+
+        let capture = ReplayCaptureOptions {
+            capture_canonical_evidence: true,
+            capture_lifecycle_evidence: true,
+            ..Default::default()
+        };
+        let config = ReplayEngineConfig::default;
+        let factory = ReplayEngineFactory::new();
+
+        let mut single =
+            SteppableEngine::new_with_capture_options(config(), &factory, capture).unwrap();
+        assert_captures(&mut single, 41, true);
+
+        let mut disaggregated =
+            SteppableDisagg::new_with_capture_options(config(), &factory, 1, 1, capture).unwrap();
+        assert_captures(&mut disaggregated, 42, true);
+
+        let mut defaulted = SteppableEngine::new(config(), &factory).unwrap();
+        assert_captures(&mut defaulted, 43, false);
     }
 
     #[test]
