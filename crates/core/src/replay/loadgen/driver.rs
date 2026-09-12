@@ -220,6 +220,23 @@ fn checked_delay_ms(what: &str, value: f64) -> Result<f64> {
     Ok(value)
 }
 
+/// Companion to [`checked_ready_at_ms`] for an *authored absolute* time on the
+/// replay timeline, whose origin is zero.
+///
+/// `checked_ready_at_ms` admits any finite value because a derived ready time
+/// legitimately moves forward from an already-validated origin. An authored
+/// origin has no such provenance: a negative one is stamped verbatim into
+/// `DirectRequest::arrival_timestamp_ms` and `CompactReadyTurn`'s
+/// `scheduled_ready_at_ms`, so it reaches per-request output bytes. The
+/// downstream admission filter tests `is_finite()` only, so this is the last
+/// gate for the constructors that skip `Trace::validate`.
+fn checked_absolute_time_ms(what: &str, value: f64) -> Result<f64> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("{what} must be finite and non-negative, got {value}");
+    }
+    Ok(value)
+}
+
 impl PartialEq for ReadySession {
     fn eq(&self, other: &Self) -> bool {
         self.ready_at_ms.to_bits() == other.ready_at_ms.to_bits()
@@ -938,7 +955,7 @@ impl WorkloadDriver {
                 let next_ready_at_ms = if is_concurrency {
                     None
                 } else {
-                    Some(checked_ready_at_ms(
+                    Some(checked_absolute_time_ms(
                         &format!("session {} first_arrival_timestamp_ms", session.session_id),
                         session.first_arrival_timestamp_ms.unwrap_or(0.0),
                     )?)

@@ -146,6 +146,33 @@ fn single_turn_requests_plan_missing_output_tokens_deterministically() {
 }
 
 #[test]
+fn unvalidated_trace_driver_rejects_negative_first_arrival() {
+    // `new_trace` skips `Trace::validate`, so the in-driver time check is the
+    // last gate before a negative origin is stamped into
+    // `DirectRequest::arrival_timestamp_ms`.
+    let trace = Trace {
+        block_size: 1,
+        sessions: vec![SessionTrace {
+            session_id: "negative".into(),
+            first_arrival_timestamp_ms: Some(-100.0),
+            turns: vec![TurnTrace {
+                input_length: 1,
+                max_output_tokens: 1,
+                hash_ids: vec![10],
+                ..Default::default()
+            }],
+        }],
+    };
+
+    let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("first_arrival_timestamp_ms") && message.contains("non-negative"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn test_from_mooncake_preserves_output_token_replay_keys() {
     let file = write_trace(&[
         serde_json::json!({
