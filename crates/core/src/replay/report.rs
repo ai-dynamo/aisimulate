@@ -119,6 +119,12 @@ pub struct TraceLatencyStats {
     pub num_ttft_samples: usize,
     pub num_tpot_samples: usize,
     pub num_e2e_latency_samples: usize,
+    /// Inter-token intervals folded into `itl` and
+    /// `output_token_throughput_per_user`. Without it, `mean_itl_ms: 0.0` is
+    /// indistinguishable from "no sample was ever folded" -- `finish()`
+    /// returns all-zeros at `count == 0`, and `StreamingDistribution::add`
+    /// silently drops a non-finite sample.
+    pub num_itl_samples: usize,
     pub ttft: TraceDistributionStats,
     pub ttst: TraceDistributionStats,
     pub tpot: TraceDistributionStats,
@@ -132,6 +138,9 @@ pub struct TraceTrajectoryStats {
     pub total: usize,
     pub completed: usize,
     pub incomplete: usize,
+    /// Trajectory end-to-end latencies folded into `e2e`. Distinguishes a
+    /// measured zero from an empty distribution, which reports all-zeros.
+    pub num_e2e_samples: usize,
     pub e2e: TraceDistributionStats,
 }
 
@@ -312,6 +321,7 @@ impl Serialize for ReplayReport {
             "num_e2e_latency_samples",
             &self.latency.num_e2e_latency_samples,
         )?;
+        map.serialize_entry("num_itl_samples", &self.latency.num_itl_samples)?;
         serialize_distribution(&mut map, "ttft", &self.latency.ttft)?;
         serialize_distribution(&mut map, "ttst", &self.latency.ttst)?;
         serialize_distribution(&mut map, "tpot", &self.latency.tpot)?;
@@ -325,6 +335,7 @@ impl Serialize for ReplayReport {
             map.serialize_entry("total_trajectories", &trajectories.total)?;
             map.serialize_entry("completed_trajectories", &trajectories.completed)?;
             map.serialize_entry("incomplete_trajectories", &trajectories.incomplete)?;
+            map.serialize_entry("num_trajectory_e2e_samples", &trajectories.num_e2e_samples)?;
             serialize_distribution(&mut map, "trajectory_e2e_latency", &trajectories.e2e)?;
             map.serialize_entry("p50_trajectory_e2e_latency_ms", &trajectories.e2e.median_ms)?;
         }
@@ -446,6 +457,9 @@ struct StreamingDistribution {
     sum_squared_deviations: f64,
     min: f64,
     max: f64,
+    /// Samples rejected as non-finite. A silent drop is otherwise
+    /// indistinguishable from a measured zero in the emitted distribution.
+    non_finite_samples: u64,
 }
 
 impl Default for StreamingDistribution {
@@ -461,13 +475,23 @@ impl Default for StreamingDistribution {
             sum_squared_deviations: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
+            non_finite_samples: 0,
         }
     }
 }
 
 impl StreamingDistribution {
+    /// Samples actually folded in. Distinct from the number of calls to
+    /// [`Self::add`], which silently drops a non-finite value.
+    fn sample_count(&self) -> usize {
+        usize::try_from(self.count).unwrap_or(usize::MAX)
+    }
+
     fn add(&mut self, value: f64) {
         if !value.is_finite() {
+            // Counted rather than logged here: this is a per-token hot path,
+            // and logging takes an output lock. `finish` reports the total.
+            self.non_finite_samples = self.non_finite_samples.saturating_add(1);
             return;
         }
 
@@ -482,6 +506,14 @@ impl StreamingDistribution {
     }
 
     fn finish(&self) -> TraceDistributionStats {
+        if self.non_finite_samples > 0 {
+            tracing::warn!(
+                non_finite_samples = self.non_finite_samples,
+                folded_samples = self.count,
+                component = "replay_streaming_distribution",
+                "dropped non-finite latency samples from a reported distribution"
+            );
+        }
         if self.count == 0 {
             return empty_distribution_stats();
         }
@@ -1578,8 +1610,10 @@ impl TraceCollector {
                 incomplete: snapshot
                     .total_trajectories
                     .saturating_sub(snapshot.completed_trajectories),
+                num_e2e_samples: snapshot.e2e_latencies_ms.len(),
                 e2e: build_distribution_stats(snapshot.e2e_latencies_ms),
             });
+        let num_itl_samples = self.itl_distribution.sample_count();
         let itl_distribution = self.itl_distribution.finish();
         let output_token_throughput_per_user = self.output_token_throughput_per_user.finish();
         let requests = self.requests;
@@ -1725,6 +1759,7 @@ impl TraceCollector {
                 num_ttft_samples,
                 num_tpot_samples,
                 num_e2e_latency_samples,
+                num_itl_samples,
                 ttft: build_distribution_stats(ttfts),
                 ttst: build_distribution_stats(ttsts),
                 tpot: build_distribution_stats(tpots),
@@ -2415,6 +2450,30 @@ mod tests {
         assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
         assert_eq!(rec.first_admission_g1_reused_input_tokens, None);
         assert_eq!(rec.first_admission_host_reused_input_tokens, None);
+    }
+
+    /// The report carried no sample count for ITL, so `mean_itl_ms: 0.0` was
+    /// indistinguishable from "every sample was rejected as non-finite" and
+    /// from "measured zero" -- `finish()` returns all-zeros at `count == 0`.
+    #[test]
+    fn the_itl_sample_count_distinguishes_an_empty_distribution_from_a_measured_zero() {
+        let mut measured_zero = TraceCollector::default();
+        // Three tokens at one instant: two real intervals, both 0.0 ms.
+        add_completed(&mut measured_zero, 1, 0.0, 3, &[10.0, 10.0, 10.0]);
+        let measured_zero = measured_zero.finish();
+        assert_eq!(measured_zero.latency.itl.distribution.mean_ms, 0.0);
+        assert_eq!(measured_zero.latency.num_itl_samples, 2);
+
+        // One token: no interval exists, so the distribution is empty and
+        // reports the same 0.0 mean.
+        let mut no_samples = TraceCollector::default();
+        add_completed(&mut no_samples, 1, 0.0, 1, &[10.0]);
+        let no_samples = no_samples.finish();
+        assert_eq!(no_samples.latency.itl.distribution.mean_ms, 0.0);
+        assert_eq!(no_samples.latency.num_itl_samples, 0);
+
+        let value = serde_json::to_value(&no_samples).expect("report must serialize");
+        assert_eq!(value["num_itl_samples"], serde_json::json!(0));
     }
 
     /// `SlaThresholds::validate` used to be reachable only from

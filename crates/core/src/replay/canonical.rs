@@ -418,6 +418,7 @@ mod tests {
             total: 1,
             completed: 1,
             incomplete: 0,
+            num_e2e_samples: 1,
             e2e: crate::replay::report::TraceDistributionStats {
                 mean_ms: f64::NAN,
                 min_ms: 0.0,
