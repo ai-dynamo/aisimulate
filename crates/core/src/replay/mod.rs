@@ -16,14 +16,11 @@ mod capture;
 pub(crate) mod components;
 pub(crate) mod core;
 mod disagg;
+mod engine;
 mod error;
-pub(crate) mod event;
+pub(crate) mod events;
 mod evidence;
 mod handoff;
-pub(crate) mod events {
-    pub(crate) use crate::replay::event::*;
-}
-mod engine;
 pub mod loadgen;
 mod progress;
 mod protocol;

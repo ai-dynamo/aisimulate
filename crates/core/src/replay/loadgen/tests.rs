@@ -1055,7 +1055,9 @@ fn speed_up_timing_refuses_a_ratio_that_overflows_a_timestamp() {
         .speed_up_timing(f64::MIN_POSITIVE)
         .unwrap_err();
     assert!(
-        error.to_string().contains("is not finite after speeding up"),
+        error
+            .to_string()
+            .contains("is not finite after speeding up"),
         "unexpected error: {error}"
     );
 }
