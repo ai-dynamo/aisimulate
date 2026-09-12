@@ -294,8 +294,25 @@ impl ReplayArtifactSink {
         Ok(())
     }
 
+    /// Drain the accumulated artifacts.
+    ///
+    /// Fails when a `PassEnd` pass start is still parked in
+    /// `deferred_pass_start_kv_events`: those events are flushed only when
+    /// that pass's completion is processed, and a run that ends in between --
+    /// the `max_sim_time_ms` soft cap leaves exactly this state, with the
+    /// start recorded and the completion still on the event heap -- would
+    /// otherwise drop that pass's entire G1 batch from an artifact advertised
+    /// as a parity fixture, with no error and a complete-looking result.
     pub(crate) fn take(&self) -> ReplayResult<ReplayArtifacts> {
-        Ok(std::mem::take(&mut self.lock()?.artifacts))
+        let mut state = self.lock()?;
+        if !state.deferred_pass_start_kv_events.is_empty() {
+            return Err(ReplayError::Invariant(format!(
+                "artifact sink has {} deferred pass-start KV events from a pass \
+                 whose completion was never processed",
+                state.deferred_pass_start_kv_events.len()
+            )));
+        }
+        Ok(std::mem::take(&mut state.artifacts))
     }
 
     fn lock(&self) -> ReplayResult<std::sync::MutexGuard<'_, ReplayArtifactState>> {
@@ -458,7 +475,7 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
-    use crate::engine::HostBlockKey;
+    use crate::engine::{HostBlockKey, KvEventData};
 
     #[test]
     fn observer_mutex_poison_is_a_sticky_finalization_error() {
@@ -488,6 +505,35 @@ mod tests {
             let error = sink.take().unwrap_err().to_string();
             assert!(error.contains("replay artifact sink lock was poisoned"));
         }
+    }
+
+    /// Under `PassEnd`, a pass start parks its events until that pass's
+    /// completion is processed. A run ending in between -- the state
+    /// `max_sim_time_ms`'s soft cap produces -- must not silently drop that
+    /// pass's whole G1 batch from an artifact advertised as a parity fixture.
+    #[test]
+    fn take_refuses_to_drop_deferred_pass_start_kv_events() {
+        let event = KvEvent {
+            event_id: 1,
+            dp_rank: 0,
+            data: KvEventData::Removed {
+                block_hashes: vec![3],
+            },
+        };
+        let sink = ReplayArtifactSink::new(ReplayArtifactKvEventVisibility::PassEnd);
+        sink.record_pass_start_kv_events(1.0, std::slice::from_ref(&event))
+            .unwrap();
+
+        let error = sink.take().unwrap_err().to_string();
+        assert!(error.contains("deferred pass-start KV events"), "{error}");
+
+        // Once the pass completes, the deferred batch flushes and `take`
+        // succeeds with the events present.
+        sink.record_pass_completion_kv_events(1.0, 2.0, &[])
+            .unwrap();
+        let artifacts = sink.take().unwrap();
+        assert_eq!(artifacts.kv_events.len(), 1);
+        assert_eq!(artifacts.kv_events[0].observed_at_ms, 2.0);
     }
 
     #[test]
