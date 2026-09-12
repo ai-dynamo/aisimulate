@@ -141,15 +141,10 @@ where
     Observation: ReplayEngineObservation,
 {
     stage: SimulationWorkerStage,
-    // Stored but never read anywhere in this crate (round-12 Low): disagg.rs
-    // passes Hidden for the prefill engine and Visible for decode, agg.rs
-    // passes Visible unconditionally, but nothing in EngineComponent branches
-    // on this field, so that distinction is currently a no-op. Left wired
-    // through rather than deleted -- removing it would touch 8 call sites
-    // across agg.rs/disagg.rs/tests for a value callers clearly intend to be
-    // load-bearing, and neither this session nor the review that found it
-    // could establish whether the missing consumer is a genuine gap or a
-    // deliberately deferred feature.
+    // Unread. Nothing below this component can observe it either: the single
+    // pass-execution path, `RankEngine::execute_pass`, takes no mode parameter
+    // and both backends collapse onto `try_execute_hidden_pass`. Delete along
+    // with its 8 call sites across agg.rs/disagg.rs/tests.
     _pass_mode: EnginePassMode,
     workers: Vec<Option<LogicalWorker>>,
     scheduler_owners: Vec<Option<SchedulerOwner>>,
@@ -435,9 +430,29 @@ where
 
         if target > effective {
             for _ in 0..(target - effective) {
-                let id = self.add_worker().with_context(|| {
-                    format!("failed to add worker while scaling from {effective} to {target}")
-                })?;
+                let id = match self.add_worker() {
+                    Ok(id) => id,
+                    Err(error) => {
+                        // Reverse this call's additions before surfacing the error.
+                        // The caller drops `added` with it, so it never schedules
+                        // the `WorkerReady` events for the workers already created
+                        // -- they would sit in `pending_startup` (and therefore in
+                        // `non_draining_group_count`) for the rest of the run,
+                        // never becoming ready. The scale-down arm below already
+                        // cancels a starting worker this way.
+                        for id in added.iter().rev() {
+                            self.tombstone_worker(*id).with_context(|| {
+                                format!("failed to roll back added worker {id}")
+                            })?;
+                            self.pending_startup.remove(id);
+                        }
+                        return Err(error).with_context(|| {
+                            format!(
+                                "failed to add worker while scaling from {effective} to {target}"
+                            )
+                        });
+                    }
+                };
                 if self.startup_time_ms.is_some() {
                     self.pending_startup.insert(id);
                     self.ready_workers.remove(&id);
@@ -468,17 +483,22 @@ where
         Ok((added, newly_marked, removed))
     }
 
-    pub(crate) fn active_group_ids(&self) -> Vec<usize> {
+    /// Active worker ids without materializing them, for the callers that only
+    /// need a count or an emptiness test on the per-scaling-tick path.
+    fn active_group_ids_iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.workers
             .iter()
             .enumerate()
-            .filter(|(worker_id, worker)| {
-                worker.is_some()
-                    && !self.pending_removal.contains(worker_id)
-                    && !self.pending_startup.contains(worker_id)
+            .filter_map(move |(worker_id, worker)| {
+                (worker.is_some()
+                    && !self.pending_removal.contains(&worker_id)
+                    && !self.pending_startup.contains(&worker_id))
+                .then_some(worker_id)
             })
-            .map(|(worker_id, _)| worker_id)
-            .collect()
+    }
+
+    pub(crate) fn active_group_ids(&self) -> Vec<usize> {
+        self.active_group_ids_iter().collect()
     }
 
     pub(crate) fn starting_group_ids(&self) -> Vec<usize> {
@@ -490,7 +510,7 @@ where
     }
 
     pub(crate) fn non_draining_group_count(&self) -> usize {
-        self.active_group_ids().len() + self.pending_startup.len()
+        self.active_group_ids_iter().count() + self.pending_startup.len()
     }
 
     /// Topologies of every currently-active worker, keyed by worker id.
@@ -578,10 +598,16 @@ where
             let Some(worker) = worker else {
                 continue;
             };
-            let ranks = worker
-                .telemetry
-                .as_ref()
-                .expect("live worker must retain scheduler telemetry");
+            // Cannot fail: the early return above proves component telemetry is
+            // enabled, and `enable_telemetry` populates `worker.telemetry` for
+            // every live worker -- including ones added later, which
+            // `apply_target_count` builds through the same path. This function
+            // returns `Vec`, not `Result`, because `disagg` folds two of these
+            // into one snapshot expression; `update_scheduler_metrics` and
+            // `take_telemetry_snapshot` guard the same invariant with `.context`.
+            let Some(ranks) = worker.telemetry.as_ref() else {
+                continue;
+            };
             for state in ranks {
                 snapshots.push(state.gauge_snapshot(worker_id));
             }
@@ -606,7 +632,7 @@ where
             let ranks = worker
                 .telemetry
                 .as_ref()
-                .expect("live worker must retain scheduler telemetry");
+                .context("telemetry-enabled worker did not retain live rank state")?;
             for state in ranks {
                 interval.checked_add_assign(state.interval)?;
             }
@@ -617,7 +643,7 @@ where
             let ranks = worker
                 .telemetry
                 .as_mut()
-                .expect("live worker must retain scheduler telemetry");
+                .context("telemetry-enabled worker did not retain live rank state")?;
             for state in ranks {
                 state.take_interval();
             }
@@ -640,7 +666,7 @@ where
     }
 
     pub(crate) fn has_active_workers(&self) -> bool {
-        !self.active_group_ids().is_empty()
+        self.active_group_ids_iter().next().is_some()
     }
 
     pub(crate) fn startup_time_ms(&self) -> Option<f64> {
@@ -694,6 +720,13 @@ where
             .context("addressed native command produced no rank effects")?
             .effects;
 
+        // Readiness is derived purely from engine state, and the command has
+        // already committed to the engine, so refresh before the fallible
+        // bookkeeping below. Leaving it at the end meant an accounting or
+        // metrics error left `ready_workers` describing the worker's pre-command
+        // state -- survivable for callers that keep driving after an error.
+        self.refresh_worker(owner.worker_id);
+
         let acquired = match effects.result {
             CommandResult::Submitted(request_id)
             | CommandResult::DestinationAccepted { request_id } => Some(request_id),
@@ -707,7 +740,6 @@ where
             owner.dp_rank,
             effects.kv_events,
         );
-        self.refresh_worker(owner.worker_id);
         Ok(ObservedCommandEffects {
             result: effects.result,
             lifecycle_events: effects.lifecycle_events,
@@ -957,14 +989,26 @@ where
             .complete_pass(completion.pass_id, now_ms)
             .map_err(crate::replay::error::engine_boundary)?;
         self.required_worker_mut(completion.worker_id)?.pending_pass = None;
-        let mut payloads = Vec::with_capacity(completed.effects.by_rank.len());
-        for rank in completed.effects.into_by_rank() {
-            let scheduler_id = self
-                .required_worker(completion.worker_id)?
-                .scheduler_ids
-                .get(rank.dp_rank as usize)
-                .copied()
-                .context("native completion returned an out-of-range DP rank")?;
+        let by_rank = completed.effects.into_by_rank();
+        // Resolve every rank's scheduler before committing any of them. The loop
+        // below retires requests from `in_flight_by_rank`/`total_in_flight` and
+        // folds interval counters, but drops `payloads` on the error return -- so
+        // an out-of-range rank partway through left the earlier ranks' requests
+        // accounted as drained while their `OutputSignal`s, tokens and terminals
+        // included, never reached the collector.
+        let scheduler_ids = by_rank
+            .iter()
+            .map(|rank| {
+                self.required_worker(completion.worker_id)?
+                    .scheduler_ids
+                    .get(rank.dp_rank as usize)
+                    .copied()
+                    .context("native completion returned an out-of-range DP rank")
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut payloads = Vec::with_capacity(by_rank.len());
+        for (rank, scheduler_id) in by_rank.into_iter().zip(scheduler_ids) {
             // Retiring on `completed` alone also covers rejections: `rejected`
             // is only ever set together with `completed`. Its single producer
             // is the vLLM admission gate (`engine::scheduler::vllm::core`),
