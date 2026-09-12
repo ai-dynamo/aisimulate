@@ -579,6 +579,10 @@ impl KvIngestEventEncoder<'_> {
         storage_tier_name: &'static str,
         event_id: u64,
     ) {
+        // Unlike `add_blocks`, this counter is incremented by exactly one per
+        // call and no adapter-supplied magnitude enters it, so reaching
+        // `u64::MAX` requires 2^64 calls -- unreachable, and this signature
+        // has no error to return.
         self.evidence.events = self
             .evidence
             .events
@@ -597,11 +601,16 @@ impl KvIngestEventEncoder<'_> {
     }
 
     pub fn add_blocks(&mut self, count: usize, context: &str) -> Result<()> {
+        // `count` is adapter-supplied on a documented out-of-crate seam, and
+        // this function already returns `Result` -- `to_u64` errors for an
+        // out-of-range value, so panicking one combinator later for an
+        // out-of-range sum would abort the host process over the same class
+        // of misbehaving input.
         self.evidence.blocks = self
             .evidence
             .blocks
             .checked_add(to_u64(count, context)?)
-            .expect("KV ingestion block count overflow");
+            .ok_or_else(|| anyhow::anyhow!("{context} overflows the KV ingestion block count"))?;
         Ok(())
     }
 
@@ -754,11 +763,52 @@ mod tests {
             Vec::new(),
         );
 
+        // A second collector must not see the first one's origin: without
+        // this arm the body would pass just as well against a `thread_local!`
+        // origin map, which is the isolation the name claims.
+        let other = ReplayEvidenceCollector::new(ReplayCaptureOptions {
+            capture_lifecycle_evidence: true,
+            ..Default::default()
+        });
+        assert_eq!(other.startup_origin(WorkerPool::Decode, 3), None);
+
         let evidence = evidence.finish();
         assert_eq!(evidence.lifecycle_operations.len(), 2);
         assert_eq!(
             evidence.lifecycle_operations[1].origin_operation_ordinal,
             Some(0)
+        );
+        assert!(other.finish().lifecycle_operations.is_empty());
+    }
+
+    /// `add_blocks` is a documented out-of-crate seam that already returns
+    /// `Result`: an adapter-supplied count must fail the replay, not abort the
+    /// host process one combinator after `to_u64` correctly errors.
+    #[test]
+    fn add_blocks_reports_an_overflowing_block_count_as_an_error() {
+        let mut evidence = ReplayEvidenceCollector::new(ReplayCaptureOptions {
+            capture_canonical_evidence: true,
+            ..Default::default()
+        });
+        let error = evidence
+            .record_kv_ingest(
+                WorkerPool::Agg,
+                KvIngestBoundary::PassEnd,
+                1.0,
+                1,
+                |encoder| {
+                    encoder.begin_event(3, 0, 0, "device", 9);
+                    encoder.add_blocks(usize::MAX, "first")?;
+                    encoder.add_blocks(usize::MAX, "second")?;
+                    Ok(())
+                },
+            )
+            .expect_err("an overflowing block count must be an error, not a panic");
+        assert!(
+            error
+                .to_string()
+                .contains("overflows the KV ingestion block count"),
+            "{error}"
         );
     }
 
