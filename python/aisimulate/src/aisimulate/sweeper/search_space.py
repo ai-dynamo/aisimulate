@@ -28,7 +28,7 @@ from .afd_parallel import (
     enumerate_afd_topologies,
 )
 from .config import SmartSearchConfig
-from .kv_estimate import NoPerfDatabase
+from .kv_estimate import NoPerfDatabase, resolve_backend_version
 from .model_hw import ModelHardware, NoViableParallelConfig, parallel_configs_for, resolve_model_hardware
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .replay import RunnerCapabilities
@@ -234,6 +234,59 @@ def _role_runtime(search_space, backend: str, role: str) -> tuple[int, int, floa
 def _runtime_by_role(search_space, backend: str, mode: str) -> dict[str, tuple[int, int, float, int | None]]:
     roles = ("agg",) if mode == "agg" else ("prefill", "decode")
     return {role: _role_runtime(search_space, backend, role) for role in roles}
+
+
+def _heterogeneous_disagg_configs(
+    search_space,
+    *,
+    backend: str,
+    max_seq_len: int | None,
+) -> list[DisaggParallelConfig]:
+    """Enumerate each P/D role against its own hardware, then apply the shared budget."""
+    role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
+    backend_version = search_space.backend_version
+    if backend_version is None:
+        role_versions = {role: resolve_backend_version(hardware, backend) for role, hardware in role_hardware.items()}
+        if len(set(role_versions.values())) != 1:
+            raise NoPerfDatabase(
+                "heterogeneous P/D hardware requires one common backend_version; "
+                f"latest versions for backend={backend!r} are {role_versions}. "
+                "Set search_space.backend_version to a version supported by both SKUs."
+            )
+        backend_version = role_versions["prefill"]
+
+    per_role: dict[str, list[ReplicaParallelConfig]] = {}
+    for role, hardware in role_hardware.items():
+        try:
+            configs = parallel_configs_for(
+                search_space.model_name,
+                hardware,
+                gpu_budget=search_space.gpu_budget,
+                deployment_mode="agg",
+                backend=backend,
+                backend_version=backend_version,
+                min_gpu_budget=None,
+                max_seq_len=max_seq_len,
+                role_runtime={"agg": _role_runtime(search_space, backend, role)},
+            )
+        except (NoPerfDatabase, NoViableParallelConfig) as exc:
+            raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
+        per_role[role] = configs
+
+    configs = [
+        DisaggParallelConfig(prefill=prefill, decode=decode)
+        for prefill in per_role["prefill"]
+        for decode in per_role["decode"]
+        if prefill.total_gpus + decode.total_gpus <= search_space.gpu_budget
+        and (
+            search_space.min_gpu_budget is None or prefill.total_gpus + decode.total_gpus >= search_space.min_gpu_budget
+        )
+    ]
+    if not configs:
+        raise NoViableParallelConfig(
+            f"heterogeneous P/D roles have no legal pair within gpu_budget={search_space.gpu_budget}"
+        )
+    return configs
 
 
 def _pinned_afd_topology(
@@ -521,17 +574,24 @@ def enumerate_branches(
             ):
                 continue
             try:
-                legal = parallel_configs_for(
-                    ss.model_name,
-                    ss.hardware_sku,
-                    gpu_budget=ss.gpu_budget,
-                    deployment_mode=deployment_mode,
-                    backend=backend,
-                    backend_version=ss.backend_version,
-                    min_gpu_budget=ss.min_gpu_budget,
-                    max_seq_len=max_seq_len,
-                    role_runtime=_runtime_by_role(ss, backend, deployment_mode),
-                )
+                if deployment_mode == "disagg" and (ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")):
+                    legal = _heterogeneous_disagg_configs(
+                        ss,
+                        backend=backend,
+                        max_seq_len=max_seq_len,
+                    )
+                else:
+                    legal = parallel_configs_for(
+                        ss.model_name,
+                        ss.hardware_sku_for("agg" if deployment_mode == "agg" else "prefill"),
+                        gpu_budget=ss.gpu_budget,
+                        deployment_mode=deployment_mode,
+                        backend=backend,
+                        backend_version=ss.backend_version,
+                        min_gpu_budget=ss.min_gpu_budget,
+                        max_seq_len=max_seq_len,
+                        role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                    )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
             legal = [
