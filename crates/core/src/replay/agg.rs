@@ -287,51 +287,69 @@ where
     }
 
     /// Materialize policy-released admissions into concrete worker dispatches.
+    ///
+    /// A released batch is a list of independent assignments, and by the time
+    /// the policy hands it back it has already dropped every entry from its own
+    /// pending set. Abandoning the tail on the first failure therefore loses
+    /// those requests outright: `pending_count` no longer counts them and the
+    /// engine never received them, so `cluster_in_flight` reads zero and
+    /// `is_workload_done` reports a finished run with requests still parked in
+    /// `self.requests`. Every entry is attempted and the first error is returned
+    /// afterwards; `Placement` is `Copy`, entries are independent, and iteration
+    /// follows `Vec` order, so this stays deterministic.
     fn dispatch_placements(&mut self, placements: Vec<Placement>) -> anyhow::Result<()> {
-        // Resolve every placement's rank identity before committing anything.
-        // `record_placement` folds the placement into offered-traffic totals and
-        // the KV hit-rate sample, and `on_route_released` emits a routing record,
-        // so resolving inline meant an unknown scheduler in the middle of a batch
-        // left the earlier placements already counted as routed while their
-        // requests stayed queued -- the same class of half-applied accounting an
-        // earlier round hoisted a `bail!` for in `assign_request`.
-        let identities = placements
-            .iter()
-            .map(|placement| {
-                self.engine
-                    .rank_identity(placement.scheduler_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "offline replay placement references unknown scheduler {}",
-                            placement.scheduler_id
-                        )
-                    })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        for (placement, (logical_worker_id, dp_rank)) in placements.into_iter().zip(identities) {
-            self.record_placement(placement);
-            let uuid = placement.request_id;
-            self.collector.on_route_released(
-                uuid,
-                ReplayRequestPool::Agg,
-                self.now_ms,
-                logical_worker_id,
-                placement.scheduler_id,
-                dp_rank,
-                placement.reported_overlap_tokens,
-                placement.cache_sample,
-                placement.placement_replica_id,
-            );
-            let request = self
-                .requests
-                .get_mut(&uuid)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("offline replay missing queued request state for {uuid}")
-                })?
-                .take_queued_request(uuid, placement.scheduler_id)?;
-            self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
+        let mut first_error: Option<anyhow::Error> = None;
+        for placement in placements {
+            if let Err(error) = self.dispatch_placement(placement)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Dispatch one released placement, resolving everything that can fail before
+    /// any accounting lands. `record_placement` folds the placement's KV hit-rate
+    /// sample into offered traffic and `on_route_released` emits a routing record,
+    /// so committing them first meant a rejected release still moved the reported
+    /// mean and named a worker it was never dispatched to -- the same class of
+    /// half-applied accounting an earlier round hoisted a `bail!` for in
+    /// `assign_request`.
+    fn dispatch_placement(&mut self, placement: Placement) -> anyhow::Result<()> {
+        let uuid = placement.request_id;
+        let (logical_worker_id, dp_rank) = self
+            .engine
+            .rank_identity(placement.scheduler_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "offline replay placement references unknown scheduler {}",
+                    placement.scheduler_id
+                )
+            })?;
+        let request = self
+            .requests
+            .get_mut(&uuid)
+            .ok_or_else(|| {
+                anyhow::anyhow!("offline replay missing queued request state for {uuid}")
+            })?
+            .take_queued_request(uuid, placement.scheduler_id)?;
+        self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
+        self.record_placement(placement);
+        self.collector.on_route_released(
+            uuid,
+            ReplayRequestPool::Agg,
+            self.now_ms,
+            logical_worker_id,
+            placement.scheduler_id,
+            dp_rank,
+            placement.reported_overlap_tokens,
+            placement.cache_sample,
+            placement.placement_replica_id,
+        );
         Ok(())
     }
 

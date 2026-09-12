@@ -397,6 +397,170 @@ fn canceling_a_router_queued_request_does_not_also_deliver_request_terminal() {
     assert_eq!(runtime.placement.pending_count(), 0);
 }
 
+/// Queues every request, and releases a scripted batch on the next `place`.
+/// Like a real policy, it drops every released id out of its own pending set
+/// before handing the batch back, so an abandoned release is invisible to
+/// `pending_count` -- which is exactly what makes a dropped tail undercount
+/// `cluster_in_flight`.
+#[derive(Default)]
+struct ScriptedReleasePlacement {
+    pending: Vec<Uuid>,
+    next_release: Vec<Placement>,
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for ScriptedReleasePlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        let request_id = request
+            .metadata()
+            .uuid
+            .ok_or_else(|| anyhow::anyhow!("scripted placement requires a request UUID"))?;
+        self.pending.push(request_id);
+        let released = std::mem::take(&mut self.next_release);
+        for placement in &released {
+            self.pending.retain(|id| *id != placement.request_id);
+        }
+        Ok(crate::replay::PlacementEffects {
+            decision: PlacementDecision::Queued,
+            released,
+        })
+    }
+
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        let Some(index) = self.pending.iter().position(|id| *id == request_id) else {
+            return false;
+        };
+        self.pending.remove(index);
+        true
+    }
+
+    fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+type ScriptedAggRuntime =
+    AggRuntimeImpl<ScriptedReleasePlacement, NoEngineEvents, NoReplayMetadata>;
+
+fn scripted_release_runtime() -> ScriptedAggRuntime {
+    let role_factory = ReplayEngineFactory::new()
+        .role_factory(
+            &ReplayEngineConfig::default(),
+            WorkerStage::Aggregated,
+            false,
+        )
+        .unwrap();
+    AggRuntimeImpl::<ScriptedReleasePlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
+        role_factory,
+        AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| Ok(ScriptedReleasePlacement::default()),
+    )
+    .unwrap()
+    .into_steppable()
+}
+
+fn placement(request_id: Uuid) -> Placement {
+    Placement {
+        request_id,
+        scheduler_id: 0,
+        reported_overlap_tokens: 0,
+        cache_sample: Some(crate::replay::PlacementCacheSample {
+            overlap_blocks: 2,
+            best_available_overlap_blocks: 2,
+            isl_blocks: 4,
+        }),
+        placement_replica_id: None,
+    }
+}
+
+/// A failing placement in the middle of a released batch must not abandon the
+/// entries behind it. The policy has already dropped every released id from its
+/// pending set, so an abandoned tail is counted by neither `pending_count` nor
+/// `engine.in_flight()` -- `cluster_in_flight` reads zero and `is_workload_done`
+/// reports a finished run with requests still parked in `self.requests`.
+#[test]
+fn a_failing_release_does_not_abandon_the_rest_of_the_batch() {
+    let mut runtime = scripted_release_runtime();
+    let first = runtime.submit_dynamic(request(1, 0.0)).unwrap();
+    let ghost = Uuid::from_u128(0xdead);
+
+    runtime.placement.next_release = vec![placement(ghost), placement(first)];
+    let error = runtime.submit_dynamic(request(2, 0.0)).unwrap_err();
+    assert!(
+        error.to_string().contains("missing queued request state"),
+        "{error}"
+    );
+
+    assert_eq!(
+        runtime.requests.get(&first).map(|state| state.phase),
+        Some(crate::replay::state::AggRequestPhase::Running),
+        "the placement behind the failing one must still have been dispatched"
+    );
+    assert_eq!(runtime.engine.in_flight(), 1);
+    assert!(!runtime.is_workload_done());
+}
+
+/// The failing placement itself must contribute no report bytes. `record_placement`
+/// folds a KV hit-rate sample into the traffic accumulator, so committing it
+/// before the fallible steps meant a rejected release still moved the mean.
+#[test]
+fn a_failing_release_folds_no_kv_hit_rate_sample() {
+    let mut runtime = scripted_release_runtime();
+    let first = runtime.submit_dynamic(request(1, 0.0)).unwrap();
+
+    // Releasing the same id twice: the second `take_queued_request` finds the
+    // request already `Running` and bails.
+    runtime.placement.next_release = vec![placement(first), placement(first)];
+    let error = runtime.submit_dynamic(request(2, 0.0)).unwrap_err();
+    assert!(
+        error.to_string().contains("expected queued request state"),
+        "{error}"
+    );
+    assert_eq!(
+        runtime.traffic.drain_planner(1_000.0).hit_rate_count,
+        1,
+        "only the release that actually dispatched may contribute a hit-rate sample"
+    );
+}
+
 #[test]
 fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     let role_factory = ReplayEngineFactory::new()
