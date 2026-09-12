@@ -131,6 +131,10 @@ def unroll_sample(
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
 
+    if mode == "disagg":
+        sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")
+        sample["decode_hardware_sku"] = search_space.hardware_sku_for("decode")
+
     sample.update(_unroll_parallel(mode, parallel_config))
 
     # engine knobs for the active branch only
