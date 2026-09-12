@@ -1717,6 +1717,58 @@ fn native_correction_uses_configured_bounds_and_ignores_out_of_range_observation
     );
 }
 
+/// Pins the retention contract `tune_with_fpms` documents.
+///
+/// Determinism here is per input SEQUENCE, not per input multiset. Retention is
+/// a bounded sliding window, so which observations survive — and therefore the
+/// correction factor, and for the regression arm the Welford standardization
+/// refitted from the survivors — depends on arrival order once the window
+/// overflows. Nothing in the subsystem sorts or canonicalizes tuning
+/// iterations, so byte-exact parity rests on the caller delivering them in a
+/// fixed order. That is asserted below in both directions: identical sequences
+/// agree exactly, and two permutations of one multiset are pinned to their own
+/// distinct (and individually stable) outcomes.
+#[test]
+fn tuning_is_deterministic_per_sequence_and_sequence_dependent_across_permutations() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 1,
+        max_observations: 2,
+        bucket_count: 1,
+        min_faster_correction_factor: None,
+        max_slower_correction_factor: None,
+        ..Default::default()
+    };
+    let native_ms = native_model(options.clone())
+        .estimate_forward_pass_time_ms(&[prefill_fpm(20, 0.0)])
+        .unwrap()
+        .unwrap();
+    let observation = |factor: f64| vec![prefill_fpm(20, native_ms * factor / 1000.0)];
+
+    let corrected_after = |batch: &[Vec<ForwardPassMetrics>]| {
+        let mut model = native_model(options.clone());
+        model.tune_with_fpms(batch).unwrap();
+        model
+            .estimate_forward_pass_time_ms(&[prefill_fpm(20, 0.0)])
+            .unwrap()
+            .unwrap()
+            / native_ms
+    };
+
+    let ascending = [observation(2.0), observation(4.0), observation(8.0)];
+    let descending = [observation(8.0), observation(4.0), observation(2.0)];
+
+    // Same multiset, same order: byte-identical.
+    assert_eq!(corrected_after(&ascending), corrected_after(&ascending));
+    assert_eq!(corrected_after(&descending), corrected_after(&descending));
+
+    // Same multiset, reversed order: the two-sample window keeps the LAST two
+    // observations, so the surviving median differs. This is the documented
+    // behavior of a bounded sliding window, not an order bug — but it is the
+    // reason the caller-ordering contract exists.
+    assert_close(corrected_after(&ascending), 6.0);
+    assert_close(corrected_after(&descending), 3.0);
+}
+
 /// A fresh native model reports source = Aic (no correction yet) and is
 /// Ready.
 #[test]
