@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from tools.support_matrix.qualify_fpe_support_matrix import qualify
 from tools.verify_installed_package_layers import _exercise_fpe_matrix, _verify_fpe_probe_results
 
@@ -61,7 +60,7 @@ def payload():
     }
 
 
-def check(tmp_path, payload, **kwargs):
+def check(tmp_path, payload):
     path = tmp_path / "shard" / "fpe_support_matrix.json"
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(payload))
@@ -71,7 +70,6 @@ def check(tmp_path, payload, **kwargs):
         expected_sha=SHA,
         expected_wheel_sha256=WHEEL_SHA,
         required_probes=[PROBE],
-        **kwargs,
     )
 
 

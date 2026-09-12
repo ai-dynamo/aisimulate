@@ -123,6 +123,7 @@ pub(crate) struct AllocResult {
 pub struct SglangKvManager {
     cache: RadixCache,
     enable_prefix_caching: bool,
+    emit_token_ids: bool,
     kv_event_publishers: KvEventPublishers,
     dp_rank: u32,
     next_event_id: u64,
@@ -188,7 +189,14 @@ impl SglangKvManager {
         kv_event_publishers: KvEventPublishers,
         dp_rank: u32,
     ) -> Self {
-        Self::new_with_prefix_caching(total_tokens, page_size, kv_event_publishers, dp_rank, true)
+        Self::new_with_prefix_caching(
+            total_tokens,
+            page_size,
+            kv_event_publishers,
+            dp_rank,
+            true,
+            false,
+        )
     }
 
     pub(crate) fn new_with_prefix_caching(
@@ -197,6 +205,7 @@ impl SglangKvManager {
         kv_event_publishers: KvEventPublishers,
         dp_rank: u32,
         enable_prefix_caching: bool,
+        emit_token_ids: bool,
     ) -> Self {
         let page_to_block_hash = if kv_event_publishers.is_empty() {
             Vec::new()
@@ -206,6 +215,7 @@ impl SglangKvManager {
         Self {
             cache: RadixCache::new(total_tokens, page_size),
             enable_prefix_caching,
+            emit_token_ids,
             kv_event_publishers,
             dp_rank,
             next_event_id: 0,
@@ -284,7 +294,7 @@ impl SglangKvManager {
         let allocated_tokens = available_before - self.cache.available_tokens();
 
         // Observer-visible KV events are complete-block only.
-        self.publish_stored_hashes(materialized_hashes, &pages, token_ids.len(), prefix_len);
+        self.publish_stored_hashes(materialized_hashes, &pages, prefix_len, token_ids);
 
         self.log_trace("allocation", allocated_tokens);
 
@@ -351,8 +361,8 @@ impl SglangKvManager {
         self.publish_stored_hashes(
             lease.page_hashes_through(token_ids.len(), page_size),
             &lease.pages,
-            lease.materialized_tokens,
             prefix_len,
+            token_ids,
         );
         self.log_trace("allocation", allocated_tokens);
         Some(prefix_len)
@@ -382,8 +392,13 @@ impl SglangKvManager {
         let complete_pages = complete_len / self.cache.page_size();
         let page_hashes = &lease.page_hashes[..complete_pages];
         let pages = &mut lease.pages[..complete_pages];
-        let new_last_node =
-            self.cache_unfinished_hashes(page_hashes, pages, last_node, lease.cached_tokens);
+        let new_last_node = self.cache_unfinished_hashes(
+            page_hashes,
+            pages,
+            last_node,
+            lease.cached_tokens,
+            token_ids,
+        );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
     }
@@ -437,6 +452,7 @@ impl SglangKvManager {
             &lease.pages,
             last_node,
             lease.cached_tokens,
+            token_ids,
         );
     }
 
@@ -463,9 +479,10 @@ impl SglangKvManager {
         pages: &[KvPageId],
         last_node: NodeId,
         first_new_token: usize,
+        token_ids: &[u32],
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
-        self.publish_stored_hashes(page_hashes, pages, complete_len, first_new_token);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -487,6 +504,7 @@ impl SglangKvManager {
         pages: &mut [KvPageId],
         last_node: NodeId,
         first_new_token: usize,
+        token_ids: &[u32],
     ) -> NodeId {
         let block_size = self.cache.page_size();
         let complete_len = page_hashes.len() * block_size;
@@ -498,7 +516,7 @@ impl SglangKvManager {
             pages.len()
         );
 
-        self.publish_stored_hashes(page_hashes, pages, complete_len, first_new_token);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -569,9 +587,10 @@ impl SglangKvManager {
     pub(crate) fn activate_destination_lease(
         &mut self,
         reservation: SglangDestinationReservation,
-        token_count: usize,
+        token_ids: &[u32],
         lease: &mut RadixRequestLease,
     ) -> usize {
+        let token_count = token_ids.len();
         let SglangDestinationReservation {
             prefix_len,
             mut prefix_pages,
@@ -589,6 +608,7 @@ impl SglangKvManager {
                     &mut prefix_pages,
                     last_node,
                     prefix_len,
+                    token_ids,
                 ),
                 token_count / self.cache.page_size() * self.cache.page_size(),
             )
@@ -871,12 +891,14 @@ impl SglangKvManager {
         });
     }
 
+    /// Publish complete materialized blocks. `token_ids` must start at sequence
+    /// position zero and cover all supplied page hashes when token emission is enabled.
     fn publish_stored_hashes(
         &mut self,
         page_hashes: &[LocalBlockHash],
         pages: &[KvPageId],
-        num_tokens: usize,
         first_new_token: usize,
+        token_ids: &[u32],
     ) -> usize {
         if self.kv_event_publishers.is_empty() {
             return 0;
@@ -887,8 +909,7 @@ impl SglangKvManager {
         }
 
         let block_size = self.cache.page_size();
-        let complete_len =
-            (page_hashes.len() * block_size).min(num_tokens) / block_size * block_size;
+        let complete_len = page_hashes.len() * block_size;
         if complete_len == 0 || first_new_token >= complete_len {
             return 0;
         }
@@ -897,6 +918,11 @@ impl SglangKvManager {
             pages.len() >= complete_pages,
             "not enough KV pages for Stored event: need {complete_pages}, got {}",
             pages.len()
+        );
+        assert!(
+            !self.emit_token_ids || token_ids.len() >= complete_len,
+            "not enough token IDs for Stored event: need {complete_len}, got {}",
+            token_ids.len()
         );
 
         let first_page = first_new_token / block_size;
@@ -940,7 +966,9 @@ impl SglangKvManager {
                 blocks.push(KvBlock {
                     block_hash,
                     tokens_hash: tokens_hash.0,
-                    token_ids: None,
+                    token_ids: self.emit_token_ids.then(|| {
+                        token_ids[page_idx * block_size..(page_idx + 1) * block_size].to_vec()
+                    }),
                 });
             }
         }
@@ -1214,24 +1242,50 @@ mod tests {
 
     #[test]
     fn destination_activation_bounds_hashes_to_materialized_tokens() {
-        let mut mgr = SglangKvManager::new(8, 4, KvEventPublishers::default(), 0);
-        let tokens = [1, 2, 3, 4, 5, 6, 7, 8];
-        let mut lease = RadixRequestLease::default();
-        lease.ensure_page_hashes(&tokens, 4);
+        for emit_token_ids in [false, true] {
+            let sink = Arc::new(MockSink::new());
+            let mut mgr = SglangKvManager::new_with_prefix_caching(
+                8,
+                4,
+                KvEventPublishers::new(Some(sink.clone())),
+                0,
+                true,
+                emit_token_ids,
+            );
+            let tokens = [1, 2, 3, 4, 5, 6, 7, 8];
+            let mut lease = RadixRequestLease::default();
+            lease.ensure_page_hashes(&tokens, 4);
 
-        let reservation = mgr
-            .reserve_destination_lease(lease.page_hashes(), 4)
-            .unwrap();
-        assert_eq!(
-            mgr.activate_destination_lease(reservation, 4, &mut lease),
-            0
-        );
+            let reservation = mgr
+                .reserve_destination_lease(lease.page_hashes(), 4)
+                .unwrap();
+            assert_eq!(
+                mgr.activate_destination_lease(reservation, &tokens[..4], &mut lease),
+                0
+            );
 
-        assert_eq!(lease.page_count(), 1);
-        assert_eq!(lease.cached_tokens(), 4);
-        assert_eq!(mgr.cache().prefix_match_len(&tokens[..4]), 4);
-        assert_eq!(mgr.cache().prefix_match_len(&tokens), 4);
-        mgr.abort(lease);
+            let events = sink.clone_events();
+            let [
+                KvEvent {
+                    data: KvEventData::Stored(stored),
+                    ..
+                },
+            ] = events.as_slice()
+            else {
+                panic!("expected one activation store");
+            };
+            assert_eq!(stored.blocks.len(), 1);
+            assert_eq!(stored.blocks[0].tokens_hash, lease.page_hashes()[0].0);
+            assert_eq!(
+                stored.blocks[0].token_ids.as_deref(),
+                emit_token_ids.then_some(&tokens[..4])
+            );
+            assert_eq!(lease.page_count(), 1);
+            assert_eq!(lease.cached_tokens(), 4);
+            assert_eq!(mgr.cache().prefix_match_len(&tokens[..4]), 4);
+            assert_eq!(mgr.cache().prefix_match_len(&tokens), 4);
+            mgr.abort(lease);
+        }
     }
 
     #[test]
@@ -1367,6 +1421,76 @@ mod tests {
     }
 
     #[test]
+    fn stored_token_ids_follow_materialized_pages_when_enabled() {
+        for emit_token_ids in [false, true] {
+            let sink = Arc::new(MockSink::new());
+            let mut mgr = SglangKvManager::new_with_prefix_caching(
+                16,
+                4,
+                KvEventPublishers::new(Some(sink.clone())),
+                0,
+                true,
+                emit_token_ids,
+            );
+            let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+            let mut alloc = mgr.allocate_for_request(&tokens[..4]).unwrap();
+            mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
+            mgr.extend_allocation(&tokens, &mut alloc.lease).unwrap();
+            mgr.finish(&tokens, alloc.lease);
+            let events = sink.clone_events();
+            let stored = events
+                .iter()
+                .filter_map(|event| match &event.data {
+                    KvEventData::Stored(data) => Some(data),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(stored.len(), 2);
+            assert_eq!(stored[1].parent_hash, Some(stored[0].blocks[0].block_hash));
+            for (index, data) in stored.iter().enumerate() {
+                assert_eq!(data.blocks.len(), 1);
+                assert_eq!(
+                    data.blocks[0].token_ids.as_deref(),
+                    emit_token_ids.then_some(&tokens[index * 4..(index + 1) * 4])
+                );
+            }
+            let event_count = sink.event_count();
+            let cached = mgr.allocate_for_request(&tokens[..8]).unwrap();
+            assert_eq!(cached.prefix_len, 8);
+            mgr.finish(&tokens[..8], cached.lease);
+            assert_eq!(sink.event_count(), event_count);
+            mgr.evict(8);
+            let reused = mgr.allocate_for_request(&tokens[..4]).unwrap();
+            mgr.finish(&tokens[..4], reused.lease);
+            let events = sink.clone_events();
+            let KvEventData::Stored(stored) = &events.last().unwrap().data else {
+                panic!("expected a store after eviction");
+            };
+            assert_eq!(
+                stored.blocks[0].token_ids.as_deref(),
+                emit_token_ids.then_some(&tokens[..4])
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not enough token IDs for Stored event: need 4, got 3")]
+    fn stored_token_ids_must_cover_materialized_blocks() {
+        let mut mgr = SglangKvManager::new_with_prefix_caching(
+            8,
+            4,
+            KvEventPublishers::new(Some(Arc::new(MockSink::new()))),
+            0,
+            true,
+            true,
+        );
+        let tokens = [1, 2, 3, 4];
+        let hashes = compute_block_hash_for_seq(&tokens, 4);
+        let pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
+        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3]);
+    }
+
+    #[test]
     fn test_event_publishing() {
         let sink = Arc::new(MockSink::new());
         let mut mgr = SglangKvManager::new(100, 1, KvEventPublishers::new(Some(sink.clone())), 0);
@@ -1445,15 +1569,15 @@ mod tests {
         let lease = lease_with_hashes(&tokens, 4);
 
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(4, 4), &pages[..1], 4, 0),
+            mgr.publish_stored_hashes(lease.page_hashes_through(4, 4), &pages[..1], 0, &tokens),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 8, 0),
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 8, 0),
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
             0
         );
 
@@ -1558,7 +1682,7 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 2)
+            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 2, &tokens)
         }));
 
         assert!(result.is_err());
@@ -1577,7 +1701,7 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 0)
+            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 0, &tokens)
         }));
 
         assert!(result.is_err());
