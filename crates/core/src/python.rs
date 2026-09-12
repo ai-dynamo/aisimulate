@@ -1297,6 +1297,117 @@ mod tests {
         assert!(timing.predictions.len() <= TIMING_CACHE_CAPACITY);
     }
 
+    #[pyclass]
+    struct ReplayTimingProbe {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[pymethods]
+    impl ReplayTimingProbe {
+        fn predict_prefill_latency(&self, bs: u32, isl: u32, prefix: u32) -> f64 {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            f64::from(bs + isl - prefix)
+        }
+
+        fn predict_decode_latency(&self, bs: u32, isl: u32, _osl: u32) -> f64 {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            f64::from(bs + isl)
+        }
+    }
+
+    #[test]
+    fn timing_cache_preserves_cold_and_warm_replay_reports() {
+        pyo3::prepare_freethreaded_python();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = || {
+            Arc::new(AicTimingModel {
+                engine: Python::with_gil(|py| {
+                    Py::new(
+                        py,
+                        ReplayTimingProbe {
+                            calls: Arc::clone(&calls),
+                        },
+                    )
+                    .unwrap()
+                    .into_any()
+                }),
+                use_fpm_decode_totals: false,
+                fpm_decode_kv_ceiling: None,
+                predictions: Cache::new(TIMING_CACHE_CAPACITY),
+            })
+        };
+        let replay = |timing: Arc<AicTimingModel>| {
+            let spec = ReplaySpec {
+                version: 1,
+                topology: ReplayTopology::Aggregated {
+                    workers: WorkerPoolSpec::default(),
+                },
+                engine: serde_json::to_value(ReplayEngineConfig {
+                    rank: EngineConfig {
+                        num_gpu_blocks: 16,
+                        block_size: 4,
+                        max_num_seqs: 1,
+                        max_num_batched_tokens: 64,
+                        enable_prefix_caching: false,
+                        ..EngineConfig::default()
+                    },
+                    ..ReplayEngineConfig::default()
+                })
+                .unwrap(),
+                adapters: ReplayAdapters {
+                    placement: ProviderSpec::round_robin(),
+                    scaling: ProviderSpec::no_scaling(),
+                },
+                max_sim_time_ms: None,
+                max_in_flight: Some(1),
+                record_per_request: false,
+                sla: Default::default(),
+                requests: (0..4)
+                    .map(|index| ReplayRequest {
+                        id: format!("request-{index}"),
+                        arrival_time_ms: f64::from(index) * 1000.0,
+                        input_tokens: 4,
+                        output_tokens: 3,
+                        input_token_ids: None,
+                        output_token_ids: None,
+                        dp_rank: None,
+                        prefill_dp_rank: None,
+                        session_id: None,
+                        turn_index: None,
+                        metadata: serde_json::Value::Null,
+                    })
+                    .collect(),
+            };
+            let report = Replayer::new(spec, ReplayEngineFactory::with_timing_model(timing))
+                .unwrap()
+                .run()
+                .unwrap();
+            let mut value = serde_json::to_value(report).unwrap();
+            for field in [
+                "wall_time_ms",
+                "processed_tokens_per_s",
+                "processed_output_tokens_per_s",
+            ] {
+                value.as_object_mut().unwrap().remove(field);
+            }
+            value
+        };
+        let timing = provider();
+        let cold = replay(Arc::clone(&timing));
+        let cold_calls = calls.load(Ordering::SeqCst);
+        assert_eq!(cold["completed_requests"], 4);
+        assert_eq!(cold["total_output_tokens"], 12);
+        // Four identical request shapes share the same prefill/decode queries.
+        assert!(
+            cold_calls > 0 && cold_calls <= 4,
+            "unexpected miss count: {cold_calls}"
+        );
+        assert_eq!(replay(timing), cold);
+        assert_eq!(calls.load(Ordering::SeqCst), cold_calls);
+        assert_eq!(replay(provider()), cold);
+        assert_eq!(calls.load(Ordering::SeqCst), cold_calls * 2);
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),

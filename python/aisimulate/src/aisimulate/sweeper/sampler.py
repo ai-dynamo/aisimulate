@@ -412,6 +412,7 @@ class SeededBayesianBranchSampler:
         import jax
         from vizier import algorithms as vza
         from vizier._src.algorithms.designers import gp_ucb_pe
+        from vizier.pyvizier.converters import padding
 
         self.branch = branch
         self._vz = vz
@@ -510,6 +511,11 @@ class SeededBayesianBranchSampler:
         self._designer = gp_ucb_pe.VizierGPUCBPEBandit(
             problem,
             rng=jax.random.PRNGKey(seed),
+            # Completed/active trial counts grow during every suggestion batch.
+            # Masked trial-axis padding lets nearby counts reuse JAX executables
+            # instead of compiling a new tensor shape for each count. Keep the
+            # model, acquisition budget, seed, and feature/metric axes unchanged.
+            padding_schedule=padding.PaddingSchedule(num_trials=padding.PaddingType.POWERS_OF_2),
         )
 
     def suggest(self, count: int) -> list[Suggestion]:

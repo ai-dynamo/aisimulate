@@ -6,6 +6,8 @@ from __future__ import annotations
 import time
 from typing import ClassVar
 
+import pytest
+
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.parallel_enum import (
@@ -340,6 +342,32 @@ def test_seeded_bayesian_sampler_is_deterministic() -> None:
     second = SeededBayesianBranchSampler(branch, objectives=None, seed=13).suggest(2)
 
     assert [item.selection for item in first] == [item.selection for item in second]
+
+
+@pytest.mark.filterwarnings("ignore:Explicitly requested dtype .* is not available.*:UserWarning")
+def test_bayesian_updates_and_suggestions_keep_padding_unobserved() -> None:
+    import math
+
+    branch = _branches()[0]
+    branch.knob_choices["agg_max_num_seqs"] = [256, 512, 1024]
+    sampler = SeededBayesianBranchSampler(branch, objectives=None, seed=13)
+    initial = sampler.suggest(3)
+    for index, suggestion in enumerate(initial):
+        sampler.observe(suggestion, {"objective": float(index + 1)})
+    designer = sampler._designer
+    data = designer._trials_to_data(designer._all_completed_trials)
+    assert len(designer._all_completed_trials) == 3
+    assert data.labels.padded_array.shape[0] == 4
+    assert data.labels.is_missing[0].tolist() == [False, False, False, True]
+    # Fit a real GP over a non-power-of-two observation count, then ask again.
+    # The masked slot must not become a synthetic observation or leak NaNs.
+    following = sampler.suggest(2)
+    assert len(following) == 2
+    assert len(sampler._active) == 2
+    assert len(designer._all_completed_trials) == 3
+    for suggestion in following:
+        assert suggestion.selection["agg_max_num_seqs"] in [256, 512, 1024]
+        assert all(math.isfinite(float(value.value)) for value in suggestion.handle.parameters.values())
 
 
 def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:

@@ -221,6 +221,38 @@ def worker(args):
     Path(args.result).write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
 
 
+def attest(variant, env):
+    root = Path(variant["root"]).resolve()
+    for path in variant["sources"]:
+        Path(path).resolve().relative_to(root)
+    # Untracked Python modules can shadow imports; native build products are
+    # normally ignored by Git and are attested separately below.
+    dirty = subprocess.check_output(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True
+    ).strip()
+    if dirty:
+        raise RuntimeError(f"{variant['label']} has uncommitted source changes: {dirty}")
+    module = "aisimulate._runtime" if variant["kind"] == "aisimulate" else "aiconfigurator_core._aiconfigurator_core"
+    dependencies = ["numpy", "pandas", "pyarrow", "pyyaml"]
+    if variant["kind"] == "aisimulate":
+        dependencies += ["jax", "jaxlib", "google-vizier", "equinox"]
+    code = (
+        "import importlib,importlib.metadata,json,sys; "
+        f"native=importlib.import_module({module!r}); "
+        "print(json.dumps({'python':sys.version,'native':native.__file__,"
+        f"'dependencies':{{n:importlib.metadata.version(n) for n in {dependencies!r}}}}}))"
+    )
+    result = json.loads(subprocess.check_output([variant["python"], "-c", code], env=env, text=True))
+    native = Path(result["native"]).resolve()
+    native.relative_to(root)  # Reject a stale extension loaded from another checkout.
+    if native.suffix not in {".so", ".pyd"}:
+        raise RuntimeError(f"{variant['label']} did not load a native extension")
+    result["native"] = str(native)
+    result["native_sha256"] = hashlib.sha256(native.read_bytes()).hexdigest()
+    result["revision"] = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    return result
+
+
 def controller(args):
     variants = json.loads(Path(args.variants).read_text())
     output = Path(args.output)
@@ -247,9 +279,9 @@ def controller(args):
     for variant in variants:
         root = Path(variant["root"]).resolve()
         variant["revision"] = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-        variant["dirty"] = subprocess.check_output(
-            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"], text=True
-        ).strip()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(str(Path(p).resolve()) for p in variant["sources"])
+        variant["attestation"] = attest(variant, env)
     # A full unrecorded pass pays first-install/import/filesystem warmup costs.
     # Recorded samples still start a fresh interpreter; OS caches are not purged.
     for round_number in range(-1, args.rounds):
@@ -284,6 +316,12 @@ def controller(args):
                     if child.returncode:
                         raise RuntimeError(f"{variant['label']}/{case}: {child.stdout}\n{child.stderr}")
                     row = json.loads(result_path.read_text())
+                    expected = variant["attestation"]
+                    loaded = {str(Path(p).resolve()) for p in row["native_modules"]}
+                    if expected["native"] not in loaded:
+                        raise RuntimeError(f"{variant['label']} loaded an unexpected native runtime")
+                    if hashlib.sha256(Path(expected["native"]).read_bytes()).hexdigest() != expected["native_sha256"]:
+                        raise RuntimeError(f"{variant['label']} native runtime changed during measurement")
                     row.update(
                         variant=variant["label"], case=case, requests=requests, round=round_number, process_wall_s=wall
                     )
