@@ -966,7 +966,30 @@ impl TraceCollector {
 
     /// Set the SLA thresholds used to classify goodput in `finish()`. With no
     /// SLA set (the default), the report's `goodput` field stays `None`.
+    ///
+    /// Thresholds that fail [`SlaThresholds::validate`] are refused and the
+    /// previous thresholds are kept. `ReplaySpec::validate` is the only path
+    /// that used to reach `validate()`; the `SteppableReplay` seam forwards
+    /// caller-supplied floats straight here, so without this gate
+    /// `ttft_ms: NaN` made `ttft_ms > bound` false for every request and
+    /// `goodput.request_throughput_rps` silently equalled total throughput,
+    /// while `e2e_ms: -1.0` inverted it to zero -- both reported as real
+    /// numbers. A caller passing `e2e_ms` and `ttft_ms` together would also
+    /// get a different goodput definition through the steppable seam than the
+    /// identical spec gets through `Replayer`, which refuses it. This
+    /// signature cannot return the error (out-of-crate `SteppableReplay`
+    /// implementors bind the `()` form), so surface it the way
+    /// `advance_now_ms` surfaces a non-finite clock advance, and leave
+    /// goodput unset rather than fabricating one.
     pub fn set_sla_thresholds(&mut self, sla: SlaThresholds) {
+        if let Err(error) = sla.validate() {
+            tracing::error!(
+                error = %error,
+                component = "replay_trace_collector",
+                "refused invalid SLA thresholds; goodput classification is unchanged"
+            );
+            return;
+        }
         self.sla = sla;
     }
 
@@ -2392,6 +2415,48 @@ mod tests {
         assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
         assert_eq!(rec.first_admission_g1_reused_input_tokens, None);
         assert_eq!(rec.first_admission_host_reused_input_tokens, None);
+    }
+
+    /// `SlaThresholds::validate` used to be reachable only from
+    /// `ReplaySpec::validate`, so the steppable seam could install `NaN`
+    /// (making every request "good") or a negative bound (making none good),
+    /// both reported as real goodput numbers.
+    #[test]
+    fn invalid_sla_thresholds_are_refused_rather_than_installed() {
+        let valid = SlaThresholds {
+            e2e_ms: Some(1_000.0),
+            ..Default::default()
+        };
+        let invalid = [
+            SlaThresholds {
+                ttft_ms: Some(f64::NAN),
+                ..Default::default()
+            },
+            SlaThresholds {
+                e2e_ms: Some(-1.0),
+                ..Default::default()
+            },
+            SlaThresholds {
+                e2e_ms: Some(10.0),
+                ttft_ms: Some(5.0),
+                itl_ms: None,
+            },
+        ];
+
+        for rejected in invalid {
+            let mut collector = TraceCollector::default();
+            collector.set_sla_thresholds(valid);
+            collector.set_sla_thresholds(rejected);
+            assert_eq!(
+                collector.sla, valid,
+                "an invalid threshold must leave the previous one in place"
+            );
+        }
+
+        // An all-`None` default is vacuously valid and still installable.
+        let mut collector = TraceCollector::default();
+        collector.set_sla_thresholds(SlaThresholds::default());
+        assert!(collector.sla.is_unset());
     }
 
     /// `with_wall_time_ms` is `pub` and validates nothing, and NaN makes every

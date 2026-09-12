@@ -163,6 +163,12 @@ pub trait SteppableReplay {
     fn set_capture_per_request(&mut self, capture: bool);
 
     /// Configure the goodput thresholds the report classifies against.
+    ///
+    /// Thresholds that fail `SlaThresholds::validate` (non-finite, non-positive,
+    /// or `e2e_ms` combined with `ttft_ms`/`itl_ms`) are refused and the previous
+    /// thresholds are kept, so the steppable seam and `Replayer` agree on which
+    /// SLAs are authorable. Like [`Self::advance_now_ms`], this signature has no
+    /// error to return, so the refusal is logged.
     fn set_sla_thresholds(&mut self, sla: SlaThresholds);
 
     /// Measured `(ttft_ms, mean_itl_ms)` for `uuid` once it has a first token.
@@ -1355,9 +1361,58 @@ mod tests {
             );
         }
 
+        // Every topology, matching `cancellation_is_immediately_terminal`:
+        // the `already live` arm of `SteppableDisagg::submit` is a verbatim
+        // copy of the aggregated one rather than a shared helper, so driving
+        // only `SteppableAgg` left it with no coverage at all.
         let factory = ReplayEngineFactory::new();
         let mut aggregated = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
         assert_rejected(&mut aggregated);
+
+        let mut multi_worker =
+            SteppableAgg::new(ReplayEngineConfig::default(), &factory, 2).unwrap();
+        assert_rejected(&mut multi_worker);
+
+        let mut single_worker =
+            SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap();
+        assert_rejected(&mut single_worker);
+
+        let mut disaggregated =
+            SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 1).unwrap();
+        assert_rejected(&mut disaggregated);
+    }
+
+    /// The steppable seam forwards caller-supplied floats straight to the
+    /// collector, bypassing `SlaThresholds::validate` -- which `Replayer`
+    /// enforces. A `NaN` bound made `ttft_ms > bound` false for every request,
+    /// so goodput silently equalled total throughput.
+    #[test]
+    fn steppable_replay_refuses_invalid_sla_thresholds() {
+        fn assert_refused(engine: &mut dyn SteppableReplay, uuid: u128) {
+            engine.set_sla_thresholds(SlaThresholds {
+                ttft_ms: Some(f64::NAN),
+                ..Default::default()
+            });
+            engine.submit(request(uuid, 128, 4)).unwrap();
+            drain(engine);
+            let report = engine.take_report(engine.now_ms()).unwrap();
+            assert!(
+                report.goodput.is_none(),
+                "an invalid SLA must leave goodput unset, not classify every request as good"
+            );
+        }
+
+        let factory = ReplayEngineFactory::new();
+        let mut aggregated = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
+        assert_refused(&mut aggregated, 31);
+
+        let mut single_worker =
+            SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap();
+        assert_refused(&mut single_worker, 32);
+
+        let mut disaggregated =
+            SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 1).unwrap();
+        assert_refused(&mut disaggregated, 33);
     }
 
     #[test]
