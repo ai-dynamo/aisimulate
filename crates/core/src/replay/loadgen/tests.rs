@@ -961,16 +961,56 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
     })
     .unwrap();
 
-    let partitions =
-        trace.partition_by_session(SessionPartitionSpec::RoundRobin { num_partitions: 2 });
+    let partitions = trace
+        .partition_by_session(SessionPartitionSpec::RoundRobin { num_partitions: 2 })
+        .unwrap();
     assert_eq!(partitions.len(), 2);
-    assert_eq!(partitions[0].sessions.len(), 2);
-    assert_eq!(partitions[1].sessions.len(), 2);
+    // Assert session *identity*, not just cardinality: a block partitioner
+    // (`session_idx / num_partitions`) also yields two partitions of two, so
+    // counts alone cannot tell round-robin from block striping.
+    let session_ids = |partition: &Trace| {
+        partition
+            .sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(session_ids(&partitions[0]), vec!["session_0", "session_2"]);
+    assert_eq!(session_ids(&partitions[1]), vec!["session_1", "session_3"]);
     assert!(
         partitions
             .iter()
             .flat_map(|partition| partition.sessions.iter())
             .all(|session| session.turns.len() == 2)
+    );
+}
+
+#[test]
+fn partition_by_session_refuses_a_zero_partition_count() {
+    // `.max(1)` used to repair this silently, handing back one partition
+    // containing the whole trace as if the split had succeeded.
+    let trace = Trace {
+        block_size: 1,
+        sessions: vec![SessionTrace {
+            session_id: "only".into(),
+            first_arrival_timestamp_ms: Some(0.0),
+            turns: vec![TurnTrace {
+                input_length: 1,
+                max_output_tokens: 1,
+                hash_ids: vec![1],
+                ..Default::default()
+            }],
+        }],
+    };
+
+    let error = trace
+        .partition_by_session(SessionPartitionSpec::RoundRobin { num_partitions: 0 })
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("num_partitions must be greater than 0"),
+        "unexpected error: {error}"
     );
 }
 
@@ -1166,7 +1206,8 @@ fn test_expand_hash_prefix_depth_scales_hashes_and_input_length() {
             }],
         }],
     }
-    .expand_hash_prefix_depth(3);
+    .expand_hash_prefix_depth(3)
+    .unwrap();
 
     let turn = &trace.sessions[0].turns[0];
     assert_eq!(turn.input_length, 18);
@@ -1179,9 +1220,8 @@ fn test_expand_hash_prefix_depth_scales_hashes_and_input_length() {
 }
 
 #[test]
-#[should_panic(expected = "hash prefix expansion overflow")]
 fn test_expand_hash_prefix_depth_rejects_offset_overflow() {
-    Trace {
+    let error = Trace {
         block_size: 1,
         sessions: vec![SessionTrace {
             session_id: "session".to_string(),
@@ -1194,7 +1234,12 @@ fn test_expand_hash_prefix_depth_rejects_offset_overflow() {
             }],
         }],
     }
-    .expand_hash_prefix_depth(3);
+    .expand_hash_prefix_depth(3)
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("hash prefix expansion overflow"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

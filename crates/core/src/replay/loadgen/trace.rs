@@ -894,7 +894,7 @@ impl Trace {
                     hash_ids.push(next_unique_hash);
                     next_unique_hash = next_unique_hash
                         .checked_add(1)
-                        .expect("synthetic hash id overflow");
+                        .ok_or_else(|| anyhow!("synthetic hash id overflow"))?;
                 }
 
                 turns.push(TurnTrace {
@@ -1063,38 +1063,49 @@ impl Trace {
         Ok(self)
     }
 
-    pub fn expand_hash_prefix_depth(mut self, factor: usize) -> Self {
+    /// Deepen every turn's hash prefix by `factor`, scaling `input_length` to
+    /// match.
+    ///
+    /// Every arithmetic step here is driven by trace data and a caller-supplied
+    /// `factor`, so overflow is an input error, not an invariant violation --
+    /// it is reported rather than panicked.
+    pub fn expand_hash_prefix_depth(mut self, factor: usize) -> Result<Self> {
         if factor <= 1 {
-            return self;
+            return Ok(self);
         }
-        let factor = u32::try_from(factor).expect("hash prefix expansion factor exceeds u32");
+        let factor = u32::try_from(factor)
+            .with_context(|| format!("hash prefix expansion factor {factor} exceeds u32"))?;
         for session in &mut self.sessions {
             for turn in &mut session.turns {
                 turn.input_length = turn
                     .input_length
                     .checked_mul(factor as usize)
-                    .expect("input_length expansion overflow");
+                    .ok_or_else(|| anyhow!("input_length expansion overflow"))?;
                 turn.hash_ids = turn
                     .hash_ids
                     .iter()
-                    .flat_map(|&hash_id| {
+                    .map(|&hash_id| {
                         let base = hash_id
                             .checked_mul(factor)
-                            .expect("hash prefix expansion overflow");
-                        (0..factor).map(move |offset| {
-                            base.checked_add(offset)
-                                .expect("hash prefix expansion overflow")
-                        })
+                            .ok_or_else(|| anyhow!("hash prefix expansion overflow"))?;
+                        (0..factor)
+                            .map(|offset| {
+                                base.checked_add(offset)
+                                    .ok_or_else(|| anyhow!("hash prefix expansion overflow"))
+                            })
+                            .collect::<Result<Vec<_>>>()
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>>>()?
+                    .concat();
             }
         }
-        self
+        Ok(self)
     }
 
-    pub fn duplicate_hash_space(mut self, copies: usize) -> Self {
+    /// Replicate the whole trace `copies` times into disjoint hash spaces.
+    pub fn duplicate_hash_space(mut self, copies: usize) -> Result<Self> {
         if copies <= 1 {
-            return self;
+            return Ok(self);
         }
 
         let max_hash_id = self
@@ -1106,15 +1117,16 @@ impl Trace {
             .unwrap_or(0);
         let offset_base = max_hash_id
             .checked_add(1)
-            .expect("hash duplication offset overflow");
+            .ok_or_else(|| anyhow!("hash duplication offset overflow"))?;
         let original_sessions = self.sessions.clone();
         self.sessions.clear();
 
         for copy_idx in 0..copies {
-            let copy_idx = u32::try_from(copy_idx).expect("hash copy index exceeds u32");
+            let copy_idx = u32::try_from(copy_idx)
+                .with_context(|| format!("hash copy index {copy_idx} exceeds u32"))?;
             let offset = offset_base
                 .checked_mul(copy_idx)
-                .expect("hash duplication offset overflow");
+                .ok_or_else(|| anyhow!("hash duplication offset overflow"))?;
             for session in &original_sessions {
                 let mut duplicated = session.clone();
                 duplicated.session_id = format!("{}:copy_{copy_idx}", session.session_id);
@@ -1125,22 +1137,32 @@ impl Trace {
                         .map(|&hash_id| {
                             hash_id
                                 .checked_add(offset)
-                                .expect("hash duplication overflow")
+                                .ok_or_else(|| anyhow!("hash duplication overflow"))
                         })
-                        .collect();
+                        .collect::<Result<Vec<_>>>()?;
                 }
                 self.sessions.push(duplicated);
             }
         }
-        self
+        Ok(self)
     }
 
-    pub fn partition_by_session(&self, spec: SessionPartitionSpec) -> Vec<Self> {
+    /// Split the trace into `num_partitions` disjoint traces, keeping each
+    /// session whole.
+    ///
+    /// A zero partition count is refused rather than repaired. `.max(1)` used
+    /// to silently hand back a single partition containing everything, which
+    /// reads as a successful split of a workload that was never split --
+    /// exactly the failure mode `WorkloadDriver::new` rejects loudly for
+    /// `max_in_flight == 0`.
+    pub fn partition_by_session(&self, spec: SessionPartitionSpec) -> Result<Vec<Self>> {
         let num_partitions = match spec {
             SessionPartitionSpec::Random { num_partitions, .. } => num_partitions,
             SessionPartitionSpec::RoundRobin { num_partitions } => num_partitions,
+        };
+        if num_partitions == 0 {
+            bail!("num_partitions must be greater than 0");
         }
-        .max(1);
         let mut partitions = vec![
             Self {
                 block_size: self.block_size,
@@ -1165,7 +1187,7 @@ impl Trace {
             partitions[partition_idx].sessions.push(session);
         }
 
-        partitions
+        Ok(partitions)
     }
 
     pub fn to_single_turn_requests(&self) -> Result<Vec<DirectRequest>> {
