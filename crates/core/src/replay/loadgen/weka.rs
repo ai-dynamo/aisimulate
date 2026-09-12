@@ -2132,7 +2132,10 @@ mod tests {
     /// finding.
     #[test]
     fn an_absurd_declared_request_length_is_rejected_at_validation() {
-        for (field, value) in [("in", 10_000_000_000_000_000_u64), ("out", 1e16 as u64)] {
+        for (field, value) in [
+            ("in", 10_000_000_000_000_000_u64),
+            ("out", 10_000_000_000_000_000_u64),
+        ] {
             let directory = tempdir().unwrap();
             let path = directory.path().join("trace.json");
             let mut row = request(0.0, 8, 1, &[1, 2]);
@@ -2365,21 +2368,50 @@ mod tests {
         }));
     }
 
+    /// `in: 6` with `block_size: 4` is one full block plus a partial tail, so
+    /// each row carries both identity kinds and they can be asserted apart.
+    /// Comparing whole `hash_ids` vectors would not: either property alone
+    /// makes them differ, so the namespacing assertion would still pass with
+    /// tail privacy removed, and vice versa.
     #[test]
     fn local_hashes_are_namespaced_and_partial_tails_are_private() {
-        let directory = tempdir().unwrap();
+        let namespaced = tempdir().unwrap();
         write_trace(
-            &directory.path().join("a.json"),
+            &namespaced.path().join("a.json"),
             serde_json::json!([request(0.0, 6, 1, &[7, 8])]),
         );
         write_trace(
-            &directory.path().join("b.json"),
+            &namespaced.path().join("b.json"),
             serde_json::json!([request(0.0, 6, 1, &[7, 8])]),
         );
-        let (_, rows) = load_weka_agentic_rows(directory.path()).unwrap();
+        let (_, rows) = load_weka_agentic_rows(namespaced.path()).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_ne!(rows[0].hash_ids, rows[1].hash_ids);
-        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 2);
+        let a = rows[0].hash_ids.as_ref().unwrap();
+        let b = rows[1].hash_ids.as_ref().unwrap();
+        assert_eq!((a.len(), b.len()), (2, 2));
+        // `hash_id_scope: local` means block 7 in a.json is not block 7 in
+        // b.json, even though the two requests are byte-identical.
+        assert_ne!(a[0], b[0], "a full block must be namespaced by source");
+
+        // Within one source, two requests declaring the same blocks do share
+        // the full block -- but never the partial tail, whose content is not
+        // determined by the authored hash and so takes a request-private
+        // identity.
+        let shared = tempdir().unwrap();
+        let path = shared.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([request(0.0, 6, 1, &[7, 8]), request(1.0, 6, 1, &[7, 8])]),
+        );
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        assert_eq!(rows.len(), 2);
+        let first = rows[0].hash_ids.as_ref().unwrap();
+        let second = rows[1].hash_ids.as_ref().unwrap();
+        assert_eq!(
+            first[0], second[0],
+            "a full block is shared within a source"
+        );
+        assert_ne!(first[1], second[1], "a partial tail is request-private");
     }
 
     #[test]
