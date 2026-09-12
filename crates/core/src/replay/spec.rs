@@ -11,6 +11,12 @@ use crate::replay::{ReplayError, ReplayResult, SlaThresholds};
 
 pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
 
+/// Upper bound on an authored `input_tokens`/`output_tokens` count in one
+/// [`ReplayRequest`]. The length-only form costs a caller nothing to declare
+/// but sizes a heap allocation and a simulated generation, so it is bounded
+/// the same way the trace loaders bound their own declared token counts.
+pub const MAX_DECLARED_SPEC_REQUEST_TOKENS: usize = 10_000_000;
+
 /// Serializable input to one replay execution.
 ///
 /// Provider descriptors are data only. A runner resolves them to concrete
@@ -213,6 +219,27 @@ impl ReplayRequest {
             ));
         }
         validate_time("request arrival_time_ms", self.arrival_time_ms)?;
+        // A `ReplaySpec` is deserialized straight from a caller-supplied
+        // payload, and `lower_requests` turns `input_tokens` into a
+        // `Vec<u32>` of exactly that length. Without a bound, the twenty
+        // bytes `{"input_tokens": 18446744073709551615}` -- with no
+        // `input_token_ids` to pay for them -- request a 64 EiB allocation
+        // and abort the process. `output_tokens` is the same class with a
+        // different failure mode: unbounded simulated generation, since
+        // `max_sim_time_ms` defaults to `None`. Matches the magnitude the
+        // trace loaders already use for authored token counts
+        // (`MAX_DECLARED_REQUEST_TOKENS`, `MAX_SYNTHETIC_SEQUENCE_TOKENS`).
+        for (name, count) in [
+            ("input_tokens", self.input_tokens),
+            ("output_tokens", self.output_tokens),
+        ] {
+            if count > MAX_DECLARED_SPEC_REQUEST_TOKENS {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "request {:?} declares {count} {name}, above the maximum of {MAX_DECLARED_SPEC_REQUEST_TOKENS}",
+                    self.id
+                )));
+            }
+        }
         if let Some(input_token_ids) = &self.input_token_ids
             && input_token_ids.len() != self.input_tokens
         {
@@ -639,6 +666,39 @@ mod direct_request_conversion_tests {
         assert_eq!(converted.input_tokens, 2);
         assert_eq!(converted.input_token_ids, None);
     }
+
+    /// The length-only form declares a token count without paying for it, and
+    /// `lower_requests` turns `input_tokens` into a `Vec<u32>` of exactly that
+    /// length. Twenty bytes of JSON must not request a 64 EiB allocation.
+    #[test]
+    fn validate_rejects_an_unbounded_declared_token_count() {
+        let request = |input_tokens, output_tokens| ReplayRequest {
+            id: "r1".to_string(),
+            arrival_time_ms: 0.0,
+            input_tokens,
+            input_token_ids: None,
+            output_tokens,
+            output_token_ids: None,
+            dp_rank: None,
+            prefill_dp_rank: None,
+            session_id: None,
+            turn_index: None,
+            metadata: Value::Null,
+        };
+
+        let error = request(usize::MAX, 1).validate().unwrap_err();
+        assert!(error.to_string().contains("input_tokens"), "{error}");
+
+        let error = request(1, usize::MAX).validate().unwrap_err();
+        assert!(error.to_string().contains("output_tokens"), "{error}");
+
+        request(
+            MAX_DECLARED_SPEC_REQUEST_TOKENS,
+            MAX_DECLARED_SPEC_REQUEST_TOKENS,
+        )
+        .validate()
+        .expect("a count at the bound stays valid");
+    }
 }
 
 #[cfg(test)]
@@ -667,6 +727,23 @@ mod unknown_field_tests {
             .expect_err("a misspelled key must not be silently dropped");
         assert!(
             error.to_string().contains("max_inflight"),
+            "error should name the offending key: {error}"
+        );
+    }
+
+    /// `deny_unknown_fields` does not recurse, and `SlaThresholds` is the one
+    /// nested spec DTO where every field defaults -- so a missing `_ms` suffix
+    /// used to parse into `default()`, leaving `is_set()` false and the
+    /// `goodput_*` keys absent from a run the caller authored as goodput-gated.
+    #[test]
+    fn a_misspelled_nested_sla_key_is_rejected_rather_than_defaulted() {
+        serde_json::from_str::<ReplaySpec>(&spec_json(r#""sla":{"ttft_ms":100}"#))
+            .expect("the correctly spelled key must still parse");
+
+        let error = serde_json::from_str::<ReplaySpec>(&spec_json(r#""sla":{"ttft":100}"#))
+            .expect_err("a misspelled nested key must not be silently dropped");
+        assert!(
+            error.to_string().contains("ttft"),
             "error should name the offending key: {error}"
         );
     }
