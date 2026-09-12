@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::model::{
-    IterationFeatures, IterationObservation, RegressionIterationFeatures, WorkloadKind,
-};
+use super::model::{IterationFeatures, RankLatency, RegressionIterationFeatures, WorkloadKind};
 use super::options::{validate_options, validate_regression_options};
 use super::{
     ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
@@ -238,34 +236,82 @@ fn assert_close(actual: f64, expected: f64) {
 
 // ---- native feature-selection parity ----
 
-#[test]
-fn native_phase_separated_ranks_keep_representative_rank_selection() {
-    let prefill_dominant = regression_fpm(1, 2_000, 50_000, 0, 0, 0.0);
-    let decode = regression_fpm(0, 0, 0, 4, 1_000, 0.0);
+fn rank_latency(dp_rank: u32, latency_ms: f64, metrics: &ForwardPassMetrics) -> RankLatency {
+    RankLatency {
+        dp_rank,
+        latency_ms,
+        feature: IterationFeatures::from_single_rank(metrics),
+    }
+}
 
-    let ranks = vec![prefill_dominant.clone(), decode.clone()];
-    let feature = IterationFeatures::from_metrics(&ranks).unwrap().unwrap();
+/// The native estimate and the correction region must come from the SAME rank.
+/// Selecting the region by summed feature counts while the engine selects by
+/// modeled latency applies a factor learned in one region to an estimate
+/// produced in another.
+#[test]
+fn native_correction_region_comes_from_the_rank_that_gates_the_estimate() {
+    // Counts favor the decode rank (4 + 1_000 > 2_000 is false, so make it so),
+    // while the modeled forward pass is gated by the prefill rank.
+    let prefill = regression_fpm(1, 2_000, 50_000, 0, 0, 0.0);
+    let decode = regression_fpm(0, 0, 0, 4, 9_000, 0.0);
+    let count_score = |metrics: &ForwardPassMetrics| {
+        let scheduled = &metrics.scheduled_requests;
+        f64::from(scheduled.sum_prefill_tokens)
+            + f64::from(scheduled.num_decode_requests)
+            + f64::from(scheduled.sum_decode_kv_tokens)
+    };
+    assert!(count_score(&decode) > count_score(&prefill));
+
+    // The prefill rank is the slower one to model.
+    let ranks = vec![
+        rank_latency(0, 12.0, &prefill),
+        rank_latency(1, 3.0, &decode),
+    ];
+    let (native, feature) = super::model::reduce_rank_latencies(&ranks).unwrap();
+    assert_eq!(native, 12.0);
     assert_eq!(feature.workload_kind, WorkloadKind::Prefill);
     assert_eq!(feature.x, vec![2_000.0]);
+}
 
-    let mut reversed = ranks;
-    reversed.reverse();
-    let reversed_feature = IterationFeatures::from_metrics(&reversed).unwrap().unwrap();
+/// Rank selection is a property of the iteration, not of the caller's slice
+/// ordering: an exact latency tie breaks on the lower `dp_rank`, so reversing
+/// the slice cannot change which correction grid is read or written.
+#[test]
+fn native_rank_selection_is_independent_of_slice_order() {
+    let prefill = regression_fpm(1, 1_000, 0, 0, 0, 0.0);
+    let decode = regression_fpm(0, 0, 0, 2, 998, 0.0);
+
+    let forward = vec![
+        rank_latency(0, 5.0, &prefill),
+        rank_latency(1, 5.0, &decode),
+    ];
+    let reversed = vec![
+        rank_latency(1, 5.0, &decode),
+        rank_latency(0, 5.0, &prefill),
+    ];
+
+    let (forward_native, forward_feature) = super::model::reduce_rank_latencies(&forward).unwrap();
+    let (reversed_native, reversed_feature) =
+        super::model::reduce_rank_latencies(&reversed).unwrap();
+    assert_eq!(forward_native, reversed_native);
+    assert_eq!(forward_feature.workload_kind, WorkloadKind::Prefill);
     assert_eq!(reversed_feature.workload_kind, WorkloadKind::Prefill);
-    assert_eq!(reversed_feature.x, vec![2_000.0]);
+    assert_eq!(forward_feature.x, reversed_feature.x);
+}
 
-    let decode_dominant = vec![regression_fpm(1, 900, 75_000, 0, 0, 0.0), decode];
-    let feature = IterationFeatures::from_metrics(&decode_dominant)
-        .unwrap()
-        .unwrap();
+/// An iteration where no rank scheduled work has no gating rank, and ranks
+/// without scheduled work never supply the region for ranks that have it.
+#[test]
+fn native_rank_selection_skips_ranks_without_scheduled_work() {
+    let empty = ForwardPassMetrics::default();
+    assert!(super::model::reduce_rank_latencies(&[rank_latency(0, 0.0, &empty)]).is_none());
+
+    let decode = regression_fpm(0, 0, 0, 4, 1_000, 0.0);
+    let ranks = vec![rank_latency(0, 9.0, &empty), rank_latency(1, 2.0, &decode)];
+    let (native, feature) = super::model::reduce_rank_latencies(&ranks).unwrap();
+    // The native estimate still reduces over every rank.
+    assert_eq!(native, 9.0);
     assert_eq!(feature.workload_kind, WorkloadKind::Decode);
-    assert_eq!(feature.x, vec![4.0, 1_000.0]);
-
-    let mut reversed = decode_dominant;
-    reversed.reverse();
-    let reversed_feature = IterationFeatures::from_metrics(&reversed).unwrap().unwrap();
-    assert_eq!(reversed_feature.workload_kind, WorkloadKind::Decode);
-    assert_eq!(reversed_feature.x, vec![4.0, 1_000.0]);
 }
 
 #[test]
@@ -278,28 +324,21 @@ fn native_iteration_observation_uses_max_finite_positive_wall_time() {
         prefill_fpm(50, 0.007),
         prefill_fpm(100, 0.001),
     ];
-    let observation = IterationObservation::from_metrics(&ranks).unwrap().unwrap();
-    assert_eq!(observation.feature.workload_kind, WorkloadKind::Prefill);
-    assert_eq!(observation.feature.x, vec![100.0]);
-    assert_eq!(observation.wall_time_ms, 7.0);
+    assert_eq!(super::model::max_positive_wall_time_ms(&ranks), Some(7.0));
 
     let mut reversed = ranks;
     reversed.reverse();
-    let reversed_observation = IterationObservation::from_metrics(&reversed)
-        .unwrap()
-        .unwrap();
     assert_eq!(
-        reversed_observation.feature.workload_kind,
-        WorkloadKind::Prefill
+        super::model::max_positive_wall_time_ms(&reversed),
+        Some(7.0)
     );
-    assert_eq!(reversed_observation.feature.x, vec![100.0]);
-    assert_eq!(reversed_observation.wall_time_ms, 7.0);
 
-    let overflowing_observation =
-        IterationObservation::from_metrics(&[prefill_fpm(50, 0.007), prefill_fpm(100, f64::MAX)])
-            .unwrap()
-            .unwrap();
-    assert!(overflowing_observation.wall_time_ms.is_infinite());
+    let overflowing = super::model::max_positive_wall_time_ms(&[
+        prefill_fpm(50, 0.007),
+        prefill_fpm(100, f64::MAX),
+    ])
+    .unwrap();
+    assert!(overflowing.is_infinite());
 }
 
 #[test]

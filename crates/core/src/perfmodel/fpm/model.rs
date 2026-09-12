@@ -306,7 +306,11 @@ impl ForwardPassPerfModel {
     /// for estimation.
     ///
     /// Native models return an AIC estimate immediately, multiplied by the
-    /// correction factor for the matching workload region. Correction factors
+    /// correction factor for the workload region of the rank that produced that
+    /// estimate — the rank with the highest modeled latency, breaking an exact
+    /// tie on the lower `dp_rank`. The result is therefore independent of the
+    /// order in which ranks appear in `metrics_by_rank` whenever `dp_rank` is
+    /// populated. Correction factors
     /// default to `1.0` for inferred workload kinds with fewer than
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
@@ -324,10 +328,10 @@ impl ForwardPassPerfModel {
                 engine,
                 corrections,
             } => {
-                let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+                let ranks = rank_latencies(engine, metrics_by_rank)?;
+                let Some((native, feature)) = reduce_rank_latencies(&ranks) else {
                     return Ok(Some(0.0));
                 };
-                let native = engine.forward_pass_time_ms(metrics_by_rank)?;
                 let corrected = native
                     * corrections
                         .store(feature.workload_kind)
@@ -365,7 +369,8 @@ impl ForwardPassPerfModel {
     /// active backend and uses the maximum finite positive `wall_time` across
     /// ranks as the observed latency target in milliseconds. Iterations with
     /// no scheduled work or no positive `wall_time` are ignored. Native models
-    /// infer the workload kind and update the matching region's
+    /// infer the workload kind from the same gating rank that
+    /// `estimate_forward_pass_time_ms` selects, and update that region's
     /// median `observed_ms / native_ms` correction factor, with each ratio
     /// bounded by `min_faster_correction_factor` and
     /// `max_slower_correction_factor` when configured. Regions are used only
@@ -387,14 +392,18 @@ impl ForwardPassPerfModel {
                     engine,
                     corrections,
                 } => {
-                    let Some(observation) = IterationObservation::from_metrics(metrics_by_rank)?
-                    else {
+                    let ranks = rank_latencies(engine, metrics_by_rank)?;
+                    let Some((native, feature)) = reduce_rank_latencies(&ranks) else {
                         continue;
                     };
-                    let native = engine.forward_pass_time_ms(metrics_by_rank)?;
+                    let Some(wall_time_ms) = max_positive_wall_time_ms(metrics_by_rank) else {
+                        continue;
+                    };
+                    let workload_kind = feature.workload_kind;
+                    let x = feature.x.clone();
                     corrections
-                        .store_mut(observation.feature.workload_kind)
-                        .add_observation(observation.feature.x, observation.wall_time_ms, native);
+                        .store_mut(workload_kind)
+                        .add_observation(x, wall_time_ms, native);
                 }
                 ForwardPassPerfMode::Regression {
                     worker_type,
@@ -562,30 +571,99 @@ pub(crate) struct IterationFeatures {
     pub(crate) x: Vec<f64>,
 }
 
-impl IterationFeatures {
-    pub(crate) fn from_metrics(
-        metrics_by_rank: &[ForwardPassMetrics],
-    ) -> Result<Option<Self>, AicError> {
-        if metrics_by_rank.is_empty() {
-            return Err(AicError::InvalidForwardPassMetrics(
-                "at least one attention-DP rank metric is required".to_string(),
-            ));
-        }
-        for metrics in metrics_by_rank {
-            validate_forward_pass_metrics(metrics)?;
-        }
+/// One attention-DP rank's modeled latency and the native-correction features
+/// it contributes to the iteration.
+#[derive(Clone, Debug)]
+pub(crate) struct RankLatency {
+    pub(crate) dp_rank: u32,
+    pub(crate) latency_ms: f64,
+    pub(crate) feature: Option<IterationFeatures>,
+}
 
-        Ok(metrics_by_rank
-            .iter()
-            .filter_map(Self::from_single_rank)
-            .max_by(|left, right| {
-                left.load_score()
-                    .partial_cmp(&right.load_score())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }))
+/// Validate every rank and model each one's latency individually.
+///
+/// [`Engine::forward_pass_time_ms`] reduces a whole rank slice to its maximum,
+/// which discards *which* rank produced that maximum. The correction region has
+/// to be keyed on the features of the rank the native estimate actually came
+/// from, so the per-rank latencies are modeled here and reduced by
+/// [`reduce_rank_latencies`]. The reduction repeats the engine's own fold
+/// (seed `0.0`, strict `>`), so the native value is unchanged by the split.
+pub(crate) fn rank_latencies(
+    engine: &Engine,
+    metrics_by_rank: &[ForwardPassMetrics],
+) -> Result<Vec<RankLatency>, AicError> {
+    if metrics_by_rank.is_empty() {
+        return Err(AicError::InvalidForwardPassMetrics(
+            "at least one attention-DP rank metric is required".to_string(),
+        ));
+    }
+    // Validate the whole slice before modeling any rank, so an invalid rank is
+    // reported ahead of an engine estimation error on an earlier rank.
+    for metrics in metrics_by_rank {
+        validate_forward_pass_metrics(metrics)?;
     }
 
-    fn from_single_rank(metrics: &ForwardPassMetrics) -> Option<Self> {
+    metrics_by_rank
+        .iter()
+        .map(|metrics| {
+            Ok(RankLatency {
+                dp_rank: metrics.dp_rank,
+                latency_ms: engine.forward_pass_time_ms(std::slice::from_ref(metrics))?,
+                feature: IterationFeatures::from_single_rank(metrics),
+            })
+        })
+        .collect()
+}
+
+/// Reduce per-rank modeled latencies into the iteration's native estimate and
+/// the features of the rank that gates it.
+///
+/// The native estimate is the maximum across every rank, matching
+/// [`Engine::forward_pass_time_ms`]. The returned features belong to the
+/// *same* rank: applying a correction learned for one rank's region to another
+/// rank's latency mis-keys both estimation and tuning, and the two selections
+/// diverge routinely because attention latency is not linear in the scheduled
+/// counts. Returns `None` when no rank scheduled any work.
+pub(crate) fn reduce_rank_latencies(ranks: &[RankLatency]) -> Option<(f64, &IterationFeatures)> {
+    let native_ms = ranks
+        .iter()
+        .map(|rank| rank.latency_ms)
+        .fold(
+            0.0_f64,
+            |max, latency| {
+                if latency > max { latency } else { max }
+            },
+        );
+
+    let gating = ranks
+        .iter()
+        .filter_map(|rank| rank.feature.as_ref().map(|feature| (rank, feature)))
+        .reduce(|incumbent, candidate| {
+            if gates_iteration(candidate.0, incumbent.0) {
+                candidate
+            } else {
+                incumbent
+            }
+        })?;
+
+    Some((native_ms, gating.1))
+}
+
+/// Selection order between two feature-bearing ranks: the higher modeled
+/// latency gates the iteration; an exact tie breaks to the lower `dp_rank`, and
+/// only a tie in both falls back to slice position. Without the `dp_rank`
+/// tie-break the selected region — and with it the correction grid, the feature
+/// dimensionality, and the final latency — would be a function of the caller's
+/// argument ordering rather than of the iteration.
+fn gates_iteration(candidate: &RankLatency, incumbent: &RankLatency) -> bool {
+    if candidate.latency_ms != incumbent.latency_ms {
+        return candidate.latency_ms > incumbent.latency_ms;
+    }
+    candidate.dp_rank < incumbent.dp_rank
+}
+
+impl IterationFeatures {
+    pub(crate) fn from_single_rank(metrics: &ForwardPassMetrics) -> Option<Self> {
         let scheduled = &metrics.scheduled_requests;
         let has_prefill = scheduled.sum_prefill_tokens > 0;
         let has_decode = scheduled.num_decode_requests > 0 || scheduled.sum_decode_kv_tokens > 0;
@@ -611,33 +689,6 @@ impl IterationFeatures {
             },
         };
         Some(feature)
-    }
-
-    fn load_score(&self) -> f64 {
-        self.x.iter().sum()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct IterationObservation {
-    pub(crate) feature: IterationFeatures,
-    pub(crate) wall_time_ms: f64,
-}
-
-impl IterationObservation {
-    pub(crate) fn from_metrics(
-        metrics_by_rank: &[ForwardPassMetrics],
-    ) -> Result<Option<Self>, AicError> {
-        let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
-            return Ok(None);
-        };
-        let Some(wall_time_ms) = max_positive_wall_time_ms(metrics_by_rank) else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            feature,
-            wall_time_ms,
-        }))
     }
 }
 
@@ -768,7 +819,7 @@ impl RegressionIterationObservation {
     }
 }
 
-fn max_positive_wall_time_ms(metrics_by_rank: &[ForwardPassMetrics]) -> Option<f64> {
+pub(crate) fn max_positive_wall_time_ms(metrics_by_rank: &[ForwardPassMetrics]) -> Option<f64> {
     let wall_time_seconds = metrics_by_rank
         .iter()
         .map(|metrics| metrics.wall_time)
