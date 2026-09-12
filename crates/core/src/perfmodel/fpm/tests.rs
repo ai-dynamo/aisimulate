@@ -1178,9 +1178,14 @@ fn fallback_regression_keeps_decode_fit_ready_when_ols_kv_slope_is_negative() {
         .estimate_forward_pass_time_ms(&[decode_fpm(32, 80_000, 0.0)])
         .unwrap()
         .unwrap();
-    assert!(
-        higher_kv >= lower_kv,
-        "decode estimate must not decrease with KV load: lower={lower_kv}, higher={higher_kv}"
+    // The non-negativity constraint puts the KV slope exactly on the zero
+    // boundary, so the two estimates are equal. `>=` alone would pass
+    // identically whether the constraint clamped the negative OLS slope or
+    // admitted a positive one, which is the whole point of the test.
+    assert_eq!(
+        higher_kv, lower_kv,
+        "a negative OLS KV slope must be clamped to the zero boundary, not admitted: \
+         lower={lower_kv}, higher={higher_kv}"
     );
 
     let fewer_requests = model

@@ -109,6 +109,13 @@ impl CorrectionBuckets {
         .unwrap_or(1.0)
     }
 
+    /// Count of populated regions, once the workload kind is ready.
+    ///
+    /// This can exceed the number of factors [`Self::correction_factors`]
+    /// reduces over only if some region's samples are all non-finite or
+    /// non-positive. Ingestion admits a sample only when both `observed_ms` and
+    /// `native_ms` are finite and strictly positive and empty buckets are
+    /// removed, so every populated region yields a factor.
     pub(crate) fn ready_bucket_count(&self) -> usize {
         if self.is_ready() {
             self.samples.buckets.len()
