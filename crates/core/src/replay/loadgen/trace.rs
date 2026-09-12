@@ -713,6 +713,17 @@ impl Trace {
                     line_idx + 1
                 );
             }
+            // This is the one loader with no `hash_ids` array to anchor the
+            // declared input length against: it *synthesizes* one hash per
+            // `input_length.div_ceil(block_size)` blocks in an unbounded
+            // `while` loop, and the cumulative length then grows by each
+            // turn's response and tool-call output. `checked_add` below guards
+            // the arithmetic, not the resource, so without this ceiling a
+            // single declared `1e18` hangs the import with no diagnostic.
+            checked_declared_length(
+                &format!("trace line {} input_prompt_length", line_idx + 1),
+                raw.input_prompt_length,
+            )?;
 
             let group_id = if shared_prefix_ratio > 0.0 && num_prefix_groups > 0 {
                 Some(line_idx % num_prefix_groups)
@@ -768,6 +779,10 @@ impl Trace {
                             line_idx + 1
                         )
                     })?;
+                checked_declared_length(
+                    &format!("trace line {} cumulative input length", line_idx + 1),
+                    current_input_length,
+                )?;
                 extend_applied_compute_agentic_hash_ids(
                     &mut hash_ids,
                     current_input_length,

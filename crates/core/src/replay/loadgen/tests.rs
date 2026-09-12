@@ -160,7 +160,9 @@ fn mooncake_rejects_unbounded_declared_output_length() {
 
     let error = Trace::from_mooncake(file.path(), 4).unwrap_err();
     assert!(
-        error.to_string().contains("maximum declared sequence length"),
+        error
+            .to_string()
+            .contains("maximum declared sequence length"),
         "unexpected error: {error}"
     );
 }
@@ -180,7 +182,9 @@ fn agentic_mooncake_rejects_unbounded_declared_output_length() {
 
     let error = AgenticTrace::from_agentic_mooncake(file.path()).unwrap_err();
     assert!(
-        error.to_string().contains("maximum declared sequence length"),
+        error
+            .to_string()
+            .contains("maximum declared sequence length"),
         "unexpected error: {error}"
     );
 }
@@ -206,7 +210,9 @@ fn unvalidated_trace_driver_rejects_unbounded_declared_output_length() {
 
     let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
     assert!(
-        error.to_string().contains("maximum declared sequence length"),
+        error
+            .to_string()
+            .contains("maximum declared sequence length"),
         "unexpected error: {error}"
     );
 }
@@ -765,6 +771,52 @@ fn test_from_applied_compute_agentic_expands_rows_into_num_turns_plus_final_requ
     assert_eq!(session.turns[2].input_length, 200);
     assert_eq!(session.turns[2].max_output_tokens, 50);
     assert_eq!(session.turns[2].delay_after_previous_ms, 1250.0);
+}
+
+#[test]
+fn applied_compute_agentic_rejects_unbounded_declared_input_length() {
+    // No `hash_ids` array anchors this loader's declared input length -- it
+    // synthesizes one hash per block in an unbounded loop.
+    let file = write_trace(&[serde_json::json!({
+        "num_turns": 0,
+        // Over the ceiling but still importable, so removing the gate fails
+        // this test by succeeding rather than by hanging the suite.
+        "input_prompt_length": MAX_DECLARED_SEQUENCE_TOKENS + 1,
+        "assistant_response_length": [],
+        "tool_call_output_length": [],
+        "tool_call_latency": [],
+        "final_assistant_response_length": 1,
+    })]);
+
+    let error = Trace::from_applied_compute_agentic(file.path(), 64, 0.0, 0).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("maximum declared sequence length"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn applied_compute_agentic_rejects_unbounded_cumulative_input_length() {
+    // Each turn's response and tool-call output grow the cumulative length,
+    // which drives the same synthesis loop on the next turn.
+    let file = write_trace(&[serde_json::json!({
+        "num_turns": 1,
+        "input_prompt_length": 1,
+        "assistant_response_length": [MAX_DECLARED_SEQUENCE_TOKENS],
+        "tool_call_output_length": [MAX_DECLARED_SEQUENCE_TOKENS],
+        "tool_call_latency": [0.0],
+        "final_assistant_response_length": 1,
+    })]);
+
+    let error = Trace::from_applied_compute_agentic(file.path(), 64, 0.0, 0).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cumulative input length 20000001 exceeds"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
