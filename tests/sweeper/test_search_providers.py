@@ -9,7 +9,7 @@ import pytest
 
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.provider import (
     AdapterReplaySpec,
     AdapterSearchPlan,
@@ -396,6 +396,84 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
     assert result.outcome == "infeasible"
     assert result.reason_category is ReasonCategory.ADAPTER_CONSTRAINT
     assert "invalid correlated leaves" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("mode", "prefill", "decode", "load_model", "system", "accepted"),
+    [
+        ("disagg", "gb200", "h200_sxm", "aic", "h200_sxm", False),
+        ("disagg", "gb200", "gb200", "aic", "h200_sxm", False),
+        ("disagg", "gb200", "h200_sxm", "aic", None, False),
+        ("disagg", "gb200", "h200_sxm", "aic", "gb200", True),
+        ("disagg", "gb200", "gb200", "aic", "gb200", True),
+        ("disagg", "h200_sxm", "gb200", "aic", "h200_sxm", True),
+        ("disagg", None, None, "aic", "h200_sxm", True),
+        ("disagg", "gb200", "h200_sxm", "none", None, True),
+        ("agg", "gb200", "gb200", "aic", "h200_sxm", True),
+    ],
+)
+def test_router_aic_role_hardware_is_checked_before_replay(mode, prefill, decode, load_model, system, accepted):
+    config = _config()
+    config.search_space.deployment_mode = ["agg", "disagg"]
+    config.search_space.prefill_hardware_sku = prefill
+    config.search_space.decode_hardware_sku = decode
+    config.search_space.backend_version = "0.24.0"
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = DisaggParallelConfig(prefill=role, decode=role) if mode == "disagg" else role
+    hook = RuntimeHookSpec(
+        provider="dynamo.router",
+        kind="placement_policy",
+        api_version=1,
+        config={
+            "router_config": {"router_prefill_load_model": load_model},
+            "aic_perf_config": {"aic_system": system} if system is not None else None,
+        },
+    )
+
+    class RouterAdapter(_Adapter):
+        def materialize_replay(self, plan, selection, context):
+            assert context.sample["hardware_sku"] == "h200_sxm"
+            return AdapterReplaySpec(runtime_hooks=(hook,))
+
+    class RouterRunnerFactory(_RunnerFactory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("*", "*"),),
+                supported_hooks=(HookCapability("dynamo.router", "placement_policy", 1),),
+            )
+
+    selection = {"deployment_mode": mode, "backend": "vllm"}
+    for engine_role in ("prefill", "decode") if mode == "disagg" else ("agg",):
+        selection[f"{engine_role}_max_num_batched_tokens"] = 8192
+        selection[f"{engine_role}_max_num_seqs"] = 256
+    factory = RouterRunnerFactory()
+    prepared, result = search_module._materialize_one(
+        selection,
+        parallel,
+        config=config,
+        goal=config.goal,
+        providers={"test.feature": RouterAdapter()},
+        provider_plans={"test.feature": AdapterSearchPlan()},
+        runner_factory=factory,
+    )
+
+    if accepted:
+        assert result is None
+        assert prepared is not None
+        assert prepared.replay_spec.runtime_hooks == (hook,)
+        engine = (
+            prepared.replay_spec.backend_deployment.prefill_engine_args
+            if mode == "disagg"
+            else prepared.replay_spec.backend_deployment.agg_engine_args
+        )
+        expected = (prefill or "h200_sxm") if mode == "disagg" else "h200_sxm"
+        assert engine["aic_system"] == expected
+    else:
+        assert prepared is None
+        assert result.outcome == "infeasible"
+        assert result.reason_category is ReasonCategory.ADAPTER_CONSTRAINT
+        assert "does not match effective prefill_hardware_sku='gb200'" in result.reason
+        assert factory.runner.specs == []
 
 
 def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -> None:

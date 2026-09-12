@@ -147,8 +147,10 @@ The two roles must use the same model, backend, and backend version. When `backe
 omitted, both hardware SKUs must resolve to the same latest version; otherwise set one explicit
 version supported by both. This path does not add heterogeneous hardware to `aisimulate predict` or
 `aisimulate recommend`. It also does not support heterogeneous deployment-manifest generation. With
-the Dynamo stack, do not use Router `prefill_load_model.type: aic` until that provider consumes
-`prefill_hardware_sku`; its current compatibility path still reads the shared fallback SKU.
+the Dynamo stack, the current Router `prefill_load_model.type: aic` path still reads the shared
+fallback SKU. Sweeper rejects candidates whose Router AIC system differs from the effective
+`prefill_hardware_sku`, including matching P/D overrides that differ from `hardware_sku`.
+Use a corrected Router provider or a non-AIC prefill load model for those overrides.
 
 ## Migrate one concrete deployment
 

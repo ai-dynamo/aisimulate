@@ -85,11 +85,12 @@ omitted, the latest performance-data version for both effective SKUs must match;
 version supported by both systems. These overrides are part of the Sweeper YAML/SDK contract; the
 separate `aisimulate recommend` input continues to describe one shared hardware SKU.
 
-The Dynamo Router adapter does not yet support heterogeneous role SKUs with
-`prefill_load_model.type: aic`: its candidate hook uses the shared `hardware_sku` for prefill load
-estimation instead of `prefill_hardware_sku`. Shared-SKU Router AIC behavior is unchanged. Keep
-heterogeneous candidates in the Sweeper YAML/SDK workflow until the provider consumes the
-role-specific SKU.
+The current Dynamo Router adapter uses the shared `hardware_sku` for
+`prefill_load_model.type: aic`. Sweeper rejects a candidate before replay when its materialized
+Router AIC system differs from the effective prefill SKU. This also affects matching overrides:
+`hardware_sku: h200_sxm` with both role SKUs set to `gb200` needs a GB200 prefill load model.
+Use a Router provider that consumes `prefill_hardware_sku`, or select a non-AIC load model.
+Correctly materialized AIC hooks, decode-only overrides, and shared-SKU behavior remain supported.
 
 ## Attention-FFN Disaggregation
 
