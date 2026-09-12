@@ -84,6 +84,39 @@ pub(super) fn pop_next_concurrency_ready(
     Some((request, now_ms))
 }
 
+/// Allocate the next event sequence number and advance the counter.
+///
+/// Previously open-coded five times, as `checked_add(..).expect(..)` at one
+/// call site and a bare `+= 1` at the other four.
+///
+/// `seq_no` is the final, total tie-break in `SimulationEvent`'s `Ord`, so it
+/// must be unique or the heap order stops being deterministic -- wrapping would
+/// silently break that. `u64` cannot reach it: at one event per nanosecond a
+/// run would need ~584 years to exhaust the space, so the `checked_add` is a
+/// statement of the invariant rather than a reachable panic.
+///
+/// # Event-time finiteness
+///
+/// None of the `push_*` helpers below guards `at_ms`, and a non-finite one
+/// wedges the loop three ways (`next_timestamp` uses `f64::min`, which returns
+/// the other operand for NaN; every `pop_ready_*` compares `at_ms != now_ms`,
+/// always true for NaN; and `total_cmp` parks a negative-signed NaN at the heap
+/// head forever). Each producer is guarded at its own boundary instead:
+/// `ScheduledEngineCompletion.at_ms` comes from `Engine::execute_pass`, which
+/// applies `validate_time(pass.end_ms, ..)` and `pass.end_ms >= now_ms` per
+/// attention-DP rank before folding with `max` from a `now_ms` seed; transfer
+/// deadlines are checked in `HandoffCoordinatorCore::advance_active` and again
+/// in `DisaggFlowState::start_transfer`; scaling ticks reject a non-finite
+/// `next_tick_ms` at the tick site. These helpers therefore stay infallible, so
+/// the callers that genuinely cannot fail keep an infallible signature.
+fn allocate_event_seq(next_event_seq: &mut u64) -> u64 {
+    let seq_no = *next_event_seq;
+    *next_event_seq = next_event_seq
+        .checked_add(1)
+        .expect("offline replay event sequence overflow");
+    seq_no
+}
+
 pub(super) fn push_worker_completions<Events: EngineEventBatch>(
     events: &mut BinaryHeap<SimulationEvent<Events>>,
     next_event_seq: &mut u64,
@@ -92,12 +125,9 @@ pub(super) fn push_worker_completions<Events: EngineEventBatch>(
     let ScheduledEngineCompletion { at_ms, completion } = scheduled;
     events.push(SimulationEvent {
         at_ms,
-        seq_no: *next_event_seq,
+        seq_no: allocate_event_seq(next_event_seq),
         kind: SimulationEventKind::EnginePassCompletion(completion),
     });
-    *next_event_seq = next_event_seq
-        .checked_add(1)
-        .expect("offline replay event sequence overflow");
 }
 
 pub(super) fn pop_ready_worker_completions<Events: EngineEventBatch>(
@@ -131,10 +161,9 @@ pub(super) fn push_transfer_complete<Events: EngineEventBatch>(
 ) {
     events.push(SimulationEvent {
         at_ms,
-        seq_no: *next_event_seq,
+        seq_no: allocate_event_seq(next_event_seq),
         kind: SimulationEventKind::TransferComplete { handoff_id },
     });
-    *next_event_seq += 1;
 }
 
 pub(super) fn pop_ready_transfer_complete<Events: EngineEventBatch>(
@@ -164,10 +193,9 @@ pub(super) fn push_worker_ready<Events: EngineEventBatch>(
 ) {
     events.push(SimulationEvent {
         at_ms,
-        seq_no: *next_event_seq,
+        seq_no: allocate_event_seq(next_event_seq),
         kind: SimulationEventKind::WorkerReady { stage, worker_id },
     });
-    *next_event_seq += 1;
 }
 
 pub(super) fn pop_ready_worker_ready<Events: EngineEventBatch>(
@@ -195,10 +223,9 @@ pub(super) fn push_scaling_tick<Events: EngineEventBatch>(
 ) {
     events.push(SimulationEvent {
         at_ms,
-        seq_no: *next_event_seq,
+        seq_no: allocate_event_seq(next_event_seq),
         kind: SimulationEventKind::ScalingTick,
     });
-    *next_event_seq += 1;
 }
 
 /// Pop a `ScalingTick` scheduled for exactly `now_ms` (peek-and-pop-at-now, like the
@@ -227,10 +254,9 @@ pub(super) fn push_telemetry_tick<Events: EngineEventBatch>(
 ) {
     events.push(SimulationEvent {
         at_ms,
-        seq_no: *next_event_seq,
+        seq_no: allocate_event_seq(next_event_seq),
         kind: SimulationEventKind::TelemetryTick,
     });
-    *next_event_seq += 1;
 }
 
 pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
