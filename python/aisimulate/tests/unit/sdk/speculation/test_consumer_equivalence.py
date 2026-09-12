@@ -649,6 +649,186 @@ def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_
     )
 
 
+def _assert_public_mixed_rows(estimate, native):
+    """Compare the public report with executed native rows, without repricing."""
+    rows = [row for group in native for row in group]
+    names = {row[0] for row in rows} | {"context_attention", "generation_attention"}
+    public_names = {"context_attention (scaled)" if name == "context_attention" else name for name in names}
+    assert estimate.per_op_latency_ms.keys() == public_names
+    assert estimate.per_op_source.keys() == public_names
+    for name in names:
+        matches = [row for row in rows if row[0] == name]
+        public_name = "context_attention (scaled)" if name == "context_attention" else name
+        sources = {row[3] for row in matches} or {"silicon"}
+        assert estimate.per_op_latency_ms[public_name] == pytest.approx(sum(row[1] for row in matches)), name
+        assert estimate.per_op_source[public_name] == (sources.pop() if len(sources) == 1 else "mixed"), name
+    for component, group in zip(("shared_non_attention", "context_attention", "decode_attention"), native, strict=True):
+        assert estimate.component_latency_ms[component] == pytest.approx(sum(row[1] for row in group))
+        assert estimate.component_energy_wms[component] == pytest.approx(sum(row[2] for row in group))
+    assert estimate.latency_ms == pytest.approx(sum(row[1] for row in rows))
+    assert estimate.energy_wms == pytest.approx(sum(row[2] for row in rows))
+    assert sum(estimate.per_op_latency_ms.values()) == pytest.approx(estimate.latency_ms)
+
+
+@pytest.mark.parametrize("gen_requests", [0, 7])
+@pytest.mark.parametrize("database_mode", ["SILICON", "SOL"])
+@pytest.mark.parametrize("draft", ["eagle3", "Qwen/Qwen3-0.6B", "Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
+def test_public_mixed_draft_names_values_and_sources_match_native(draft, database_mode, gen_requests):
+    from aiconfigurator.sdk.inference_session import InferenceSession
+    from aiconfigurator_core.sdk.backends.factory import get_backend
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+    from .test_dense_draft_schemes import EAGLE3_CONFIG
+
+    speculation = (
+        SpeculationConfig(kind="eagle3", params={"tree_shape": [1, 1, 1]}, draft_config=EAGLE3_CONFIG)
+        if draft == "eagle3"
+        else SpeculationConfig(kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path=draft)
+    )
+    target = "Qwen/Qwen3.5-35B-A3B" if draft == "Qwen/Qwen3-0.6B" else "Qwen/Qwen3-8B"
+    model = get_model(target, _model_config(speculation), "vllm")
+    database = get_database_view("h100_sxm", "vllm", "0.24.0", database_mode=database_mode)
+    native = _cached_engine_handle(model, database)._mixed_step_breakdown_per_op_with_metadata(
+        128, gen_requests, 4000, 64, 64
+    )
+    estimate = InferenceSession(model, database, get_backend("vllm")).run_mixed(
+        RuntimeConfig(isl=4000, osl=64, prefix=64), MixedStepInput(128, gen_requests)
+    )
+    assert any(row[0].startswith("draft_") for row in native[1])
+    assert any(row[0].startswith("draft_") for row in native[2]) == bool(gen_requests)
+    if draft == "eagle3" and gen_requests:
+        # EAGLE's feature projection executes in both phases under one name.
+        duplicates = {row[0] for row in native[1]} & {row[0] for row in native[2]}
+        assert any(name.startswith("draft_") and "fc" in name for name in duplicates)
+    _assert_public_mixed_rows(estimate, native)
+
+
+@pytest.mark.parametrize("gen_requests", [0, 7])
+@pytest.mark.parametrize("depth", [0, 2])
+def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, gen_requests, depth):
+    from aiconfigurator.sdk.inference_session import InferenceSession
+    from aiconfigurator_core.sdk.backends.factory import get_backend
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+    config = _model_config()
+    config.nextn = depth
+    model = get_model("Qwen/Qwen3-8B", config, "vllm")
+    native = _cached_engine_handle(model, real_database)._mixed_step_breakdown_per_op_with_metadata(
+        128, gen_requests, 4000, 64, 0
+    )
+    estimate = InferenceSession(model, real_database, get_backend("vllm")).run_mixed(
+        RuntimeConfig(isl=4000, osl=64), MixedStepInput(128, gen_requests)
+    )
+    _assert_public_mixed_rows(estimate, native)
+    assert estimate.num_decode_query_tokens == gen_requests * (depth + 1)
+    if not gen_requests:
+        assert estimate.per_op_latency_ms["generation_attention"] == 0.0
+        assert estimate.per_op_source["generation_attention"] == "silicon"
+
+
+def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_database, monkeypatch):
+    from aiconfigurator.sdk.inference_session import InferenceSession
+    from aiconfigurator_core.sdk import rust_engine_step
+    from aiconfigurator_core.sdk.backends.factory import get_backend
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.performance_result import MoECommFallback
+    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+    context_fallback = ("context", "deepep_ht", 32, 8, 8, 1)
+    generation_fallback = ("generation", "deepep_ll", 32, 8, 4, 1)
+    # Synthetic phase rows isolate an exact source collision and nonzero
+    # energy; real native executions are checked separately above.
+    native = (
+        [("context_mlp", 5.0, 50.0, "sol")],
+        [
+            ("context_attention", 2.0, 20.0, "sol"),
+            ("draft_eagle_fc", 3.0, 30.0, "empirical", (context_fallback, [])),
+        ],
+        [
+            ("generation_attention", 7.0, 70.0, "silicon"),
+            ("draft_eagle_fc", 11.0, 110.0, "sol", (generation_fallback, [])),
+            ("draft_eagle_fc", 13.0, 130.0, "silicon", (generation_fallback, [])),
+        ],
+    )
+    handle = SimpleNamespace(
+        _mixed_step_breakdown_per_op_with_metadata=lambda *args, **kwargs: native, last_provenance=lambda: None
+    )
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *args: handle)
+    model = get_model("Qwen/Qwen3-8B", _model_config(), "vllm")
+    estimate = InferenceSession(model, real_database, get_backend("vllm")).run_mixed(
+        RuntimeConfig(isl=4000, osl=64), MixedStepInput(128, 7)
+    )
+    _assert_public_mixed_rows(estimate, native)
+    assert estimate.per_op_latency_ms["draft_eagle_fc"] == 27.0
+    assert estimate.per_op_source["draft_eagle_fc"] == "mixed"
+    assert estimate.moe_comm_fallbacks == (MoECommFallback(*context_fallback), MoECommFallback(*generation_fallback))
+
+
+@pytest.mark.parametrize("gen_requests", [0, 1])
+def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests):
+    import copy
+
+    from aiconfigurator.sdk.inference_session import InferenceSession
+    from aiconfigurator_core.sdk.backends.factory import get_backend
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.operations import MoEAllToAll
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+    from aiconfigurator_core.sdk.performance_result import MoECommFallback
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+    config = ModelConfig(
+        tp_size=1,
+        pp_size=1,
+        attention_dp_size=32,
+        moe_tp_size=1,
+        moe_ep_size=32,
+        gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+        moe_quant_mode=common.MoEQuantMode.fp8_block,
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        fmha_quant_mode=common.FMHAQuantMode.fp8_block,
+        moe_comm_backend={"context": "deepep_ht", "generation": "deepep_ll"},
+        num_gpus_per_node=4,
+    )
+    model = get_model("deepseek-ai/DeepSeek-R1", config, "sglang")
+    # Isolate both draft-phase fallback paths with a synthetic materialized
+    # graph. Native communication queries use real checked-in GB200 donors.
+    for phase in ("context_ops", "generation_ops"):
+        ops = getattr(model, phase)
+        for op in list(ops):
+            if isinstance(op, MoEAllToAll):
+                draft = copy.copy(op)
+                draft._name = f"draft_{op._name}"
+                ops.append(draft)
+    database = get_database_view("gb200", "sglang", "0.5.14")
+    _engine_handle_cache_clear()
+    try:
+        native = _cached_engine_handle(model, database)._mixed_step_breakdown_per_op_with_metadata(
+            128, gen_requests, 1024, 32, 0
+        )
+        estimate = InferenceSession(model, database, get_backend("sglang")).run_mixed(
+            RuntimeConfig(isl=1024, osl=32), MixedStepInput(128, gen_requests)
+        )
+        _assert_public_mixed_rows(estimate, native)
+        context_fallback = ("context", "deepep_ht", 32, 8, 8, 1)
+        generation_fallback = ("generation", "deepep_ll", 32, 8, 4, 1)
+        for phase, payload in ((1, context_fallback), (2, generation_fallback)):
+            drafts = [row for row in native[phase] if row[0].startswith("draft_")]
+            assert len(drafts) == (2 if phase == 1 or gen_requests else 0)
+            assert all(row[3:] == ("estimated", (payload, [])) for row in drafts)
+        expected = (MoECommFallback(*context_fallback),)
+        if gen_requests:
+            expected += (MoECommFallback(*generation_fallback),)
+        assert estimate.moe_comm_fallbacks == expected
+    finally:
+        _engine_handle_cache_clear()
+
+
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(real_database, round_trip):
     import copy

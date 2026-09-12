@@ -379,6 +379,62 @@ def fpm_session(tmp_path):
 
 
 class TestFPMStaticAndMixed:
+    def test_public_mixed_hybrid_keeps_native_component_sources(self, fpm_session):
+        from aiconfigurator.sdk.config import RuntimeConfig
+        from aiconfigurator.sdk.inference_session import InferenceSession
+        from aiconfigurator_core.sdk.operations.elementwise import ElementWise
+        from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+        from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+        baseline, database, backend, isl, osl = fpm_session
+        model = models.get_model(
+            baseline.model_path,
+            _model_config(
+                forward_model="fpm",
+                speculation=SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3}),
+            ),
+            BACKEND,
+        )
+        # A synthetic materialized draft graph runs real native empirical ops
+        # alongside the fixture's silicon-tagged FPM table components.
+        model.context_ops.append(ElementWise("draft_context", 1.0, 4096, 4096, 0.8))
+        generation = ElementWise("draft_generation", 1.0, 4096, 4096, 0.8)
+        _fold_width(generation, 1, 4)
+        model.generation_ops.append(generation)
+        native = _cached_engine_handle(model, database)._mixed_step_breakdown_per_op_with_metadata(isl, 2, isl, osl, 0)
+        estimate = InferenceSession(model, database, backend).run_mixed(
+            RuntimeConfig(isl=isl, osl=osl), MixedStepInput(isl, 2)
+        )
+        [prefill], context, [decode] = native
+        assert prefill[0] == "fpm_forward_prefill"
+        assert decode[0] == "fpm_forward_decode"
+        assert context == []
+        assert prefill[3] == decode[3] == "mixed"
+        assert estimate.per_op_latency_ms == {
+            "fpm_forward_prefill": pytest.approx(prefill[1]),
+            "context_attention (scaled)": 0.0,
+            "generation_attention": pytest.approx(decode[1]),
+        }
+        assert estimate.per_op_source == {
+            "fpm_forward_prefill": prefill[3],
+            "context_attention (scaled)": "silicon",
+            "generation_attention": decode[3],
+        }
+        assert estimate.component_latency_ms == {
+            "shared_non_attention": pytest.approx(prefill[1]),
+            "context_attention": 0.0,
+            "decode_attention": pytest.approx(decode[1]),
+        }
+        assert estimate.component_energy_wms == {
+            "shared_non_attention": pytest.approx(prefill[2]),
+            "context_attention": 0.0,
+            "decode_attention": pytest.approx(decode[2]),
+        }
+        assert estimate.latency_ms == pytest.approx(prefill[1] + decode[1])
+        assert estimate.energy_wms == pytest.approx(prefill[2] + decode[2])
+
     def test_ngram_verify_width_reaches_native_fpm_query(self, fpm_session):
         from aiconfigurator.sdk.config import RuntimeConfig
         from aiconfigurator.sdk.inference_session import InferenceSession
