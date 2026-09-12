@@ -229,7 +229,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
     assert "uses: ./.github/workflows/collector-check.yml" in full
     assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
-    assert "needs: fast-ci" in full
+    assert "name: Select Full CI Scope" in full
+    assert "needs: [fast-ci, select-full-ci]" in full
     assert "EXPECTED_SHA: ${{ inputs.expected_sha }}" in full
     assert "RUN_SHA: ${{ github.sha }}" in full
     assert "expected_sha: ${{ github.sha }}" in full
@@ -237,7 +238,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "name: Fast CI Success" in fast
     assert "name: Full CI Success" in full
     assert "manual Full CI requires a nonempty expected_sha" in full
-    assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
+    assert (
+        'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then'
+        in full
+    )
     assert "workflow_dispatch" in full_config["on"]
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
     assert dispatch_sha["required"] == "true"
@@ -296,6 +300,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_readiness["if"] == "${{ always() }}"
     assert set(full_readiness["needs"]) == {
         "verify-target",
+        "select-full-ci",
+        "application-test-wheel",
         "fast-ci",
         "platform-wheels",
         "collector-data",
@@ -314,14 +320,26 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     full_readiness_script = full_readiness["steps"][0]["run"]
     full_readiness_env = full_readiness["steps"][0]["env"]
     assert full_readiness_env["NEEDS_JSON"] == "${{ toJSON(needs) }}"
-    assert 'expected = {name: "success" for name in needs}' in full_readiness_script
+    assert '"success" if selected == "true" else "skipped"' in full_readiness_script
+    assert (
+        full_readiness_env["PLAN_JSON"] == "${{ toJSON(needs.select-full-ci.outputs) }}"
+    )
+    assert "stage-application-wheel" not in full_readiness["needs"]
     assert 'payload["result"]' in full_readiness_script
 
     assert set(full_config["jobs"]["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
 
     application_wheel = full_config["jobs"]["application-wheel"]
-    assert "if" not in application_wheel
-    verify_steps = [step for step in application_wheel["steps"] if step.get("name") == "Verify exact staged wheel"]
+    assert "select-full-ci" in application_wheel["needs"]
+    assert (
+        "needs.select-full-ci.outputs.application_wheel == 'true'"
+        in application_wheel["if"]
+    )
+    verify_steps = [
+        step
+        for step in application_wheel["steps"]
+        if step.get("name") == "Verify exact staged wheel"
+    ]
     assert len(verify_steps) == 1
     verify_step = verify_steps[0]
     assert verify_step["run"] == ("python python/aisimulate/tools/verify_release_wheels.py dist")
@@ -370,6 +388,9 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     passing_results = {name: {"result": "success"} for name in readiness["needs"]}
     passing_pr = {
         "NEEDS_JSON": json.dumps(passing_results),
+        "PLAN_JSON": json.dumps(
+            {name: "true" for name in config["jobs"]["select-full-ci"]["outputs"]}
+        ),
     }
 
     assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
