@@ -379,18 +379,35 @@ impl ForwardPassPerfModel {
     /// correction models. Regression models validate compatibility with their
     /// fixed worker type and update one two-dimensional constrained linear fit.
     ///
+    /// A batch is all-or-nothing: every iteration is extracted before any
+    /// observation is retained, so an `Err` leaves the model exactly as it was
+    /// and the batch can be retried without double-counting its prefix.
+    ///
+    /// Retention is a bounded sliding window whose eviction order, and the
+    /// Welford standardization refitted from it, both depend on the sequence in
+    /// which observations arrive — not merely on the multiset they form.
+    /// Callers needing reproducible predictions must therefore deliver
+    /// iterations in a fixed order; ranks *within* one iteration are order-free
+    /// (see `estimate_forward_pass_time_ms`).
+    ///
     /// Pure Rust over the `Engine` — no Python re-entry.
     pub fn tune_with_fpms(
         &mut self,
         iterations: &[Vec<ForwardPassMetrics>],
     ) -> Result<(), AicError> {
         let Self { mode, options, .. } = self;
-        for metrics_by_rank in iterations {
-            match mode {
-                ForwardPassPerfMode::Native {
-                    engine,
-                    corrections,
-                } => {
+        // Extract every observation in the batch before retaining any of them.
+        // Ingesting as we go left the model partially mutated on the first
+        // `Err`: a caller that retried a failed batch would double-count its
+        // successful prefix into the bounded sample window, changing eviction
+        // order and therefore every subsequent prediction.
+        match mode {
+            ForwardPassPerfMode::Native {
+                engine,
+                corrections,
+            } => {
+                let mut extracted = Vec::with_capacity(iterations.len());
+                for metrics_by_rank in iterations {
                     let ranks = rank_latencies(engine, metrics_by_rank)?;
                     let Some((native, feature)) = reduce_rank_latencies(&ranks)? else {
                         continue;
@@ -398,16 +415,25 @@ impl ForwardPassPerfModel {
                     let Some(wall_time_ms) = max_positive_wall_time_ms(metrics_by_rank) else {
                         continue;
                     };
-                    let workload_kind = feature.workload_kind;
-                    let x = feature.x.clone();
+                    extracted.push((
+                        feature.workload_kind,
+                        feature.x.clone(),
+                        wall_time_ms,
+                        native,
+                    ));
+                }
+                for (workload_kind, x, wall_time_ms, native) in extracted {
                     corrections
                         .store_mut(workload_kind)
                         .add_observation(x, wall_time_ms, native);
                 }
-                ForwardPassPerfMode::Regression {
-                    worker_type,
-                    regression,
-                } => {
+            }
+            ForwardPassPerfMode::Regression {
+                worker_type,
+                regression,
+            } => {
+                let mut extracted = Vec::with_capacity(iterations.len());
+                for metrics_by_rank in iterations {
                     let Some(observation) = RegressionIterationObservation::from_metrics(
                         metrics_by_rank,
                         *worker_type,
@@ -416,6 +442,9 @@ impl ForwardPassPerfModel {
                     else {
                         continue;
                     };
+                    extracted.push(observation);
+                }
+                for observation in extracted {
                     regression.add_observation(observation.feature.x, observation.wall_time_ms);
                 }
             }

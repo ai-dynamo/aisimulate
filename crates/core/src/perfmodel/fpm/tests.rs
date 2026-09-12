@@ -399,6 +399,61 @@ fn native_tuning_preserves_engine_errors_when_wall_time_conversion_overflows() {
     assert_eq!(overflowing_error.to_string(), finite_error.to_string());
 }
 
+/// A batch that fails partway through must leave the model untouched. Ingesting
+/// as the batch is walked retained the successful prefix, so a caller that
+/// retried the batch double-counted it into the bounded sample window and
+/// changed every subsequent prediction.
+#[test]
+fn native_tuning_is_all_or_nothing_across_a_multi_iteration_batch() {
+    let mut model = native_model(ForwardPassPerfOptions {
+        min_observations: 1,
+        ..Default::default()
+    });
+    let good = prefill_fpm(20, 0.002);
+    // An out-of-domain rank the engine cannot price.
+    let bad = regression_fpm(u32::MAX, 1, 0, 0, 0, 0.001);
+
+    assert!(
+        model
+            .tune_with_fpms(&[vec![good.clone()], vec![good.clone()], vec![bad]])
+            .is_err()
+    );
+    assert_eq!(model.diagnostics().retained_observations, 0);
+
+    // The same batch without the failing iteration still retains normally.
+    model
+        .tune_with_fpms(&[vec![good.clone()], vec![good]])
+        .unwrap();
+    assert_eq!(model.diagnostics().retained_observations, 2);
+}
+
+#[test]
+fn regression_tuning_is_all_or_nothing_across_a_multi_iteration_batch() {
+    let mut model = regression_model(
+        ForwardPassWorkerType::Prefill,
+        ForwardPassPerfOptions {
+            min_observations: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let good = regression_fpm(1, 100, 0, 0, 0, 0.002);
+    // A prefill-bound regression worker rejects scheduled decode work.
+    let bad = regression_fpm(0, 0, 0, 4, 1_000, 0.002);
+
+    assert!(
+        model
+            .tune_with_fpms(&[vec![good.clone()], vec![good.clone()], vec![bad]])
+            .is_err()
+    );
+    assert_eq!(model.diagnostics().retained_observations, 0);
+
+    model
+        .tune_with_fpms(&[vec![good.clone()], vec![good]])
+        .unwrap();
+    assert_eq!(model.diagnostics().retained_observations, 2);
+}
+
 #[test]
 fn regression_tuning_does_not_retain_overflowing_wall_time_conversion() {
     let mut model = regression_model(
