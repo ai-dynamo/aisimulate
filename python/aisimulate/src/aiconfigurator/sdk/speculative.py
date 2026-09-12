@@ -230,17 +230,24 @@ def resolve_speculative_block(
     if method == "none":
         if params or accepted is not None:
             raise ValueError("speculative method 'none' does not accept params or accepted_tokens.")
-        return SpeculativeBlockResolution(nextn=nextn, nextn_accepted=nextn_accepted)
+        if nextn not in (None, 0) or nextn_accepted is not None:
+            raise ValueError("Conflicting speculative inputs: method 'none' cannot be combined with legacy MTP inputs.")
+        return SpeculativeBlockResolution(nextn=0, nextn_accepted=None)
     if method == "mtp":
         unknown = params.keys() - {"depth"}
         if unknown:
             raise ValueError(f"Unknown speculative MTP params: {sorted(unknown)}.")
-        depth = normalize_nextn(params.get("depth", 0))
+        depth_input = params.get("depth", nextn)
+        depth = "auto" if depth_input == "auto" and "depth" not in params else normalize_nextn(depth_input)
         if nextn not in (0, "auto") and nextn != depth:
             raise ValueError(f"Conflicting speculative inputs: nextn={nextn} vs speculative mtp depth={depth}.")
         if accepted is not None and nextn_accepted is not None and float(accepted) != float(nextn_accepted):
             raise ValueError("Conflicting speculative accepted_tokens and nextn_accepted values.")
-        depth, accepted = normalize_speculative_decoding(depth, accepted if accepted is not None else nextn_accepted)
+        accepted = accepted if accepted is not None else nextn_accepted
+        if depth == "auto":
+            # Task/CLI resolve checkpoint depth before checking the acceptance bound.
+            return SpeculativeBlockResolution(nextn=depth, nextn_accepted=accepted)
+        depth, accepted = normalize_speculative_decoding(depth, accepted)
         return SpeculativeBlockResolution(nextn=depth, nextn_accepted=accepted)
     if nextn not in (0,):
         raise ValueError(

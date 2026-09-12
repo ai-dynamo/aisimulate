@@ -198,3 +198,22 @@ def test_pre_speculation_positional_task_call_keeps_attention_backend():
     assert task.attention_backend == "fa3"
     assert task.moe_backend is None
     assert task.speculative is None
+
+
+@pytest.mark.parametrize("nextn", [1, "auto"])
+def test_none_block_rejects_legacy_mtp(nextn):
+    with pytest.raises(ValueError, match="Conflicting speculative inputs"):
+        _task(nextn=nextn, speculative={"method": "none"})
+
+
+def test_mtp_block_without_depth_preserves_checkpoint_auto():
+    legacy = _task(nextn="auto", nextn_accepted=0.5)
+    explicit = _task(nextn="auto", speculative={"method": "mtp", "accepted_tokens": 0.5})
+    assert explicit.nextn == legacy.nextn > 0
+    assert explicit.nextn_accepted == legacy.nextn_accepted == 0.5
+    assert explicit.build_speculative_profile() == legacy.build_speculative_profile()
+
+
+def test_auto_mtp_block_validates_acceptance_after_checkpoint_resolution():
+    with pytest.raises(ValueError, match="resolved to nextn"):
+        _task(nextn="auto", speculative={"method": "mtp", "accepted_tokens": 999})

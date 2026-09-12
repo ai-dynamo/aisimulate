@@ -322,8 +322,11 @@ impl PyOperation {
 
     /// Repetition scaling for sequential draft forwards.
     #[setter(_scale_factor)]
-    fn set_scale_factor(&mut self, value: f64) {
+    fn set_scale_factor(&mut self, value: f64) -> PyResult<()> {
+        // Match the getter contract; composites and FPM have no scalar field.
+        self.scale_factor()?;
         self.inner.set_scale_factor(value);
+        Ok(())
     }
 
     #[getter(_scale_factor)]

@@ -157,7 +157,7 @@ def resolve_speculation(model_config: ModelConfig):
     spec = model_config.speculation
     nextn = normalize_nextn(model_config.nextn)
 
-    if spec is None or spec.kind == "none":
+    if spec is None:
         spec = SpeculationConfig(kind="mtp", params={"depth": nextn}) if nextn > 0 else (spec or SpeculationConfig())
     elif spec.kind == "mtp":
         # Same contract as legacy nextn: integer draft length (1.9 must be

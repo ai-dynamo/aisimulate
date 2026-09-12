@@ -53,6 +53,7 @@ from aiconfigurator_core.sdk.speculation.base import (
     DraftOpSpec,
     SpecSchemeBase,
     SpeculationConfig,
+    normalize_target_layer_ids,
     positive_integer,
     register_spec_scheme,
 )
@@ -87,11 +88,13 @@ class DSparkScheme(SpecSchemeBase):
     ) -> None:
         self.num_draft_tokens = positive_integer(num_draft_tokens, "num_draft_tokens")
         self.num_draft_layers = positive_integer(num_draft_layers, "num_draft_layers")
-        self.target_layer_ids = tuple(int(i) for i in target_layer_ids)
+        self.target_layer_ids = normalize_target_layer_ids(target_layer_ids)
         self.markov_rank = positive_integer(markov_rank, "markov_rank")
         # None = V4-family draft (geometry derived from the target model);
         # set = dense-family draft with its own stack geometry.
         self.draft_geometry = draft_geometry
+        if draft_geometry is not None and self.num_draft_layers > draft_geometry.num_layers:
+            raise ValueError("num_draft_layers cannot exceed the draft checkpoint's num_hidden_layers")
 
     @classmethod
     def from_configs(cls, model_config, spec_config: SpeculationConfig) -> DSparkScheme:
@@ -304,7 +307,7 @@ class DSparkScheme(SpecSchemeBase):
 
         h = model._hidden_size
         # ReplicatedLinear(h * len(target_layer_ids) -> h) in vLLM.
-        return ops.GEMM("dspark_main_proj", 1, h, h * max(1, len(self.target_layer_ids)), model.config.gemm_quant_mode)
+        return ops.GEMM("dspark_main_proj", 1, h, h * len(self.target_layer_ids), model.config.gemm_quant_mode)
 
     def build_draft_generation_ops(self, model) -> list[DraftOpSpec]:
         import aiconfigurator_core.sdk.operations as ops
@@ -313,10 +316,9 @@ class DSparkScheme(SpecSchemeBase):
         n_tokens = self.num_draft_tokens
         # Window-capped drafts (V4) pin the attention KV length; full-attention
         # dense drafts follow the target's sequence length (no override).
-        if self.draft_geometry is not None:
-            window = self.draft_geometry.sliding_window
-        else:
-            window = self._sliding_window(model)
+        # Dense attention carries window_size through its native operation.
+        # The V4 proxy still needs a query override and fails materialization.
+        window = None if self.draft_geometry is not None else self._sliding_window(model)
         kv_cap = window + n_tokens if window else None
         specs = [DraftOpSpec(op=self._main_proj_op(model), tokens_per_request=1)]
         for op in self._block_ops(model, is_context=False):

@@ -52,6 +52,7 @@ from aiconfigurator_core.sdk.speculation.base import (
     DraftOpSpec,
     SpecSchemeBase,
     SpeculationConfig,
+    normalize_target_layer_ids,
     positive_integer,
     register_spec_scheme,
 )
@@ -82,7 +83,7 @@ class DFlashScheme(SpecSchemeBase):
         owns_embed_and_head: bool = False,
     ) -> None:
         self.num_draft_tokens = positive_integer(num_draft_tokens, "num_draft_tokens")
-        self.target_layer_ids = tuple(int(i) for i in target_layer_ids)
+        self.target_layer_ids = normalize_target_layer_ids(target_layer_ids)
         self.draft_geometry = draft_geometry
         # mHC targets expose hc_mult residual streams per aux layer: the
         # injection fc reads len(target_layer_ids) * injection_streams * h
@@ -171,7 +172,7 @@ class DFlashScheme(SpecSchemeBase):
         import aiconfigurator_core.sdk.operations as ops
 
         h = self.draft_geometry.hidden_size
-        k = model._hidden_size * max(1, len(self.target_layer_ids)) * self.injection_streams
+        k = model._hidden_size * len(self.target_layer_ids) * self.injection_streams
         return ops.GEMM("dflash_main_proj", 1, h, k, model.config.gemm_quant_mode)
 
     def _head_op(self, model):

@@ -42,8 +42,7 @@ Transition-state limitations (tracked for follow-ups):
   targets (e.g. DeepSeek-V4) verify attention keeps the conservative
   token-basis price.
 * ``DraftOpSpec.query_overrides`` (e.g. a sliding-window KV cap) cannot
-  ride the wire; affected draft attention prices at the phase sequence
-  length.
+  ride the wire; schemes requiring them fail before materialization.
 * Per-round host-side scheduling glue (draft assembly, acceptance
   processing, KV bookkeeping) is NOT modeled: it is stack-version software
   cost outside the op tables, and small (~1.7 ms chain / ~3.6 ms tree per
@@ -105,16 +104,24 @@ def materialize_spec_scheme(model) -> None:
 
     verify_width = scheme.verify_width()
 
+    generation_specs = scheme.build_draft_generation_ops(model)
+    context_specs = scheme.build_draft_context_ops(model)
+    # Validate both phases before modifying the model. Silently dropping these
+    # overrides changes the requested workload (notably DSpark V4's KV cap).
+    for spec in [*generation_specs, *context_specs]:
+        if spec.query_overrides:
+            raise ValueError("DraftOpSpec.query_overrides are unsupported by the compiled engine")
+
     # Shallow-copy before renaming/folding: the specs' op objects belong to
     # the scheme (some schemes cache a built draft model), and callers may
     # re-inspect build_draft_*_ops after materialization.
-    for spec in scheme.build_draft_generation_ops(model):
+    for spec in generation_specs:
         op = copy.copy(spec.op)
         op._name = f"draft_{op._name}"
         _fold_width(op, spec.tokens_per_request, verify_width)
         model.generation_ops.append(op)
 
-    for spec in scheme.build_draft_context_ops(model):
+    for spec in context_specs:
         op = copy.copy(spec.op)
         op._name = f"draft_{op._name}"
         # Context-phase draft precompute runs over the same prompt tokens as

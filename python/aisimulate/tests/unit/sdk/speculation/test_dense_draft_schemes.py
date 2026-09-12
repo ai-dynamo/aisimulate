@@ -378,12 +378,10 @@ class TestDFlashV4Speculators:
 
 
 class TestNgramTriggerRate:
-    def test_measured_two_parameter_yield(self):
-        # Measured on vLLM x H100 gsm8k greedy: p = 0.301, E+1|drafted = 2.15
-        # -> per-round progress 1.347 (flat across c8/16/32).
-        model = _q8b("ngram", None, num_speculative_tokens=8, trigger_rate=0.301)
-        scheme = model.spec_scheme
-        assert scheme.expected_progress(1.15) == pytest.approx(1.0 + 0.301 * 1.15)
+    @pytest.mark.parametrize("trigger_rate", [0.301, 0.5, 0.999, float("nan"), float("inf")])
+    def test_rejects_unmodeled_mixed_rounds(self, trigger_rate):
+        with pytest.raises(ValueError, match="trigger_rate must be 1.0"):
+            _q8b("ngram", None, num_speculative_tokens=8, trigger_rate=trigger_rate)
 
     def test_default_is_always_draft(self):
         scheme = _q8b("ngram", None, num_speculative_tokens=8).spec_scheme
@@ -450,3 +448,51 @@ def test_dense_scheme_rejects_fractional_widths(kind, cfg, param):
 def test_eagle_rejects_fractional_tree_width():
     with pytest.raises(ValueError, match="tree_shape width"):
         _q8b("eagle3", EAGLE3_CONFIG, tree_shape=[1, 1.9])
+
+
+@pytest.mark.parametrize(
+    "kind,config", [("dspark", DSPARK_8B_CONFIG), ("dflash", DFLASH_CONFIG), ("eagle3", EAGLE3_CONFIG)]
+)
+def test_draft_intermediate_size_must_divide_tensor_parallelism(kind, config):
+    config = {**config, "intermediate_size": 12289}
+    cfg = _model_config(kind, config)
+    cfg.tp_size = 2
+    with pytest.raises(ValueError, match="intermediate_size.*divisible"):
+        models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+
+
+@pytest.mark.parametrize("kind,config", [("dspark", DSPARK_8B_CONFIG), ("dflash", DFLASH_CONFIG)])
+@pytest.mark.parametrize("ids", [[], [1.9], [True], [-1], [float("nan")], [float("inf")]])
+def test_invalid_target_layer_ids_fail_before_graph_construction(kind, config, ids):
+    config = dict(config)
+    if kind == "dflash":
+        config["dflash_config"] = {"target_layer_ids": ids}
+    else:
+        config["target_layer_ids"] = ids
+    with pytest.raises(ValueError, match="target_layer_ids"):
+        _q8b(kind, config)
+
+
+def test_dense_dspark_rejects_layers_absent_from_checkpoint():
+    with pytest.raises(ValueError, match="num_draft_layers cannot exceed"):
+        _q8b("dspark", DSPARK_8B_CONFIG, num_draft_layers=6)
+    assert _q8b("dspark", DSPARK_8B_CONFIG, num_draft_layers=4).spec_scheme.num_draft_layers == 4
+
+
+@pytest.mark.parametrize(
+    "kind,config", [("dspark", DSPARK_8B_CONFIG), ("dflash", DFLASH_CONFIG), ("eagle3", EAGLE3_CONFIG)]
+)
+def test_dense_draft_attention_keeps_checkpoint_window_in_both_phases(kind, config):
+    import json
+
+    config = {**config, "use_sliding_window": True, "sliding_window": 128}
+    model = _q8b(kind, config)
+    for phase in (model.context_ops, model.generation_ops):
+        attention = [op for op in phase if op._name.startswith("draft_") and op._name.endswith("_attention")]
+        assert attention
+        for op in attention:
+            assert op._window_size == 128
+            wire = next(iter(json.loads(op._spec_json()).values()))
+            assert wire["window_size"] == 128
+    scheme = model.spec_scheme
+    assert scheme.draft_kv_bytes_per_sequence(model, 128) == scheme.draft_kv_bytes_per_sequence(model, 4096)

@@ -85,6 +85,24 @@ def positive_integer(value: Any, name: str) -> int:
     return normalized
 
 
+def normalize_target_layer_ids(values) -> tuple[int, ...]:
+    """Reject malformed checkpoint taps before building the injection graph."""
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("target_layer_ids must be a non-empty list or tuple of nonnegative integers")
+    result = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError("target_layer_ids must contain nonnegative integers")
+        try:
+            normalized = int(value)
+        except (ValueError, OverflowError) as exc:
+            raise ValueError("target_layer_ids must contain nonnegative integers") from exc
+        if normalized != value:
+            raise ValueError("target_layer_ids must contain nonnegative integers")
+        result.append(normalized)
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class DraftOpSpec:
     """One draft-side operation plus its per-request token width.

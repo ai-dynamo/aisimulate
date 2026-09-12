@@ -346,3 +346,22 @@ def test_cli_epd_rejects_scheme_instead_of_ignoring_it(cli_parser):
     )
     with pytest.raises(ValueError, match="aggregated serving without EPD"):
         _run_estimate_mode(args)
+
+
+@pytest.mark.parametrize("depth", [1, 3])
+def test_cli_mtp_block_preserves_auto_depth(cli_parser, monkeypatch, depth):
+    from aiconfigurator.cli.main import _resolve_and_validate_nextn
+
+    monkeypatch.setattr("aiconfigurator.cli.main.resolve_nextn_auto", lambda path: depth)
+    args = _args(cli_parser, "--nextn", "auto", "--spec-method", "mtp", "--spec-accepted-tokens", "0.7")
+    _resolve_and_validate_nextn(args)
+    assert (args.nextn, args.nextn_accepted) == (depth, 0.7)
+
+
+def test_estimate_mtp_block_without_depth_preserves_resolved_auto(monkeypatch):
+    monkeypatch.setattr("aiconfigurator.cli.api._resolve_nextn_auto", lambda path: 1)
+    explicit = cli_estimate(
+        mode="static_gen", nextn="auto", speculative={"method": "mtp", "accepted_tokens": 0.7}, **COMMON
+    )
+    legacy = cli_estimate(mode="static_gen", nextn=1, nextn_accepted=0.7, **COMMON)
+    assert explicit.tpot == pytest.approx(legacy.tpot)

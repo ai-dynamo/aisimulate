@@ -858,6 +858,7 @@ impl Engine {
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                |_, _, _| {},
             )?;
             let prefill_ms = prefill_ms.latency_ms;
             let marginal_decode_ms = marginal_decode_ms.latency_ms;
@@ -1052,10 +1053,11 @@ impl Engine {
         isl: u32,
         osl: u32,
         prefix: u32,
+        mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<(PerformanceResult, PerformanceResult), AicError> {
         let mut prefill_component = PerformanceResult::zero();
         let decode_query_tokens = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
-        let price_prefill = |batch: u32, tokens: u32, prefix: u32, scheduled: u32| {
+        let mut price_prefill = |batch: u32, tokens: u32, prefix: u32, scheduled: u32| {
             let mut result = prefill_op.query_totals(
                 &self.db,
                 &[
@@ -1064,6 +1066,11 @@ impl Engine {
                     batch as f64 * prefix as f64,
                 ],
             )?;
+            on_op(
+                MixedPass::SharedNonAttention,
+                &self.context_ops[0],
+                result.clone(),
+            );
             // Draft precompute is absent from the whole-model target curve.
             // Keep energy, provenance and executed fallback metadata together
             // with its latency for the native per-op reporting endpoint.
@@ -1075,7 +1082,10 @@ impl Engine {
                 prefix,
                 1.0,
                 ContextOpFilter::All,
-                |_op, draft| result = std::mem::take(&mut result).plus(draft),
+                |op, draft| {
+                    on_op(MixedPass::SharedNonAttention, op, draft.clone());
+                    result = std::mem::take(&mut result).plus(draft);
+                },
             )?;
             Ok::<_, AicError>(result)
         };
@@ -1127,6 +1137,7 @@ impl Engine {
                 let component = if matches!(op, Op::FpmForward(_)) {
                     &mut target
                 } else {
+                    on_op(MixedPass::DecodeAttention, op, result.clone());
                     &mut draft
                 };
                 *component = std::mem::take(component).plus(result);
@@ -1143,6 +1154,11 @@ impl Engine {
             }
             // Draft work has no twin in the prefill pass and must survive
             // even when the target's marginal cost clamps to zero.
+            on_op(
+                MixedPass::DecodeAttention,
+                &self.generation_ops[0],
+                target.clone(),
+            );
             marginal_decode = target.plus(draft);
         }
         Ok((prefill_component, marginal_decode))
@@ -1276,18 +1292,13 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<MixedStepPerOpValuesWithMetadata, AicError> {
-        // Whole-model FPM: never the name-filtered three-pass split (see
-        // mixed_step_breakdown_with). Report the scalar path's component
-        // mapping as per-op entries — the prefill component under the
-        // prefill op's name in the shared bucket, the decode marginal under
-        // the decode op's name — so the Python fold sees the same keys as
-        // its own FPM branch.
+        // Preserve the FPM component contract while reporting the actual target
+        // and draft operations independently. The same execution path supplies
+        // scalar costs, energy, provenance, and fallback metadata.
         if let Some((prefill_op, decode_op, ctx_tail, _gen_tail)) = self.fpm_split() {
-            // Hybrid note: draft-op cost is folded INTO the two components
-            // (draft prefill precompute into the prefill entry, draft decode
-            // work into the marginal-decode entry via the generic generation
-            // phase) — the per-op view stays two-keyed for fpm engines.
-            let (prefill_ms, marginal_decode_ms) = self.fpm_mixed_step_components(
+            let mut shared = PerOpFold::new("context");
+            let mut dec_attn = PerOpFold::new("generation");
+            self.fpm_mixed_step_components(
                 prefill_op,
                 decode_op,
                 ctx_tail,
@@ -1296,16 +1307,24 @@ impl Engine {
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                |pass, op, result| match pass {
+                    MixedPass::SharedNonAttention => shared.add(op, result),
+                    MixedPass::DecodeAttention => dec_attn.add(op, result),
+                    MixedPass::ContextAttention => unreachable!("FPM uses the prefill component"),
+                },
             )?;
-            let mut shared = PerOpFold::new("context");
-            if ctx_tokens > 0 {
-                shared.add(&self.context_ops[0], prefill_ms);
+            let mut shared = shared.into_values();
+            let new_tokens = isl.max(1).saturating_sub(prefix);
+            if ctx_tokens > 0 && ctx_tokens < new_tokens {
+                // Fold each name before the same single division used by the
+                // scalar chunked-prefill path.
+                let chunks = new_tokens.div_ceil(ctx_tokens) as f64;
+                for row in &mut shared {
+                    row.1 /= chunks;
+                    row.2 /= chunks;
+                }
             }
-            let mut dec_attn = PerOpFold::new("generation");
-            if gen_tokens > 0 {
-                dec_attn.add(&self.generation_ops[0], marginal_decode_ms);
-            }
-            return Ok((shared.into_values(), Vec::new(), dec_attn.into_values()));
+            return Ok((shared, Vec::new(), dec_attn.into_values()));
         }
         let mut shared = PerOpFold::new("context");
         let mut ctx_attn = PerOpFold::new("context");
@@ -3464,8 +3483,17 @@ mod tests {
         let expected =
             run_generation_ops_step(std::slice::from_ref(&draft_op), &db, 8, 2050, 1.0, false)
                 .unwrap();
-        assert!((decode[0].1 - expected).abs() < 1e-12);
-        assert_eq!(decode[0].3, "empirical");
+        let draft = decode
+            .iter()
+            .find(|row| row.0.starts_with("draft_"))
+            .unwrap();
+        let target = decode
+            .iter()
+            .find(|row| row.0 == "fpm_forward_decode")
+            .unwrap();
+        assert!((draft.1 - expected).abs() < 1e-12);
+        assert_eq!(draft.3, "empirical");
+        assert_eq!(target.1, 0.0);
     }
 
     #[test]
@@ -3482,11 +3510,22 @@ mod tests {
         let (prefill, _, decode) = engine
             .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
             .unwrap();
-        assert_eq!(prefill[0].3, "mixed");
-        assert_eq!(decode[0].3, "mixed");
+        for rows in [&prefill, &decode] {
+            assert_eq!(rows.len(), 2);
+            let target = rows
+                .iter()
+                .find(|row| row.0.starts_with("fpm_forward_"))
+                .unwrap();
+            let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+            assert_eq!(target.3, "silicon");
+            assert_eq!(draft.3, "empirical");
+            assert!(draft.1 > 0.0);
+            assert!(draft.2 > 0.0);
+        }
         let scalar = engine
             .mixed_step_latency(2048, 1, 2048, 2, 0, 1.0, 1.0)
             .unwrap();
-        assert_eq!(scalar, prefill[0].1 + decode[0].1);
+        let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+        assert!((scalar - reported).abs() < 1e-12);
     }
 }

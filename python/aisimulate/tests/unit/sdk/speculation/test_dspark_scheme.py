@@ -58,8 +58,12 @@ def _model_config(speculation: SpeculationConfig | None = None) -> sdk_config.Mo
 
 
 def _v4_model_with_dspark(**params):
-    cfg = _model_config(speculation=_spec_config(**params))
-    return models.get_model("deepseek-ai/DeepSeek-V4-Flash", cfg, "sglang")
+    # Inspect the scheme's structural model without admitting its unsupported
+    # KV query override to the compiled execution path.
+    model = models.get_model("deepseek-ai/DeepSeek-V4-Flash", _model_config(), "sglang")
+    model.spec_scheme = DSparkScheme.from_configs(model.config, _spec_config(**params))
+    model.spec_scheme.validate(model, "sglang")
+    return model
 
 
 class TestParamResolution:
@@ -81,16 +85,10 @@ class TestParamResolution:
 
 
 class TestValidation:
-    def test_attaches_to_v4_model(self):
-        model = _v4_model_with_dspark(num_draft_tokens=7)
-        assert isinstance(model.spec_scheme, DSparkScheme)
-        assert model.spec_scheme.verify_width() == 8
-        # Materialized width channel: the engine widens the decode batch by
-        # (_nextn + 1) = verify_width. MTP LAYER scaling must stay off — op
-        # counts were built with config.nextn=0 before materialization.
-        assert model._nextn == 7
-        assert getattr(model, "_mtp_scale_factor", 1.0) == pytest.approx(1.0)
-        assert any(op._name.startswith("draft_") for op in model.generation_ops)
+    def test_rejects_v4_query_overrides_at_model_boundary(self):
+        cfg = _model_config(speculation=_spec_config(num_draft_tokens=7))
+        with pytest.raises(ValueError, match="query_overrides are unsupported"):
+            models.get_model("deepseek-ai/DeepSeek-V4-Flash", cfg, "sglang")
 
     def test_rejects_non_v4_family(self):
         cfg = sdk_config.ModelConfig(

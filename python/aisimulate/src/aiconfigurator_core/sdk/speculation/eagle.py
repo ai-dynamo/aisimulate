@@ -130,6 +130,8 @@ class EagleScheme(SpecSchemeBase):
             raise ValueError(f"EAGLE-3 modeling supports backends {_SUPPORTED_BACKENDS}, got {backend_name!r}.")
         if self.draft_geometry.num_heads % model.config.tp_size:
             raise ValueError("draft num_attention_heads must be divisible by tp_size")
+        if self.draft_geometry.inter_size % model.config.tp_size:
+            raise ValueError("draft intermediate_size must be divisible by tp_size")
         if self.draft_geometry.hidden_size != model._hidden_size:
             raise ValueError(
                 f"draft hidden_size {self.draft_geometry.hidden_size} != target hidden_size "
@@ -160,7 +162,7 @@ class EagleScheme(SpecSchemeBase):
         h = geom.hidden_size
         n = float(geom.num_layers)
         kv_per_gpu = max(1, geom.num_kv_heads // tp_size)
-        attn_args = dict(head_size=geom.head_dim, use_qk_norm=geom.use_qk_norm)
+        attn_args = dict(head_size=geom.head_dim, use_qk_norm=geom.use_qk_norm, window_size=geom.sliding_window or 0)
         attn = (
             ops.ContextAttention(
                 "eagle3_attention",

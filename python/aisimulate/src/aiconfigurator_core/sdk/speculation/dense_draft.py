@@ -76,10 +76,12 @@ def dense_block_ops(geom: DenseDraftGeometry, model, prefix: str, *, is_context:
     tp_size = cfg.tp_size
     if geom.num_heads % tp_size:
         raise ValueError(f"draft num_attention_heads {geom.num_heads} must be divisible by tp_size {tp_size}")
+    if geom.inter_size % tp_size:
+        raise ValueError(f"draft intermediate_size {geom.inter_size} must be divisible by tp_size {tp_size}")
     h = geom.hidden_size
     n = float(geom.num_layers)
     kv_per_gpu = max(1, geom.num_kv_heads // tp_size)
-    attn_args = dict(head_size=geom.head_dim, use_qk_norm=geom.use_qk_norm)
+    attn_args = dict(head_size=geom.head_dim, use_qk_norm=geom.use_qk_norm, window_size=geom.sliding_window or 0)
     attn = (
         ops.ContextAttention(
             f"{prefix}_attention",

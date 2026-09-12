@@ -628,8 +628,8 @@ def estimate_mixed_step_breakdown_with_rust(
     ``run_mixed`` retains native operation names, including draft work in
     either phase, while preserving the legacy ``"context_attention (scaled)"``
     and ``"generation_attention"`` keys. Context values are already divided
-    by ``ceil(isl/ctx)``. FPM retains its two composed operations, with the
-    native decode component reported under ``"generation_attention"``.
+    by ``ceil(isl/ctx)``. FPM retains its prefill/decode component split and separate draft rows, with
+    the target decode operation reported under ``"generation_attention"``.
     """
     handle = _cached_engine_handle(model, database)
     try:

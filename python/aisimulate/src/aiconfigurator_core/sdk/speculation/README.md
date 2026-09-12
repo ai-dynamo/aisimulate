@@ -24,7 +24,7 @@ aiconfigurator cli estimate \
   --spec-accepted-tokens 1.5
 ```
 
-Here `1.5` is an illustrative acceptance assumption. The target verifies four tokens per request and the expected output progress is 2.5 tokens per iteration. For n-gram configurations with `trigger_rate < 1`, expected progress is `1 + trigger_rate * accepted_tokens`; verification cost still assumes the full width on every round.
+Here `1.5` is an illustrative acceptance assumption. The target verifies four tokens per request and the expected output progress is 2.5 tokens per iteration. N-gram requires `trigger_rate=1.0`; mixed drafted and draft-less rounds are rejected until weighted round costs are supported.
 
 Non-MTP schemes support `agg`, `static`, `static_ctx`, and `static_gen` estimates. MTP retains the existing `nextn`/`nextn_accepted` behavior, including disaggregated estimates. The unified `aisimulate predict` and `aisimulate recommend` commands do not acquire speculative configuration through this migration.
 
@@ -67,6 +67,7 @@ The operation schema changes to version 18; rebuild the native extension and rec
 
 ## Modeling limits
 
+- Schemes that require draft query overrides are rejected before materialization. This includes DeepSeek-V4 DSpark with its sliding-window KV cap; dense DSpark without overrides remains supported.
 - Host-side proposal lookup, sampling, and framework overhead are outside the operation graph.
 - FPM verification maps onto autoregressive collection rows; it is not a measured wide-verification surface.
 - Aggregate scheduling retains the source mean-field approximation. The upstream source documents errors at workloads below one full prefill per round.

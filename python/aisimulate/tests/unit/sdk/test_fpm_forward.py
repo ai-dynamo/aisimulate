@@ -360,6 +360,9 @@ def fpm_session(tmp_path):
         _row("prefill", 1, isl + 2, 0, 23.0, model_path=model.model_path, identity=identity),
         _row("prefill", 1, 258, 0, 11.0, model_path=model.model_path, identity=identity),
         _row("prefill", 1, 258, 256, 13.0, model_path=model.model_path, identity=identity),
+        # Prefill-only chunk averages used by the hybrid attribution probe.
+        _row("prefill", 1, 256, 0, 10.0, model_path=model.model_path, identity=identity),
+        _row("prefill", 1, 256, 256, 12.0, model_path=model.model_path, identity=identity),
         # CUDA-graph cliff pair at capture=2048 plus the eager plateau: the
         # regime is encoded in the data, the formula only addresses it.
         _row("prefill", 1, 2048, 0, 47.0, model_path=model.model_path, identity=identity),
@@ -379,7 +382,9 @@ def fpm_session(tmp_path):
 
 
 class TestFPMStaticAndMixed:
-    def test_public_mixed_hybrid_keeps_native_component_sources(self, fpm_session):
+    @pytest.mark.parametrize("ctx_tokens", [256, 512])
+    @pytest.mark.parametrize("gen_requests", [0, 2])
+    def test_public_mixed_hybrid_keeps_native_component_sources(self, fpm_session, ctx_tokens, gen_requests):
         from aiconfigurator.sdk.config import RuntimeConfig
         from aiconfigurator.sdk.inference_session import InferenceSession
         from aiconfigurator_core.sdk.operations.elementwise import ElementWise
@@ -403,37 +408,44 @@ class TestFPMStaticAndMixed:
         generation = ElementWise("draft_generation", 1.0, 4096, 4096, 0.8)
         _fold_width(generation, 1, 4)
         model.generation_ops.append(generation)
-        native = _cached_engine_handle(model, database)._mixed_step_breakdown_per_op_with_metadata(isl, 2, isl, osl, 0)
+        handle = _cached_engine_handle(model, database)
+        native = handle._mixed_step_breakdown_per_op_with_metadata(ctx_tokens, gen_requests, isl, osl, 0)
         estimate = InferenceSession(model, database, backend).run_mixed(
-            RuntimeConfig(isl=isl, osl=osl), MixedStepInput(isl, 2)
+            RuntimeConfig(isl=isl, osl=osl), MixedStepInput(ctx_tokens, gen_requests)
         )
-        [prefill], context, [decode] = native
-        assert prefill[0] == "fpm_forward_prefill"
-        assert decode[0] == "fpm_forward_decode"
-        assert context == []
-        assert prefill[3] == decode[3] == "mixed"
-        assert estimate.per_op_latency_ms == {
-            "fpm_forward_prefill": pytest.approx(prefill[1]),
-            "context_attention (scaled)": 0.0,
-            "generation_attention": pytest.approx(decode[1]),
+        shared, context, decode = native
+        assert {row[0] for row in shared} == {"fpm_forward_prefill", "draft_context"}
+        assert {row[0] for row in decode} == ({"fpm_forward_decode", "draft_generation"} if gen_requests else set())
+        rows = {row[0]: row for group in native for row in group}
+        # Independent phase queries establish draft values, energy and source;
+        # the reporting path must not absorb these into target FPM rows.
+        expected_context = handle.evaluate_context_ops([1], batch_size=1, s=ctx_tokens)[0]
+        assert rows["draft_context"][1:3] == pytest.approx(expected_context[1:3])
+        assert rows["draft_context"][3] == expected_context[3] == "empirical"
+        if gen_requests:
+            expected_generation = handle.evaluate_generation_ops(
+                [1], batch_size=gen_requests * 4, s=isl + osl // 2 + 1
+            )[0]
+            assert rows["draft_generation"][1:3] == pytest.approx(expected_generation[1:3])
+            assert rows["draft_generation"][3] == expected_generation[3] == "empirical"
+        assert rows["fpm_forward_prefill"][3] == "silicon"
+        public_rows = {
+            "generation_attention" if name == "fpm_forward_decode" else name: row for name, row in rows.items()
         }
-        assert estimate.per_op_source == {
-            "fpm_forward_prefill": prefill[3],
-            "context_attention (scaled)": "silicon",
-            "generation_attention": decode[3],
-        }
-        assert estimate.component_latency_ms == {
-            "shared_non_attention": pytest.approx(prefill[1]),
-            "context_attention": 0.0,
-            "decode_attention": pytest.approx(decode[1]),
-        }
-        assert estimate.component_energy_wms == {
-            "shared_non_attention": pytest.approx(prefill[2]),
-            "context_attention": 0.0,
-            "decode_attention": pytest.approx(decode[2]),
-        }
-        assert estimate.latency_ms == pytest.approx(prefill[1] + decode[1])
-        assert estimate.energy_wms == pytest.approx(prefill[2] + decode[2])
+        expected_latency = {name: pytest.approx(row[1]) for name, row in public_rows.items()}
+        expected_latency.setdefault("generation_attention", 0.0)
+        expected_latency["context_attention (scaled)"] = 0.0
+        assert estimate.per_op_latency_ms == expected_latency
+        expected_source = {name: row[3] for name, row in public_rows.items()}
+        expected_source.setdefault("generation_attention", "silicon")
+        expected_source["context_attention (scaled)"] = "silicon"
+        assert estimate.per_op_source == expected_source
+        for name, group in zip(("shared_non_attention", "context_attention", "decode_attention"), native, strict=True):
+            assert estimate.component_latency_ms[name] == pytest.approx(sum(row[1] for row in group))
+            assert estimate.component_energy_wms[name] == pytest.approx(sum(row[2] for row in group))
+        assert estimate.latency_ms == pytest.approx(handle.mixed_step_latency(ctx_tokens, gen_requests, isl, osl, 0))
+        assert estimate.latency_ms == pytest.approx(sum(row[1] for row in rows.values()))
+        assert estimate.energy_wms == pytest.approx(sum(row[2] for row in rows.values()))
 
     def test_ngram_verify_width_reaches_native_fpm_query(self, fpm_session):
         from aiconfigurator.sdk.config import RuntimeConfig

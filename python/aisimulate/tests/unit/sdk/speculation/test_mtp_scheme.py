@@ -128,3 +128,16 @@ def test_reused_explicit_mtp_still_rejects_conflicting_legacy_depth():
     apply_nextn(cfg, 2)
     with pytest.raises(ValueError, match="Conflicting speculative inputs"):
         get_model("Qwen/Qwen3-8B", cfg, "vllm")
+
+
+@pytest.mark.parametrize("nextn", [1, 3])
+def test_explicit_none_rejects_legacy_mtp(nextn):
+    cfg = _model_config(nextn=nextn, speculation=SpeculationConfig(kind="none"))
+    with pytest.raises(ValueError, match="Conflicting speculative inputs"):
+        resolve_speculation(cfg)
+
+
+def test_explicit_none_stays_disabled():
+    cfg = _model_config(speculation=SpeculationConfig(kind="none"))
+    assert resolve_speculation(cfg).kind == "none"
+    assert cfg.nextn == 0

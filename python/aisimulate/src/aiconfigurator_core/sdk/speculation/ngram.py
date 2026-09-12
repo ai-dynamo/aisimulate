@@ -41,15 +41,10 @@ class NgramScheme(SpecSchemeBase):
         trigger_rate: float = 1.0,
     ) -> None:
         self.num_speculative_tokens = positive_integer(num_speculative_tokens, "num_speculative_tokens")
-        # Fraction of decode rounds in which the proposer actually drafts
-        # (prompt-lookup fires only on a suffix match). Measured, workload-
-        # dependent — e.g. Qwen3-8B gsm8k greedy: p = 0.301, flat across
-        # concurrency. The acceptance input `accepted_tokens` is the
-        # PER-DRAFTED-ROUND value (vLLM accepted/drafts counters); the
-        # expected-progress fold mixes in the (1 - p) draft-less rounds.
-        # Default 1.0 = every round drafts (dense-drafting semantics).
-        if not 0.0 < float(trigger_rate) <= 1.0:
-            raise ValueError(f"trigger_rate must be in (0, 1], got {trigger_rate}")
+        # The engine prices a full verification round. Mixed drafted/AR rounds
+        # need weighted costs as well as weighted progress before being enabled.
+        if float(trigger_rate) != 1.0:
+            raise ValueError("trigger_rate must be 1.0; mixed drafted and draft-less round costs are unsupported")
         self.trigger_rate = float(trigger_rate)
 
     @classmethod
@@ -64,14 +59,7 @@ class NgramScheme(SpecSchemeBase):
         )
 
     def expected_progress(self, accepted_tokens: float) -> float:
-        # Mixed rounds: p drafted rounds commit (1 + accepted), (1 - p)
-        # draft-less rounds commit 1 -> 1 + p * accepted per round.
-        # Cost-side note: verify compute is still priced at full width every
-        # round (the op graph cannot express mixed widths yet), so with
-        # p < 1 the GEMM token volume is over-priced by (1-p)*(width-1)
-        # tokens/round — a conservative bias, flagged for the mixed-round
-        # costing follow-up.
-        return 1.0 + self.trigger_rate * float(accepted_tokens)
+        return 1.0 + float(accepted_tokens)
 
     def verify_attention_sequence_basis(self) -> bool:
         # Block verify: one shared KV pass per request (see SpecSchemeBase).

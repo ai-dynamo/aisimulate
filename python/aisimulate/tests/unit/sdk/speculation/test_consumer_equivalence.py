@@ -38,8 +38,6 @@ from aiconfigurator_core.sdk.speculation import DraftOpSpec, NullScheme, Specula
 from aiconfigurator_core.sdk.speculation.materialize import materialize_spec_scheme
 from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
 
-pytestmark = pytest.mark.unit
-
 
 class _RecordingOp:
     """Fake op carrying the attributes materialization touches."""
@@ -121,7 +119,7 @@ class _FakeDraftScheme(NullScheme):
 
     def build_draft_generation_ops(self, model):
         return [
-            DraftOpSpec(op=self.gen_op, tokens_per_request=5, query_overrides={"s": 133}),
+            DraftOpSpec(op=self.gen_op, tokens_per_request=5),
             DraftOpSpec(op=self.gen_op_divisible, tokens_per_request=3),
         ]
 
@@ -138,6 +136,7 @@ class _FakeDraftScheme(NullScheme):
         return True  # block verify shares one KV pass (all real draft schemes)
 
 
+@pytest.mark.unit
 class TestGoldenEquivalence:
     def test_legacy_and_explicit_mtp_share_engine_state(self):
         legacy = _fake_model(nextn=2)  # spec_scheme derived: MTPScheme(2)
@@ -161,6 +160,7 @@ class TestGoldenEquivalence:
         assert _engine_config_json(legacy, db) == _engine_config_json(explicit, db)
 
 
+@pytest.mark.unit
 class TestMaterialization:
     def test_width_channel_and_draft_ops_land_in_op_lists(self):
         scheme = _FakeDraftScheme()
@@ -201,6 +201,7 @@ class TestMaterialization:
         assert [op._name for op in model.generation_ops] == once
 
 
+@pytest.mark.unit
 class TestAttentionWidthChannel:
     """Sequence-basis fold + roofline guard on dense decode attention."""
 
@@ -275,6 +276,7 @@ class TestAttentionWidthChannel:
         assert dup._verify_query_tokens == 5
 
 
+@pytest.mark.unit
 class TestMemoryAndRouting:
     def test_memory_accounting_includes_draft_bytes(self):
         base = _fake_model(nextn=0)
@@ -337,6 +339,7 @@ class TestMemoryAndRouting:
         assert should_use_rust_engine_step(default, synthetic_db) is False
 
 
+@pytest.mark.unit
 def test_materialize_draft_width_larger_than_verify_budget():
     class WideDraftScheme(_FakeDraftScheme):
         def build_draft_generation_ops(self, model):
@@ -347,6 +350,7 @@ def test_materialize_draft_width_larger_than_verify_budget():
     assert model.generation_ops[-1]._draft_token_width == (8, 6)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_native_attention_preserves_positional_options_and_keyword_widths(round_trip):
     import copy
@@ -388,6 +392,7 @@ def real_database():
     return get_database_view("h100_sxm", "vllm", "0.24.0")
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("draft_count", [1, 3, 7])
 @pytest.mark.parametrize("batch_size", [1, 512])
 def test_every_standalone_draft_op_matches_independent_decode(real_database, draft_count, batch_size):
@@ -418,6 +423,7 @@ def test_every_standalone_draft_op_matches_independent_decode(real_database, dra
         assert actual[f"draft_{name}"] == pytest.approx(draft_count * latency, rel=1e-10), name
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("tree_shape", [[1, 1], [2, 3], [4, 8]])
 @pytest.mark.parametrize("batch_size", [1, 512])
 def test_every_tree_draft_op_queries_its_own_width(real_database, tree_shape, batch_size):
@@ -464,6 +470,7 @@ def test_every_tree_draft_op_queries_its_own_width(real_database, tree_shape, ba
         assert actual[2] == pytest.approx(expected.energy, rel=1e-10), actual[0]
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("mutation", ["params", "draft_config"])
 def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_database, mutation):
     import copy
@@ -509,6 +516,7 @@ def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_data
         _engine_handle_cache_clear()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, round_trip):
     import copy
@@ -529,6 +537,7 @@ def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, 
     assert float(duplicate._engine_query(real_database, x=6)) == float(baseline._engine_query(real_database, x=5))
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("tokens,width", [(0, 6), (5, 0), (-1, 6), (5, 1.5), (True, 6)])
 def test_materialize_rejects_invalid_draft_width(tokens, width):
     from aiconfigurator_core.sdk.speculation.materialize import _fold_width
@@ -537,6 +546,7 @@ def test_materialize_rejects_invalid_draft_width(tokens, width):
         _fold_width(_RecordingOp("draft"), tokens, width)
 
 
+@pytest.mark.unit
 def test_draft_query_wrapper_does_not_hide_retired_native_ops():
     from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
     from aiconfigurator_core.sdk.operations.moe import MoEDispatch
@@ -548,6 +558,7 @@ def test_draft_query_wrapper_does_not_hide_retired_native_ops():
         build_ops_json([op])
 
 
+@pytest.mark.unit
 def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
     from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
     from aiconfigurator_core.sdk.speculation.materialize import _fold_width
@@ -558,6 +569,7 @@ def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
         build_ops_json([op])
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("draft_path", ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
 @pytest.mark.parametrize("draft_count", [1, 3])
 def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real_database, draft_path, draft_count):
@@ -605,6 +617,7 @@ def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real
             assert row[3:] == (source, metadata), name
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("ctx_tokens,gen_requests,prefix", [(0, 7, 0), (128, 0, 64), (128, 7, 64), (8000, 7, 64)])
 def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_tokens, gen_requests, prefix):
     import math
@@ -670,6 +683,7 @@ def _assert_public_mixed_rows(estimate, native):
     assert sum(estimate.per_op_latency_ms.values()) == pytest.approx(estimate.latency_ms)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 7])
 @pytest.mark.parametrize("database_mode", ["SILICON", "SOL"])
 @pytest.mark.parametrize("draft", ["eagle3", "Qwen/Qwen3-0.6B", "Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
@@ -706,6 +720,7 @@ def test_public_mixed_draft_names_values_and_sources_match_native(draft, databas
     _assert_public_mixed_rows(estimate, native)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 7])
 @pytest.mark.parametrize("depth", [0, 2])
 def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, gen_requests, depth):
@@ -731,6 +746,7 @@ def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, g
         assert estimate.per_op_source["generation_attention"] == "silicon"
 
 
+@pytest.mark.integration
 def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_database, monkeypatch):
     from aiconfigurator.sdk.inference_session import InferenceSession
     from aiconfigurator_core.sdk import rust_engine_step
@@ -769,6 +785,7 @@ def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_data
     assert estimate.moe_comm_fallbacks == (MoECommFallback(*context_fallback), MoECommFallback(*generation_fallback))
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 1])
 def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests):
     import copy
@@ -829,6 +846,7 @@ def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests)
         _engine_handle_cache_clear()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(real_database, round_trip):
     import copy
@@ -875,3 +893,41 @@ def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(rea
     for ops, batch in [([composite], 512), (folded, 2048)]:
         with pytest.raises(SolNotImplementedError, match="no SOL decomposition"):
             handle.evaluate_ops_sol_json(build_ops_json(ops), is_context=False, batch_size=batch, s=65, x=batch)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_query_overrides_fail_before_mutating_either_phase(phase):
+    class OverrideScheme(_FakeDraftScheme):
+        def build_draft_context_ops(self, model):
+            return [DraftOpSpec(self.ctx_op, 1, {"s": 128} if phase == "context" else None)]
+
+        def build_draft_generation_ops(self, model):
+            return [DraftOpSpec(self.gen_op, 1, {"s": 128} if phase == "generation" else None)]
+
+    model = _fake_model(spec_scheme=OverrideScheme())
+    original_context, original_generation = list(model.context_ops), list(model.generation_ops)
+    with pytest.raises(ValueError, match="query_overrides are unsupported"):
+        materialize_spec_scheme(model)
+    assert model.context_ops == original_context
+    assert model.generation_ops == original_generation
+    assert model._nextn == 0
+    assert not getattr(model, "_spec_scheme_materialized", False)
+
+
+@pytest.mark.unit
+def test_native_scale_factor_setter_rejects_composites_and_updates_leaf():
+    from aiconfigurator_core.sdk.operations.gemm import GEMM
+    from aiconfigurator_core.sdk.operations.overlap import FallbackOp, OverlapOp
+
+    leaf = GEMM("leaf", 1.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
+    leaf._scale_factor = 3.0
+    assert leaf._scale_factor == 3.0
+    for op in (
+        OverlapOp("overlap", group_a=[leaf], group_b=[leaf]),
+        FallbackOp("fallback", primary=leaf, fallback=[leaf]),
+    ):
+        original_wire = op._spec_json()
+        with pytest.raises(TypeError, match="op family carries no scale_factor"):
+            op._scale_factor = 3.0
+        assert op._spec_json() == original_wire
