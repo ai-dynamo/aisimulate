@@ -492,6 +492,100 @@ def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -
     assert factory.created == 0
 
 
+@pytest.mark.parametrize("decode", ["h200_sxm", "gb200"])
+@pytest.mark.parametrize(("system", "accepted"), [("h200_sxm", False), ("gb200", True)])
+def test_sweep_submits_only_router_aic_hooks_matching_prefill_hardware(monkeypatch, decode, system, accepted):
+    config = _config()
+    config.search_space.deployment_mode = ["disagg"]
+    config.search_space.prefill_hardware_sku = "gb200"
+    config.search_space.decode_hardware_sku = decode
+    config.search_space.backend_version = "0.24.0"
+    config.sweep.max_trials = 1
+    config.sweep.max_eval_seconds = None  # Exercise the sequential runner in this process.
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = DisaggParallelConfig(prefill=role, decode=role)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"vllm"})},
+        knob_choices={
+            "backend": ["vllm"],
+            "prefill_max_num_batched_tokens": [8192],
+            "prefill_max_num_seqs": [1],
+            "decode_max_num_batched_tokens": [8192],
+            "decode_max_num_seqs": [256],
+        },
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    hook = RuntimeHookSpec(
+        provider="dynamo.router",
+        kind="placement_policy",
+        api_version=1,
+        config={
+            "router_config": {"router_prefill_load_model": "aic"},
+            "aic_perf_config": {"aic_system": system},
+        },
+    )
+
+    class RouterAdapter(_Adapter):
+        def generate_search_space(self, search_spec, context):
+            return AdapterSearchPlan(
+                fragment=SearchSpaceFragment(choices_by_branch={"disagg": {"mode": ["fast"]}}),
+                potential_runtime_hooks=(hook,),
+            )
+
+        def materialize_replay(self, plan, selection, context):
+            self.materialized.append(context)
+            return AdapterReplaySpec(runtime_hooks=(hook,))
+
+    rejected = []
+
+    class Sampler(_Sampler):
+        def __init__(self, branch, study_id, objectives=None, **kwargs):
+            super().__init__(branch, study_id, objectives)
+
+        def suggest(self, count):
+            assert count == 1
+            selection = {
+                "deployment_mode": "disagg",
+                **{name: values[0] for name, values in self.branch.knob_choices.items()},
+            }
+            return [Suggestion(selection=selection, parallel_config=parallel, handle=selection)]
+
+        def observe_infeasible(self, suggestion, reason):
+            rejected.append(reason)
+
+    class RouterRunnerFactory(_RunnerFactory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("*", "*"),),
+                supported_hooks=(HookCapability("dynamo.router", "placement_policy", 1),),
+            )
+
+    adapter = RouterAdapter()
+    factory = RouterRunnerFactory()
+    result = search_module.Sweeper(
+        runner_factory=factory,
+        providers={"test.feature": adapter},
+        sampler_factory=Sampler,
+        show_progress=False,
+    ).run(config, top_n=None)
+
+    assert len(adapter.materialized) == 1
+    if accepted:
+        assert not rejected
+        assert len(result.selected_candidates) == 1
+        assert len(factory.runner.specs) == 1
+        assert factory.runner.specs[0].runtime_hooks == (hook,)
+    else:
+        assert not result.selected_candidates
+        assert factory.runner.specs == []
+        assert len(rejected) == 1
+        assert "does not match effective prefill_hardware_sku='gb200'" in rejected[0]
+        assert result.counts.infeasible == 1
+        assert result.candidates[0].reason_category is ReasonCategory.ADAPTER_CONSTRAINT
+
+
 def test_core_branch_preflight_runs_before_adapter_preparation(monkeypatch) -> None:
     adapter = _Adapter()
 
