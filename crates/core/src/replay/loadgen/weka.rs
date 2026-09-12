@@ -1055,9 +1055,19 @@ fn streams_from_detection(
     });
     for (worker_index, chain_index) in detection.worker_indices.iter().copied().enumerate() {
         let chain = &detection.chains[chain_index];
+        // `detect_chains` only ever appends to a chain tail, so a chain is
+        // built in arrival order -- but `resolve_seams` splices an elected
+        // chain's requests on as one block, and its guards bound timestamps
+        // only (with epsilon slack, no `source_order` tiebreak). The
+        // concatenation can therefore be locally out of order. Downstream
+        // dependency emission reads stream order positionally, so restore the
+        // invariant here rather than inside `resolve_seams`, whose `tail_*`
+        // bookkeeping requires the elected block to be appended as a unit.
+        let mut requests = chain.requests.clone();
+        requests.sort_by(request_order);
         live.push(Stream {
             session_id: format!("{namespace}:session:{prefix}:worker:{worker_index}"),
-            requests: chain.requests.clone(),
+            requests,
             fork_source_id: chain
                 .fork
                 .as_ref()
@@ -3092,6 +3102,72 @@ mod tests {
             error
                 .to_string()
                 .contains("must use a .json or .jsonl extension")
+        );
+    }
+
+    /// `resolve_seams` splices an elected chain's requests onto the owner's
+    /// tail as one block, and its admission guards compare timestamps only --
+    /// with epsilon slack and no `source_order` tiebreak. The cascade
+    /// re-parent can therefore elect a chain whose first request sorts
+    /// *before* the owner's new tail, leaving the concatenated chain out of
+    /// arrival order. Dependency emission reads stream order positionally
+    /// (`windows(2)`), so an inverted pair declares the later request as the
+    /// predecessor of the earlier one, and `seconds_to_milliseconds` clamps
+    /// the resulting negative delay to zero so the backwards edge still looks
+    /// well-formed to the canonical validator.
+    ///
+    /// The fixture drives the exact-tie window: `outer:4` and `outer:5` share
+    /// a timestamp, `outer:5` extends the elected chain after `outer:4`
+    /// already forked its own, and the cascade then splices `outer:4`'s chain
+    /// in behind `outer:5`.
+    #[test]
+    fn a_spliced_worker_chain_emits_sequence_edges_in_arrival_order() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let trace = serde_json::json!({
+            "id": "play",
+            "models": ["m0", "m1"],
+            "block_size": 4,
+            "hash_id_scope": "local",
+            "requests": [
+                {"t":0.0,"type":"s","model":"m0","in":4,"out":1,"hash_ids":[1],"api_time":0.0},
+                {"t":1.0,"type":"s","model":"m1","in":8,"out":1,"hash_ids":[1,2],"api_time":0.0},
+                {"t":2.0,"type":"s","model":"m1","in":12,"out":1,"hash_ids":[1,2,3],"api_time":0.0},
+                {"t":3.0,"type":"s","model":"m1","in":12,"out":1,"hash_ids":[1,2,9],"api_time":0.0},
+                {"t":4.0,"type":"s","model":"m1","in":12,"out":1,"hash_ids":[1,2,8],"api_time":0.0},
+                {"t":4.0,"type":"s","model":"m1","in":16,"out":1,"hash_ids":[1,2,9,7],"api_time":0.0}
+            ],
+        });
+        std::fs::write(&path, serde_json::to_vec(&trace).unwrap()).unwrap();
+
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let sequence_predecessors = |suffix: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.request_id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("row {suffix} is present"));
+            row.dependencies
+                .iter()
+                .filter(|edge| edge.relation == AgenticDependencyRelation::Sequence)
+                .map(|edge| {
+                    let (_, tail) = edge.request_id.rsplit_once(":request:").unwrap();
+                    tail.to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // The spliced chain is one worker stream: 1 -> 2 -> 3 -> 4 -> 5.
+        assert_eq!(
+            sequence_predecessors("outer:4"),
+            vec!["outer:3".to_string()]
+        );
+        assert_eq!(
+            sequence_predecessors("outer:5"),
+            vec!["outer:4".to_string()]
+        );
+        assert_eq!(
+            sequence_predecessors("outer:3"),
+            vec!["outer:2".to_string()]
         );
     }
 }
