@@ -3510,7 +3510,20 @@ mod tests {
         let (prefill, _, decode) = engine
             .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
             .unwrap();
-        for rows in [&prefill, &decode] {
+        let expected_context =
+            query_context_op(&engine.context_ops[1], &engine.db, 1, 2048, 0, 1.0, None).unwrap();
+        let expected_generation = query_generation_op(
+            &engine.generation_ops[1],
+            &engine.db,
+            8,
+            1,
+            2050,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        for (rows, expected) in [(&prefill, expected_context), (&decode, expected_generation)] {
             assert_eq!(rows.len(), 2);
             let target = rows
                 .iter()
@@ -3520,7 +3533,9 @@ mod tests {
             assert_eq!(target.3, "silicon");
             assert_eq!(draft.3, "empirical");
             assert!(draft.1 > 0.0);
-            assert!(draft.2 > 0.0);
+            assert_eq!(draft.1, expected.latency_ms);
+            // This fixture can carry the existing unavailable-energy sentinel.
+            assert_eq!(draft.2, expected.energy_wms);
         }
         let scalar = engine
             .mixed_step_latency(2048, 1, 2048, 2, 0, 1.0, 1.0)
