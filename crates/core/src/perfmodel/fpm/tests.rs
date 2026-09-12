@@ -267,7 +267,9 @@ fn native_correction_region_comes_from_the_rank_that_gates_the_estimate() {
         rank_latency(0, 12.0, &prefill),
         rank_latency(1, 3.0, &decode),
     ];
-    let (native, feature) = super::model::reduce_rank_latencies(&ranks).unwrap();
+    let (native, feature) = super::model::reduce_rank_latencies(&ranks)
+        .unwrap()
+        .unwrap();
     assert_eq!(native, 12.0);
     assert_eq!(feature.workload_kind, WorkloadKind::Prefill);
     assert_eq!(feature.x, vec![2_000.0]);
@@ -290,9 +292,12 @@ fn native_rank_selection_is_independent_of_slice_order() {
         rank_latency(0, 5.0, &prefill),
     ];
 
-    let (forward_native, forward_feature) = super::model::reduce_rank_latencies(&forward).unwrap();
-    let (reversed_native, reversed_feature) =
-        super::model::reduce_rank_latencies(&reversed).unwrap();
+    let (forward_native, forward_feature) = super::model::reduce_rank_latencies(&forward)
+        .unwrap()
+        .unwrap();
+    let (reversed_native, reversed_feature) = super::model::reduce_rank_latencies(&reversed)
+        .unwrap()
+        .unwrap();
     assert_eq!(forward_native, reversed_native);
     assert_eq!(forward_feature.workload_kind, WorkloadKind::Prefill);
     assert_eq!(reversed_feature.workload_kind, WorkloadKind::Prefill);
@@ -304,14 +309,46 @@ fn native_rank_selection_is_independent_of_slice_order() {
 #[test]
 fn native_rank_selection_skips_ranks_without_scheduled_work() {
     let empty = ForwardPassMetrics::default();
-    assert!(super::model::reduce_rank_latencies(&[rank_latency(0, 0.0, &empty)]).is_none());
+    assert!(
+        super::model::reduce_rank_latencies(&[rank_latency(0, 0.0, &empty)])
+            .unwrap()
+            .is_none()
+    );
 
     let decode = regression_fpm(0, 0, 0, 4, 1_000, 0.0);
     let ranks = vec![rank_latency(0, 9.0, &empty), rank_latency(1, 2.0, &decode)];
-    let (native, feature) = super::model::reduce_rank_latencies(&ranks).unwrap();
+    let (native, feature) = super::model::reduce_rank_latencies(&ranks)
+        .unwrap()
+        .unwrap();
     // The native estimate still reduces over every rank.
     assert_eq!(native, 9.0);
     assert_eq!(feature.workload_kind, WorkloadKind::Decode);
+}
+
+/// The engine's cross-rank fold seeds at 0.0 and advances on `>`, and
+/// `NaN > x` is false — so an unguarded reduction reports a degenerate
+/// interpolation on the slowest rank as a 0ms forward pass, and `+inf` escapes
+/// as an estimate. Both must be rejected instead.
+#[test]
+fn native_non_finite_rank_latency_is_rejected_not_reduced_away() {
+    let prefill = regression_fpm(1, 1_000, 0, 0, 0, 0.0);
+    for latency in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let ranks = vec![
+            rank_latency(0, 4.0, &prefill),
+            rank_latency(1, latency, &prefill),
+        ];
+        assert!(
+            super::model::reduce_rank_latencies(&ranks).is_err(),
+            "accepted a {latency}ms rank latency"
+        );
+    }
+
+    // The finite path is unchanged.
+    let ranks = vec![rank_latency(0, 4.0, &prefill)];
+    let (native, _) = super::model::reduce_rank_latencies(&ranks)
+        .unwrap()
+        .unwrap();
+    assert_eq!(native, 4.0);
 }
 
 #[test]

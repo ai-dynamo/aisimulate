@@ -329,14 +329,13 @@ impl ForwardPassPerfModel {
                 corrections,
             } => {
                 let ranks = rank_latencies(engine, metrics_by_rank)?;
-                let Some((native, feature)) = reduce_rank_latencies(&ranks) else {
+                let Some((native, feature)) = reduce_rank_latencies(&ranks)? else {
                     return Ok(Some(0.0));
                 };
-                let corrected = native
-                    * corrections
-                        .store(feature.workload_kind)
-                        .correction_factor_for(&feature.x);
-                Ok(Some(corrected))
+                let correction_factor = corrections
+                    .store(feature.workload_kind)
+                    .correction_factor_for(&feature.x);
+                Ok(Some(checked_corrected_estimate(native, correction_factor)?))
             }
             ForwardPassPerfMode::Regression {
                 worker_type,
@@ -393,7 +392,7 @@ impl ForwardPassPerfModel {
                     corrections,
                 } => {
                     let ranks = rank_latencies(engine, metrics_by_rank)?;
-                    let Some((native, feature)) = reduce_rank_latencies(&ranks) else {
+                    let Some((native, feature)) = reduce_rank_latencies(&ranks)? else {
                         continue;
                     };
                     let Some(wall_time_ms) = max_positive_wall_time_ms(metrics_by_rank) else {
@@ -623,17 +622,29 @@ pub(crate) fn rank_latencies(
 /// *same* rank: applying a correction learned for one rank's region to another
 /// rank's latency mis-keys both estimation and tuning, and the two selections
 /// diverge routinely because attention latency is not linear in the scheduled
-/// counts. Returns `None` when no rank scheduled any work.
-pub(crate) fn reduce_rank_latencies(ranks: &[RankLatency]) -> Option<(f64, &IterationFeatures)> {
-    let native_ms = ranks
-        .iter()
-        .map(|rank| rank.latency_ms)
-        .fold(
-            0.0_f64,
-            |max, latency| {
-                if latency > max { latency } else { max }
-            },
-        );
+/// counts. Returns `Ok(None)` when no rank scheduled any work.
+///
+/// A non-finite rank latency is rejected rather than reduced. The engine's fold
+/// seeds at `0.0` and advances on `rank_latency > max_latency`, and `NaN > x` is
+/// false, so a degenerate perf-database interpolation on the slowest rank would
+/// otherwise be silently discarded and the iteration reported as a
+/// plausible-looking 0ms forward pass for a DES to schedule around; `+inf` would
+/// escape as an estimate outright.
+pub(crate) fn reduce_rank_latencies(
+    ranks: &[RankLatency],
+) -> Result<Option<(f64, &IterationFeatures)>, AicError> {
+    let mut native_ms = 0.0_f64;
+    for rank in ranks {
+        if !rank.latency_ms.is_finite() {
+            return Err(AicError::PerfDatabase(format!(
+                "engine returned a non-finite forward-pass latency {}ms for attention-DP rank {}",
+                rank.latency_ms, rank.dp_rank
+            )));
+        }
+        if rank.latency_ms > native_ms {
+            native_ms = rank.latency_ms;
+        }
+    }
 
     let gating = ranks
         .iter()
@@ -644,9 +655,22 @@ pub(crate) fn reduce_rank_latencies(ranks: &[RankLatency]) -> Option<(f64, &Iter
             } else {
                 incumbent
             }
-        })?;
+        });
 
-    Some((native_ms, gating.1))
+    Ok(gating.map(|(_, feature)| (native_ms, feature)))
+}
+
+/// Guard the corrected native estimate before it escapes as a forward-pass
+/// duration. `native_ms` is finite by [`reduce_rank_latencies`] and the factor
+/// is a median of bounded positive ratios, but their product can still overflow.
+fn checked_corrected_estimate(native_ms: f64, correction_factor: f64) -> Result<f64, AicError> {
+    let corrected = native_ms * correction_factor;
+    if !corrected.is_finite() {
+        return Err(AicError::PerfDatabase(format!(
+            "corrected forward-pass estimate is not finite: {native_ms}ms * {correction_factor}"
+        )));
+    }
+    Ok(corrected)
 }
 
 /// Selection order between two feature-bearing ranks: the higher modeled
