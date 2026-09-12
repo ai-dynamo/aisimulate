@@ -402,8 +402,6 @@ impl HandoffCoordinatorCore {
             }
             return Ok(Vec::new());
         }
-        self.actions.outcomes.insert(action_id, outcome.clone());
-
         if let HandoffActionOutcome::Failed(_) = outcome {
             if matches!(
                 action,
@@ -411,47 +409,51 @@ impl HandoffCoordinatorCore {
             ) {
                 bail!("handoff cleanup action {action_id:?} failed");
             }
+            self.actions.outcomes.insert(action_id, outcome);
             return self.begin_cleanup();
         }
 
+        // Validate before journalling. Recording first made a *rejected*
+        // outcome permanent, so a re-report of the same action id took the
+        // `outcomes` hit above and failed with "conflicting outcome" instead of
+        // the true "invalid handoff action outcome" -- a misleading diagnostic
+        // for the caller that reported the bad outcome in the first place.
         match action {
             HandoffAction::SubmitPrefill { .. } => {
                 require_outcome(&outcome, &[HandoffActionOutcome::Submitted])?;
-                self.source.submitted = true;
             }
             HandoffAction::ReserveDestination { .. } => {
                 require_outcome(&outcome, &[HandoffActionOutcome::Accepted])?;
-                self.destination.accepted = true;
             }
             HandoffAction::StartTransfer { .. } => {
                 require_outcome(&outcome, &[HandoffActionOutcome::Scheduled])?;
-                self.transfer.scheduled = true;
             }
             HandoffAction::ActivateDestination { .. } => {
                 require_outcome(&outcome, &[HandoffActionOutcome::Applied])?;
-                self.destination.activation_applied = true;
             }
-            HandoffAction::ReleaseSource { .. } => {
+            HandoffAction::ReleaseSource { .. }
+            | HandoffAction::CancelSource { .. }
+            | HandoffAction::CancelDestination { .. } => {
                 require_outcome(
                     &outcome,
                     &[HandoffActionOutcome::Applied, HandoffActionOutcome::Noop],
                 )?;
+            }
+            // Terminal bookkeeping: `complete()` has already cleared the
+            // journal, so this arm does not constrain its outcome.
+            HandoffAction::Complete { .. } => {}
+        }
+        self.actions.outcomes.insert(action_id, outcome);
+
+        match action {
+            HandoffAction::SubmitPrefill { .. } => self.source.submitted = true,
+            HandoffAction::ReserveDestination { .. } => self.destination.accepted = true,
+            HandoffAction::StartTransfer { .. } => self.transfer.scheduled = true,
+            HandoffAction::ActivateDestination { .. } => self.destination.activation_applied = true,
+            HandoffAction::ReleaseSource { .. } | HandoffAction::CancelSource { .. } => {
                 self.source.cleanup_done = true;
             }
-            HandoffAction::CancelSource { .. } => {
-                require_outcome(
-                    &outcome,
-                    &[HandoffActionOutcome::Applied, HandoffActionOutcome::Noop],
-                )?;
-                self.source.cleanup_done = true;
-            }
-            HandoffAction::CancelDestination { .. } => {
-                require_outcome(
-                    &outcome,
-                    &[HandoffActionOutcome::Applied, HandoffActionOutcome::Noop],
-                )?;
-                self.destination.cleanup_done = true;
-            }
+            HandoffAction::CancelDestination { .. } => self.destination.cleanup_done = true,
             HandoffAction::Complete { .. } => return Ok(Vec::new()),
         }
 
@@ -484,23 +486,43 @@ impl HandoffCoordinatorCore {
             return Ok(vec![self.issue_submit_prefill()]);
         }
         if self.source.held && self.destination.reserved && !self.transfer.issued {
+            // Errors, not `expect`: the `held`/`reserved` flags and these two
+            // payloads are set together today (`on_fact`'s SourceHeld and
+            // DestinationReserved arms), but that is a state-machine invariant
+            // held at two other sites, not a property of this one. A future
+            // edit that sets a flag from a second site would turn a
+            // state-machine bug into a process abort on the DES hot path, while
+            // every other failure in this file is a recoverable `anyhow` error.
+            let Some(transfer_timing) = self.source.transfer_timing else {
+                bail!("held source did not retain transfer timing");
+            };
+            let Some(transferable_prompt_tokens) = self.destination.transferable_prompt_tokens
+            else {
+                bail!("reserved destination did not report its transferable footprint");
+            };
+            // Validate the number actually scheduled. `validate_transfer_timing`
+            // runs on `SourceHeld` and checks `full_prompt_delay_ms()`, but in
+            // `TransferTimingMode::DestinationMissing` that quantity is never
+            // used: `delay_ms` reads `transferable_prompt_tokens` instead, which
+            // arrives on the *`DestinationReserved`* fact and is bounded by
+            // nothing. It is block-rounded at both KV backends
+            // (`fresh_len() * block_size`, `unpublished_pages.len() * page_size`)
+            // so it legitimately exceeds `full_prompt_tokens` -- a 10-token
+            // prompt reserves 12 -- and the delay is monotonic in it. A finite
+            // full-prompt delay therefore does not imply a finite scheduled one.
+            // The fallback is only `debug_assert`ed, so it needs the same guard.
+            let delay_ms = transfer_timing
+                .delay_ms(transferable_prompt_tokens)
+                .unwrap_or(self.fallback_transfer_delay_ms);
+            validate_transfer_delay_ms(Some(delay_ms))?;
+            // Set only once the transfer is certain to be issued: latching it
+            // ahead of the fallible steps above would leave a rejected handoff
+            // permanently marked as having issued a transfer it never did.
             self.transfer.issued = true;
-            let transfer_timing = self
-                .source
-                .transfer_timing
-                .expect("held source must retain transfer timing");
-            let transferable_prompt_tokens = self
-                .destination
-                .transferable_prompt_tokens
-                .expect("reserved destination must report its transferable footprint");
-            return Ok(vec![
-                self.issue(HandoffAction::StartTransfer {
-                    handoff_id: self.handoff_id,
-                    delay_ms: transfer_timing
-                        .delay_ms(transferable_prompt_tokens)
-                        .unwrap_or(self.fallback_transfer_delay_ms),
-                }),
-            ]);
+            return Ok(vec![self.issue(HandoffAction::StartTransfer {
+                handoff_id: self.handoff_id,
+                delay_ms,
+            })]);
         }
         if self.transfer.completed && !self.destination.activation_issued {
             self.destination.activation_issued = true;
@@ -792,6 +814,126 @@ mod tests {
                 "{fact:?} did not reopen cleanup; got {actions:?}"
             );
         }
+    }
+
+    /// `validate_transfer_timing` gates `SourceHeld` on `full_prompt_delay_ms()`,
+    /// but `DestinationMissing` mode schedules `delay_ms(transferable_prompt_tokens)`
+    /// instead. The transferable footprint is block-rounded at both KV backends
+    /// and so legitimately exceeds `full_prompt_tokens`, which means a finite
+    /// full-prompt delay does not imply a finite scheduled delay. The scheduled
+    /// number must be validated at its point of use, not ~1200 lines later in
+    /// `start_transfer`, which aborts the whole replay instead of rejecting the
+    /// fact at the boundary that admitted it.
+    #[test]
+    fn destination_missing_validates_the_delay_it_actually_schedules() {
+        let handoff_id = HandoffId::new(Uuid::from_u128(11));
+        let timing = HandoffTransferTiming {
+            mode: TransferTimingMode::DestinationMissing,
+            full_prompt_tokens: 1,
+            kv_bytes_per_token: Some(1024),
+            bandwidth_gb_s: Some(1e-300),
+        };
+        // The boundary guard passes: the full-prompt delay is finite.
+        validate_transfer_timing(timing).expect("full-prompt delay is finite");
+
+        let mut coordinator =
+            HandoffCoordinatorCore::new_with_fallback(handoff_id, HandoffOrder::SourceFirst, 0.0);
+        let submit = coordinator.start().unwrap().remove(0);
+        coordinator
+            .on_action_outcome(submit.id, HandoffActionOutcome::Submitted)
+            .unwrap();
+        let reserve = coordinator
+            .on_fact(HandoffFact::SourceHeld {
+                handoff_id,
+                transfer_timing: timing,
+            })
+            .unwrap()
+            .remove(0);
+        coordinator
+            .on_action_outcome(reserve.id, HandoffActionOutcome::Accepted)
+            .unwrap();
+
+        let error = coordinator
+            .on_fact(HandoffFact::DestinationReserved {
+                handoff_id,
+                transferable_prompt_tokens: 1 << 60,
+            })
+            .expect_err("a non-finite scheduled delay must be rejected at the coordinator");
+        assert!(
+            error.to_string().contains("invalid handoff transfer delay"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The fallback delay is only `debug_assert`ed at construction, so in a
+    /// release build a non-finite one reaches the event heap unless the
+    /// point-of-use guard covers the post-`unwrap_or` value.
+    #[test]
+    fn a_non_finite_fallback_delay_is_rejected_before_it_is_issued() {
+        let timing = HandoffTransferTiming {
+            mode: TransferTimingMode::DestinationMissing,
+            full_prompt_tokens: 4,
+            kv_bytes_per_token: None,
+            bandwidth_gb_s: None,
+        };
+        let handoff_id = HandoffId::new(Uuid::from_u128(12));
+        let mut coordinator =
+            HandoffCoordinatorCore::new_with_fallback(handoff_id, HandoffOrder::SourceFirst, 0.0);
+        // Assigned rather than constructed: `new_with_fallback` only
+        // `debug_assert`s finiteness, so a debug test build cannot reach the
+        // release-build state this guard exists for through the constructor.
+        coordinator.fallback_transfer_delay_ms = f64::INFINITY;
+        let submit = coordinator.start().unwrap().remove(0);
+        coordinator
+            .on_action_outcome(submit.id, HandoffActionOutcome::Submitted)
+            .unwrap();
+        let reserve = coordinator
+            .on_fact(HandoffFact::SourceHeld {
+                handoff_id,
+                transfer_timing: timing,
+            })
+            .unwrap()
+            .remove(0);
+        coordinator
+            .on_action_outcome(reserve.id, HandoffActionOutcome::Accepted)
+            .unwrap();
+
+        assert!(
+            coordinator
+                .on_fact(HandoffFact::DestinationReserved {
+                    handoff_id,
+                    transferable_prompt_tokens: 4,
+                })
+                .is_err()
+        );
+    }
+
+    /// A rejected outcome must not be journalled. Recording before validating
+    /// made the rejection permanent, so re-reporting the same action id
+    /// reported "conflicting outcome" rather than the true cause.
+    #[test]
+    fn a_rejected_outcome_is_not_recorded_in_the_journal() {
+        let handoff_id = HandoffId::new(Uuid::from_u128(13));
+        let mut coordinator =
+            HandoffCoordinatorCore::new_with_fallback(handoff_id, HandoffOrder::SourceFirst, 1.0);
+        let submit = coordinator.start().unwrap().remove(0);
+
+        for _ in 0..2 {
+            let error = coordinator
+                .on_action_outcome(submit.id, HandoffActionOutcome::Accepted)
+                .expect_err("SubmitPrefill only accepts Submitted");
+            assert!(
+                error.to_string().contains("invalid handoff action outcome"),
+                "unexpected error: {error}"
+            );
+        }
+
+        // The rejected outcome left no trace, so the correct one still applies.
+        assert!(
+            coordinator
+                .on_action_outcome(submit.id, HandoffActionOutcome::Submitted)
+                .is_ok()
+        );
     }
 
     #[test]
