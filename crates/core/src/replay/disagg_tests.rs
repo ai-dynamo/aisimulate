@@ -2001,8 +2001,17 @@ fn source_only_reuse_does_not_reduce_destination_missing_transfer() {
     }
 }
 
+/// Renamed from `..._ignores_retired_completion_event`: the assertion below is
+/// that no `TransferComplete` remains *in the heap*, which pins the *purge*
+/// (`prune_stale_transfer_events`), the opposite mechanism from the "ignore"
+/// the old name claimed. If production delivered-and-ignored the event this
+/// test would fail, so the name was describing a path it does not reach.
+///
+/// The backend axis varies capacity, not the handoff path: vLLM and TRT-LLM are
+/// both `HandoffOrder::SourceFirst` (`handoff.rs`). `DestinationFirst`
+/// cancellation-during-transfer is not covered here.
 #[test]
-fn test_cancellation_during_transfer_ignores_retired_completion_event() {
+fn test_cancellation_during_transfer_purges_retired_completion_event() {
     for mode in [
         KvTransferTimingMode::FullPrompt,
         KvTransferTimingMode::DestinationMissing,
@@ -2055,6 +2064,11 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
                 &event.kind,
                 crate::replay::events::SimulationEventKind::TransferComplete { .. }
             )));
+            // The stale-event count is only a hint for the O(heap) sweep
+            // heuristic, so it must return to zero once no stale event is left:
+            // a count that only ever rose would make the sweep fire on every
+            // drain for the rest of the run.
+            assert_eq!(runtime.flow.stale_transfer_events, 0);
             while !runtime.is_done() {
                 let next = runtime.next_timestamp().unwrap();
                 runtime.advance_now_ms(next);

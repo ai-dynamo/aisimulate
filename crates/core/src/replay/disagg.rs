@@ -2338,6 +2338,17 @@ where
         let mut changed = false;
         while let Some(handoff_id) = pop_ready_transfer_complete(&mut self.events, self.now_ms) {
             let Some(uuid) = self.flow.requests_by_handoff.get(&handoff_id).copied() else {
+                // This consumed a stale event, so it must repay the increment
+                // `finalize` made when it retired a `TransferPending` request.
+                // The path is reachable in one drain iteration:
+                // `prune_stale_transfer_events` runs first but only pops stale
+                // events already at the heap head, and the
+                // `apply_worker_completions` between it and here can retire a
+                // request whose `TransferComplete` is the next head at
+                // `now_ms`. Without the repayment the count only ever rose, so
+                // the `> 32` heuristic below eventually misfired into a
+                // spurious O(heap) `retain` sweep on every drain.
+                self.flow.stale_transfer_events = self.flow.stale_transfer_events.saturating_sub(1);
                 continue;
             };
             self.apply_handoff_fact(uuid, HandoffFact::TransferCompleted { handoff_id })?;
@@ -2886,11 +2897,14 @@ where
             )
         }) {
             self.events.pop();
-            self.flow.stale_transfer_events = self
-                .flow
-                .stale_transfer_events
-                .checked_sub(1)
-                .expect("stale transfer event count underflow");
+            // Saturating, not `checked_sub(..).expect(..)`: this count is a
+            // heuristic hint for the sweep below (which resets it to zero
+            // wholesale), not an exact ledger. Aborting the process on an
+            // accounting slip is the wrong failure mode here, for the same
+            // reason this file gives at `settle_internal_work`. The former
+            // `expect` was unreachable only because the count could not fall
+            // below zero while the consume path above never repaid it.
+            self.flow.stale_transfer_events = self.flow.stale_transfer_events.saturating_sub(1);
             removed = true;
         }
         if self.flow.stale_transfer_events > 32
