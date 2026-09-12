@@ -51,6 +51,47 @@ COMMON = dict(
 )
 
 
+@pytest.mark.parametrize("consumer", ["cli_estimate", "task"])
+def test_aggregate_prices_different_draft_work_at_identical_verification_width(consumer):
+    from aiconfigurator.sdk.task_v2 import Task
+    from aiconfigurator_core.sdk import common, models
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+    costs, tpots = [], []
+    for tree in ([1, 1, 1], [3]):
+        block = {**SPEC_BLOCK, "params": {"tree_shape": tree}}
+        args = {**COMMON, "isl": 4000, "osl": 64}
+        if consumer == "cli_estimate":
+            tpots.append(cli_estimate(mode="agg", ctx_tokens=128, speculative=block, **args).tpot)
+        else:
+            task_args = {key: value for key, value in args.items() if key != "batch_size"}
+            task = Task.from_yaml({"serving_mode": "agg", "speculative": block, **task_args})
+            tpots.append(task.run_single_agg(tp=1, batch_size=8, ctx_tokens=128)["tpot"])
+        model = models.get_model(
+            COMMON["model_path"],
+            ModelConfig(
+                tp_size=1,
+                pp_size=1,
+                gemm_quant_mode=common.GEMMQuantMode.bfloat16,
+                kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+                fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+                speculation=SpeculationConfig(kind="eagle3", params={"tree_shape": tree}, draft_config=EAGLE3_CONFIG),
+            ),
+            "vllm",
+        )
+        handle = _cached_engine_handle(model, get_database_view("h100_sxm", "vllm", "0.24.0"))
+        indices = [i for i, op in enumerate(model.generation_ops) if op._name.startswith("draft_")]
+        costs.append(sum(row[1] for row in handle.evaluate_generation_ops(indices, batch_size=28, s=4033)))
+    # Target width, acceptance and prefill graph are equal; the measured
+    # native draft-query difference must reach the public aggregate TPOT.
+    assert costs[0] > costs[1]
+    assert tpots[0] > tpots[1]
+    assert tpots[0] - tpots[1] == pytest.approx((costs[0] - costs[1]) / 2.8, rel=1e-10)
+
+
 class TestEstimateSpeculativeBlock:
     def test_agg_scheme_folds_acceptance(self):
         baseline = cli_estimate(mode="agg", **COMMON)
@@ -211,6 +252,57 @@ def test_cli_flags_reach_real_estimate(cli_parser, monkeypatch, capsys):
             )
         )
     assert 0 < results[1].tpot < results[0].tpot
+    assert "Performance Estimate" in capsys.readouterr().out
+
+
+def test_cli_aggregate_draft_flags_price_full_native_draft_work(cli_parser, monkeypatch, capsys):
+    import math
+
+    import aiconfigurator.cli.api as cli_api
+    import aiconfigurator.cli.main as cli_main
+
+    results, draft_costs = [], []
+    estimate = cli_api.cli_estimate
+
+    def record_result(**kwargs):
+        result = estimate(**kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(cli_api, "cli_estimate", record_result)
+    for draft_path in ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"):
+        cli_main._run_estimate_mode(
+            _args(
+                cli_parser,
+                "--estimate-mode",
+                "agg",
+                "--isl",
+                "4000",
+                "--osl",
+                "64",
+                "--ctx-tokens",
+                "128",
+                "--spec-method",
+                "draft_model",
+                "--spec-num-draft-tokens",
+                "3",
+                "--spec-accepted-tokens",
+                "1.8",
+                "--spec-draft-model-path",
+                draft_path,
+            )
+        )
+        # Independent width-one checkpoint estimates: one full prefill
+        # amortized over chunks, plus three forwards for seven decode requests.
+        prefill = estimate(
+            mode="static_ctx", **{**COMMON, "model_path": draft_path, "batch_size": 1, "isl": 4000, "osl": 2}
+        )
+        generation = estimate(
+            mode="static_gen", **{**COMMON, "model_path": draft_path, "batch_size": 7, "isl": 4032, "osl": 2}
+        )
+        draft_costs.append(prefill.ttft / math.ceil(4000 / 128) + 3 * generation.tpot)
+    assert results[1].tpot > results[0].tpot
+    assert results[1].tpot - results[0].tpot == pytest.approx((draft_costs[1] - draft_costs[0]) / 2.8, rel=1e-10)
     assert "Performance Estimate" in capsys.readouterr().out
 
 

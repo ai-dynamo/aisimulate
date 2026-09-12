@@ -888,16 +888,25 @@ impl Engine {
                 combined as i64 - prefix1 as i64
             )));
         }
-        let shared_non_attention = run_context_ops_with(
-            &self.context_ops,
-            &self.db,
-            1,
-            combined - prefix1,
-            prefix1,
-            seq_imbalance_correction_scale,
-            ContextOpFilter::SkipContextAttention,
-            |op, r| on_op(MixedPass::SharedNonAttention, op, r),
-        )?;
+        let mut shared_non_attention = 0.0;
+        for op in &self.context_ops {
+            // Only target operations share a forward across prefill and
+            // verification. The draft has its own phase-specific graph.
+            if op.is_context_attention() || op.name().starts_with("draft_") {
+                continue;
+            }
+            let result = query_context_op(
+                op,
+                &self.db,
+                1,
+                combined - prefix1,
+                prefix1,
+                seq_imbalance_correction_scale,
+                None,
+            )?;
+            shared_non_attention += result.latency_ms;
+            on_op(MixedPass::SharedNonAttention, op, result);
+        }
 
         // ---- Pass 2: context attention at the prefill shape ----
         // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
@@ -913,21 +922,31 @@ impl Engine {
             }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
-            let attn = run_context_ops_with(
-                &self.context_ops,
-                &self.db,
-                batch2,
-                isl - prefix,
-                prefix,
-                seq_imbalance_correction_scale,
-                ContextOpFilter::OnlyContextAttention,
+            let mut attn = 0.0;
+            for op in &self.context_ops {
+                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // Draft prefill uses the same whole-prefill amortization
+                // as target attention, independently of decode work. It
+                // never sees the combined target verification token count.
+                let result = query_context_op(
+                    op,
+                    &self.db,
+                    batch2,
+                    isl - prefix,
+                    prefix,
+                    seq_imbalance_correction_scale,
+                    None,
+                )?;
+                attn += result.latency_ms;
                 // RAW results to the sink; the per-op wrapper divides the
                 // FOLDED values by scale2 with one true division per name
                 // (Python folds `context_attention` into one key, then
                 // `latency_dict["context_attention"] / scale_factor` —
                 // fold-then-divide, `base_backend.py:1244-1246`).
-                |op, r| on_op(MixedPass::ContextAttention, op, r),
-            )?;
+                on_op(MixedPass::ContextAttention, op, result);
+            }
             context_attention = attn / scale2;
         }
 
@@ -938,16 +957,25 @@ impl Engine {
             // `_run_generation_phase` queries at s = isl_pass3 + i + 1 with
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
-            decode_attention = run_generation_ops_step_beamed_with(
-                &self.generation_ops,
-                &self.db,
-                bs,
-                1,
-                s,
-                gen_seq_imbalance_correction_scale,
-                true,
-                |op, r| on_op(MixedPass::DecodeAttention, op, r),
-            )?;
+            for op in &self.generation_ops {
+                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // The draft's TokenScale maps this verification-width
+                // batch to its own query width before native op lookup.
+                let result = query_generation_op(
+                    op,
+                    &self.db,
+                    bs,
+                    1,
+                    s,
+                    gen_seq_imbalance_correction_scale,
+                    0,
+                    None,
+                )?;
+                decode_attention += result.latency_ms;
+                on_op(MixedPass::DecodeAttention, op, result);
+            }
         }
 
         Ok([
@@ -2257,6 +2285,210 @@ mod tests {
             .unwrap();
         assert_eq!(breakdown[0], breakdown[1] + breakdown[2] + breakdown[3]);
         assert_eq!(ms, breakdown[0]);
+    }
+
+    #[test]
+    fn mixed_draft_phases_preserve_native_results_and_target_composition() {
+        use crate::operators::op::TokenScaleOp;
+
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            let db = Arc::new(
+                PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::default()),
+            );
+            let mut config = fixture_engine_config(Some(3));
+            config.database_mode = mode;
+            let target = Engine::build(
+                EngineSpec::new(config.clone(), context_ops(), generation_ops()),
+                db.clone(),
+            )
+            .unwrap();
+            let ctx_draft: Vec<_> = context_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    op
+                })
+                .collect();
+            let gen_draft: Vec<_> = generation_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    Op::TokenScale(TokenScaleOp {
+                        op: Box::new(op),
+                        numerator: 1,
+                        denominator: 4,
+                    })
+                })
+                .collect();
+            let mut ctx_ops = context_ops();
+            ctx_ops.extend(ctx_draft.clone());
+            let mut gen_ops = generation_ops();
+            gen_ops.extend(gen_draft.clone());
+            let engine = Engine::build(EngineSpec::new(config, ctx_ops, gen_ops), db).unwrap();
+
+            for (ctx, generation, prefix) in
+                [(0_u32, 7, 0), (128, 0, 64), (128, 7, 64), (8192, 7, 64)]
+            {
+                let mut ctx_expected = PerformanceResult::zero();
+                if ctx > 0 {
+                    for op in &ctx_draft {
+                        ctx_expected = ctx_expected.plus(
+                            query_context_op(
+                                op,
+                                &engine.db,
+                                ctx.div_ceil(4096),
+                                4096 - prefix,
+                                prefix,
+                                1.0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    ctx_expected = ctx_expected.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                let mut gen_expected = PerformanceResult::zero();
+                if generation > 0 {
+                    for op in &gen_draft {
+                        // Independent width-one draft queries, before the
+                        // verification-width wrapper is applied.
+                        let Op::TokenScale(wrapper) = op else {
+                            unreachable!()
+                        };
+                        gen_expected = gen_expected.plus(
+                            query_generation_op(
+                                &wrapper.op,
+                                &engine.db,
+                                generation,
+                                1,
+                                4129,
+                                1.0,
+                                0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                }
+                let mut observed_ctx = PerformanceResult::zero();
+                let mut observed_gen = PerformanceResult::zero();
+                let result = engine
+                    .mixed_step_breakdown_with(
+                        ctx,
+                        generation,
+                        4096,
+                        64,
+                        prefix,
+                        1.0,
+                        1.0,
+                        |pass, op, r| {
+                            if op.name().starts_with("draft_") {
+                                match pass {
+                                    MixedPass::SharedNonAttention => {
+                                        panic!("draft charged as shared target work")
+                                    }
+                                    MixedPass::ContextAttention => {
+                                        observed_ctx = observed_ctx.clone().plus(r)
+                                    }
+                                    MixedPass::DecodeAttention => {
+                                        observed_gen = observed_gen.clone().plus(r)
+                                    }
+                                }
+                            }
+                        },
+                    )
+                    .unwrap();
+                if ctx > 0 {
+                    observed_ctx = observed_ctx.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                // Includes energy, source, SOL components and fallback records.
+                assert_eq!(observed_ctx, ctx_expected);
+                assert_eq!(observed_gen, gen_expected);
+                let baseline = target
+                    .mixed_step_breakdown(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                assert_eq!(result[1], baseline[1]);
+                assert!((result[2] - baseline[2] - ctx_expected.latency_ms).abs() < 1e-10);
+                assert!((result[3] - baseline[3] - gen_expected.latency_ms).abs() < 1e-10);
+                let (shared, prefill, decode) = engine
+                    .mixed_step_breakdown_per_op(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                let per_op_sum: f64 = shared
+                    .iter()
+                    .chain(&prefill)
+                    .chain(&decode)
+                    .map(|r| r.1)
+                    .sum();
+                assert!((result[0] - per_op_sum).abs() < 1e-10);
+                for (rows, expected) in [(prefill, ctx_expected), (decode, gen_expected)] {
+                    let draft_energy: f64 = rows
+                        .iter()
+                        .filter(|r| r.0.starts_with("draft_"))
+                        .map(|r| r.2)
+                        .sum();
+                    assert!((draft_energy - expected.energy_wms).abs() < 1e-10);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_draft_composites_keep_executed_fallback_metadata() {
+        use crate::operators::op::{FallbackOp, OverlapOp, TokenScaleOp};
+
+        let mut config = fixture_engine_config(Some(3));
+        config.system_name = "gb200".to_string();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.16".to_string());
+        let comm = Op::MoeAllToAll(MoeAllToAllOp {
+            name: "comm".into(),
+            scale_factor: 1.0,
+            phase: "dispatch".into(),
+            comm_backend: "deepep_ll".into(),
+            comm_dtype: "default".into(),
+            hidden_size: 7168,
+            topk: 8,
+            num_experts: 256,
+            moe_ep_size: 32,
+            node_num: 8,
+            sms: 0,
+            attention_tp_size: 1,
+            workload_distribution: "power_law_1.2".into(),
+            enable_eplb: false,
+        });
+        let composite = Op::Overlap(OverlapOp::new(
+            "draft_overlap",
+            vec![Op::Fallback(FallbackOp::new(
+                "fallback",
+                comm.clone(),
+                vec![],
+            ))],
+            vec![comm],
+        ));
+        let generation = Op::TokenScale(TokenScaleOp {
+            op: Box::new(composite.clone()),
+            numerator: 1,
+            denominator: 4,
+        });
+        let spec = EngineSpec::new(config, vec![composite], vec![generation; 3]);
+        let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root()).unwrap();
+        let (shared, prefill, decode) = engine
+            .mixed_step_breakdown_per_op_with_metadata(1, 1, 2, 2, 0, 1.0, 1.0)
+            .unwrap();
+        assert!(shared.is_empty());
+        for (rows, phase) in [(&prefill, "context"), (&decode, "generation")] {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].4, Some(((phase, "deepep_ll", 32, 8, 4, 1), vec![])));
+            assert!(rows[0].1 > 0.0);
+        }
+        let standalone =
+            query_generation_op(&engine.generation_ops[0], &engine.db, 4, 1, 4, 1.0, 0, None)
+                .unwrap();
+        assert!((decode[0].1 - 3.0 * standalone.latency_ms).abs() < 1e-12);
+        assert!((decode[0].2 - 3.0 * standalone.energy_wms).abs() < 1e-12);
+        assert_eq!(decode[0].3, standalone.source.as_str());
     }
 
     // ---- FPM whole-model engine branches ----

@@ -57,6 +57,8 @@ The same `speculative` mapping can be supplied to an aggregate `Task` or its exp
 
 Core SDK callers configure `ModelConfig(speculation=SpeculationConfig(...))`. N-gram, EAGLE-3, and standalone-draft schemes use `num_speculative_tokens`; DFlash and DSpark use `num_draft_tokens`; MTP uses `depth`. The model exposes the resulting scheme and verification width. Model construction snapshots the speculation inputs; changing the caller's configuration requires building a new model. Core timing APIs return iteration cost; applying accepted-token progress is the upper layer's responsibility.
 
+Standalone drafts support registry model families, including MoE, subject to their existing backend and performance-data coverage requirements. Draft TP defaults to target TP and can be set with `params.draft_tp_size`; expert TP follows draft TP, while the existing configuration resolver derives expert parallelism. Each draft step repeats the native generation graph, including composite operations, while reusing the same weights and prefill graph.
+
 ## Whole-forward FPM
 
 With `forward_model="fpm"`, target verification uses a whole-model FPM operation and draft operations remain explicit. At concurrency `c` and verification width `w`, the target query uses `c * w` tokens while retaining the total KV of `c` requests. Existing FPM model, system, backend, worker-role, and coverage requirements still apply. Plain MTP remains unsupported with FPM because the collected target curves do not include its draft-head cost.
@@ -68,6 +70,8 @@ The operation schema changes to version 18; rebuild the native extension and rec
 - Host-side proposal lookup, sampling, and framework overhead are outside the operation graph.
 - FPM verification maps onto autoregressive collection rows; it is not a measured wide-verification surface.
 - Aggregate scheduling retains the source mean-field approximation. The upstream source documents errors at workloads below one full prefill per round.
+- In op-level mixed estimates, draft prefill uses the same full-prefill amortization as target context attention, including draft compute operations. Its cost depends only on the prefill workload. Draft generation runs only for decode requests and uses the draft's own query width.
+- Model-registry support does not guarantee backend/system performance coverage: unsupported operation graphs and missing required data fail explicitly, and composite overlap operations retain their existing refusal of a complete SOL decomposition.
 - The attention model uses physical bounds without fitted calibration. Source accuracy numbers are historical measurements, not validation of this migration or a guarantee for another model or workload.
 
 ## Source

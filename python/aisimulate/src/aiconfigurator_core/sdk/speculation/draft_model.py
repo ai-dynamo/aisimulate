@@ -19,8 +19,7 @@ the model's own methods instead of scheme-local formulas.
 Cost structure per verify round:
 
 * K sequential draft forwards at 1 token/request (the draft model's full
-  ``generation_ops`` with per-op counts scaled by K — count is how ops
-  encode repetition).
+  ``generation_ops`` repeated K times, including composite operations).
 * Target verify width K + 1. No injection/fc GEMM exists.
 * Prefill side: one full draft-model context pass builds the draft KV.
 
@@ -28,6 +27,8 @@ Parallelism: the draft's TP defaults to the target's (SGLang deep-copies
 the target server args; vLLM is configurable) and can be overridden with
 ``params["draft_tp_size"]``. Quant modes are inherited from the target
 config; separate draft quantization overrides are not supported.
+MoE drafts use the draft TP for expert tensor parallelism; the existing
+configuration resolver infers expert parallelism from attention DP and CP.
 
 Acceptance stays an upper-layer measured input, as everywhere in this
 module. Measured surprise (Qwen3-0.6B -> Qwen3-8B, gsm8k greedy): the
@@ -110,14 +111,15 @@ class DraftModelScheme(SpecSchemeBase):
         from aiconfigurator_core.sdk.models import get_model
 
         backend = backend_name or self._draft_backend or "vllm"
-        # Inherit the target's quant/parallel config; standalone drafts are
-        # dense small models in every known deployment, so MoE widths are
-        # reset alongside an optional TP override.
+        # Match expert TP to draft attention TP; the existing MoE resolver
+        # infers EP from the inherited attention DP/CP width. This also
+        # supports a dense target with a MoE draft and draft TP overrides.
+        draft_tp = self.draft_tp_size or model.config.tp_size
         draft_config = dataclasses.replace(
             model.config,
-            tp_size=self.draft_tp_size or model.config.tp_size,
+            tp_size=draft_tp,
             pp_size=1,
-            moe_tp_size=None,
+            moe_tp_size=draft_tp,
             moe_ep_size=None,
             speculation=None,
             nextn=0,
@@ -125,13 +127,9 @@ class DraftModelScheme(SpecSchemeBase):
             overwrite_num_layers=0,
         )
         self._draft_model = get_model(self.draft_model_path, draft_config, backend)
-        # Weights before K-scaling: get_weights folds the op count (layer
-        # repetition), which must not include the per-round step count.
+        # The independent graph stays unchanged: K forwards reuse weights
+        # and must not multiply context cost or mutate shared composite ops.
         self._draft_weights = float(sum(op.get_weights() for op in self._draft_model.generation_ops))
-        # K sequential steps per round: fold K into the op counts once
-        # (ops encode repetition via their count/scale factor).
-        for op in self._draft_model.generation_ops:
-            op._scale_factor = op._scale_factor * self.num_speculative_tokens
         return self._draft_model
 
     def validate(self, model, backend_name: str) -> None:
@@ -150,7 +148,11 @@ class DraftModelScheme(SpecSchemeBase):
     # ------------------------------------------------------------------
     def build_draft_generation_ops(self, model) -> list[DraftOpSpec]:
         draft = self._build_draft(model)
-        return [DraftOpSpec(op=op, tokens_per_request=1) for op in draft.generation_ops]
+        return [
+            DraftOpSpec(op=op, tokens_per_request=1)
+            for _ in range(self.num_speculative_tokens)
+            for op in draft.generation_ops
+        ]
 
     def build_draft_context_ops(self, model) -> list[DraftOpSpec]:
         draft = self._build_draft(model)
@@ -161,7 +163,7 @@ class DraftModelScheme(SpecSchemeBase):
     # ------------------------------------------------------------------
     def draft_weights_bytes(self, model) -> float:
         # generation_ops carries the full unique weight set (embedding +
-        # layers + head); the sum is cached pre-K-scaling in _build_draft.
+        # layers + head); repetition reuses that set without changing it.
         self._build_draft(model)
         return self._draft_weights
 

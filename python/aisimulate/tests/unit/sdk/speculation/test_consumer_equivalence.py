@@ -556,3 +556,142 @@ def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
     _fold_width(op, 1, 4)
     with pytest.raises(OpConversionError, match="no OpSpec conversion"):
         build_ops_json([op])
+
+
+@pytest.mark.parametrize("draft_path", ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
+@pytest.mark.parametrize("draft_count", [1, 3])
+def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real_database, draft_path, draft_count):
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.operations.overlap import OverlapOp
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+    independent = get_model(draft_path, _model_config(), "vllm")
+    target = get_model(
+        "Qwen/Qwen3.5-397B-A17B",
+        _model_config(
+            SpeculationConfig(
+                kind="draft_model",
+                params={"num_speculative_tokens": draft_count},
+                draft_model_path=draft_path,
+            )
+        ),
+        "vllm",
+    )
+    draft = target.spec_scheme._draft_model
+    assert (draft.config.moe_tp_size, draft.config.moe_ep_size) == (1, 1)
+    if "3.5" in draft_path:
+        assert sum(isinstance(op, OverlapOp) for op in draft.generation_ops) == 2
+    # The cached draft remains an independent checkpoint, including context
+    # work and unique weights, even after materialization repeats its graph.
+    for phase in ("context_ops", "generation_ops"):
+        assert [op._spec_json() for op in getattr(draft, phase)] == [
+            op._spec_json() for op in getattr(independent, phase)
+        ]
+    assert target.spec_scheme.draft_weights_bytes(target) == sum(op.get_weights() for op in independent.generation_ops)
+
+    def run(model):
+        return _cached_engine_handle(model, real_database)._run_static_per_op_with_metadata(
+            batch_size=8, isl=64, osl=2, mode="static", stride=1
+        )
+
+    expected, actual = run(independent), run(target)
+    for expected_rows, actual_rows, repetitions in zip(expected, actual, (1, draft_count), strict=True):
+        draft_rows = {row[0].removeprefix("draft_"): row for row in actual_rows if row[0].startswith("draft_")}
+        assert draft_rows.keys() == {row[0] for row in expected_rows}
+        for name, latency, energy, source, metadata in expected_rows:
+            row = draft_rows[name]
+            assert row[1] == pytest.approx(repetitions * latency, rel=1e-10), name
+            assert row[2] == pytest.approx(repetitions * energy, rel=1e-10), name
+            assert row[3:] == (source, metadata), name
+
+
+@pytest.mark.parametrize("ctx_tokens,gen_requests,prefix", [(0, 7, 0), (128, 0, 64), (128, 7, 64), (8000, 7, 64)])
+def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_tokens, gen_requests, prefix):
+    import math
+
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+    from .test_dense_draft_schemes import EAGLE3_CONFIG
+
+    model = get_model(
+        "Qwen/Qwen3-8B",
+        _model_config(SpeculationConfig(kind="eagle3", params={"tree_shape": [1, 1, 1]}, draft_config=EAGLE3_CONFIG)),
+        "vllm",
+    )
+    handle = _cached_engine_handle(model, real_database)
+    shared, context, generation = handle.mixed_step_breakdown_per_op(ctx_tokens, gen_requests, 4000, 64, prefix)
+    assert not any(row[0].startswith("draft_") for row in shared)
+    ctx_indices = [i for i, op in enumerate(model.context_ops) if op._name.startswith("draft_")]
+    gen_indices = [i for i, op in enumerate(model.generation_ops) if op._name.startswith("draft_")]
+    expected_context = (
+        handle.evaluate_context_ops(
+            ctx_indices, batch_size=math.ceil(ctx_tokens / 4000), s=4000 - prefix, prefix=prefix
+        )
+        if ctx_tokens
+        else []
+    )
+    expected_generation = (
+        handle.evaluate_generation_ops(gen_indices, batch_size=gen_requests * 4, s=4033) if gen_requests else []
+    )
+    for actual, expected, divisor in (
+        (context, expected_context, math.ceil(4000 / ctx_tokens) if ctx_tokens else 1),
+        (generation, expected_generation, 1),
+    ):
+        drafts = {r[0]: r for r in actual if r[0].startswith("draft_")}
+        assert drafts.keys() == {r[0] for r in expected}
+        for name, latency, energy, source in expected:
+            assert drafts[name][1] == pytest.approx(latency / divisor, rel=1e-10)
+            assert drafts[name][2] == pytest.approx(energy / divisor, rel=1e-10)
+            assert drafts[name][3] == source
+    assert sum(r[1] for group in (shared, context, generation) for r in group) == pytest.approx(
+        handle.mixed_step_latency(ctx_tokens, gen_requests, 4000, 64, prefix), rel=1e-10
+    )
+
+
+@pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
+def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(real_database, round_trip):
+    import copy
+    import pickle
+
+    from aiconfigurator_core.sdk.engine import _evaluate_single_op, build_ops_json
+    from aiconfigurator_core.sdk.errors import SolNotImplementedError
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.operations.gemm import GEMM
+    from aiconfigurator_core.sdk.operations.overlap import FallbackOp, OverlapOp
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aiconfigurator_core.sdk.speculation.draft_model import DraftModelScheme
+
+    leaf = GEMM("gemm", 2.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
+    composite = FallbackOp(
+        "nested",
+        primary=OverlapOp("overlap", group_a=[leaf], group_b=[FallbackOp("child", primary=leaf, fallback=[leaf])]),
+        fallback=[leaf],
+    )
+    draft = SimpleNamespace(generation_ops=[composite], context_ops=[composite])
+    scheme = DraftModelScheme("Qwen/Qwen3-0.6B", 3)
+    scheme._draft_model = draft
+    target = get_model("Qwen/Qwen3-8B", _model_config(), "vllm")
+    target.spec_scheme = scheme
+    original_wire = composite._spec_json()
+    original_weights = composite.get_weights()
+    materialize_spec_scheme(target)
+    folded = [op for op in target.generation_ops if op._name.startswith("draft_")]
+    assert len(folded) == 3
+    folded = [
+        pickle.loads(pickle.dumps(op)) if round_trip == "pickle" else getattr(copy, round_trip)(op) for op in folded
+    ]
+    assert composite._spec_json() == original_wire
+    assert composite.get_weights() == original_weights
+    assert all(op.get_weights() == original_weights for op in folded)
+    expected = _evaluate_single_op(real_database, composite, is_context=False, batch_size=512, s=65, x=512)
+    handle = _cached_engine_handle(target, real_database)
+    [actual] = handle.evaluate_ops_json(build_ops_json(folded), is_context=False, batch_size=2048, s=65, x=2048)
+    assert actual[1] == pytest.approx(3 * float(expected), rel=1e-10)
+    assert actual[2] == pytest.approx(3 * expected.energy, rel=1e-10)
+    assert actual[3] == expected.source
+    # Overlap does not yet export a complete SOL decomposition. Repetition
+    # must preserve that explicit absence rather than fabricate components.
+    for ops, batch in [([composite], 512), (folded, 2048)]:
+        with pytest.raises(SolNotImplementedError, match="no SOL decomposition"):
+            handle.evaluate_ops_sol_json(build_ops_json(ops), is_context=False, batch_size=batch, s=65, x=batch)

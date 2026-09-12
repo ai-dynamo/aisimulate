@@ -52,8 +52,10 @@ class TestDraftModelScheme:
         # Full model graph: embedding + layers + logits head all present.
         assert "generation_embedding" in by_name
         assert "generation_logits_gemm" in by_name
-        # K sequential steps folded into op counts: 28 layers x K=3.
-        assert by_name["generation_qkv_gemm"].op._scale_factor == 28 * 3
+        # Three full forwards, each retaining the checkpoint's 28 layers.
+        qkv = [s.op for s in specs if s.op._name == "generation_qkv_gemm"]
+        assert len(qkv) == 3
+        assert all(op._scale_factor == 28 for op in qkv)
         # Draft geometry is the 0.6B's, not the target's: qkv n at h=1024,
         # 16 q heads + 2x8 kv heads, head_dim 128.
         assert by_name["generation_qkv_gemm"].op._k == 1024
@@ -117,3 +119,30 @@ def test_target_layer_override_does_not_change_independent_draft():
         assert scheme.draft_kv_bytes_per_sequence(target, seq_len) == independent.get_kvcache_bytes_per_sequence(
             seq_len
         )
+
+
+@pytest.mark.parametrize("draft_tp", [None, 1, 2])
+def test_moe_draft_parallelism_resolves_after_draft_tp_override(draft_tp):
+    cfg = sdk_config.ModelConfig(
+        tp_size=2,
+        pp_size=1,
+        attention_dp_size=2,
+        moe_tp_size=1,
+        moe_ep_size=4,
+        gemm_quant_mode=common.GEMMQuantMode.bfloat16,
+        moe_quant_mode=common.MoEQuantMode.bfloat16,
+        kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        speculation=SpeculationConfig(
+            kind="draft_model",
+            params={"num_speculative_tokens": 3, "draft_tp_size": draft_tp},
+            draft_model_path="Qwen/Qwen3-30B-A3B",
+        ),
+    )
+    target = models.get_model("Qwen/Qwen3-32B", cfg, "vllm")
+    draft = target.spec_scheme._draft_model
+    assert draft.config.tp_size == (draft_tp or 2)
+    assert draft.config.moe_tp_size == draft.config.tp_size
+    assert draft.config.moe_ep_size == 2
+    assert draft.config.attn_width == draft.config.moe_tp_size * draft.config.moe_ep_size
+    assert (cfg.moe_tp_size, cfg.moe_ep_size) == (1, 4)
