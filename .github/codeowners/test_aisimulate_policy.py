@@ -29,9 +29,7 @@ def _owners(path: str) -> set[str]:
     return set(resolve_owners(rules, path))
 
 
-def _run_readiness_script(
-    script: str, tmp_path: Path, env: dict[str, str]
-) -> subprocess.CompletedProcess[str]:
+def _run_readiness_script(script: str, tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     summary = tmp_path / "summary.md"
     return subprocess.run(
         ["bash", "-c", script],
@@ -51,9 +49,7 @@ def _run_readiness_script(
 
 def test_subsystem_teams_retain_maintainer_coownership() -> None:
     rules = parse_codeowners((ROOT / "CODEOWNERS").read_text())
-    tracked = subprocess.check_output(
-        ["git", "-C", str(ROOT), "ls-files"], text=True
-    ).splitlines()
+    tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files"], text=True).splitlines()
     violations = []
     for path in tracked:
         owners = set(resolve_owners(rules, path))
@@ -233,15 +229,19 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
     assert "uses: ./.github/workflows/collector-check.yml" in full
     assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
-    assert "needs: fast-ci" in full
-    assert 'EXPECTED_SHA: ${{ inputs.expected_sha }}' in full
-    assert 'RUN_SHA: ${{ github.sha }}' in full
-    assert 'expected_sha: ${{ github.sha }}' in full
+    assert "name: Select Full CI Scope" in full
+    assert "needs: [fast-ci, select-full-ci]" in full
+    assert "EXPECTED_SHA: ${{ inputs.expected_sha }}" in full
+    assert "RUN_SHA: ${{ github.sha }}" in full
+    assert "expected_sha: ${{ github.sha }}" in full
     assert "needs: verify-target" in full
     assert "name: Fast CI Success" in fast
     assert "name: Full CI Success" in full
     assert "manual Full CI requires a nonempty expected_sha" in full
-    assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
+    assert (
+        'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then'
+        in full
+    )
     assert "workflow_dispatch" in full_config["on"]
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
     assert dispatch_sha["required"] == "true"
@@ -288,14 +288,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_config["permissions"]["pull-requests"] == "read"
     verify_target = full_config["jobs"]["verify-target"]
     verify_copy_steps = [
-        step
-        for step in verify_target["steps"]
-        if step.get("name") == "Verify trusted PR copy matches originating head"
+        step for step in verify_target["steps"] if step.get("name") == "Verify trusted PR copy matches originating head"
     ]
     assert len(verify_copy_steps) == 1
-    assert verify_copy_steps[0]["if"] == (
-        "startsWith(github.ref, 'refs/heads/pull-request/')"
-    )
+    assert verify_copy_steps[0]["if"] == ("startsWith(github.ref, 'refs/heads/pull-request/')")
     assert "repos/${REPOSITORY}/pulls/${pr_number}" in verify_copy_steps[0]["run"]
     assert '"${pr_head}" != "${RUN_SHA}"' in verify_copy_steps[0]["run"]
 
@@ -304,6 +300,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_readiness["if"] == "${{ always() }}"
     assert set(full_readiness["needs"]) == {
         "verify-target",
+        "select-full-ci",
+        "application-test-wheel",
         "fast-ci",
         "platform-wheels",
         "collector-data",
@@ -317,24 +315,26 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "engine-golden-regression",
         "release-artifact-contract",
         "application-wheel",
-        "stage-application-wheel",
     }
-    assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness"}
+    assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness", "stage-application-wheel"}
     full_readiness_script = full_readiness["steps"][0]["run"]
     full_readiness_env = full_readiness["steps"][0]["env"]
     assert full_readiness_env["NEEDS_JSON"] == "${{ toJSON(needs) }}"
-    assert 'expected = {name: "success" for name in needs}' in full_readiness_script
-    assert 'expected["stage-application-wheel"]' in full_readiness_script
+    assert '"success" if selected == "true" else "skipped"' in full_readiness_script
+    assert (
+        full_readiness_env["PLAN_JSON"] == "${{ toJSON(needs.select-full-ci.outputs) }}"
+    )
+    assert "stage-application-wheel" not in full_readiness["needs"]
     assert 'payload["result"]' in full_readiness_script
 
-    staging_if = full_config["jobs"]["stage-application-wheel"]["if"]
-    normalize = lambda text: " ".join(text.split())
-    expected_stage = normalize(full_readiness_env["EXPECTED_STAGE_RESULT"])
-    assert normalize(staging_if) in expected_stage
-    assert "'success' || 'skipped'" in expected_stage
+    assert set(full_config["jobs"]["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
 
     application_wheel = full_config["jobs"]["application-wheel"]
-    assert "if" not in application_wheel
+    assert "select-full-ci" in application_wheel["needs"]
+    assert (
+        "needs.select-full-ci.outputs.application_wheel == 'true'"
+        in application_wheel["if"]
+    )
     verify_steps = [
         step
         for step in application_wheel["steps"]
@@ -342,9 +342,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     ]
     assert len(verify_steps) == 1
     verify_step = verify_steps[0]
-    assert verify_step["run"] == (
-        "python python/aisimulate/tools/verify_release_wheels.py dist"
-    )
+    assert verify_step["run"] == ("python python/aisimulate/tools/verify_release_wheels.py dist")
     assert "if" not in verify_step
     assert "continue-on-error" not in verify_step
     assert full_config["jobs"]["stage-application-wheel"]["if"] == (
@@ -388,10 +386,11 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     readiness = config["jobs"]["readiness"]
     script = readiness["steps"][0]["run"]
     passing_results = {name: {"result": "success"} for name in readiness["needs"]}
-    passing_results["stage-application-wheel"]["result"] = "skipped"
     passing_pr = {
         "NEEDS_JSON": json.dumps(passing_results),
-        "EXPECTED_STAGE_RESULT": "skipped",
+        "PLAN_JSON": json.dumps(
+            {name: "true" for name in config["jobs"]["select-full-ci"]["outputs"]}
+        ),
     }
 
     assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
@@ -410,21 +409,6 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     }
     missing_job = {**passing_pr, "NEEDS_JSON": json.dumps(missing_results)}
     assert _run_readiness_script(script, tmp_path, missing_job).returncode != 0
-
-    passing_release_results = {
-        **passing_results,
-        "stage-application-wheel": {"result": "success"},
-    }
-    passing_release = {
-        **passing_pr,
-        "NEEDS_JSON": json.dumps(passing_release_results),
-        "EXPECTED_STAGE_RESULT": "success",
-    }
-    assert _run_readiness_script(script, tmp_path, passing_release).returncode == 0
-
-    skipped_release_staging = {**passing_release, "NEEDS_JSON": json.dumps(passing_results)}
-    result = _run_readiness_script(script, tmp_path, skipped_release_staging)
-    assert result.returncode != 0
 
 
 def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
@@ -454,10 +438,7 @@ def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
         "GITHUB_EVENT_NAME": "push",
         "EXPECTED_SHA": "",
     }
-    assert (
-        _run_readiness_script(manual_script, tmp_path, push_without_input).returncode
-        == 0
-    )
+    assert _run_readiness_script(manual_script, tmp_path, push_without_input).returncode == 0
 
 
 def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
@@ -474,7 +455,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "exit_code=${FAKE_GH_EXIT:-0}\n"
-        "if [[ ${exit_code} != 0 ]]; then exit \"${exit_code}\"; fi\n"
+        'if [[ ${exit_code} != 0 ]]; then exit "${exit_code}"; fi\n'
         "printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
     )
     fake_gh.chmod(0o755)
