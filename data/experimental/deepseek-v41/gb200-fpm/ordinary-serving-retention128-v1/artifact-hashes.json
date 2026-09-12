@@ -1,0 +1,21 @@
+{
+  "files_sha256": {
+    "CURRENT_REPLAY_SEMANTICS.md": "943cd0f2114a2332eb920e4f24b517f160709da5cd56a3c4b885e61de0ffb5b5",
+    "README.md": "ca26cdd5c6b8c7dc285827b2709ab7dbc9ca8fc0e859db86f8c3c5115c56616b",
+    "export_public.py": "84cec64db903e83b6175d9c27dd56eae9cc0fd48e480898a501fe15bde90234c",
+    "prediction-config.json": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
+    "provenance.json": "53c2fa963ea5515444690d440c87255a947a6619e21b12bf03bd1a855a1d87e6",
+    "render-inputs.json": "c09953742d9e3914d7177422ed7de8742f5f29dff142b94bf5eacd9f6fd1ff60",
+    "render_report.py": "e8760f0a94d042fb3f8048afe05e24f76011a9851fc5f15b603f3202916d6246",
+    "report/README.md": "57f8f1f641c72cd86b85f6819e65a04ad44a1ab4e71114f5dcfa562ec43cbf32",
+    "report/comparison.csv": "d276efe5fe495981aa4d6f632d9ba4f3ac036c7fc4f37967152829ca7f22e290",
+    "report/comparison.pdf": "b4be7222bfbaa5f57a555b0f32f91b99072e0b86519a2ca63cb9792a0b8f4128",
+    "report/comparison.png": "f55c6f8ddb81a74adfd8cc6d0d5003ace1d1c4901a6031d304e240637a9d4e3c",
+    "report/plot-input-hashes.json": "6685c368a24add1a5b4992f1f21cde43615a1f91bcd63426c38fc7b84d321912",
+    "report/scenario-confidence-intervals.csv": "c2ed2456125091fefa1e74eaaaa5ec918feea34852fdc83f0b5dbdc561b85abc",
+    "reports/main/e2e.json.gz": "cf8d20b1da57236a7257ab4f037ac1d0baa2596af7cf63c97835f46aa59224b9",
+    "reports/main/summary.json.gz": "eb533b2f04c5517a315056181c0f563fa606c53a6097e93e7796e8ff319970b1",
+    "reports/main/trace.json.gz": "0cecfefa644d212ee0a97eca68ece2f069bf331319f9ea15b3dbd59be0b4700b",
+    "test_public_projection.py": "d48f56918ba1ecc1827a1f3f81adbf8025f09f6e9dd7560528c51c016a127b83"
+  }
+}

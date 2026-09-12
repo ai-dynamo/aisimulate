@@ -12,6 +12,7 @@ from compare_trace import (
     compare_interval,
     digest,
     independent_trial_summary,
+    native_decode_context,
     qualify_inputs,
     qualify_prediction_config,
     systems_identity,
@@ -586,3 +587,124 @@ def test_frozen_token_content_is_bound_to_every_native_dispatch(mutation):
     bind(audit, plan, measurement)
     with pytest.raises(ValueError, match="token content"):
         qualify_inputs(audit, plan, measurement)
+
+
+@pytest.mark.parametrize("inclusive,past", [(1, 0), (128, 127), (129, 128), (130, 129), (2049, 2048)])
+def test_vllm_inclusive_decode_witness_reconstructs_native_past(inclusive, past):
+    request = {
+        "phase": "decode",
+        "query_tokens": 1,
+        "prefix_tokens": None,
+        "inclusive_context_tokens": inclusive,
+    }
+    original = deepcopy(request)
+    assert native_decode_context(request, "vllm") == past
+    assert request == original and "past_kv_tokens" not in request
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("query_tokens", None),
+        ("query_tokens", False),
+        ("query_tokens", 0),
+        ("query_tokens", 2),
+        ("query_tokens", 1.0),
+        ("query_tokens", "1"),
+        ("inclusive_context_tokens", None),
+        ("inclusive_context_tokens", True),
+        ("inclusive_context_tokens", 0),
+        ("inclusive_context_tokens", -1),
+        ("inclusive_context_tokens", 128.0),
+        ("inclusive_context_tokens", "128"),
+        ("prefix_tokens", 0),
+        ("prefix_tokens", False),
+        ("prefix_tokens", {}),
+        ("phase", "prefill"),
+    ],
+)
+def test_vllm_inclusive_decode_rejects_unqualified_values(key, value):
+    request = {"phase": "decode", "query_tokens": 1, "prefix_tokens": None, "inclusive_context_tokens": 128}
+    request[key] = value
+    with pytest.raises(ValueError):
+        native_decode_context(request, "vllm")
+
+
+@pytest.mark.parametrize("key", ["phase", "query_tokens", "prefix_tokens", "inclusive_context_tokens"])
+def test_vllm_inclusive_decode_requires_each_witness_field(key):
+    request = {"phase": "decode", "query_tokens": 1, "prefix_tokens": None, "inclusive_context_tokens": 128}
+    del request[key]
+    with pytest.raises(ValueError):
+        native_decode_context(request, "vllm")
+
+
+@pytest.mark.parametrize("past", [None, False, -1, 127.0, "127", 128])
+def test_vllm_explicit_past_is_not_replaced_by_an_inclusive_fallback(past):
+    request = {
+        "phase": "decode",
+        "query_tokens": 1,
+        "prefix_tokens": None,
+        "inclusive_context_tokens": 128,
+        "past_kv_tokens": past,
+    }
+    with pytest.raises(ValueError):
+        native_decode_context(request, "vllm")
+
+
+@pytest.mark.parametrize("query", [None, False, 0, 2, 1.0, "1"])
+def test_vllm_dual_decode_context_rejects_an_invalid_explicit_query(query):
+    request = {"phase": "decode", "past_kv_tokens": 127, "inclusive_context_tokens": 128, "query_tokens": query}
+    with pytest.raises(ValueError):
+        native_decode_context(request, "vllm")
+
+
+def test_vllm_legacy_past_and_consistent_dual_contexts_remain_supported():
+    assert native_decode_context({"phase": "decode", "past_kv_tokens": 127}, "vllm") == 127
+    both = {"phase": "decode", "past_kv_tokens": 127, "inclusive_context_tokens": 128}
+    assert native_decode_context(both, "vllm") == 127
+    assert native_decode_context(both, "sglang") == 128
+    with pytest.raises(ValueError):
+        native_decode_context(both, "unknown")
+
+
+@pytest.mark.parametrize("inclusive", [128, 129, 130])
+@pytest.mark.parametrize("forward_model", ["fpm", "op_level"])
+def test_vllm_inclusive_request_bridge_preserves_native_metrics_once(inclusive, forward_model):
+    audit, _, _ = fixture(backend="vllm")
+    row = audit["active_rows"][0]
+    request = row["dispatch_requests"][0]
+    del request["past_kv_tokens"]
+    request.update(query_tokens=1, prefix_tokens=None, inclusive_context_tokens=inclusive, prompt_tokens=inclusive - 1)
+    row["fpm"]["scheduled_requests"]["sum_decode_kv_tokens"] = inclusive - 1
+    original = deepcopy(row)
+    calls = []
+
+    def predictor(metrics):
+        assert "wall_time" not in metrics
+        expected = inclusive - 1 if forward_model == "fpm" else inclusive
+        assert metrics["scheduled_requests"]["sum_decode_kv_tokens"] == expected
+        calls.append(metrics)
+        return 10.0
+
+    result = compare_interval(row, predictor, backend="vllm", forward_model=forward_model, decoder_replay=False)
+    assert result["status"] == "predicted" and len(calls) == 1
+    assert result["native_scheduled_requests"]["sum_decode_kv_tokens"] == inclusive - 1
+    assert row == original
+
+
+@pytest.mark.parametrize(
+    "field,value", [("num_decode_requests", 2), ("sum_decode_kv_tokens", 4), ("var_decode_kv_tokens", 1.0)]
+)
+def test_vllm_inclusive_request_still_requires_native_aggregate_and_variance(field, value):
+    audit, _, _ = fixture(backend="vllm")
+    row = audit["active_rows"][0]
+    request = row["dispatch_requests"][0]
+    del request["past_kv_tokens"]
+    request.update(query_tokens=1, prefix_tokens=None)
+    row["fpm"]["scheduled_requests"][field] = value
+    called = []
+    with pytest.raises(ValueError):
+        compare_interval(
+            row, lambda metrics: called.append(metrics), backend="vllm", forward_model="fpm", decoder_replay=False
+        )
+    assert not called

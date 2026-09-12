@@ -241,6 +241,21 @@ prediction coverage; a trial missing any prediction remains visible and prevents
 that scenario from receiving a final interval. This uncertainty is conditional
 on the frozen model and calibration, not variation across runtime lifecycles.
 
+The qualified vLLM request observer (`vllm_request_observer.snapshot`, source
+SHA `fc8cdef9e559b82c6abec55adc2e392897a43aa44c6115ff178c898b4765e83d`)
+records `inclusive_context_tokens` as pre-update native past KV plus
+`query_tokens` and requires exactly one query for decode. Its request auditor
+(`request_audit.dispatch_requests`, source SHA
+`3d09743e1f55afeaa4cdbb844ba167897f0fd73469cd742d43e02b8ee8e689a5`)
+checks the native decode KV sum and variance using that same subtraction.
+`compare_trace.py` accepts those existing inclusive witnesses only with typed,
+explicit single-query decode fields; it reconstructs past KV without adding a
+field to the evidence. Explicit past-KV witnesses remain supported, and two
+present representations must agree. Missing or malformed values are rejected.
+Source/closure qualification and native count, sum and variance checks still
+precede prediction. The separate aggregate bridge in `normalize_fpm.py` applies
+once for the requested target axis; SGLang retains its inclusive-query semantics.
+
 `compare_e2e.py` replays the actual input token IDs, output lengths and HTTP
 submit offsets through the native scheduler and independent timing provider.
 Each cold cohort starts a fresh model cache; the explicit prefix seed and reuse

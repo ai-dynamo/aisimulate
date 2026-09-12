@@ -314,6 +314,36 @@ def qualify_prediction_config(config, measurement):
     )
 
 
+def native_decode_context(request, backend):
+    """Recover the native KV axis from an already source-qualified witness.
+
+    The pinned vLLM observer records inclusive = native past + query and admits
+    only query=1 decode; its request auditor checks native sums/variance using
+    inclusive - query. This consumer preserves the existing native aggregate
+    and prediction bridges. See adjacent README for the source proof.
+    """
+    if backend == "sglang":
+        return integer(request.get("inclusive_context_tokens"), "inclusive_context_tokens", 1)
+    if backend != "vllm" or request.get("phase") != "decode":
+        raise ValueError("unqualified native decode context")
+    if "past_kv_tokens" in request:
+        past = integer(request["past_kv_tokens"], "past_kv_tokens")
+        if "query_tokens" in request and integer(request["query_tokens"], "native decode query", 1) != 1:
+            raise ValueError("native decode context requires one query")
+        if "inclusive_context_tokens" in request:
+            inclusive = integer(request["inclusive_context_tokens"], "inclusive_context_tokens", 1)
+            if inclusive != past + 1:
+                raise ValueError("native past and inclusive decode contexts disagree")
+        return past
+    if (
+        integer(request.get("query_tokens"), "native decode query", 1) != 1
+        or "prefix_tokens" not in request
+        or request["prefix_tokens"] is not None
+    ):
+        raise ValueError("inclusive native decode context requires a single-query witness")
+    return integer(request.get("inclusive_context_tokens"), "inclusive_context_tokens", 1) - 1
+
+
 def compare_interval(row, predictor, *, backend, forward_model, decoder_replay):
     if backend not in RUNTIMES or forward_model not in {"op_level", "fpm"}:
         raise ValueError("unknown native producer or forward model")
@@ -340,8 +370,7 @@ def compare_interval(row, predictor, *, backend, forward_model, decoder_replay):
     for key, value in expected.items():
         if integer(scheduled.get(key), key) != value:
             raise ValueError("native per-request dispatch and FPM aggregate geometry differ")
-    context_key = "inclusive_context_tokens" if backend == "sglang" else "past_kv_tokens"
-    contexts = [integer(r.get(context_key), context_key, 1 if backend == "sglang" else 0) for r in decodes]
+    contexts = [native_decode_context(request, backend) for request in decodes]
     if integer(scheduled.get("sum_decode_kv_tokens"), "decode KV sum") != sum(contexts):
         raise ValueError("native per-request decode contexts differ from the FPM KV axis")
     native_prefill_lengths = [

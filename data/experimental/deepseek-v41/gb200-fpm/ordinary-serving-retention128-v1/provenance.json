@@ -1,0 +1,105 @@
+{
+  "actual_prepared_squashfs_bytes": 21501927424,
+  "actual_prepared_squashfs_sha256": "c42ea19c53004855c25731f2cf5e6b5e3955ed677f8d3a7b854b864b11e32d52",
+  "base_arm64_image_digest": "sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58",
+  "e2e_prediction_sources_sha256": {
+    "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+    "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
+    "engine_compiler": "d7e468df1302f67925d294aa44312f9a2c534c32a8edea0d39c399b9225cf744",
+    "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+    "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+    "native_extension": "f54a6015f6a97212e018615d909f1814f729d9b25df8b64e86802b7c5630e163",
+    "native_python_bridge": "5b72dac907cd4bcd4826e632d14c9b1dcf07c78f95af13930207f114d82c8ccc",
+    "trace_qualification": "4f0359c0dec8b2e3558607ca04c3ed7c3bdc872839c082537ce6adb89dbab3ca",
+    "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+  },
+  "measurement_identity": {
+    "backend": "vllm",
+    "backend_version": "0.1.dev20904+g179dd0fa9",
+    "decoder_replay": false,
+    "execution_mode": "eager",
+    "model_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+    "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "observer_source_sha256": "eaa3afcae9dc0d8c5163d7fda3ad9423f68eb896ad77286855f2093aeddb24a7",
+    "producer_semantics": "vllm_past_kv",
+    "producer_source_sha256": "765586f5891908f074c7dccae3a35edf4fb2629688f2bfdae11ab0de732ae298",
+    "runtime_digest": "sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58",
+    "source_bindings": {
+      "actual_runtime_receipt_sha256": "f49163ba3bb3da360db12e50d13b0b968abbc53583108ce76c435aa8fc27362d",
+      "audit_canonical_sha256": "0319806206125cd96b4324f070dae8c587d85a8da8e93b915a1ecddc4270fdf3",
+      "audit_tool_sha256": "fa5011f9928b2d1b29eb24309f13fce3e69a9235599b6d4998ecd664c3bc9dde",
+      "auditor_closure_sha256": "632a04e32c510895a657c0d866039c52f0df41d584fdd764fc204bc032971bce",
+      "client_summary_file_sha256": "07ee41c79f675a7988e1e0c36219624f6160406fe350458b128a079432e0a3a8",
+      "execution_file_sha256": "a6064eb8a38b1549166b8bdbf5eea8a3f89a651de439797b42e782b454006d26",
+      "fmha_identity_receipt_sha256": "dd37bb83724d84838dbb3cb9fbdbd42062ff325b5dcd82d3840fc4451d39dd76",
+      "main_statistics_file_sha256": "8d4e12520e4f17a01f59d27197d8dd6e4085303abbfd91a2d8d39a48a4f9f0b0",
+      "measurement_builder_sha256": "9d24b62ee018f4e29f5f86972f7bab14b51294a05171e63dd93e2479726d2083",
+      "original_audit_file_sha256": "0052c769152624aa1bcf35d6a0160505b3d7487c5104e33f14c4bb271ab49e2f",
+      "original_canary_source_proof_sha256": "8f56c60fe16744ba378736f51afd09f88dd99cc2b5f5ea51886ae365c6b13d3f",
+      "original_client_summary_file_sha256": "3d79bce3c695e7c0e0d4013ce3c9d94a4d6d015a50b0224c6eed7c2340192f00",
+      "original_plan_file_sha256": "94c795ac94376266a484f3163082aee5f02e9b7c81395633df3d401c0da9cd7a",
+      "pilot_statistics_file_sha256": "31c8f172bc235754ade8b57b970f6b3df65207b9cb66ad7f19bfe7c1979402c1",
+      "plan_canonical_sha256": "8d60681ce8c04800ebc45d56050a42b91f37fb7c2fa227e3be3d7adfb0b64c0e",
+      "raw_evidence_inventory_sha256": "47527089ff22c2a069db54257f409348123235a288ff28461ada843a4c50d91a",
+      "scheduler_receipt_file_sha256": "0c2f04da6ac61d8cbda75750c2fcc8b150f2e90d380b80f516b88cfc2d0827f0",
+      "serving_canary_output_comparison_sha256": "753603d8fd17f1100248841ee1b9d3f0acf4952d8d9a48163ad2f17a45264669",
+      "serving_canary_qualification_sha256": "c6c007aa612738578e5ae2cbd0516649d6d55cae3c07272828fed32ff1cdcaa5",
+      "serving_qualification_protocol_sha256": "689abbbbb3d31dc38f123ca149b89495f4d2fba0ecc258ba2e04fb182b4af45a",
+      "text_only_registration_guard_sha256": "31cbf55bf748d4b8bc9775222cad3823167c19f41227c27f015d6c72a1fd183e",
+      "worker_config_file_sha256": "5a642685015349268e4e67976c212d4adc6547be1227adee7b5cc0e68bcf95b0"
+    },
+    "system_name": "gb200"
+  },
+  "normalization_builder_sha256": "9d24b62ee018f4e29f5f86972f7bab14b51294a05171e63dd93e2479726d2083",
+  "original_private_files_sha256": {
+    "calibration_admission": "0841d41c3840753bc8850c7368f25fb6f77626e3364407a0b5e7341483b3acb7",
+    "calibration_points": "20b2223efe67c03eab3204fdf0875ba9a9d19d7566877d47ac50a5b00dd915f1",
+    "e2e": "7047006c72e6aaabf1b494a65c55a450b5cdd1312920301061296c8b28c69f7c",
+    "measurement": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a",
+    "normalization_receipt": "2b6ebbb9f27fa60f72138b8180b5fa17a9c02c0f20a9e8123acf64f59ebc057a",
+    "observed_main": "8d4e12520e4f17a01f59d27197d8dd6e4085303abbfd91a2d8d39a48a4f9f0b0",
+    "plan": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1",
+    "prediction_config": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
+    "prepared_image_receipt": "49aa4ed0903414bbd2baae4cf152196c9b11352a8c3fc3cb86a0b45d6d3aaff4",
+    "statistical_review": "3a51031e9f28f9dc7ce90523d620ab0e1ecc47c7095512b5d55f636d417b77b6",
+    "trace": "f9a675c8be938cc2ad75a9119b837fce3fe826e5cf88c525c8cd989db74f32dc"
+  },
+  "prediction_commit": "3627568d809774eb693abf3551a2ed36ad1dc032",
+  "prediction_native_extension_sha256": "f54a6015f6a97212e018615d909f1814f729d9b25df8b64e86802b7c5630e163",
+  "projection_policy": "Retained measurement/prediction numbers and CI arrays are preserved; private identifiers are omitted or replaced by public trial/scenario/order IDs. Original full reports remain private and hash-bound.",
+  "resolved_model_identity": {
+    "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+    "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+    "fpm_query_identity_override": {
+      "fpm_fmha_dtype": "fp8"
+    },
+    "fpm_selector_semantics": "Table identity only; checkpoint arithmetic and memory remain unchanged",
+    "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
+    "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+  },
+  "runtime_contract_changed": false,
+  "study": "ordinary-serving-retention128-v1",
+  "systems_identity": {
+    "files_sha256": {
+      "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+      "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+      "gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+    },
+    "inventory_scope": "complete selected overlay including unused files",
+    "inventory_sha256": "2976691f89eee8b237f5ca914d7d79b875beb09d7cb188efac8c02c244dcec0d",
+    "system_spec_sha256": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+  },
+  "trace_prediction_sources_sha256": {
+    "adapter": "5b72dac907cd4bcd4826e632d14c9b1dcf07c78f95af13930207f114d82c8ccc",
+    "analysis": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
+    "engine": "d7e468df1302f67925d294aa44312f9a2c534c32a8edea0d39c399b9225cf744",
+    "forward_comparison": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+    "model": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+    "native_extension": "f54a6015f6a97212e018615d909f1814f729d9b25df8b64e86802b7c5630e163",
+    "normalization": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+    "statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+  },
+  "trace_source_sha256": {
+    "trace-0000": "cd571203706499feb3e148af1fa93e2c9bca4bef8f867aa8f61b23b76ea9730b"
+  }
+}
