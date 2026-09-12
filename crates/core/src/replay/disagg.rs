@@ -233,7 +233,7 @@ impl DisaggActionQueues {
     // `Result`, not `unreachable!`: `DisaggActionQueues` is a plain struct
     // taking `SimulationWorkerStage` (3 variants) as an ordinary parameter,
     // one refactor away from a caller that doesn't already exclude
-    // `Aggregated` -- same reasoning as `wake_deferred_actions` above.
+    // `Aggregated` -- same reasoning as `wake_deferred_actions` (below).
     fn waiting_mut(
         &mut self,
         stage: SimulationWorkerStage,
@@ -285,6 +285,23 @@ impl DisaggActionQueues {
 }
 
 struct DisaggFlowState {
+    /// KNOWN ISSUE -- unbounded for the life of the run.
+    ///
+    /// `insert` is the only mutation until `take_report_dynamic` calls
+    /// `clear()`, which `run()` never reaches; `retire_completed_request` only
+    /// calls `mark_done()`, and `complete_decode()` drops `original` and
+    /// `replay_hashes` but leaves `session_id: Option<String>` allocated. The
+    /// result is O(total_requests) retention of `DisaggRequestState` plus one
+    /// live `String` per session-tagged request, on exactly the long replays
+    /// this DES exists to serve, and it makes `finish_test_stats` an O(N) walk
+    /// over every request ever seen. `agg.rs` removes at terminal in two
+    /// places.
+    ///
+    /// Removal is genuinely blocked today: `run_handoff_conformance`,
+    /// `take_report_dynamic`, and the defensive `self.state(uuid)?` lookups on
+    /// late signals all read this map *after* `mark_done`. Closing it needs a
+    /// compact tombstone at `mark_done` carrying only what those readers
+    /// require -- a design change, not a one-line removal.
     requests: HashMap<Uuid, DisaggRequestState>,
     requests_by_handoff: HashMap<HandoffId, Uuid>,
     handoff_order: HandoffOrder,
