@@ -29,8 +29,8 @@ The dated record uses standalone AIC `f254959eb89e2f206b8f9a77051644d7c1cbdb89`,
 `46ca8915a3ba9b5b17c2c925644127a6ed9de869`, and optimized sampler
 `1024438228eed7a8ef6c108e012d26f1d408d4dc`. This recommendation base **already has the replay cache**,
 so the before/after comparison isolates trial-axis padding. Both AISimulate variants load the same
-release native binary, verified by SHA-256. Later documentation/ownership commits do not change
-measured production code. The artifact records exact source identities, dependencies, native hashes,
+release native binary, verified by SHA-256. The tables remain pinned to these revisions;
+subsequent branch integration includes main's independent event-ordering/non-finite timing fix. The artifact records exact source identities, dependencies, native hashes,
 per-run times/counts/scores, candidate configurations, and before/after prediction checks.
 
 AIC receives:
