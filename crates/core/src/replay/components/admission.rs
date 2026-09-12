@@ -193,9 +193,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                     if arrival_time_ms > now_ms {
                         break;
                     }
-                    let request = pending
-                        .pop_front()
-                        .expect("front request must exist when arrival is ready");
+                    // Cannot fail: `pending.front()` above returned `Some` and
+                    // nothing between there and here touches the queue.
+                    let Some(request) = pending.pop_front() else {
+                        bail!("offline trace replay lost the front request while admitting it");
+                    };
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()

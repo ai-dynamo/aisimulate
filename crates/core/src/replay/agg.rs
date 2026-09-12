@@ -235,6 +235,10 @@ where
         sample_interval_ms: f64,
         observer: Box<dyn ReplayTelemetryObserver>,
     ) -> Self {
+        // Validated at the only public entry point that reaches here:
+        // `Replayer::with_telemetry_observer` rejects a non-finite or
+        // non-positive interval with `InvalidSpec`. This assert is the
+        // development-time backstop for that, not the check itself.
         debug_assert!(sample_interval_ms.is_finite() && sample_interval_ms > 0.0);
         self.engine.enable_telemetry();
         self.traffic.enable_telemetry();
@@ -723,7 +727,10 @@ where
             } = ready;
             let input_length = request.input_length();
             let output_length = request.metadata().effective_max_output_tokens();
-            let session_metadata = session_id.clone().zip(turn_index);
+            // Clone only when there is a turn index to pair it with; `session_id`
+            // itself is moved into `assign_request` below.
+            let session_metadata =
+                turn_index.and_then(|index| session_id.clone().map(|id| (id, index)));
             let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
             if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
                 self.collector
@@ -1025,10 +1032,13 @@ where
             draining_decode_ids: self.engine.draining_group_ids(),
         };
 
+        // Proven `Some` by the guard at the top of this function -- nothing
+        // between there and here clears `self.telemetry` -- but the proof is
+        // non-local, so surface it as an error rather than a panic.
         let mut telemetry = self
             .telemetry
             .take()
-            .expect("telemetry must remain attached while publishing");
+            .context("replay telemetry detached while publishing a sample")?;
         let result = telemetry.publish(snapshot);
         if result.is_ok() && kind != ReplayTelemetrySampleKind::Baseline {
             telemetry.close_interval(self.now_ms);
@@ -1044,10 +1054,12 @@ where
         };
         telemetry.start_at(self.now_ms);
         self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+        // `publish_telemetry_sample` restores `self.telemetry` on every path,
+        // including its error return, so this is `Some` -- non-locally.
         let at_ms = self
             .telemetry
             .as_ref()
-            .expect("telemetry must remain attached")
+            .context("replay telemetry detached while seeding the first tick")?
             .next_periodic_at_ms()?;
         push_telemetry_tick(&mut self.events, &mut self.next_event_seq, at_ms);
         Ok(())
@@ -1059,10 +1071,11 @@ where
             self.publish_telemetry_sample(ReplayTelemetrySampleKind::Periodic)?;
             changed = true;
             if !self.is_workload_done() {
+                // Same restore-on-every-path proof as `seed_first_telemetry_tick`.
                 let next_ms = self
                     .telemetry
                     .as_ref()
-                    .expect("telemetry must remain attached")
+                    .context("replay telemetry detached while re-arming its tick")?
                     .next_periodic_at_ms()?;
                 push_telemetry_tick(&mut self.events, &mut self.next_event_seq, next_ms);
             }
@@ -1460,8 +1473,13 @@ where
             {
                 break;
             }
+            // `next_timestamps` computes this one over a superset of the sources
+            // behind the canonical timestamp -- every event, not just the
+            // non-telemetry ones -- so a `Some` canonical timestamp implies a
+            // `Some` here. The proof lives in the other function, so surface a
+            // broken pairing as an error rather than a panic.
             let next_timestamp_ms = next_timestamp_ms
-                .expect("canonical replay activity must have a next scheduled timestamp");
+                .context("canonical replay activity had no next scheduled timestamp")?;
             if next_timestamp_ms < canonical_timestamp_ms {
                 self.sample_telemetry_only_timestamp(next_timestamp_ms)?;
                 continue;

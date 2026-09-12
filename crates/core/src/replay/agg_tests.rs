@@ -65,6 +65,10 @@ fn telemetry_only_timestamps_do_not_enter_the_agg_semantic_drain() {
         .run()
         .unwrap();
 
+    // The floor only has to be above "the run did nothing": one request needs at
+    // least an arrival drain and a completion drain, so anything greater than one
+    // proves the baseline actually drove semantic work for the comparison below
+    // to be meaningful.
     assert!(baseline_stats.semantic_drain_count > 1);
     assert_eq!(
         observed_stats.semantic_drain_count, baseline_stats.semantic_drain_count,

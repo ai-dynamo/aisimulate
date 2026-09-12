@@ -473,6 +473,12 @@ where
                     .with_context(|| format!("failed to cancel starting worker {id}"))?;
                 self.pending_startup.remove(id);
             }
+            // Highest worker id first: scale-down retires the most recently added
+            // workers. `newly_marked` therefore comes back descending while
+            // `added` and `removed` are ascending, and callers forward all three
+            // in order into recorded lifecycle evidence. Deterministic, so not a
+            // parity concern, but the direction flip is deliberate rather than an
+            // oversight -- do not "normalize" it without re-baselining evidence.
             for id in active_ids.iter().rev().take(excess - to_cancel.len()) {
                 self.mark_for_removal(*id);
                 newly_marked.push(*id);

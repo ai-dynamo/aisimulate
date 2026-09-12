@@ -670,7 +670,12 @@ mod tests {
         let mut poisoned = TrafficAccumulator::new();
         poisoned.on_arrival();
         poisoned.on_completion(10, 3, Some((f64::NAN, 5.0)));
-        assert_eq!(poisoned.drain(1_000.0).avg_ttft_ms, 0.0);
+        let drained = poisoned.drain(1_000.0);
+        // `avg_ttft_ms == 0.0` is also what an empty accumulator reports, so it
+        // alone does not distinguish "rejected the NaN" from "folded it in and
+        // happened to read zero". The count is what pins the intent.
+        assert_eq!(drained.ttft_count, 0);
+        assert_eq!(drained.avg_ttft_ms, 0.0);
     }
 
     /// The replay clock steps backward by design, so a drain can land before
