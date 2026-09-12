@@ -255,7 +255,17 @@ impl WekaImporter {
             .as_file_mut()
             .seek(SeekFrom::Start(0))
             .context("rewinding preflighted Weka row spool")?;
-        debug_assert_eq!(plays, preflight_plays);
+        // The spool must carry exactly the plays preflight counted, or emission
+        // is bound to a different corpus than the header provenance describes.
+        // `for_each_row` enforces the equivalent row-count contract with a real
+        // error, so this one must not evaporate in a release build either.
+        if plays != preflight_plays {
+            bail!(
+                "Weka preflight counted {} plays but the row spool holds {}",
+                preflight_plays,
+                plays
+            );
+        }
         tracing::info!(
             requested_basis = options.nested_timestamp_basis.as_str(),
             resolved_basis = nested_timestamp_basis.as_str(),
@@ -399,16 +409,27 @@ fn load_weka_agentic_graph_with_cache_status(
         // compiled graph. This still avoids the expensive snapshot, parse,
         // lowering, row-spool, and graph-build work for sweep candidates.
         let current_digest = compute_corpus_digest(path)?;
-        let cache = cache
-            .lock()
-            .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
-        if current_digest == known_digest
-            && let Some(cached) = cache
+        // Release the cache mutex before logging. `tracing` takes an output
+        // lock, so emitting under the cache lock serializes every concurrent
+        // sweep candidate behind whichever one is writing a line. The graph
+        // clone itself still happens under the lock; removing that needs the
+        // cache to hand out an `Arc` rather than a value.
+        let cached = if current_digest == known_digest {
+            cache
+                .lock()
+                .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
                 .graphs
                 .get(&(current_digest, options.nested_timestamp_basis))
-        {
+                .cloned()
+        } else {
+            None
+        };
+        if let Some(cached) = cached {
             assert_expected_block_size(&cached.graph, expected_block_size)?;
-            tracing::info!(
+            // One line per sweep-candidate lookup is internal bookkeeping, not
+            // an end-user event; the import path logs the same resolution once
+            // at `info!`.
+            tracing::debug!(
                 requested_basis = options.nested_timestamp_basis.as_str(),
                 resolved_basis = cached.resolved_timestamp_basis.as_str(),
                 resolution = if options.nested_timestamp_basis == WekaNestedTimestampBasis::Auto {
@@ -419,7 +440,7 @@ fn load_weka_agentic_graph_with_cache_status(
                 cache_hit = true,
                 "resolved Weka nested timestamp basis for complete corpus"
             );
-            return Ok((cached.graph.clone(), cached.resolved_timestamp_basis, true));
+            return Ok((cached.graph, cached.resolved_timestamp_basis, true));
         }
     }
 
@@ -1401,6 +1422,16 @@ fn resolve_seams(
         chains[owner].tail_end = chains[elected].tail_end;
         chains[owner].tail_model = chains[elected].tail_model.clone();
         chains[elected].spliced_into = Some(owner);
+        // `aliases` must stay a forest: both walks over it are unguarded, so a
+        // cycle would hang the import with no diagnostic rather than fail. It
+        // does, because every inserted edge runs from a node that is not yet a
+        // key (`elected` is filtered on `spliced_into.is_none()`, and a key is
+        // always spliced) to `owner`, which was just resolved and so has no
+        // outgoing edge. The only cycle such an edge could close is a
+        // self-loop, which requires a chain to fork from its own tail --
+        // impossible, because a fork always allocates a fresh `chains.len()`
+        // index distinct from its parent.
+        debug_assert_ne!(owner, elected, "a chain may not be spliced into itself");
         aliases.insert(elected, owner);
 
         let Some(new_tail_source) = chains[owner].tail_source_id.clone() else {
@@ -1508,11 +1539,6 @@ fn normalized_hashes(
     // validator rejects exactly this mismatch (`trace.rs`, "requires exactly
     // {} hash_ids") but can never fire here, because this function always
     // returns a full-length vector.
-    //
-    // Tightening it to reject only the partial case would be a product
-    // decision about the Weka producer contract (is a short `hash_ids` a lossy
-    // producer to accommodate, or corrupt input to refuse?), not a bug fix, so
-    // it is deliberately left alone rather than guessed at.
     let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
     for block_index in 0..full_blocks {
         let identity = request.hash_ids.get(block_index).map_or_else(
@@ -1534,6 +1560,7 @@ fn normalized_hashes(
 fn unique_hash(domain: &str, identity: &str, used: &mut HashMap<u64, String>) -> Result<u64> {
     for nonce in 0_u32..=u32::MAX {
         let digest = blake3::hash(format!("{domain}\0{identity}\0{nonce}").as_bytes());
+        // A BLAKE3 digest is 32 bytes, so the exactly-8 slice always converts.
         let value = u64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap());
         match used.get(&value) {
             Some(existing) if existing != identity => continue,
@@ -1712,6 +1739,12 @@ fn canonical_nested_timestamp(
     inner_index: usize,
 ) -> Result<f64> {
     match basis {
+        // `Auto` never arrives: the sole production caller threads
+        // `WekaResolvedTimestampBasis::effective_basis`, which has already
+        // collapsed the corpus heuristic to `Absolute` or `Relative`. It is
+        // grouped with `Absolute` only to keep the match exhaustive, so a
+        // future caller that skips resolution would silently get the absolute
+        // reading rather than the inferred one.
         WekaNestedTimestampBasis::Absolute | WekaNestedTimestampBasis::Auto => {
             if nested_timestamp_precedes_marker(inner_t, marker_t) {
                 bail!(
