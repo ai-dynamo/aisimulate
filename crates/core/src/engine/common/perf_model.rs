@@ -53,6 +53,13 @@ impl PerfModel {
         isl: usize,
         prefix: usize,
     ) -> Result<f64> {
+        // An inverted `prefix > isl` is a caller bug, not a fully cached prompt.
+        // It saturates to "no new tokens" and returns 0.0 in release; the assert
+        // makes it a test failure rather than a silently free prefill.
+        debug_assert!(
+            prefix <= isl,
+            "prefix {prefix} exceeds isl {isl}: inverted prefill inputs"
+        );
         let new_tokens_per_req = isl.saturating_sub(prefix);
         if batch_size == 0 || new_tokens_per_req == 0 {
             return Ok(0.0);
@@ -109,9 +116,21 @@ impl PerfModel {
             "decode timing provider returned a non-finite duration {time}ms"
         );
         // Token-emitting decode steps should not collapse onto the same timestamp.
+        //
+        // NOTE: this floor is a latency-model return value doing an event-ordering
+        // job. It reports an AIC-modeled 0.3 ms decode step as 1.0 ms — a 3.3x
+        // error applied to every token of every request, systematically inflating
+        // ITL for any configuration whose true decode step is sub-millisecond.
+        // Removing it belongs with a scheduler change that keeps simultaneous
+        // decode events distinct by ordering rather than by duration; it is a
+        // deliberate formula change and is NOT made here.
         let result = time.max(1.0);
         tracing::trace!(
-            "Decode time prediction: batch_size={batch_size}, active_kv_tokens={active_kv_tokens}, context_length={context_length}, time={result:.2}ms"
+            batch_size,
+            active_kv_tokens,
+            context_length,
+            decode_ms = result,
+            "decode time prediction"
         );
         Ok(result)
     }
@@ -130,7 +149,9 @@ pub(crate) fn polynomial_decode_time(active_kv_tokens: usize, total_kv_tokens: u
     let active_perc = if total_kv_tokens > 0 {
         (active_kv_tokens as f64 / total_kv_tokens as f64).min(1.0)
     } else {
-        tracing::warn!("Total KV tokens is 0, using 1.0 as capacity");
+        // One decode step per token per request reaches this, so `warn!` here is
+        // log spam plus an output-lock acquisition on a hot path.
+        tracing::debug!("total KV tokens is 0, assuming full utilization");
         1.0
     };
     (-25.74 * active_perc.powi(2) + 54.01 * active_perc + 5.74).max(1.0)
