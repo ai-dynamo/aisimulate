@@ -423,9 +423,24 @@ impl ForwardPassPerfModel {
                     ));
                 }
                 for (workload_kind, x, wall_time_ms, native) in extracted {
-                    corrections
-                        .store_mut(workload_kind)
-                        .add_observation(x, wall_time_ms, native);
+                    let retained = corrections.store_mut(workload_kind).add_observation(
+                        x.clone(),
+                        wall_time_ms,
+                        native,
+                    );
+                    if !retained {
+                        // Silently dropping this left an operator feeding a
+                        // fully out-of-range batch with `Ok(())` and
+                        // `retained_observations == 0` and no explanation.
+                        tracing::debug!(
+                            ?workload_kind,
+                            features = ?x,
+                            wall_time_ms,
+                            native_ms = native,
+                            "FPM correction observation rejected: outside the configured \
+                             correction-grid workload ranges, or a non-positive target"
+                        );
+                    }
                 }
             }
             ForwardPassPerfMode::Regression {
@@ -445,7 +460,17 @@ impl ForwardPassPerfModel {
                     extracted.push(observation);
                 }
                 for observation in extracted {
-                    regression.add_observation(observation.feature.x, observation.wall_time_ms);
+                    let retained =
+                        regression.add_observation(observation.feature.x, observation.wall_time_ms);
+                    if !retained {
+                        tracing::debug!(
+                            ?worker_type,
+                            features = ?observation.feature.x,
+                            wall_time_ms = observation.wall_time_ms,
+                            "FPM regression observation rejected: a non-finite or negative \
+                             feature, or a non-positive target"
+                        );
+                    }
                 }
             }
         }

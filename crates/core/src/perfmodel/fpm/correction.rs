@@ -49,7 +49,18 @@ impl StoreStats for CorrectionBuckets {
 }
 
 impl CorrectionBuckets {
-    pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, native_ms: f64) {
+    /// Retain one `observed_ms / native_ms` correction sample.
+    ///
+    /// Returns `false` when nothing was retained: a non-positive or non-finite
+    /// target or native estimate, or a feature vector outside the configured
+    /// correction-grid workload ranges. The caller knows the workload kind and
+    /// owns the diagnostic.
+    pub(crate) fn add_observation(
+        &mut self,
+        x: Vec<f64>,
+        observed_ms: f64,
+        native_ms: f64,
+    ) -> bool {
         if native_ms.is_finite() && native_ms > 0.0 && observed_ms.is_finite() && observed_ms > 0.0
         {
             // Corrections are absolute observed/native samples, not
@@ -67,13 +78,14 @@ impl CorrectionBuckets {
                 .map_or(lower_bounded_correction_factor, |max_factor| {
                     lower_bounded_correction_factor.min(max_factor)
                 });
-            self.samples.add(
+            return self.samples.add(
                 x,
                 CorrectionObservation {
                     correction_factor: bounded_correction_factor,
                 },
             );
         }
+        false
     }
 
     pub(crate) fn correction_factor_for(&self, x: &[f64]) -> f64 {

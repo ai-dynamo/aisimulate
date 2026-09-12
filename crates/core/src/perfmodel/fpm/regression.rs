@@ -70,7 +70,17 @@ impl BucketedRegression {
             .into_iter()
             .map(|(_, observation)| observation)
             .collect::<Vec<_>>();
+        let was_ready = self.fit.is_some();
         self.fit = fit_regression(&retained, self.min_observations);
+        if was_ready && self.fit.is_none() {
+            // A refit that degenerates destroys a previously valid fit: the
+            // model drops Ready -> InsufficientData mid-run while the sample
+            // count keeps rising, which is otherwise invisible.
+            tracing::debug!(
+                retained_observations = retained.len(),
+                "FPM regression fit degenerated on refit and is no longer ready"
+            );
+        }
         true
     }
 
