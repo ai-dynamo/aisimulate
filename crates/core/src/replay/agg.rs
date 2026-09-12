@@ -1784,6 +1784,7 @@ where
         // keeps per-worker load or active-block accounting keyed on released
         // requests (the real Dynamo KV router arrives here as a boxed
         // `PlacementPolicy`) sees a free for a slot it never took.
+        let mut deferred_error: Option<anyhow::Error> = None;
         let was_pending_at_router = match phase {
             super::state::AggRequestPhase::QueuedAtRouter => {
                 if !self.placement.cancel_pending(uuid) {
@@ -1803,15 +1804,26 @@ where
                     },
                     self.now_ms,
                 )?;
+                // `apply_command` has already released the request inside the
+                // engine, and both steps below are survivable failures -- the
+                // result discrimination, and `apply_engine_observations`, which
+                // calls the boxed policy's `observe`. `?`-ing out here left the
+                // engine without the request while `self.requests` still held a
+                // `Running` entry, so a later `cancel_dynamic` for the same uuid
+                // took this arm again and re-issued `CancelRequest` to an engine
+                // that no longer had it, publishing a second `Canceled` terminal
+                // for one request. Retire the runtime side either way and
+                // surface the error after the cancellation is complete.
                 if !matches!(effects.result, CommandResult::Applied | CommandResult::Noop) {
-                    bail!(
+                    deferred_error = Some(anyhow::anyhow!(
                         "offline replay cancellation for {uuid} returned an unexpected scheduler result"
-                    );
-                }
-                self.apply_engine_observations(
+                    ));
+                } else if let Err(error) = self.apply_engine_observations(
                     effects.engine_events,
                     KvIngestBoundary::SchedulerCommand,
-                )?;
+                ) {
+                    deferred_error = Some(error);
+                }
                 false
             }
         };
@@ -1833,13 +1845,17 @@ where
         } else {
             self.placement.request_terminal(uuid, self.now_ms)?
         };
-        self.dispatch_placements(placements)?;
+        let dispatched = self.dispatch_placements(placements);
         if self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
             && self.engine.is_drained()
         {
             self.drive_pending = false;
         }
+        if let Some(error) = deferred_error {
+            return Err(error);
+        }
+        dispatched?;
         Ok(Some(ReplayTerminalStatus::Canceled))
     }
 

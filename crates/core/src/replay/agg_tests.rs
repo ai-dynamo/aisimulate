@@ -561,6 +561,118 @@ fn a_failing_release_folds_no_kv_hit_rate_sample() {
     );
 }
 
+/// Places every request immediately and fails every `observe`, standing in for
+/// a boxed policy (the real Dynamo KV router arrives here as one) whose
+/// observation handling raises. This runtime's own contract treats such errors
+/// as survivable -- the caller keeps driving.
+struct FailingObservePlacement;
+
+impl PlacementPolicy<ReplayRequestPayload> for FailingObservePlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        let request_id = request
+            .metadata()
+            .uuid
+            .ok_or_else(|| anyhow::anyhow!("failing-observe placement requires a request UUID"))?;
+        Ok(crate::replay::PlacementEffects {
+            decision: PlacementDecision::Immediate(Placement {
+                request_id,
+                scheduler_id: 0,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }),
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        anyhow::bail!("placement policy observe failed")
+    }
+
+    fn cancel_pending(&mut self, _: Uuid) -> bool {
+        false
+    }
+
+    fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+/// A failure after the engine-side cancel must not strand a `Running` entry.
+///
+/// `apply_command` releases the request inside the engine; the steps after it
+/// are survivable policy failures. Leaving the runtime's own entry behind made a
+/// second `cancel_dynamic` take the `Running` arm again and re-issue
+/// `CancelRequest` to an engine that no longer had the request -- accepted as
+/// `CommandResult::Noop`, so one request received two `Canceled` terminals.
+#[test]
+fn a_failed_cancel_observation_does_not_strand_a_running_request() {
+    let role_factory = ReplayEngineFactory::new()
+        .role_factory(
+            &ReplayEngineConfig::default(),
+            WorkerStage::Aggregated,
+            false,
+        )
+        .unwrap();
+    let mut runtime =
+        AggRuntimeImpl::<FailingObservePlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
+            role_factory,
+            AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+            1,
+            None,
+            |_, _| Ok(FailingObservePlacement),
+        )
+        .unwrap()
+        .into_steppable();
+
+    let uuid = runtime.submit_dynamic(request(1, 0.0)).unwrap();
+    let error = runtime.cancel_dynamic(uuid).unwrap_err();
+    assert!(error.to_string().contains("observe failed"), "{error}");
+
+    assert!(
+        !runtime.requests.contains_key(&uuid),
+        "the engine no longer owns the request, so neither may the runtime"
+    );
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        None,
+        "a cancelled request must not be cancellable a second time"
+    );
+}
+
 #[test]
 fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     let role_factory = ReplayEngineFactory::new()
