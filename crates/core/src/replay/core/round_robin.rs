@@ -134,7 +134,22 @@ where
 
 #[derive(Debug)]
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
+    /// Cursor over the *flattened* scheduler pool, advanced only by
+    /// rank-agnostic placements.
     next: usize,
+    /// Cursors over the *rank-filtered* pools, one per preferred rank.
+    ///
+    /// A rank preference selects from a different index space than the
+    /// flattened pool -- one entry per worker exposing that rank, not one per
+    /// scheduler -- so it cannot share `next`. Writing a modulo-reduced
+    /// rank-filtered index back into the flattened cursor confined it to
+    /// `1..=rank_filtered_count`, so after any rank-preferring request the tail
+    /// of the flattened pool became unreachable to every later rank-agnostic
+    /// request: with `{0: [10, 11], 1: [20, 21]}` and interleaved traffic,
+    /// schedulers 10 and 21 were never selected again. `AggregatedRoundRobin`
+    /// keeps the same separation by refusing to advance its rank state when a
+    /// preference was supplied.
+    next_by_rank: FxHashMap<u32, usize>,
     workers: BTreeMap<usize, Vec<usize>>,
     events: PhantomData<Events>,
 }
@@ -143,6 +158,7 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
     pub fn new(workers: Vec<WorkerTopology>) -> Self {
         Self {
             next: 0,
+            next_by_rank: FxHashMap::default(),
             workers: workers
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
@@ -177,8 +193,9 @@ where
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
-        let active_count = match preferred_dp_rank {
+        let preferred_dp_rank = request.preferred_dp_rank();
+        let rank_index = preferred_dp_rank.map(|rank| rank as usize);
+        let active_count = match rank_index {
             Some(rank) => self
                 .workers
                 .values()
@@ -187,15 +204,26 @@ where
             None => self.workers.values().map(Vec::len).sum::<usize>(),
         };
         if active_count == 0 {
-            if let Some(rank) = preferred_dp_rank {
+            // An empty pool is not a rank problem, and reporting it as one sent
+            // the reader after an authored rank that may be perfectly valid.
+            if self.workers.is_empty() {
+                return Err(anyhow!("no active workers for round-robin placement"));
+            }
+            if let Some(rank) = rank_index {
                 return Err(anyhow!(
                     "preferred attention-DP rank {rank} is out of range for the active worker pool"
                 ));
             }
             return Err(anyhow!("no active workers for round-robin placement"));
         }
-        let index = self.next % active_count;
-        let scheduler_id = match preferred_dp_rank {
+        let cursor = match preferred_dp_rank {
+            Some(rank) => self.next_by_rank.get(&rank).copied().unwrap_or_default(),
+            None => self.next,
+        };
+        let index = cursor % active_count;
+        // `index < active_count`, and both iterators below enumerate exactly the
+        // `active_count` entries counted above, so `nth` always yields.
+        let scheduler_id = match rank_index {
             Some(rank) => self
                 .workers
                 .values()
@@ -208,7 +236,12 @@ where
                 .nth(index),
         }
         .expect("active round-robin pool must contain a scheduler");
-        self.next = index + 1;
+        match preferred_dp_rank {
+            Some(rank) => {
+                self.next_by_rank.insert(rank, index + 1);
+            }
+            None => self.next = index + 1,
+        }
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
                 request_id,
@@ -498,6 +531,80 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("out of range")
+        );
+    }
+
+    /// A rank preference selects from the rank-filtered pool, a different index
+    /// space from the flattened pool the rank-agnostic branch walks. Sharing one
+    /// cursor between them confined it to `1..=rank_filtered_count` after any
+    /// ranked request, so the tail of the flattened pool was never selected
+    /// again -- `10` and `21` below were starved. `ReplaySpec` authors
+    /// `dp_rank` per request as an `Option` and `validate_request_dp_ranks`
+    /// accepts `None` for any subset, so this interleaving is reachable in a
+    /// shipping disagg config through `PoolRoundRobinPlacement`.
+    #[test]
+    fn pool_rotation_is_not_starved_by_an_interleaved_rank_preference() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![
+            WorkerTopology {
+                worker_id: 0,
+                scheduler_ids: vec![10, 11],
+            },
+            WorkerTopology {
+                worker_id: 1,
+                scheduler_ids: vec![20, 21],
+            },
+        ]);
+        let ranked = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, rank| {
+            let effects = PlacementPolicy::<RankedTestRequest>::place(
+                policy,
+                &RankedTestRequest {
+                    id: Uuid::from_u128(ordinal),
+                    preferred_dp_rank: rank,
+                },
+                (),
+                None,
+                0.0,
+            )
+            .unwrap();
+            let PlacementDecision::Immediate(placement) = effects.decision else {
+                panic!("round-robin placement must be immediate");
+            };
+            placement.scheduler_id
+        };
+
+        assert_eq!(scheduler_id(&mut policy, 1), 10);
+        assert_eq!(scheduler_id(&mut policy, 2), 11);
+        // The rank-1 pool is [11, 21]; this consumes its own first entry.
+        assert_eq!(ranked(&mut policy, 3, 1), 11);
+        // The flattened cursor is untouched, so rotation resumes at 20.
+        assert_eq!(
+            (4..=6)
+                .map(|ordinal| scheduler_id(&mut policy, ordinal))
+                .collect::<Vec<_>>(),
+            vec![20, 21, 10]
+        );
+        // The rank-1 cursor advanced independently and resumes at 21.
+        assert_eq!(ranked(&mut policy, 7, 1), 21);
+    }
+
+    #[test]
+    fn an_empty_pool_is_not_reported_as_a_rank_range_error() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new(Vec::new());
+        let error = PlacementPolicy::<RankedTestRequest>::place(
+            &mut policy,
+            &RankedTestRequest {
+                id: Uuid::from_u128(1),
+                preferred_dp_rank: 0,
+            },
+            (),
+            None,
+            0.0,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("no active workers"),
+            "unexpected error: {error}"
         );
     }
 
