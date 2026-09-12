@@ -109,8 +109,16 @@ pub(crate) struct SimulationEvent<Events: EngineEventBatch = ()> {
 }
 
 impl<Events: EngineEventBatch> PartialEq for SimulationEvent<Events> {
+    /// Defined through `Ord` so the two cannot disagree.
+    ///
+    /// Comparing `at_ms.to_bits()` and `seq_no` directly left `Eq` ignoring
+    /// `kind.ordering_rank()`, which `Ord` does compare -- two events could
+    /// therefore be `Eq` while `cmp` reported `Less`/`Greater`, violating
+    /// `Ord`'s contract and the `BinaryHeap` invariant that rests on it. That
+    /// is unreachable today only because `seq_no` is globally unique, which is
+    /// an invariant maintained in `runtime_utils`, not a property of this impl.
     fn eq(&self, other: &Self) -> bool {
-        self.at_ms.to_bits() == other.at_ms.to_bits() && self.seq_no == other.seq_no
+        self.cmp(other) == Ordering::Equal
     }
 }
 
