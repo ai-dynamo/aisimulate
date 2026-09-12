@@ -40,10 +40,13 @@ impl StoreStats for CorrectionBuckets {
     }
 
     fn is_ready(&self) -> bool {
-        // Match planner's regression readiness semantics: min_observations is
-        // checked across the whole inferred workload kind, not per region.
-        // Regions only decide which correction factor to apply once the
-        // workload kind is ready.
+        // `min_observations` is checked across the whole inferred workload
+        // kind, not per region; regions only decide WHICH correction factor to
+        // apply once the workload kind is ready. This is deliberate and is part
+        // of the documented public contract on `tune_with_fpms`, but note the
+        // consequence: a region holding a single observation supplies a full
+        // correction factor for its whole range as soon as any combination of
+        // regions reaches `min_observations`.
         self.samples.total_observations >= self.min_observations
     }
 }
