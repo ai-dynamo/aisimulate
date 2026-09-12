@@ -127,15 +127,39 @@ impl ReplayEngineConfig {
             let Some(role) = value.get(role_name).and_then(Value::as_object) else {
                 continue;
             };
-            for (field, inherited, defaulted) in [
-                ("dp_size", self.dp_size, default_role.dp_size),
+            // Every field `role()` inherits when the block is absent, and so
+            // every field a present-but-partial block silently *defaults*
+            // instead. `rank` carries the KV budget, backend, and timing model,
+            // making it the most damaging omission of the four, not the least:
+            // `{"rank": {"num_gpu_blocks": 100000}, "prefill": {"dp_size": 1, "rank": {}}}`
+            // parsed cleanly and ran prefill on a default KV budget.
+            for (field, inherited_differs, inherited, defaulted) in [
+                (
+                    "dp_size",
+                    self.dp_size != default_role.dp_size,
+                    self.dp_size.to_string(),
+                    default_role.dp_size.to_string(),
+                ),
                 (
                     "tensor_parallel_size",
-                    self.tensor_parallel_size,
-                    default_role.tensor_parallel_size,
+                    self.tensor_parallel_size != default_role.tensor_parallel_size,
+                    self.tensor_parallel_size.to_string(),
+                    default_role.tensor_parallel_size.to_string(),
+                ),
+                (
+                    "num_gpu_blocks_is_explicit",
+                    self.num_gpu_blocks_is_explicit != default_role.num_gpu_blocks_is_explicit,
+                    format!("{:?}", self.num_gpu_blocks_is_explicit),
+                    format!("{:?}", default_role.num_gpu_blocks_is_explicit),
+                ),
+                (
+                    "rank",
+                    self.rank != default_role.rank,
+                    "an authored top-level block".to_string(),
+                    "an all-default engine config".to_string(),
                 ),
             ] {
-                if !role.contains_key(field) && inherited != defaulted {
+                if !role.contains_key(field) && inherited_differs {
                     return Err(ReplayError::InvalidSpec(format!(
                         "engine descriptor sets {field} {inherited} but its {role_name} block omits \
                          {field}, which would silently run {role_name} at {defaulted}; author \
@@ -487,5 +511,50 @@ mod engine_config_tests {
         }))
         .expect("an unambiguous partial block must stay accepted");
         assert_eq!(config.role(WorkerStage::Prefill).dp_size, 1);
+    }
+
+    /// `role()` inherits every top-level field when the block is absent, so a
+    /// present-but-partial block silently defaults every field it omits -- not
+    /// just the two the guard originally covered. `rank` is the worst of them:
+    /// it carries the KV budget, backend, and timing model, so omitting it
+    /// against an authored top-level rank is exactly the "capacity difference
+    /// with no warning" harm this guard exists to refuse.
+    #[test]
+    fn a_partial_role_block_may_not_omit_rank_or_the_explicit_block_flag() {
+        for (field, descriptor) in [
+            (
+                "rank",
+                serde_json::json!({
+                    "rank": {"num_gpu_blocks": 100000},
+                    "prefill": {"dp_size": 1, "rank": {}},
+                    "decode": {"dp_size": 1}
+                }),
+            ),
+            (
+                "num_gpu_blocks_is_explicit",
+                serde_json::json!({
+                    "num_gpu_blocks_is_explicit": true,
+                    "prefill": {"dp_size": 1, "rank": {}},
+                    "decode": {"dp_size": 1, "rank": {}}
+                }),
+            ),
+        ] {
+            let error = match ReplayEngineConfig::parse(&descriptor) {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("omitting {field} against a non-default top level is ambiguous"),
+            };
+            assert!(
+                error.contains(field) && (error.contains("prefill") || error.contains("decode")),
+                "the error must name the role and {field}, got: {error}"
+            );
+        }
+
+        // Authoring the omitted field explicitly resolves the ambiguity.
+        ReplayEngineConfig::parse(&serde_json::json!({
+            "rank": {"num_gpu_blocks": 100000},
+            "prefill": {"dp_size": 1, "rank": {"num_gpu_blocks": 100000}},
+            "decode": {"dp_size": 1, "rank": {}}
+        }))
+        .expect("an explicitly authored rank block must parse");
     }
 }
