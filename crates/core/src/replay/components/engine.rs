@@ -1059,13 +1059,22 @@ where
                 .engine
                 .process_internal_work(now_ms)
                 .map_err(crate::replay::error::engine_boundary)?;
-            for rank in effects.into_by_rank() {
+            // Validate every rank before consuming any of them, the same way
+            // `drive_ready` does. The loop below moves each rank's KV events into
+            // `observations`/`artifact_events`, which are function-locals dropped
+            // on the error return -- and the engine already drained them, so they
+            // are never re-emitted. Bailing partway also skipped `refresh_worker`
+            // below, leaving `ready_workers` stale for this worker.
+            for rank in &effects.by_rank {
                 if !rank.effects.admissions.is_empty() || !rank.effects.pressure_events.is_empty() {
                     bail!(
                         "engine internal work exposed pass-start scheduler effects for worker {worker_id} rank {}",
                         rank.dp_rank
                     );
                 }
+            }
+
+            for rank in effects.into_by_rank() {
                 let kv_events = rank.effects.kv_events;
                 if self.capture_artifact_kv_events {
                     artifact_events.extend(kv_events.iter().cloned());
