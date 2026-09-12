@@ -1104,7 +1104,12 @@ fn transition_index(transitions: &[DisaggTransition], needle: DisaggTransition) 
     transitions
         .iter()
         .position(|transition| *transition == needle)
-        .unwrap()
+        .unwrap_or_else(|| {
+            // A bare `unwrap` here reported only "called `Option::unwrap()` on a
+            // `None` value", naming neither the missing transition nor which of
+            // the configurations in the surrounding loop failed.
+            panic!("transition {needle:?} never occurred; log was {transitions:?}")
+        })
 }
 
 #[test]
@@ -1755,6 +1760,17 @@ fn per_request_handoff_detail_preserves_backend_causality_and_stage_reuse() {
             let destination_activated = record.destination_activated_ms.unwrap();
             let source_released = record.source_released_ms.unwrap();
             let decode_admit = record.decode_admit_ms.unwrap();
+            // Strict end-to-end span. Every ordering assertion below is
+            // non-strict, because adjacent handoff steps legitimately land in
+            // the same delta cycle -- but that also meant collapsing all six
+            // timestamps onto one value satisfied every one of them. This pins
+            // that the lifecycle actually advances simulated time: prefill must
+            // execute a pass before decode can be admitted.
+            assert!(
+                decode_admit > prefill_admit,
+                "handoff lifecycle collapsed to a single instant: \
+                 prefill_admit={prefill_admit} decode_admit={decode_admit}"
+            );
             assert!(prefill_admit <= source_held);
             assert!(source_held <= source_released);
             assert!(destination_reserved <= destination_activated);
@@ -2220,7 +2236,10 @@ fn destination_first_workload_materializes_for_decode_reservation_then_completes
             .materialized_tokens()
             .unwrap()
             .is_some(),
-        "SGLang destination-first routing currently materializes before prefill"
+        "SGLang destination-first routing must materialize the prompt at decode \
+         reservation, before prefill submission: the destination needs block \
+         hashes to reserve against, and `route_destination` is the only site \
+         that can supply them in this order"
     );
 
     runtime.apply_scaling(1, 1).unwrap();
@@ -2342,11 +2361,15 @@ fn test_disagg_max_sim_time_truncates_run() {
             .run()
             .unwrap();
     let report = collector.finish();
-    assert!(
-        report.request_counts.num_requests < submitted,
-        "cap should admit fewer than {} requests; got num_requests={}",
-        submitted,
-        report.request_counts.num_requests
+    // Exact, not `< submitted`: arrivals land at 0/1000/2000/3000/4000ms and
+    // the cap is 2500ms, so precisely the first three are admitted. The old
+    // `<` bound was also satisfied by a cap that admitted *zero* requests,
+    // which would have meant the cap was broken in the opposite direction and
+    // the test would still have passed. The cap-less sibling below asserts
+    // `== 5` exactly for the same reason.
+    assert_eq!(
+        report.request_counts.num_requests, 3,
+        "a 2500ms cap must admit exactly the arrivals at 0/1000/2000ms out of {submitted}"
     );
     assert!(
         report.throughput.duration_ms <= cap_ms,
@@ -2740,6 +2763,17 @@ fn cancel_racing_a_decode_completion_is_not_counted_as_traffic_completion() {
         }
         runtime.step_dynamic_until(f64::INFINITY).unwrap();
     }
+    // The drain loop must actually reach quiescence. Without this, a run that
+    // stalled with the request still in flight satisfied every assertion below
+    // -- they are all "must be zero", which a request that never completed
+    // trivially meets. The sibling
+    // `cancel_during_decode_retires_the_request_instead_of_letting_it_finish`
+    // runs the identical loop and does assert this.
+    assert_eq!(
+        runtime.cluster_in_flight(),
+        0,
+        "the cancel must drain, not stall"
+    );
 
     assert_eq!(
         runtime
