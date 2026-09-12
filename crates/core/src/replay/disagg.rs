@@ -3138,6 +3138,22 @@ where
             let next_tick = decision
                 .next_tick_ms
                 .filter(|next_ms| *next_ms > self.now_ms);
+            // A policy that asked to be re-armed at `now_ms` or earlier (the
+            // natural encoding of "tick again now" across the PyO3 boundary) is
+            // not the same thing as a policy that returned `None` to stop.
+            // Collapsing the two disables scaling and FPM collection for the
+            // rest of the run, and the report's worker-seconds then reflect a
+            // frozen topology with nothing to say why. Not a `bail!`: this
+            // path's contract does permit a deliberate stop. Mirrors
+            // `AggRuntimeImpl`.
+            if decision.next_tick_ms.is_some() && next_tick.is_none() {
+                tracing::warn!(
+                    next_tick_ms = ?decision.next_tick_ms,
+                    now_ms = self.now_ms,
+                    "replay scaling policy asked to re-arm at or before the current instant; \
+                     dropping the tick and stopping scaling and FPM collection"
+                );
+            }
             if let Some(next_ms) = next_tick
                 && !self.is_workload_done()
             {

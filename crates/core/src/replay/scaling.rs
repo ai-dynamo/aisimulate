@@ -229,6 +229,18 @@ pub struct ReplayScalingDecision {
     /// Target decode (agg: total) replica count.
     pub target_decode: Option<usize>,
     /// Absolute simulated time (ms) of the next tick. `None` => do not re-arm.
+    ///
+    /// A `Some` value does not guarantee a re-arm. The runtime drops any
+    /// `Some(next_ms) <= now_ms` as a spin guard, which reaches the same
+    /// terminal outcome as `None`: scaling *and* FPM collection are off for the
+    /// rest of the run. The runtime logs a warning when it does so, because the
+    /// policy did not ask for that outcome. A non-finite value is neither, and
+    /// is a hard error rather than a permanent stop -- folding a policy
+    /// arithmetic bug into the scaling-off outcome would hide it for the whole
+    /// run.
+    ///
+    /// To be re-armed, return a finite value strictly greater than
+    /// `ReplayScalingSnapshot::now_ms`.
     pub next_tick_ms: Option<f64>,
 }
 
