@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/engine.py
 
 """Compiled-engine builder.
 
@@ -122,6 +124,8 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 #   adds its decode latency.
 # - 17 (Muse Glimmer review follow-up): Context attention gained
 #   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
+# - 18 (speculation migration): Generation attention gained verify_query_tokens
+#   and FPM forward gained verify_width, both positional bincode fields.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -154,6 +158,10 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
             "weight_bytes": op._weight_bytes,
+            # Speculative verify width for the equivalent-AR decode mapping
+            # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
+            # draft scheme is materialized.
+            "verify_width": int(getattr(op, "_verify_width", 1) or 1),
             "sol_ops": [json.loads(_as_engine_op(c)._spec_json()) for c in op._sol_ops],
         }
     }

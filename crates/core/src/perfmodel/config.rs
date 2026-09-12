@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/config.rs
 
 //! Public wire/identity configuration types carried by an
 //! [`crate::perfmodel::engine::spec::EngineSpec`]. [`EngineConfig`] and its cohesive
@@ -74,7 +76,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   contributes decode latency.
 // - 17 (Muse Glimmer review follow-up): `ContextAttentionOp` gained
 //   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 17;
+// - 18 (AIC PR #1563 migration): GenerationAttentionOp gained speculative
+//   batch/query widths and FpmForwardOp gained verify_width. Upstream used
+//   14/15, already occupied here; these are positional bincode layout changes.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

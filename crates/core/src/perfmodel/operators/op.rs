@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/op.rs
 
 //! `Op` enum: unified typed dispatch for every operator family.
 //!
@@ -356,6 +358,48 @@ impl Op {
             Op::Kda(o) => o.name = name,
             Op::MoeAllToAll(o) => o.name = name,
             Op::MoeExpertCompute(o) => o.name = name,
+        }
+    }
+
+    /// Uniform scale_factor mutator (speculation.materialize's
+    /// non-integer width-ratio fold scales token-linear ops' RESULT).
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        match self {
+            Op::Gemm(o) => o.scale_factor = scale_factor,
+            Op::Embedding(o) => o.scale_factor = scale_factor,
+            Op::Elementwise(o) => o.scale_factor = scale_factor,
+            Op::ContextAttention(o) => o.scale_factor = scale_factor,
+            Op::GenerationAttention(o) => o.scale_factor = scale_factor,
+            Op::EncoderAttention(o) => o.scale_factor = scale_factor,
+            Op::ContextMla(o) => o.scale_factor = scale_factor,
+            Op::GenerationMla(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleContext(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleGeneration(o) => o.scale_factor = scale_factor,
+            Op::MlaBmm(o) => o.scale_factor = scale_factor,
+            Op::Moe(o) => o.scale_factor = scale_factor,
+            Op::MoeDispatch(o) => o.scale_factor = scale_factor,
+            Op::CustomAllReduce(o) => o.scale_factor = scale_factor,
+            Op::Nccl(o) => o.scale_factor = scale_factor,
+            Op::P2P(o) => o.scale_factor = scale_factor,
+            Op::Vision(o) => o.scale_factor = scale_factor,
+            Op::DsaContext(o) => o.scale_factor = scale_factor,
+            Op::DsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::MsaContext(o) => o.scale_factor = scale_factor,
+            Op::MsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Context(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Generation(o) => o.scale_factor = scale_factor,
+            Op::Mhc(o) => o.scale_factor = scale_factor,
+            Op::Mamba2(o) => o.scale_factor = scale_factor,
+            Op::Gdn(o) => o.scale_factor = scale_factor,
+            Op::WideEpContextMla(o) => o.scale_factor = scale_factor,
+            Op::WideEpGenerationMla(o) => o.scale_factor = scale_factor,
+            Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
+            Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
+            Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
+            Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
+            Op::Kda(o) => o.scale_factor = scale_factor,
+            Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
+            Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
         }
     }
 

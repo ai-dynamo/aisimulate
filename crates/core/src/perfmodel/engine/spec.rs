@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/engine/spec.rs
 
 //! `EngineSpec`: the serializable engine wire format.
 //!
@@ -243,6 +245,8 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Int8,
             lane_order: vec!["triton".into(), "trtllm_mha".into(), "default".into()],
             use_qk_norm: true,
+            scale_num_tokens: 8,
+            verify_query_tokens: 7,
         }
     }
 
@@ -635,6 +639,8 @@ mod tests {
                 "1".into(),
             ],
             weight_bytes: 1.5e10,
+            // Non-default on purpose: the round-trip must preserve the field.
+            verify_width: 8,
             sol_ops: vec![
                 OpSpec::Gemm(gemm()),
                 OpSpec::ContextAttention(context_attention()),
@@ -1117,5 +1123,36 @@ mod tests {
             }
             other => panic!("expected EngineSpec engine-JSON error, got {other:?}"),
         }
+    }
+    #[test]
+    fn speculative_width_json_defaults_and_bincode_version_gate() {
+        let mut attention_json = serde_json::to_value(generation_attention()).unwrap();
+        attention_json
+            .as_object_mut()
+            .unwrap()
+            .remove("scale_num_tokens");
+        attention_json
+            .as_object_mut()
+            .unwrap()
+            .remove("verify_query_tokens");
+        let attention: GenerationAttentionOp = serde_json::from_value(attention_json).unwrap();
+        assert_eq!(attention.scale_num_tokens, 1);
+        assert_eq!(attention.verify_query_tokens, 0);
+        let mut fpm_json = serde_json::to_value(fpm_forward()).unwrap();
+        fpm_json.as_object_mut().unwrap().remove("verify_width");
+        let fpm: crate::operators::FpmForwardOp = serde_json::from_value(fpm_json).unwrap();
+        assert_eq!(fpm.verify_width, 1);
+
+        let mut bytes = handshake_spec().to_bincode().unwrap();
+        bytes[..4].copy_from_slice(&17u32.to_le_bytes());
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                got: 17,
+                expected: 18,
+                ..
+            })
+        ));
     }
 }

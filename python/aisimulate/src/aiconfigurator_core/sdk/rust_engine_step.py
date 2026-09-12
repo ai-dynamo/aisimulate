@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/rust_engine_step.py
 
 """Thin facade over the compiled Rust engine (``aiconfigurator_core``).
 
@@ -1001,6 +1003,16 @@ def _cached_engine_handle(model: Any, database: Any) -> Any:
     return handle
 
 
+def _speculation_identity(model_config: Any) -> str | None:
+    spec = getattr(model_config, "speculation", None)
+    if spec is None or getattr(spec, "kind", "none") in ("none", "mtp"):
+        return None  # mtp rides the nextn key itself (legacy contract)
+    try:
+        return spec.identity_hash()
+    except Exception:
+        return repr(spec)
+
+
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
@@ -1026,6 +1038,10 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "kv_cache_dtype": _quant_to_dtype(getattr(model_config, "kvcache_quant_mode", None)),
         "kv_block_size": None,
         "nextn": int(nextn) if nextn is not None else None,
+        # Scheme-based speculation materializes draft ops into the op lists:
+        # two schemes with the same verify width (same nextn channel) still
+        # compile DIFFERENT engines, so the content identity must be keyed.
+        "speculation": _speculation_identity(model_config),
         # An op_level and an fpm model with identical parallel/quant configs
         # compile to DIFFERENT engines (granular op list vs one whole-model op
         # per phase); without this key they would share a cached handle and
