@@ -42,11 +42,77 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 
 ## Runtime speed when migrating
 
-Moving the same AIC estimate into the AISimulate distribution has little measured runtime cost.
-Moving from an AIC analytical estimate to a serving replay changes the work performed, so there
-is no single AIC-to-AISimulate speed ratio. Both distributions already use the Rust estimator;
+`recommend` has a substantial measured runtime gap. The September 11, 2026 benchmark below
+compares actual installed commands on an Apple M3 Pro (12 cores, 36 GiB), Python 3.12.11,
+optimized native builds, matching common dependencies, and shared profile data. These are host
+CPU execution times, not GPU inference latency or a silicon-accuracy result.
+
+### Recommendation: optimizer cost dominates this case
+
+AIC analytically sweeps configurations and sizes replicas for a target load. AISimulate constructs
+serving candidates, replays traffic for each unique candidate, and fits a Bayesian optimizer between
+batches. Its defaults are `algorithm: bayesian`, `max_trials: 320`, and `parallelism: 16`.
+A replay-only speedup does not remove optimizer work.
+
+The recommendation case uses Llama 3.1 8B, B200/vLLM 0.24.0, ISL 1,024, OSL 128, and concurrency
+10. AIC performs minimum-GPU sizing across aggregated/disaggregated deployments with TTFT 2,000 ms
+and TPOT 30 ms. AISimulate searches aggregated throughput per GPU under an eight-GPU limit with
+100 requests per candidate and no SLA constraint. This compares migration workflow costs with
+**different search spaces, objectives, SLA constraints, and answers**. The AISimulate test bounds
+the budget to 32 suggestions while retaining the default 16 workers; the default 320-suggestion
+search is not timed here.
+
+| Installed command / search | Median of 3 fresh processes | Observed range | Best AISimulate score (tok/s/GPU) |
+|---|---:|---:|---:|
+| Standalone `aiconfigurator cli recommend` | 8.34 s | 8.27–9.34 s | Different objective |
+| `aisimulate recommend`, Bayesian before padding | 48.81 s | 48.77–49.13 s | 2,314.48 |
+| `aisimulate recommend`, Bayesian with padding | 42.97 s | 42.96–43.28 s | 2,314.48 |
+| `aisimulate recommend`, existing random algorithm, 16 workers | 6.14 s | 6.12–6.36 s | 1,511.77 |
+| `aisimulate recommend`, existing random algorithm, 4 workers | 3.39 s | 3.32–3.40 s | 1,511.77 |
+
+Trial-axis power-of-two padding reduces Bayesian process time by **12% (1.14×)**. The measured
+gap versus AIC falls from **5.85× to 5.15×**. Both Bayesian variants already include the replay
+cache described below, so this isolates the Python optimizer change. All three before/after pairs
+produce the same 21 unique configurations and predicted metrics in this 32-suggestion case; the
+other 11 suggestions hit the candidate cache. Fresh processes use warm OS caches.
+
+A separate 64-suggestion diagnostic spent 149 of 158 seconds inside the Bayesian sampler's
+`suggest` calls. This includes JAX tracing/compilation, Gaussian-process fitting, and acquisition
+optimization. Padding lets nearby completed/pending trial counts reuse compiled tensor shapes.
+The Bayesian model, seed, dtype, and search/acquisition budgets remain unchanged, but floating-point
+optimization can take a different suggestion trajectory. That diagnostic decreased to 141 seconds,
+changed 30 unique candidates to 29, kept all 23 shared candidates' predicted metrics unchanged,
+and changed the best score by less than 0.03%. This does not establish universal search-quality
+or speed equivalence; substantial optimizer overhead remains.
+
+For a short exploratory run, explicitly select the existing random sampler and a small budget:
+
+```yaml
+optimizer:
+  algorithm: random
+  max_trials: 32
+  parallelism: 4
+```
+
+Random search avoids GP/JAX fitting and does not learn from earlier evaluations. **Its best score
+was 35% lower than Bayesian search in this case**, despite evaluating 25 unique candidates. It is
+a speed/coverage tradeoff, not an equivalent faster answer. Four workers reduced process overhead
+for these short replays and retained the same random candidate set; larger workloads may benefit
+from more workers. Trial budgets count suggestions, including duplicates and failed/unsupported
+suggestions, not guaranteed unique successful replays. Qualify the final recommendation with the
+actual workload, search domains, SLA requirements, and sufficient search budget.
+
+See the [recommendation samples and configuration evidence](benchmarks/recommend-runtime-2026-09-11.json)
+and [measurement boundaries and reproduction](runtime-benchmark.md). More work is possible on
+optimizer fitting/acquisition cost and process startup; choosing lighter optimizer budgets or a
+different algorithm requires separate search-quality validation.
+
+### Compatibility estimates and serving replay
+
+The same `aiconfigurator cli estimate` command in the two distributions has little measured runtime
+cost difference. This is a compatibility-command comparison, not evidence that the unified
+`aisimulate recommend` command is equally fast. Both distributions already use the Rust estimator;
 AISimulate also simulates scheduling, request arrivals, KV-cache behavior, and request statistics.
-Recommendation repeats that work across its evaluated candidates.
 
 The following **host runtime** measurements were collected on September 11, 2026, with an Apple
 M3 Pro (12 cores, 36 GiB), Python 3.12.11, optimized native builds, matching Python dependencies,
@@ -67,7 +133,7 @@ timings, not predicted GPU latency or a silicon-accuracy result.
 The matched compatibility CLI is effectively unchanged: the 2.4% baseline difference is small
 relative to the observed run ranges. The replay cache reduces native-loop time by **37% (1.59×)**
 and warm-runner time by **20% (1.24×)** in the 1,000-request case. There is **no demonstrated fresh
-CLI speedup**: imports, model/data loading, and provider construction dominate this small workload.
+`predict` CLI speedup from the replay cache**: imports, model/data loading, and provider construction dominate this small workload.
 The 100-request warm runner changes only from 30.18 ms to 29.86 ms. See the
 [raw timing evidence](benchmarks/migration-runtime-2026-09-11.json) and
 [measurement boundaries and reproduction](runtime-benchmark.md).

@@ -82,6 +82,7 @@ areas:
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_source_compliance.py
+      - tests/test_runtime_benchmark_attestation.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -109,6 +110,8 @@ shared:
   - glob: tests/test_ci_workflow_contracts.py
     owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
+    owners: [infra, maintainers]
+  - glob: tests/test_runtime_benchmark_attestation.py
     owners: [infra, maintainers]
   - glob: tests/test_e2e_accuracy_overview.py
     owners: [forward-pass-engine, infra, maintainers]

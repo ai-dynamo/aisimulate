@@ -87,6 +87,7 @@
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_runtime_benchmark_attestation.py         @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===
@@ -169,5 +170,6 @@
 /python/aisimulate/src/aisimulate/sweeper/           @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/runner.py          @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/traffic.py         @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_runtime_benchmark_attestation.py         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/__init__.py        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/workflows/codeowners.yml  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
