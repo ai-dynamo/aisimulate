@@ -324,21 +324,18 @@ impl DisaggFlowState {
         }
     }
 
-    #[inline(never)]
     fn state(&self, uuid: Uuid) -> Result<&DisaggRequestState> {
         self.requests
             .get(&uuid)
             .ok_or_else(|| anyhow!("offline disagg replay missing request state for {uuid}"))
     }
 
-    #[inline(never)]
     fn state_mut(&mut self, uuid: Uuid) -> Result<&mut DisaggRequestState> {
         self.requests
             .get_mut(&uuid)
             .ok_or_else(|| anyhow!("offline disagg replay missing request state for {uuid}"))
     }
 
-    #[inline(never)]
     fn acknowledge_action(
         &mut self,
         uuid: Uuid,
@@ -360,7 +357,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn apply_handoff_fact(
         &mut self,
         uuid: Uuid,
@@ -384,7 +380,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn record_prefill_placement(
         &self,
         placement: Placement,
@@ -402,7 +397,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn record_decode_placement(
         &self,
         placement: Placement,
@@ -416,13 +410,11 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn prepare_prefill_submission(&mut self, uuid: Uuid) -> Result<(DirectRequest, HandoffId)> {
         let handoff_id = self.state(uuid)?.handoff_id;
         Ok((self.state_mut(uuid)?.build_prefill_request()?, handoff_id))
     }
 
-    #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     fn finish_prefill_submission(
         &mut self,
@@ -450,7 +442,6 @@ impl DisaggFlowState {
         self.process_lifecycle_events(lifecycle_events, now_ms, collector, stats)
     }
 
-    #[inline(never)]
     fn prepare_destination_reservation(
         &mut self,
         uuid: Uuid,
@@ -465,7 +456,6 @@ impl DisaggFlowState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[inline(never)]
     fn finish_destination_reservation(
         &mut self,
         uuid: Uuid,
@@ -502,7 +492,6 @@ impl DisaggFlowState {
         self.process_lifecycle_events(lifecycle_events, now_ms, collector, stats)
     }
 
-    #[inline(never)]
     fn take_prefill_placement(
         &mut self,
         placement: Placement,
@@ -523,7 +512,6 @@ impl DisaggFlowState {
         Ok((uuid, worker_idx, action))
     }
 
-    #[inline(never)]
     fn take_decode_placement(
         &mut self,
         placement: Placement,
@@ -550,7 +538,6 @@ impl DisaggFlowState {
             .ok_or_else(|| anyhow!("offline disagg replay missing handoff {handoff_id:?}"))
     }
 
-    #[inline(never)]
     fn process_lifecycle_events(
         &mut self,
         events: Vec<LifecycleEvent>,
@@ -621,7 +608,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn on_external_arrival(
         &mut self,
         mut request: ReplayRequestPayload,
@@ -664,7 +650,6 @@ impl DisaggFlowState {
         Ok(uuid)
     }
 
-    #[inline(never)]
     fn inspect_prefill_signal(
         &mut self,
         signal: &OutputSignal,
@@ -698,7 +683,6 @@ impl DisaggFlowState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[inline(never)]
     fn start_transfer(
         &mut self,
         uuid: Uuid,
@@ -742,7 +726,6 @@ impl DisaggFlowState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[inline(never)]
     fn finish_destination_activation(
         &mut self,
         uuid: Uuid,
@@ -775,7 +758,6 @@ impl DisaggFlowState {
         self.process_lifecycle_events(lifecycle_events, now_ms, collector, stats)
     }
 
-    #[inline(never)]
     fn record_source_release(&mut self, _uuid: Uuid, _stats: &mut DisaggRuntimeStats) {
         #[cfg(test)]
         _stats
@@ -789,7 +771,6 @@ impl DisaggFlowState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[inline(never)]
     fn finish_source_release(
         &mut self,
         uuid: Uuid,
@@ -805,7 +786,6 @@ impl DisaggFlowState {
         self.process_lifecycle_events(lifecycle_events, now_ms, collector, stats)
     }
 
-    #[inline(never)]
     fn complete_successful_handoff(
         &mut self,
         uuid: Uuid,
@@ -825,7 +805,6 @@ impl DisaggFlowState {
         self.retire_completed_request(uuid)
     }
 
-    #[inline(never)]
     fn record_decode_terminal(
         &mut self,
         signal: &OutputSignal,
@@ -882,7 +861,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn prepare_logical_finish(&mut self, uuid: Uuid, remove_actions: bool) -> Result<()> {
         let transfer_was_pending = {
             let state = self.state_mut(uuid)?;
@@ -910,7 +888,6 @@ impl DisaggFlowState {
         Ok(())
     }
 
-    #[inline(never)]
     fn retire_completed_request(&mut self, uuid: Uuid) -> Result<bool> {
         let ready = {
             let state = self.state(uuid)?;
