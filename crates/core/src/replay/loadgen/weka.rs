@@ -498,12 +498,24 @@ struct WekaTrace {
     models: Vec<String>,
     block_size: usize,
     hash_id_scope: String,
-    #[serde(default)]
-    tool_tokens: usize,
-    #[serde(default)]
-    system_tokens: usize,
     requests: Vec<WekaEntry>,
+    /// Trace-wide tool-token total. Retained to document the source schema;
+    /// not consumed. It is an aggregate with no per-request attribution, so it
+    /// cannot be folded into any row's `input_length`. Whether a request's
+    /// `in` already accounts for these tokens is a producer-contract question
+    /// the corpus does not answer.
     #[serde(default)]
+    #[allow(dead_code)]
+    tool_tokens: usize,
+    /// Trace-wide system-prompt token total. Not consumed, for the same reason
+    /// as `tool_tokens`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    system_tokens: usize,
+    /// Opaque producer-authored summary block. Reporting metadata with no
+    /// canonical counterpart; never consumed.
+    #[serde(default)]
+    #[allow(dead_code)]
     totals: Option<serde_json::Value>,
 }
 
@@ -529,16 +541,35 @@ struct WekaRequest {
     #[serde(default)]
     hash_ids: Vec<u64>,
     #[serde(default)]
-    input_types: Vec<String>,
-    #[serde(default)]
-    output_types: Vec<String>,
-    #[serde(default)]
-    stop: String,
-    #[serde(default)]
     api_time: Option<f64>,
+    /// Recorded input modality labels. Not consumed: `AgenticMooncakeRow` has
+    /// no modality field and replay is driven by token counts alone.
     #[serde(default)]
+    #[allow(dead_code)]
+    input_types: Vec<String>,
+    /// Recorded output modality labels. Not consumed, as for `input_types`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    output_types: Vec<String>,
+    /// Recorded stop reason. Not consumed: replay generates exactly the
+    /// `output_length` tokens the row declares, so the reason the original
+    /// generation halted has no effect on the replayed request.
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop: String,
+    /// Recorded client think time preceding this request. Not consumed: the
+    /// canonical graph already expresses that gap as the dependency delay
+    /// derived from `t` and the predecessor's end, so honoring it here would
+    /// double-count the same wait.
+    #[serde(default)]
+    #[allow(dead_code)]
     think_time: Option<f64>,
+    /// Recorded time to first token. Not consumed, and unlike the fields above
+    /// this is a genuine gap: replay synthesizes TTFT from the performance
+    /// model, and `AgenticMooncakeRow` has no field to carry the recorded
+    /// value, so it cannot be preserved without a canonical schema change.
     #[serde(default)]
+    #[allow(dead_code)]
     ttft: Option<f64>,
 }
 
@@ -546,21 +577,34 @@ struct WekaRequest {
 struct WekaSubagent {
     t: f64,
     agent_id: String,
-    subagent_type: String,
     #[serde(default)]
     duration_ms: Option<i64>,
-    #[serde(default)]
-    total_tokens: Option<usize>,
-    #[serde(default)]
-    tool_use_count: Option<usize>,
     status: String,
     requests: Vec<WekaInnerEntry>,
+    /// Producer-authored role label, e.g. "Explore". Not consumed: it names
+    /// the agent's purpose, which affects neither timing nor graph identity.
+    #[allow(dead_code)]
+    subagent_type: String,
+    /// Subagent token and tool-call aggregates. Not consumed: reporting
+    /// metadata with no per-request attribution.
     #[serde(default)]
-    models: Vec<String>,
+    #[allow(dead_code)]
+    total_tokens: Option<usize>,
     #[serde(default)]
+    #[allow(dead_code)]
+    tool_use_count: Option<usize>,
+    #[serde(default)]
+    #[allow(dead_code)]
     tool_tokens: usize,
     #[serde(default)]
+    #[allow(dead_code)]
     system_tokens: usize,
+    /// Models used by this subagent. Not consumed: `validate_trace_models`
+    /// checks every nested request against the trace-level declaration, which
+    /// subsumes this per-subagent copy.
+    #[serde(default)]
+    #[allow(dead_code)]
+    models: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1527,12 +1571,6 @@ fn validate_trace_header(trace: &WekaTrace, relative_path: &str) -> Result<()> {
             trace.hash_id_scope
         );
     }
-    let _ = (
-        &trace.models,
-        trace.tool_tokens,
-        trace.system_tokens,
-        &trace.totals,
-    );
     Ok(())
 }
 
@@ -1573,14 +1611,6 @@ fn validate_subagent(subagent: &WekaSubagent, relative_path: &str) -> Result<Sub
             subagent.agent_id
         );
     }
-    let _ = (
-        &subagent.subagent_type,
-        subagent.total_tokens,
-        subagent.tool_use_count,
-        &subagent.models,
-        subagent.tool_tokens,
-        subagent.system_tokens,
-    );
     Ok(mode)
 }
 
@@ -1669,13 +1699,6 @@ fn validate_request(request: &WekaRequest, relative_path: &str) -> Result<()> {
             relative_path
         );
     }
-    let _ = (
-        &request.input_types,
-        &request.output_types,
-        &request.stop,
-        request.think_time,
-        request.ttft,
-    );
     Ok(())
 }
 
