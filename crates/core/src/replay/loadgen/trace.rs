@@ -472,9 +472,11 @@ impl MooncakeTraceBuilder {
             input_length,
             synthesizable_capacity
         );
-        let output_length = raw
-            .output_length
-            .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?;
+        let output_length = checked_declared_length(
+            &format!("trace line {} output_length", line_idx + 1),
+            raw.output_length
+                .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?,
+        )?;
         let output_token_ids = raw.output_token_ids;
         if let Some(output_token_ids) = output_token_ids.as_ref()
             && output_token_ids.len() != output_length
@@ -745,7 +747,13 @@ impl Trace {
 
                 turns.push(TurnTrace {
                     input_length: current_input_length,
-                    max_output_tokens: raw.assistant_response_length[turn_idx],
+                    max_output_tokens: checked_declared_length(
+                        &format!(
+                            "trace line {} assistant_response_length[{turn_idx}]",
+                            line_idx + 1
+                        ),
+                        raw.assistant_response_length[turn_idx],
+                    )?,
                     hash_ids: hash_id_interner.intern_all(hash_ids.clone())?,
                     delay_after_previous_ms: next_turn_delay_ms,
                     ..Default::default()
@@ -773,7 +781,13 @@ impl Trace {
 
             turns.push(TurnTrace {
                 input_length: current_input_length,
-                max_output_tokens: raw.final_assistant_response_length,
+                max_output_tokens: checked_declared_length(
+                    &format!(
+                        "trace line {} final_assistant_response_length",
+                        line_idx + 1
+                    ),
+                    raw.final_assistant_response_length,
+                )?,
                 hash_ids: hash_id_interner.intern_all(hash_ids)?,
                 delay_after_previous_ms: next_turn_delay_ms,
                 ..Default::default()
@@ -1424,9 +1438,11 @@ impl AgenticTraceBuilder {
         if raw.model.trim().is_empty() {
             bail!("trace line {} has an empty model", line_idx + 1);
         }
-        let output_length = raw
-            .output_length
-            .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?;
+        let output_length = checked_declared_length(
+            &format!("trace line {} output_length", line_idx + 1),
+            raw.output_length
+                .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?,
+        )?;
         let output_token_ids = raw.output_token_ids;
         if let Some(output_token_ids) = output_token_ids.as_ref()
             && output_token_ids.len() != output_length
@@ -1903,11 +1919,26 @@ fn sample_delay_ms(spec: &DelaySpec, rng: &mut StdRng) -> Result<f64> {
     }
 }
 
-/// Upper bound on a synthesized sequence length, matching the Weka importer's
-/// ceiling on a declared request length. A length reaches `Vec::with_capacity`
-/// as a block count, so an unbounded value is an allocation abort rather than
-/// an error.
-const MAX_SYNTHETIC_SEQUENCE_TOKENS: usize = 10_000_000;
+/// Upper bound on any declared or synthesized sequence length, matching the
+/// Weka importer's `MAX_DECLARED_REQUEST_TOKENS` ceiling.
+///
+/// A length reaches `Vec::with_capacity` as a token or block count, so an
+/// unbounded value is an allocation abort rather than an error. Declared
+/// *input* length is anchored to `hash_ids.len() * block_size` by every loader
+/// that carries a hash array, but declared *output* length has no such anchor:
+/// `WorkloadDriver::new*` eagerly materializes `max_output_tokens` random token
+/// IDs per turn at construction, so one trace line asking for `1e12` output
+/// tokens is a multi-terabyte allocation.
+pub(super) const MAX_DECLARED_SEQUENCE_TOKENS: usize = 10_000_000;
+
+/// Reject a declared sequence length that would drive an unbounded allocation.
+pub(super) fn checked_declared_length(what: &str, value: usize) -> Result<usize> {
+    ensure!(
+        value <= MAX_DECLARED_SEQUENCE_TOKENS,
+        "{what} {value} exceeds the maximum declared sequence length {MAX_DECLARED_SEQUENCE_TOKENS}"
+    );
+    Ok(value)
+}
 
 /// Reject a length distribution whose parameters cannot produce a usable draw.
 ///
@@ -1923,15 +1954,15 @@ fn validate_length_spec(field: &str, spec: &LengthSpec) -> Result<()> {
             spec.stddev
         );
     }
-    if spec.mean > MAX_SYNTHETIC_SEQUENCE_TOKENS {
+    if spec.mean > MAX_DECLARED_SEQUENCE_TOKENS {
         bail!(
-            "{field} mean {} exceeds the maximum synthesized sequence length {MAX_SYNTHETIC_SEQUENCE_TOKENS}",
+            "{field} mean {} exceeds the maximum synthesized sequence length {MAX_DECLARED_SEQUENCE_TOKENS}",
             spec.mean
         );
     }
-    if spec.stddev.abs() > MAX_SYNTHETIC_SEQUENCE_TOKENS as f64 {
+    if spec.stddev.abs() > MAX_DECLARED_SEQUENCE_TOKENS as f64 {
         bail!(
-            "{field} stddev {} exceeds the maximum synthesized sequence length {MAX_SYNTHETIC_SEQUENCE_TOKENS}",
+            "{field} stddev {} exceeds the maximum synthesized sequence length {MAX_DECLARED_SEQUENCE_TOKENS}",
             spec.stddev
         );
     }
@@ -1951,10 +1982,10 @@ fn sample_length(spec: &LengthSpec, min_value: usize, rng: &mut StdRng) -> Resul
     let sample = sample.round().max(min_value as f64);
     // `validate_length_spec` bounds both parameters, so only an extreme tail
     // draw can land here -- loud is still better than a saturating cast.
-    if !(sample.is_finite() && sample <= MAX_SYNTHETIC_SEQUENCE_TOKENS as f64) {
+    if !(sample.is_finite() && sample <= MAX_DECLARED_SEQUENCE_TOKENS as f64) {
         bail!(
             "synthesized length {sample} exceeds the maximum synthesized sequence \
-             length {MAX_SYNTHETIC_SEQUENCE_TOKENS}"
+             length {MAX_DECLARED_SEQUENCE_TOKENS}"
         );
     }
     Ok(sample as usize)

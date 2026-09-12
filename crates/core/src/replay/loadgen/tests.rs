@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
-use super::trace::{synthesize_trace_tokens, validate_synthesizable_prompt};
+use super::trace::{
+    MAX_DECLARED_SEQUENCE_TOKENS, synthesize_trace_tokens, validate_synthesizable_prompt,
+};
 use super::*;
 
 fn write_trace(lines: &[serde_json::Value]) -> NamedTempFile {
@@ -143,6 +145,70 @@ fn single_turn_requests_plan_missing_output_tokens_deterministically() {
     assert_eq!(first[0].output_token_ids, second[0].output_token_ids);
     assert_eq!(first[0].output_token_ids.as_ref().map(Vec::len), Some(3));
     assert_eq!(first[1].output_token_ids.as_deref(), Some(&[20, 21][..]));
+}
+
+#[test]
+fn mooncake_rejects_unbounded_declared_output_length() {
+    // `output_length` has no `hash_ids` anchor, and every turn's plan is
+    // materialized eagerly at driver construction -- so an unbounded value is
+    // an allocator abort, not an error, unless it is refused at load.
+    let file = write_trace(&[serde_json::json!({
+        "input_length": 4,
+        "output_length": 1_000_000_000_000_u64,
+        "hash_ids": [1],
+    })]);
+
+    let error = Trace::from_mooncake(file.path(), 4).unwrap_err();
+    assert!(
+        error.to_string().contains("maximum declared sequence length"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn agentic_mooncake_rejects_unbounded_declared_output_length() {
+    let file = write_agentic_trace(&[serde_json::json!({
+        "request_id": "r1",
+        "play_id": "p1",
+        "session_id": "s1",
+        "model": "m",
+        "input_length": 4,
+        "output_length": 1_000_000_000_000_u64,
+        "hash_ids": [1],
+        "not_before_ms": 0.0,
+    })]);
+
+    let error = AgenticTrace::from_agentic_mooncake(file.path()).unwrap_err();
+    assert!(
+        error.to_string().contains("maximum declared sequence length"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn unvalidated_trace_driver_rejects_unbounded_declared_output_length() {
+    let trace = Trace {
+        block_size: 1,
+        sessions: vec![SessionTrace {
+            session_id: "huge".into(),
+            first_arrival_timestamp_ms: Some(0.0),
+            turns: vec![TurnTrace {
+                input_length: 1,
+                // Over the ceiling but still allocatable, so removing the gate
+                // fails this test by succeeding rather than by aborting the
+                // whole test binary.
+                max_output_tokens: MAX_DECLARED_SEQUENCE_TOKENS + 1,
+                hash_ids: vec![10],
+                ..Default::default()
+            }],
+        }],
+    };
+
+    let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
+    assert!(
+        error.to_string().contains("maximum declared sequence length"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

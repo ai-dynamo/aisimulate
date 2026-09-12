@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
-use super::trace::validate_synthesizable_prompt;
+use super::trace::{checked_declared_length, validate_synthesizable_prompt};
 use super::types::{
     AgenticDependencyTrigger, AgenticGraphIdentity, AgenticTrace, AgenticTrajectorySnapshot,
     CompactReadyTurn, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, Trace,
@@ -785,6 +785,10 @@ impl WorkloadDriver {
 
             let prompt_tokens =
                 PromptTokens::deferred(node.input_length, hash_ids, trace_block_size)?;
+            checked_declared_length(
+                &format!("agentic node {} max_output_tokens", node.request_id),
+                node.max_output_tokens,
+            )?;
             let output_token_ids = Some(planned_output_token_ids(
                 node.output_token_ids,
                 node.max_output_tokens,
@@ -995,6 +999,16 @@ impl WorkloadDriver {
                                 authored.len()
                             );
                         }
+                        // `planned_output_token_ids` materializes one random
+                        // token ID per `max_output_tokens` right here, so an
+                        // unanchored declared length is an allocator abort
+                        // rather than a `Result`. The file loaders bound this
+                        // too, but a `Trace` literal reaches these
+                        // validate-skipping constructors directly.
+                        checked_declared_length(
+                            &format!("session {} max_output_tokens", session.session_id),
+                            turn.max_output_tokens,
+                        )?;
                         let output_token_ids = Some(planned_output_token_ids(
                             turn.output_token_ids,
                             turn.max_output_tokens,
