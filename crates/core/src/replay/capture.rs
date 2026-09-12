@@ -31,7 +31,15 @@ impl ReplayDeterminism {
 }
 
 /// Replay-owned controls for optional detailed capture.
+///
+/// Every field defaults, so a misspelled key would otherwise parse cleanly
+/// into `default()`: the difference between `capture_per_request` /
+/// `determinism` being set and being defaulted is the difference between a
+/// canonical byte-stable artifact and an ordinary one, with no signal either
+/// way. `deny_unknown_fields` does not recurse from an enclosing struct, so
+/// it has to be declared here.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayCaptureOptions {
     #[serde(default)]
     pub capture_per_request: bool,

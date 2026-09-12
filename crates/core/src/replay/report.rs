@@ -694,7 +694,14 @@ pub(crate) struct TraceRequestStatsSnapshot {
 /// SLA thresholds used to classify requests for goodput. Every configured
 /// field is enforced independently; an unset field is unbounded. All-`None`
 /// (the default) means "no SLA", which suppresses goodput entirely.
+///
+/// `deny_unknown_fields` does not recurse from the enclosing `ReplaySpec`, and
+/// every field here defaults -- so `"sla": {"ttft": 100}`, missing the `_ms`
+/// suffix, would parse into `default()`, `is_set()` would be false, and a run
+/// authored as goodput-gated would report with the `goodput_*` keys silently
+/// absent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SlaThresholds {
     pub ttft_ms: Option<f64>,
     pub itl_ms: Option<f64>,
