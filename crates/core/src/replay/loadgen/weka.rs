@@ -29,6 +29,24 @@ use super::{
 /// cannot reject a real corpus.
 const MAX_DECLARED_REQUEST_TOKENS: usize = 10_000_000;
 
+// Nothing bounds how many requests one trace carries, and three passes over a
+// play are quadratic in that count: `install_cross_stream_frontiers` scans
+// every other stream in full per target request, `detect_chains` runs
+// `extension_target` and `max_lcp_chain` across every chain per request (with
+// per-request hash-slice comparisons), and `lower_trace` walks all preceding
+// parent requests per subagent. A ~10^6-row corpus on this untrusted path is
+// therefore ~10^12 comparisons: the import wedges with no progress output and
+// no timeout.
+//
+// A `MAX_TRACE_REQUESTS` ceiling here would be symmetric with the per-row bound
+// above, but it is deliberately absent rather than guessed at. A bound derived
+// by analogy with the token ceiling (generous, ~10^7) still leaves ~10^14 ops,
+// so it would not mitigate anything; a bound tight enough to matter (~10^4-10^5)
+// needs evidence about real Weka corpus sizes that the code does not carry, and
+// set wrong it silently refuses a legitimate corpus. The number is a product
+// contract question, and the quadratic complexity -- not the ceiling -- is the
+// real limit either way.
+
 const JOIN_EPSILON_SECONDS: f64 = 1e-6;
 const SEAM_MAX_GAP_SECONDS: f64 = 3600.0;
 const SEAM_MIN_OVERLAP_RATIO: f64 = 0.5;
@@ -808,7 +826,12 @@ fn lower_trace(
 
     for (outer_index, subagent) in explicit {
         let mode = validate_subagent(subagent, relative_path)?;
-        let mut owner_candidates = streams[..parent_stream_count]
+        // The owner is the latest-authored parent request preceding this
+        // marker. A top-level `source_order` is its unique index in
+        // `trace.requests`, and the parent streams partition exactly those
+        // requests, so the maximum is unambiguous by construction -- no
+        // materialized, sorted candidate list is needed to find it.
+        let owner = streams[..parent_stream_count]
             .iter()
             .enumerate()
             .flat_map(|(stream_index, stream)| {
@@ -818,9 +841,8 @@ fn lower_trace(
                     .filter(move |request| request.source_order < outer_index)
                     .map(move |request| (stream_index, request))
             })
-            .collect::<Vec<_>>();
-        owner_candidates.sort_by_key(|(_, request)| request.source_order);
-        let Some((owner_stream_index, owner_request)) = owner_candidates.pop() else {
+            .max_by_key(|(_, request)| request.source_order);
+        let Some((owner_stream_index, owner_request)) = owner else {
             bail!(
                 "Weka trace {} has subagent {} at outer index {} without a preceding parent request",
                 relative_path,
@@ -828,17 +850,6 @@ fn lower_trace(
                 outer_index
             );
         };
-        if owner_candidates
-            .last()
-            .is_some_and(|(_, candidate)| candidate.source_order == owner_request.source_order)
-        {
-            bail!(
-                "Weka trace {} has ambiguous parent-stream ownership for subagent {} at outer index {}",
-                relative_path,
-                subagent.agent_id,
-                outer_index
-            );
-        }
         let spawn_source_id = owner_request.source_id.clone();
 
         let mut inner = Vec::with_capacity(subagent.requests.len());
@@ -1574,6 +1585,13 @@ fn unique_hash(domain: &str, identity: &str, used: &mut HashMap<u64, String>) ->
     bail!("could not allocate a collision-free hash for {identity}")
 }
 
+/// Appends `dependency` unless an equivalent edge is already present.
+///
+/// Equivalence is `(request_id, trigger, relation)`; `delay_ms` is deliberately
+/// excluded, so the first writer's delay wins and a later duplicate proposing a
+/// different delay is dropped without a warning. That is intended -- the same
+/// causal edge inferred twice must not become two edges -- but it means edge
+/// emission order decides the delay whenever two passes disagree.
 fn push_dependency(values: &mut Vec<AgenticDependency>, dependency: AgenticDependency) {
     if !values.iter().any(|existing| {
         existing.request_id == dependency.request_id
