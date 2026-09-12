@@ -77,7 +77,8 @@ def test_attestation_rejects_an_extension_from_another_checkout(tmp_path, monkey
         BENCHMARK.attest(variant, {})
 
 
-def test_controller_rechecks_source_after_workers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [None, "source", "prediction"])
+def test_controller_publishes_only_after_integrity_checks(tmp_path, monkeypatch, failure):
     import hashlib
     from types import SimpleNamespace
 
@@ -104,28 +105,48 @@ def test_controller_rechecks_source_after_workers(tmp_path, monkeypatch):
     def worker(command, **_kwargs):
         worker_calls.append(command)
         result = Path(command[command.index("--result") + 1])
-        result.write_text(json.dumps({"native_modules": [str(native)], "result_sha256": "unchanged"}))
-        source.write_text("changed while measuring")
+        prediction = "changed" if failure == "prediction" and len(worker_calls) > 4 else "unchanged"
+        result.write_text(json.dumps({"native_modules": [str(native)], "result_sha256": prediction}))
+        if failure == "source":
+            source.write_text("changed while measuring")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(BENCHMARK, "attest", attest)
     monkeypatch.setattr(BENCHMARK.platform, "platform", lambda: "fixture-platform")
     monkeypatch.setattr(BENCHMARK.subprocess, "check_output", lambda *_a, **_kw: "revision\n")
     monkeypatch.setattr(BENCHMARK.subprocess, "run", worker)
-    with pytest.raises(RuntimeError, match="source changes after preflight"):
-        BENCHMARK.controller(
-            SimpleNamespace(
-                variants=str(variants),
-                output=str(tmp_path / "results.json"),
-                systems_path=str(tmp_path / "systems"),
-                rounds=1,
-            )
-        )
-    assert len(worker_calls) == 4  # Two warm-up and two recorded workers.
+    args = SimpleNamespace(
+        variants=str(variants),
+        output=str(tmp_path / "results.json"),
+        systems_path=str(tmp_path / "systems"),
+        rounds=2 if failure == "prediction" else 1,
+    )
+    if failure:
+        message = "source changes after preflight" if failure == "source" else "prediction mismatch"
+        with pytest.raises(RuntimeError, match=message):
+            BENCHMARK.controller(args)
+        assert not (tmp_path / "results.json").exists()
+        assert (tmp_path / "results.partial.json").exists()
+    else:
+        BENCHMARK.controller(args)
+        assert len(json.loads((tmp_path / "results.json").read_text())["samples"]) == 2
+        assert not (tmp_path / "results.partial.json").exists()
+    assert len(worker_calls) == 2 * (args.rounds + 1)  # Two workers per warm-up/recorded round.
 
 
-@pytest.mark.parametrize("score,metric", [(float("nan"), 1), (float("inf"), 1), (-float("inf"), 1), (1, float("nan"))])
-def test_recommend_controller_rejects_nonfinite_results(tmp_path, monkeypatch, score, metric):
+@pytest.mark.parametrize(
+    "score,metric,mutate_source",
+    [
+        (float("nan"), 1, False),
+        (float("inf"), 1, False),
+        (-float("inf"), 1, False),
+        (1, float("nan"), False),
+        (1, 1, True),
+        (1, 1, False),
+    ],
+)
+def test_recommend_controller_only_publishes_valid_results(tmp_path, monkeypatch, score, metric, mutate_source):
+    import math
     import sys
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -146,7 +167,8 @@ def test_recommend_controller_rejects_nonfinite_results(tmp_path, monkeypatch, s
         )
     )
     output = tmp_path / "output"
-    monkeypatch.setattr(recommend, "attest", lambda *_args: {})
+    identities = iter([{"revision": "initial"}, {"revision": "changed" if mutate_source else "initial"}])
+    monkeypatch.setattr(recommend, "attest", lambda *_args: next(identities))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -177,6 +199,13 @@ def test_recommend_controller_rejects_nonfinite_results(tmp_path, monkeypatch, s
         return 1.0
 
     monkeypatch.setattr(recommend, "run", run)
-    with pytest.raises((RuntimeError, ValueError)):
+    if not math.isfinite(score) or not math.isfinite(metric) or mutate_source:
+        with pytest.raises((RuntimeError, ValueError)):
+            recommend.main()
+        assert not (output / "results.json").exists()
+        if mutate_source:
+            assert (output / "results.partial.json").exists()
+    else:
         recommend.main()
-    assert not (output / "results.json").exists()
+        assert json.loads((output / "results.json").read_text())["samples"][0]["best_score"] == score
+        assert not (output / "results.partial.json").exists()

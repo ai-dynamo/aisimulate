@@ -257,6 +257,9 @@ def controller(args):
     variants = json.loads(Path(args.variants).read_text())
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+    if output.exists() or partial.exists():
+        raise FileExistsError("benchmark output and partial output must be new paths")
     systems = Path(args.systems_path).resolve()
     files = sorted(p for p in systems.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
     manifest = {str(p.relative_to(systems)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
@@ -327,7 +330,7 @@ def controller(args):
                     )
                     if round_number >= 0:
                         evidence["samples"].append(row)
-                        output.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+                        partial.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
                     print(f"{round_number}: {variant['label']} {case}/{requests}: {wall:.3f}s", flush=True)
     for variant in variants:
         env = os.environ.copy()
@@ -352,9 +355,10 @@ def controller(args):
             match = len({r["result_sha256"] for r in rows}) == 1
         comparisons.append({"case": case, "requests": count, "predictions_match": match})
     evidence["comparisons"] = comparisons
-    output.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+    partial.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
     if not all(row["predictions_match"] for row in comparisons):
-        raise RuntimeError(f"prediction mismatch; inspect {output} before interpreting speed ratios")
+        raise RuntimeError(f"prediction mismatch; inspect {partial} before interpreting speed ratios")
+    partial.replace(output)
     for variant in variants:
         for case, count in (("estimate", 0), ("predict", 100), ("predict", 1000)):
             rows = [

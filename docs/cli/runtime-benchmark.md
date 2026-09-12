@@ -7,6 +7,10 @@ for the dated results and their interpretation.
 ## Evidence formats
 
 The controllers write detailed local `protocol: 1` results, including full reports and machine paths.
+During measurement, files use a `.partial.json` suffix. Only after final source/native attestation
+and applicable output comparisons pass are they atomically renamed to the requested final path.
+Failed runs retain partial diagnostics; they do not publish completed evidence. Use new output
+paths for each run, including the estimate/replay controller's output and partial-output paths.
 The dated JSON files linked from the guide are **compact publication bundles**, not verbatim
 controller output. Each `publication` field names its format, hashes the original input file(s),
 and describes the projection. Retained timing samples are unchanged. Replay publication groups

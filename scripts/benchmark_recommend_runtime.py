@@ -113,6 +113,7 @@ def main():
         parser.error("variants must have distinct labels and cannot be empty")
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    partial = output / "results.partial.json"
     systems = Path(args.systems_path).resolve()
     manifest = {
         str(p.relative_to(systems)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -219,13 +220,14 @@ def main():
                 row["best_score"] = max(scores)
                 row["report"] = report
             evidence["samples"].append(row)
-            (output / "results.json").write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+            partial.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
             print(label, round(elapsed, 3), flush=True)
     for variant, algorithm, _, env in cases:
         if attest(variant, env) != variant["attestation"]:
             raise RuntimeError(f"{variant['label']} source/native identity changed during measurement")
         rows = [r for r in evidence["samples"] if r["variant"] == variant["label"] and r["algorithm"] == algorithm]
         print(variant["label"], algorithm, "median_s", statistics.median(r["process_wall_s"] for r in rows))
+    partial.replace(output / "results.json")
 
 
 if __name__ == "__main__":
