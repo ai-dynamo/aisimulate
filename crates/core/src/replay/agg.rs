@@ -558,15 +558,23 @@ where
             } else {
                 ReplayTerminalStatus::Completed
             };
+            // Establish ownership before publishing anything. `on_terminal` is
+            // externally visible, `step_terminals` hands the terminal to the
+            // stepper's caller and drops the uuid from `live`, and
+            // `request_terminal` retires the policy's placement -- all three used
+            // to commit before this lookup, so a completion for a uuid this
+            // runtime does not own left a published terminal behind while
+            // `CoreAdmissionSource::on_terminal` and `progress.inc_completed`
+            // never ran.
+            let removed_state = self.requests.remove(&signal.uuid).ok_or_else(|| {
+                anyhow::anyhow!("offline replay missing request state for {}", signal.uuid)
+            })?;
             self.collector.on_terminal(signal.uuid, self.now_ms, status);
             if self.defer_drive {
                 self.step_freed_slot = true;
                 self.step_terminals.push((signal.uuid, status));
             }
             let placements = self.placement.request_terminal(signal.uuid, self.now_ms)?;
-            let removed_state = self.requests.remove(&signal.uuid).ok_or_else(|| {
-                anyhow::anyhow!("offline replay missing request state for {}", signal.uuid)
-            })?;
             // Rejected requests never ran: keep them out of completed-request
             // shape and latency samples. Their offered demand was already
             // recorded at arrival, matching requests_started_total.
