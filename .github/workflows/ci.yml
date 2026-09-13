@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
+      whitespace-base: ${{ steps.pr-target.outputs.base_sha || steps.comparison-base.outputs.sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -47,6 +48,7 @@ jobs:
             exit 1
           fi
       - name: Verify trusted PR copy matches originating head
+        id: pr-target
         if: startsWith(github.ref, 'refs/heads/pull-request/')
         shell: bash
         env:
@@ -59,13 +61,23 @@ jobs:
             echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
             exit 1
           fi
-          pr_head="$(
-            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+          pr_metadata="$(
+            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" \
+              --jq '[.head.sha, .base.sha] | @tsv'
           )"
+          IFS=$'\t' read -r pr_head pr_base <<< "${pr_metadata}"
           if [[ "${pr_head}" != "${RUN_SHA}" ]]; then
             echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
             exit 1
           fi
+          if [[ ! "${pr_base}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PR comparison base must resolve to a full commit SHA"
+            exit 1
+          fi
+          # A copied branch's push.before is its previous head, which may no
+          # longer be reachable after a rebase. Check the actual PR range,
+          # including the parent branch when this PR is stacked.
+          printf 'base_sha=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
@@ -194,6 +206,7 @@ jobs:
     uses: ./.github/workflows/fast-ci.yml
     with:
       expected_sha: ${{ github.sha }}
+      base_sha: ${{ needs.verify-target.outputs.whitespace-base }}
 
   platform-wheels:
     name: Platform Wheels

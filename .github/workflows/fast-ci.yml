@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: ""
+      base_sha:
+        description: Immutable comparison base resolved by the caller
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -88,7 +93,7 @@ jobs:
     timeout-minutes: 10
     env:
       TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      BASE_SHA: ${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -127,6 +132,9 @@ jobs:
         shell: bash
         run: |
           if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "${BASE_SHA}"
+            fi
             git diff --check "${BASE_SHA}...${TARGET_SHA}"
           else
             git diff --check "${TARGET_SHA}^" "${TARGET_SHA}"
