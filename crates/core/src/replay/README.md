@@ -146,6 +146,13 @@ must complete. CLI stdout, saved prediction, and request artifacts must agree.
 The summary records dataset revision, source/graph digests, and results for
 all four backend/input combinations. Raw and materialized sample data remain
 temporary. Use `--trace <local-weka-path>` to run the same matrix offline.
+Progress on stderr names each of the four backend/input groups and numbers
+the 12 replays: Python first run, Python repeat for determinism, then CLI for
+artifact parity. Each native request-progress bar belongs to the labeled
+Python run immediately above it. Preparation steps, elapsed times, per-group
+results, and the saved summary path remain visible; a failure identifies its
+phase and includes captured subprocess diagnostics. Stdout remains JSON, so
+redirecting it to a file does not hide progress or mix text into the report.
 
 The native integration tests additionally compare full lifecycle transcript
 bytes and normalized reports, cover overlapping children, blocking joins,
