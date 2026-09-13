@@ -1915,6 +1915,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            moe_routing: Default::default(),
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -2076,6 +2077,7 @@ mod tests {
                 attention_tp_size: 1,
                 workload_distribution: "power_law_1.2".into(),
                 enable_eplb: false,
+                measured_routing: None,
             })
         };
         let spec = EngineSpec::new(config, Vec::new(), vec![a2a(32, 8), a2a(64, 16)]);
@@ -2483,6 +2485,7 @@ mod tests {
             attention_tp_size: 1,
             workload_distribution: "power_law_1.2".into(),
             enable_eplb: false,
+            measured_routing: None,
         });
         let composite = Op::Overlap(OverlapOp::new(
             "draft_overlap",

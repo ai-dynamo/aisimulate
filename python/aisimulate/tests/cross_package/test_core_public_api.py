@@ -83,6 +83,8 @@ def test_stable_function_signatures() -> None:
         "kv_block_size: 'int | None' = None, "
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "
+        "moe_routing_mode: 'str' = 'auto', moe_power_law_alpha: 'float | None' = None, "
+        "moe_model_revision: 'str | None' = None, moe_comm_backend: 'dict[str, str] | None' = None, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
         "strict_provenance: 'bool | None' = None) -> 'bytes'"

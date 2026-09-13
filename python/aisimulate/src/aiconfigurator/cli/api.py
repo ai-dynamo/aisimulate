@@ -205,6 +205,9 @@ def cli_default(
     attention_backend: str | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
 ) -> CLIResult:
     """
     Run the default CLI mode: compare aggregated vs disaggregated serving.
@@ -354,6 +357,9 @@ def cli_default(
         attention_backend=attention_backend,
         engine_step_backend=engine_step_backend,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
     )
 
     result = _execute_and_wrap_result(tasks, mode="default", top_n=top_n, strict_sla=strict_sla)
@@ -465,6 +471,9 @@ def cli_recommend(
     save_dir: str | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
 ) -> CLIResult:
     """Find the minimum number of GPUs to meet a performance target.
 
@@ -607,6 +616,9 @@ def cli_recommend(
         max_seq_len=max_seq_len,
         engine_step_backend=engine_step_backend,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_wideep=enable_wideep,
         moe_backend=moe_backend,
         attention_backend=attention_backend,
@@ -907,6 +919,9 @@ class EstimateResult:
     topology in place of the requested topology.
     """
 
+    moe_routing_provenance: dict = field(default_factory=dict)
+    """Per-phase measured/synthetic selection, checkpoint and proxy provenance."""
+
     @property
     def request_latency(self) -> float:
         """End-to-end request latency (ms)."""
@@ -1098,6 +1113,9 @@ def cli_estimate(
     decode_max_seq_len: int | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
     attention_backend: str | None = None,
     # Static-mode (and shared) extras
     prefix: int = 0,
@@ -1396,6 +1414,9 @@ def cli_estimate(
             stride=stride,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
+            moe_routing_mode=moe_routing_mode,
+            moe_power_law_alpha=moe_power_law_alpha,
+            moe_model_revision=moe_model_revision,
             load_database=_load_database,
             get_backend=get_backend,
             get_model=get_model,
@@ -1439,6 +1460,9 @@ def cli_estimate(
             max_seq_len=max_seq_len,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
+            moe_routing_mode=moe_routing_mode,
+            moe_power_law_alpha=moe_power_law_alpha,
+            moe_model_revision=moe_model_revision,
             attention_backend=attention_backend,
             prefix=prefix,
             nextn=nextn,
@@ -1519,6 +1543,9 @@ def cli_estimate(
             get_model=get_model,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
+            moe_routing_mode=moe_routing_mode,
+            moe_power_law_alpha=moe_power_law_alpha,
+            moe_model_revision=moe_model_revision,
             attention_backend=attention_backend,
             prefix=prefix,
             nextn=nextn,
@@ -1565,6 +1592,9 @@ def cli_estimate(
 
         resolved_version = _resolve_version_for(system_name)
         afd_result = _run_afd_estimate(
+            moe_routing_mode=moe_routing_mode,
+            moe_power_law_alpha=moe_power_law_alpha,
+            moe_model_revision=moe_model_revision,
             model_path=model_path,
             system_name=system_name,
             backend_name=backend_name,
@@ -1609,6 +1639,9 @@ def cli_estimate(
 
         static_mode = "static_gen" if afd_phase == "prefill" else "static_ctx"
         static_result = _run_static_estimate(
+            moe_routing_mode=moe_routing_mode,
+            moe_power_law_alpha=moe_power_law_alpha,
+            moe_model_revision=moe_model_revision,
             static_mode=static_mode,
             model_path=model_path,
             system_name=system_name,
@@ -1701,6 +1734,9 @@ def _run_agg_estimate(
     max_seq_len=None,
     engine_step_backend=None,
     forward_model=None,
+    moe_routing_mode=None,
+    moe_power_law_alpha=None,
+    moe_model_revision=None,
     attention_backend: str | None = None,
     speculation_config=None,
     speculative_accepted: float | None = None,
@@ -1730,6 +1766,9 @@ def _run_agg_estimate(
         moe_quant_mode,
         comm_quant_mode,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
         speculation=speculation_config,
@@ -1819,6 +1858,7 @@ def _run_agg_estimate(
         per_ops_data=summary.get_per_ops_data(),
         per_ops_source=summary.get_per_ops_source(),
         moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
+        moe_routing_provenance=getattr(summary, "get_moe_routing_provenance", lambda: {})(),
         kv_cache_warning=kv_warning,
     )
 
@@ -1861,6 +1901,9 @@ def _run_static_estimate(
     get_backend,
     get_model,
     forward_model=None,
+    moe_routing_mode=None,
+    moe_power_law_alpha=None,
+    moe_model_revision=None,
     attention_backend: str | None = None,
     speculation_config=None,
     speculative_accepted: float | None = None,
@@ -1894,6 +1937,9 @@ def _run_static_estimate(
         moe_quant_mode,
         comm_quant_mode,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
         speculation=speculation_config,
@@ -1996,6 +2042,7 @@ def _run_static_estimate(
         per_ops_data=None,
         per_ops_source=None,
         moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
+        moe_routing_provenance=getattr(summary, "get_moe_routing_provenance", lambda: {})(),
         kv_cache_warning=static_warning,
     )
 
@@ -2042,6 +2089,9 @@ def _run_disagg_estimate(
     get_model,
     engine_step_backend=None,
     forward_model=None,
+    moe_routing_mode=None,
+    moe_power_law_alpha=None,
+    moe_model_revision=None,
     attention_backend: str | None = None,
     # Common (also accepted by agg / static)
     prefix: int = 0,
@@ -2086,6 +2136,9 @@ def _run_disagg_estimate(
         moe_quant_mode,
         comm_quant_mode,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
     )
@@ -2101,6 +2154,9 @@ def _run_disagg_estimate(
         moe_quant_mode,
         comm_quant_mode,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
     )
@@ -2238,6 +2294,7 @@ def _run_disagg_estimate(
         per_ops_data=summary.get_per_ops_data(),
         per_ops_source=summary.get_per_ops_source(),
         moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
+        moe_routing_provenance=getattr(summary, "get_moe_routing_provenance", lambda: {})(),
     )
 
 
@@ -2344,6 +2401,10 @@ def _combine_afd_static_estimate_results(
         tp_size=afd_result.tp_size,
         pp_size=afd_result.pp_size,
         model_path=afd_result.model_path,
+        moe_routing_provenance={
+            "afd": afd_result.moe_routing_provenance,
+            "static": static_result.moe_routing_provenance,
+        },
         system_name=afd_result.system_name,
         backend_name=afd_result.backend_name,
         backend_version=afd_result.backend_version,
@@ -2393,6 +2454,9 @@ def _run_afd_estimate(
     prefix: int = 0,
     nextn: int = 0,
     nextn_accepted: float | None = None,
+    moe_routing_mode=None,
+    moe_power_law_alpha=None,
+    moe_model_revision=None,
 ) -> EstimateResult:
     """Run AFD (Attention-FFN Disaggregated) estimation.
 
@@ -2445,6 +2509,9 @@ def _run_afd_estimate(
         fmha_quant_mode,
         moe_quant_mode,
         comm_quant_mode,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         attention_backend=attention_backend,
     )
     f_model_config = _build_model_config(
@@ -2458,6 +2525,9 @@ def _run_afd_estimate(
         fmha_quant_mode,
         moe_quant_mode,
         comm_quant_mode,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         attention_backend=attention_backend,
     )
     # Pass speculative decode knobs through to A/F model configs. TODO:
@@ -2541,6 +2611,11 @@ def _run_afd_estimate(
         osl=osl,
         batch_size=a_batch_size,
         ctx_tokens=0,
+        moe_routing_provenance={
+            "requested_mode": moe_routing_mode or "auto",
+            "selected_mode": moe_routing_mode if moe_routing_mode in {"uniform", "power-law"} else "power-law",
+            "fallback_reason": "unsupported_consumer_backend" if moe_routing_mode in (None, "auto") else None,
+        },
         tp_size=a_tp_size,
         pp_size=1,
         model_path=model_path,

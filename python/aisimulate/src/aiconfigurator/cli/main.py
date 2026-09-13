@@ -180,6 +180,16 @@ def _build_common_cli_experiments_parser() -> argparse.ArgumentParser:
         "'fpm' predicts from collected whole-model forward-pass data (requires fpm_forward "
         "perf data for the exact model/system/backend/version).",
     )
+    common_parser.add_argument(
+        "--moe-routing-mode",
+        choices=["auto", "uniform", "random", "power-law"],
+        default=None,
+        help="MoE routing: auto (default), uniform, Random-input measured, or power-law.",
+    )
+    common_parser.add_argument("--moe-power-law-alpha", type=float, default=None)
+    common_parser.add_argument(
+        "--moe-model-revision", default=None, help="Require this measured bundle model revision."
+    )
     add_generator_override_arguments(common_parser)
     return common_parser
 
@@ -1736,6 +1746,9 @@ def build_default_tasks(
     attention_backend: str | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
     serving_mode: str = "auto",
     afd_max_a_batch_size: int = 1024,
     afd_max_candidates: int = 10_000,
@@ -1943,6 +1956,13 @@ def build_default_tasks(
     }
     if forward_model is not None:
         global_kwargs["forward_model"] = forward_model
+    for key, value in (
+        ("moe_routing_mode", moe_routing_mode),
+        ("moe_power_law_alpha", moe_power_law_alpha),
+        ("moe_model_revision", moe_model_revision),
+    ):
+        if value is not None:
+            global_kwargs[key] = value
     if nextn == "auto" or (isinstance(nextn, int) and nextn > 0):
         global_kwargs["nextn"] = nextn
         global_kwargs["nextn_accepted"] = nextn_accepted
@@ -2077,6 +2097,9 @@ def build_experiment_tasks(
     config: dict[str, Any] | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
     attention_backend: str | None = None,
 ) -> dict[str, Task]:
     """Build task configs from YAML file or config dict.
@@ -2188,6 +2211,13 @@ def build_experiment_tasks(
             overrides["engine_step_backend"] = engine_step_backend
         if forward_model is not None and "forward_model" not in exp_config:
             overrides["forward_model"] = forward_model
+        for key, value in (
+            ("moe_routing_mode", moe_routing_mode),
+            ("moe_power_law_alpha", moe_power_law_alpha),
+            ("moe_model_revision", moe_model_revision),
+        ):
+            if value is not None and key not in exp_config:
+                overrides[key] = value
         if attention_backend is not None and "attention_backend" not in exp_config:
             overrides["attention_backend"] = attention_backend
 
@@ -2726,6 +2756,9 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
         max_seq_len=args.max_seq_len,
         engine_step_backend=args.engine_step_backend,
         forward_model=args.forward_model,
+        moe_routing_mode=args.moe_routing_mode,
+        moe_power_law_alpha=args.moe_power_law_alpha,
+        moe_model_revision=args.moe_model_revision,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
         speculative=_speculative_block_from_args(args),
@@ -2908,6 +2941,9 @@ def _run_estimate_mode(args):
         max_seq_len=args.max_seq_len,
         engine_step_backend=args.engine_step_backend,
         forward_model=args.forward_model,
+        moe_routing_mode=args.moe_routing_mode,
+        moe_power_law_alpha=args.moe_power_law_alpha,
+        moe_model_revision=args.moe_model_revision,
         attention_backend=getattr(args, "attention_backend", None),
         prefix=args.prefix,
         nextn=args.nextn,
@@ -3241,6 +3277,9 @@ def _run_recommend(args) -> None:
             save_dir=args.save_dir,
             engine_step_backend=args.engine_step_backend,
             forward_model=args.forward_model,
+            moe_routing_mode=args.moe_routing_mode,
+            moe_power_law_alpha=args.moe_power_law_alpha,
+            moe_model_revision=args.moe_model_revision,
         )
     except NoResultsError as exc:
         logger.debug("Recommend mode traceback", exc_info=True)
@@ -3412,6 +3451,9 @@ def main(args):
             max_seq_len=args.max_seq_len,
             engine_step_backend=args.engine_step_backend,
             forward_model=args.forward_model,
+            moe_routing_mode=args.moe_routing_mode,
+            moe_power_law_alpha=args.moe_power_law_alpha,
+            moe_model_revision=args.moe_model_revision,
             serving_mode=args.serving_mode,
             afd_max_a_batch_size=getattr(args, "afd_max_a_batch_size", 1024),
             afd_max_candidates=getattr(args, "afd_max_candidates", 10_000),
@@ -3427,6 +3469,9 @@ def main(args):
                 build_kwargs["engine_step_backend"] = args.engine_step_backend
             if args.forward_model is not None:
                 build_kwargs["forward_model"] = args.forward_model
+            for key in ("moe_routing_mode", "moe_power_law_alpha", "moe_model_revision"):
+                if getattr(args, key, None) is not None:
+                    build_kwargs[key] = getattr(args, key)
             if getattr(args, "attention_backend", None) is not None:
                 build_kwargs["attention_backend"] = args.attention_backend
             tasks = build_experiment_tasks(**build_kwargs)

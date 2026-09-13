@@ -203,6 +203,15 @@ pub struct MoeExpertComputeTable {
 }
 
 impl MoeExpertComputeTable {
+    /// Measured routing must never silently use a skewed calibration curve.
+    pub fn require_balanced_shape(&self, key: &MoeExpertComputeKey) -> Result<(), AicError> {
+        if key.distribution != "balanced" || !self.load()?.by_keys.contains_key(key) {
+            return Err(AicError::PerfDatabase(format!(
+                "measured routing requires balanced exact-shape compute calibration: {key:?}"
+            )));
+        }
+        Ok(())
+    }
     /// Construct an empty table for the given data directory. No I/O. Each
     /// perf file is sourced solely from `data_root/<basename>` with no
     /// `kernel_source` filter (pre-shared-layer behaviour).

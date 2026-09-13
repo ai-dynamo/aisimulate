@@ -86,6 +86,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             backend: BackendKind::Trtllm,
             backend_version: Some("1.3.0rc10".to_string()),
             forward_model: None,
+            moe_routing: Default::default(),
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 1,

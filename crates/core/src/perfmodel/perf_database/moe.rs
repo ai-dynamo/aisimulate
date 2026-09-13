@@ -183,6 +183,11 @@ impl MoeTable {
             grids
                 .index
                 .resolve_uniform(quant_name, workload_distribution, &shape);
+        if workload_distribution == "balanced" && dist != "balanced" {
+            return Err(AicError::PerfDatabase(
+                "balanced exact-shape MoE compute calibration unavailable".into(),
+            ));
+        }
         let by_tokens = by_tokens.ok_or_else(|| {
             let key = MoeKey::from_shape(quant_name, dist, shape);
             AicError::PerfDatabase(format!(
@@ -254,6 +259,9 @@ impl MoeTable {
             grids
                 .index
                 .resolve_uniform(quant_name, workload_distribution, &shape);
+        if workload_distribution == "balanced" && dist != "balanced" {
+            return Ok(None);
+        }
         let Some(by_tokens) = by_tokens else {
             return Ok(None);
         };

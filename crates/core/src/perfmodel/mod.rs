@@ -68,7 +68,7 @@ pub use py::{AicEngine, AicEngineBuilder};
 // resolve unchanged across the crate and for external consumers.
 pub use config::{
     BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, EngineConfig,
-    ParallelMapping, QuantizationConfig, SpeculativeConfig,
+    MoeRoutingConfig, ParallelMapping, QuantizationConfig, SpeculativeConfig,
 };
 
 /// Resolve a repo-relative path by walking up from the crate manifest dir.
