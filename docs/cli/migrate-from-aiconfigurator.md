@@ -602,11 +602,52 @@ pin the source revisions, commands, timings, and scores. Choose algorithm, trial
 count explicitly; reducing search time can reduce recommendation quality. Use AIC sizing when its
 answer fits your task and fast iteration is important.
 
+To time your own searches, save `budget-search.yaml` from the general example and run these from
+its directory. The two AISimulate commands use the same 32-trial budget and four workers; the AIC
+command performs its own sizing search. The AISimulate commands enable JAX 64-bit mode for
+numerical stability in the Bayesian optimizer:
+
+```bash
+time -p aiconfigurator cli recommend \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --target-concurrency 32 --isl 1024 --osl 128 \
+  --ttft 800 --tpot 30 --strict-sla
+
+time -p env JAX_ENABLE_X64=True aisimulate recommend --config budget-search.yaml \
+  --set optimizer.algorithm=bayesian \
+  --set optimizer.max_trials=32 --set optimizer.parallelism=4 \
+  --output-dir ./timed-bayesian
+
+time -p env JAX_ENABLE_X64=True aisimulate recommend --config budget-search.yaml \
+  --set optimizer.algorithm=random \
+  --set optimizer.max_trials=32 --set optimizer.parallelism=4 \
+  --output-dir ./timed-random
+```
+
+**Result to inspect:** `time` prints elapsed wall time as `real`. Compare the two AISimulate
+`recommendation.json` files for selected configurations and scores as well as runtime. Cached
+results and early stopping can reduce the number of unique replays. The AIC output reports a
+sizing result. This H200 example measures your local workload; it does not
+reproduce the dated B200 benchmark table or establish equivalent AIC/AISimulate answers.
+
 ### Keep minimum-GPU sizing on the compatibility CLI
 
 Use `aiconfigurator cli recommend` with `--target-request-rate` or `--target-concurrency` for
-AIC's minimum-GPU and replica-sizing result. The [request-rate example](#search-under-a-request-rate)
-shows the command and the alternative AISimulate ranking workflow.
+AIC's minimum-GPU and replica-sizing result. For four requests/s under explicit latency limits:
+
+```bash
+aiconfigurator cli recommend \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --target-request-rate 4 --isl 1024 --osl 128 \
+  --ttft 800 --tpot 30 --strict-sla
+```
+
+**Result to inspect:** the sizing table reports required GPUs, parallel configurations, and replica
+counts under the requested load and SLA. For closed-loop sizing, replace `--target-request-rate 4`
+with `--target-concurrency 32`. The [request-rate example](#search-under-a-request-rate) explains
+why AISimulate's alternative configuration ranking can choose a different GPU count.
 
 Legacy `default` also routes to sizing when a load target is supplied without `--total-gpus`.
 If both are supplied, it uses the GPU budget and warns that the load target is ignored.
@@ -624,7 +665,8 @@ aiconfigurator cli estimate \
   --isl 1024 --osl 128 --detail memory,time,energy,source
 ```
 
-The result is a per-operation estimator breakdown. See
+**Result to inspect:** the terminal contains per-operation memory, timing, energy, and data-source
+breakdowns. See
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
 
 ### Power and energy analysis
@@ -646,7 +688,8 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** the terminal prints a `Power (per GPU)` summary and the per-operation energy
-breakdown. AIC reports `power_w` only when `power_coverage` reaches 90%;
+section, which can show `<no measurable per-op data>` when energy profiles are missing.
+AIC reports `power_w` only when `power_coverage` reaches 90%;
 otherwise power is reported as unavailable. These are modeled GPU values and depend on energy-data
 coverage, rather than measurements of whole-node or datacenter consumption.
 
@@ -669,43 +712,105 @@ aiconfigurator cli generate \
   --deployment-target dynamo-j2 --save-dir ./deployment
 ```
 
-This writes a basic deployment configuration under `deployment/` without search or SLA
-optimization. AISimulate's `recommendations/*.yaml` files are inputs to `predict`, not launch
+**Result to inspect:** `deployment/` contains a basic deployment configuration, generated without
+search or SLA optimization. AISimulate's `recommendations/*.yaml` files are inputs to `predict`, not launch
 manifests. For programmatic generation from supported agg/disagg candidates, see the
 [generator SDK](../../python/aisimulate/docs/generator_overview.md). Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
 ### Experiment files and support queries
 
-Existing named experiments still run with AIC; `experiments.yaml` below is your existing file:
+Existing named experiments still run with AIC. For a complete runnable input, save
+`legacy-search.yaml` from the [legacy search example](#legacy-search-domains-and-topology-coverage)
+below, then run it and query model support:
 
 ```bash
-aiconfigurator cli exp --yaml-path experiments.yaml --save-dir ./aic-experiments
+aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./aic-experiments
 aiconfigurator cli support --model-path meta-llama/Meta-Llama-3.1-8B --system all --backend all
 ```
 
-The first command saves experiment results; the second prints AIC's agg/disagg support matrix.
+**Result to inspect:** `aic-experiments/` contains the experiment results; the second command prints
+AIC's [agg/disagg support matrix](https://ai-dynamo.org/aisimulate/support-matrix/).
 Translate each experiment separately before moving it to the unified CLI. Estimator data coverage
 alone does not establish support for an entire CLI workflow.
 
 ### Estimator controls and speculative decoding
 
 Backend version and op-level/FPM selection have unified mappings. The following controls still
-require AIC or the estimator SDK:
+require AIC or the estimator SDK.
 
-- Performance-data selection: database modes such as `HYBRID` and `SOL`, transfer policy, and custom
-  system definitions. See [database modes](legacy-aic-user-guide.md#database-mode) and
-  [system paths](legacy-aic-user-guide.md#systems-paths).
-- Explicit GEMM, KV-cache, FMHA, MoE, and communication quantization overrides, attention/MoE kernel
-  selectors. See [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
-- Exact cached-prefix input (`--prefix N`): no direct unified-CLI mapping. AISimulate supports
-  prefix-cache simulation, but `kv_cache.prefix_caching: true` enables reuse rather than specifying
-  a fixed cached-token count. Session shared-prefix settings describe workload sharing. Keep AIC
-  when you need its assumption that exactly `N` prompt tokens are already cached.
-- Speculative decoding, including MTP, n-gram, EAGLE-3, DFlash, DSpark, and standalone draft models.
-  These cost models are available through compatibility `estimate` and SDK/Task interfaces, subject
-  to scheme-specific limits; the unified CLI has no speculative configuration. The caller supplies
-  accepted-token assumptions. See [the estimate example and restrictions](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
+**Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
+the bundled system definitions:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode agg --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 \
+  --database-mode HYBRID --transfer-policy conservative --systems-paths default \
+  --detail source
+```
+
+**Result to inspect:** the estimate and per-operation source breakdown show which data supplied
+the prediction. A policy choice does not guarantee coverage. `SOL` selects theoretical estimates;
+custom system directories can be added to `--systems-paths`. See
+[database modes](legacy-aic-user-guide.md#database-mode) and
+[system paths](legacy-aic-user-guide.md#systems-paths).
+
+**Pin quantization and select an attention implementation.** For a dense-model decode estimate
+with explicit BF16 compute/cache settings and the framework's default attention implementation:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 \
+  --gemm-quant-mode bfloat16 --kvcache-quant-mode bfloat16 \
+  --fmha-quant-mode bfloat16 --comm-quant-mode half \
+  --attention-backend default --detail time,source
+```
+
+**Result to inspect:** the printed configuration and timing/source breakdown use the requested
+settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
+selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
+
+**Specify an exact cached-prefix count.** `--prefix N` has no direct unified-CLI mapping. This
+assumes 256 of the 1,024 input tokens are already cached for each request:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_ctx --batch-size 1 --tp-size 2 \
+  --isl 1024 --osl 128 --prefix 256 \
+  --detail time
+```
+
+**Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
+assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
+reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
+workload sharing. Keep AIC when you require its exact cached-token assumption.
+
+**Estimate speculative decoding.** For an n-gram example with three draft tokens and a caller-supplied
+average of 1.5 accepted tokens:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path Qwen/Qwen3-8B \
+  --system h100_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --isl 64 --osl 128 --batch-size 8 \
+  --gemm-quant-mode bfloat16 --kvcache-quant-mode bfloat16 \
+  --fmha-quant-mode bfloat16 \
+  --spec-method ngram --spec-num-draft-tokens 3 --spec-accepted-tokens 1.5
+```
+
+**Result to inspect:** the estimate projects speculative iteration cost into latency and throughput
+using the supplied acceptance. `1.5` is an illustrative assumption, not predicted acceptance. MTP,
+EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK cost models, subject
+to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
+The unified CLI has no speculative configuration.
 
 ### Legacy search domains and topology coverage
 
@@ -714,6 +819,38 @@ Explicit parallelism configurations are a separate path, and CP has no unified c
 The existing TP/DP/MoE/replica search does not reproduce every AIC PP/CP, batch/context, or exhaustive
 search domain. Retain the AIC sweep when those exact domains are required; see the
 [default search projection](../sweeper/architecture.md#parallelism-search-projection).
+
+For an explicit AIC TP/PP search, save this flat experiment YAML as `legacy-search.yaml`:
+
+```yaml
+pp_sweep:
+  serving_mode: agg
+  model_path: meta-llama/Meta-Llama-3.1-8B
+  system_name: h200_sxm
+  backend_name: vllm
+  backend_version: "0.24.0"
+  total_gpus: 4
+  isl: 1024
+  osl: 128
+  ttft: 800
+  tpot: 30
+  agg_num_gpu_candidates: [2, 4]
+  agg_tp_candidates: [1, 2]
+  agg_pp_candidates: [1, 2]
+  agg_dp_candidates: [1]
+  agg_moe_tp_candidates: [1]
+  agg_moe_ep_candidates: [1]
+  agg_cp_candidates: [1]
+```
+
+```bash
+aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./legacy-search-results
+```
+
+**Result to inspect:** the terminal and `legacy-search-results/` contain the `pp_sweep` results,
+including feasible TP/PP configurations and their latency/throughput. This example requests PP=1/2
+and pins CP=1. Nontrivial CP is family/backend-specific; do not assume this dense-model example
+supports CP>1. See [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
 
 Backend and model support also depend on topology and available performance data. Analytical
 EPD/AFD, heterogeneous P/D through the SDK, and native host offload each have the restrictions linked

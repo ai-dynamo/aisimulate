@@ -8,6 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 AISimulate predicts LLM serving behavior and searches for strong deployment
 configurations offline, without bringing up a GPU serving cluster.
 
+[Website](https://ai-dynamo.org/aisimulate/) ·
+[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
+[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
+[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
@@ -239,10 +244,11 @@ zero, so existing serialized callers do not change. See the
 
 ### FPE support matrix
 
-The new strict-native Forward Pass Engine (FPE) matrix measures estimator
-coverage across a curated roster of current models, GPU systems, backends, and
-backend versions. It probes native prefill, decode-start, decode-end, and mixed
-forward-pass calls without fallback. It does not certify the CLI, Replay,
+The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+measures strict-native estimator coverage across a curated roster of current
+models, GPU systems, backends, and backend versions. It probes native prefill,
+decode-start, decode-end, and mixed forward-pass calls without fallback.
+It does not certify the CLI, Replay,
 Sweeper, serving orchestration, or prediction accuracy.
 
 The matrix was introduced in
@@ -255,7 +261,7 @@ artifacts advance to Artifactory.
 The compatibility support matrix covers AIC command-based aggregated and
 disaggregated workflows by model, system, backend, and backend version:
 
-- [Interactive legacy AIC support matrix](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)
+- [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 - [AIC support-matrix data](python/aisimulate/src/aiconfigurator_core/systems/support_matrix/)
 - [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
 
@@ -269,11 +275,14 @@ aiconfigurator cli support \
   --backend-version 0.14.0
 ```
 
-### Accuracy matrix — under construction
+### E2E accuracy overview
 
-The accuracy matrix is not yet a published support contract. The current work
-tracks AISimulate predictions against curated measured-silicon anchors and
-keeps forward-pass accuracy distinct from end-to-end serving accuracy. See the
+The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
+reports TTFT and TPOT error, curve-shape error, and prediction coverage against
+matched measured-silicon operating points. It is evidence for the measured
+configurations, not a universal support contract.
+
+Forward-pass accuracy is tracked separately; see the
 [prediction regression and accuracy design](python/aisimulate/docs/design/prediction_regression_gate_design.md)
 and the current [silicon anchor set](python/aisimulate/tools/accuracy_tracking/silicon_refs.csv).
 
@@ -329,10 +338,12 @@ compatibility tests.
 
 ## Accuracy evidence
 
-The public-ready [E2E Accuracy Overview](python/aisimulate/docs/e2e-accuracy/)
+The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
 separate and includes a machine-readable aggregate with exact snapshot digests.
+See the [snapshot and regeneration details](python/aisimulate/docs/e2e-accuracy/README.md)
+for evidence provenance and instructions to rebuild the report.
 
 The checked-in snapshot excludes multi-node configurations and applies only to
 the exact model, hardware, framework, topology, workload, and concurrency cells

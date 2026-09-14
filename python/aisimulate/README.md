@@ -16,6 +16,9 @@ SPDX-License-Identifier: Apache-2.0
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aisimulate)
 [![Discord](https://dcbadge.limes.pink/api/server/mRJ2KNzwYE?style=flat)](https://discord.gg/mRJ2KNzwYE)
 
+Visit the [AISimulate website](https://ai-dynamo.org/aisimulate/) for the published
+accuracy overview and support matrices.
+
 In disaggregated serving, configuring an effective deployment is challenging: you need to decide how many prefill and decode
 workers to run, and the parallelism for each worker. Combined with SLA targets for TTFT (Time to First Token) and
 TPOT (Time per Output Token), optimizing throughput at a given latency becomes even more complex.
@@ -538,13 +541,17 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 
 #### Legacy AIC Support Matrix
 
-The interactive [Legacy AIC Support Matrix](docs/support-matrix/) preserves
-historical AIConfigurator CLI compatibility coverage. It uses the current
-`main` snapshot and supports filtering by system, mode, and model.
+The interactive [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+preserves historical AIConfigurator CLI compatibility coverage. It uses the
+published snapshot and supports filtering by system, mode, and model.
 
 For current strict-native forward-pass estimator coverage, use the
-[FPE Support Matrix](docs/fpe-support-matrix/). FPE coverage is estimator
+[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/). FPE coverage is estimator
 evidence, not deployment certification.
+
+For matched serving-accuracy results, use the
+[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/), which reports
+TTFT and TPOT error separately from prediction coverage.
 
 The raw data is also available as
 [per-system CSV files](src/aiconfigurator_core/systems/support_matrix).
