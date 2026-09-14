@@ -927,11 +927,15 @@ def _pd_hardware_config(*, recommend=False, **overrides):
 
 
 @pytest.mark.parametrize("recommend", [False, True])
-@pytest.mark.parametrize("value", ["", " ", "auto", {"choices": ["h200_sxm", "gb200"]}])
-def test_worker_hardware_requires_concrete_sku(recommend, value):
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize(
+    "value",
+    ["", " ", "auto", " auto ", " gb200 ", "gb200 ", "\th200_sxm", {"choices": ["h200_sxm", "gb200"]}],
+)
+def test_worker_hardware_requires_concrete_sku(recommend, role, value):
     schema = CoreRecommendationConfig if recommend else CorePredictionConfig
     with pytest.raises(ValidationError, match="hardware"):
-        schema.model_validate(_pd_hardware_config(recommend=recommend, decode=value))
+        schema.model_validate(_pd_hardware_config(recommend=recommend, **{role: value}))
 
 
 @pytest.mark.parametrize("recommend", [False, True])

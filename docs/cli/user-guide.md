@@ -969,9 +969,10 @@ engine:
       startup_seconds: 0
 ```
 
-Language-worker roles share the top-level model, hardware, backend, backend version, and context
-length. Per-role overrides for those settings are rejected. The optional analytical encoder pool
-has its own supported hardware and backend-version fields. If `engine.mode` is a
+Language-worker roles share the top-level model, backend, backend version, and context length.
+Per-role overrides for those settings are rejected. P/D workers may override the hardware fallback.
+The optional analytical encoder pool has its own supported hardware and backend-version fields.
+If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
 

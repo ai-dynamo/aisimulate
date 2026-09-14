@@ -401,7 +401,8 @@ def _validate_worker_hardware(*, modes: set[str], workers) -> None:
             continue
         if role == "aggregated" or "disaggregated" not in modes or "afd" in modes:
             raise ValueError("worker hardware overrides require prefill/decode workers in disaggregated mode")
-        if not worker.hardware.strip() or worker.hardware == "auto":
+        hardware = worker.hardware.strip()
+        if not hardware or hardware == "auto" or hardware != worker.hardware:
             raise ValueError(f"workers.{role}.hardware must be one concrete nonempty hardware identifier")
 
 
