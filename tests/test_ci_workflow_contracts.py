@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.select_full_ci import COMPONENTS, select_components
 
@@ -378,6 +379,64 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
     assert 'importlib.import_module("collector.fpm_forward")' in installed_verifier
+
+
+def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
+    expected_images = {
+        "amd64": "quay.io/pypa/manylinux_2_28_x86_64@sha256:",
+        "arm64": "quay.io/pypa/manylinux_2_28_aarch64@sha256:",
+    }
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in ("application-test-wheel", "release-artifact-contract"):
+        job = full_ci[job_name]
+        assert job["container"]["image"] == "${{ matrix.container_image }}"
+        images = {entry["arch"]: entry["container_image"] for entry in job["strategy"]["matrix"]["include"]}
+        assert images.keys() == expected_images.keys()
+        for arch, prefix in expected_images.items():
+            assert images[arch].startswith(prefix)
+            assert len(images[arch].removeprefix(prefix)) == 64
+
+    application_commands = _run_commands(full_ci["application-test-wheel"])
+    assert "scripts/build_manylinux_wheel.py" in application_commands
+    assert "maturin build" not in application_commands
+
+    fpe_prepare = _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]
+    assert fpe_prepare["container"]["image"].startswith(expected_images["amd64"])
+    assert "scripts/build_manylinux_wheel.py" in _run_commands(fpe_prepare)
+
+    release_builder = (REPOSITORY_ROOT / "scripts" / "build_release_artifacts.py").read_text()
+    assert 'sys.platform.startswith("linux")' in release_builder
+    assert '"build_manylinux_wheel.py"' in release_builder
+
+    manylinux_builder = (REPOSITORY_ROOT / "scripts" / "build_manylinux_wheel.py").read_text()
+    assert '"--auditwheel",\n            "skip"' in manylinux_builder
+    assert '"auditwheel",\n            "repair"' in manylinux_builder
+    assert '"--plat",\n            policy' in manylinux_builder
+    assert '_run("auditwheel", "show", str(repaired_wheel))' in manylinux_builder
+
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
+    assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
+    assert "auditwheel repair" in dockerfile
+    assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
+    assert "--compatibility manylinux_2_28" not in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "manylinux_2_28_x86_64"),
+        ("amd64", "manylinux_2_28_x86_64"),
+        ("aarch64", "manylinux_2_28_aarch64"),
+        ("arm64", "manylinux_2_28_aarch64"),
+    ],
+)
+def test_manylinux_platform_maps_native_architectures(machine: str, expected: str) -> None:
+    assert manylinux_platform(machine) == expected
+
+
+def test_manylinux_platform_rejects_unknown_architecture() -> None:
+    with pytest.raises(SystemExit, match="unsupported wheel architecture"):
+        manylinux_platform("riscv64")
 
 
 def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> None:
