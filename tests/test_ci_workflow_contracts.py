@@ -11,12 +11,15 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
+from scripts import build_manylinux_wheel as manylinux_builder
+from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.select_full_ci import COMPONENTS, select_components
 
@@ -380,6 +383,131 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     assert 'importlib.import_module("collector.fpm_forward")' in installed_verifier
 
 
+def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
+    expected_images = {
+        "amd64": "quay.io/pypa/manylinux_2_28_x86_64@sha256:",
+        "arm64": "quay.io/pypa/manylinux_2_28_aarch64@sha256:",
+    }
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in ("application-test-wheel", "release-artifact-contract"):
+        job = full_ci[job_name]
+        assert job["container"]["image"] == "${{ matrix.container_image }}"
+        images = {entry["arch"]: entry["container_image"] for entry in job["strategy"]["matrix"]["include"]}
+        assert images.keys() == expected_images.keys()
+        for arch, prefix in expected_images.items():
+            assert images[arch].startswith(prefix)
+            assert len(images[arch].removeprefix(prefix)) == 64
+
+    application_commands = _run_commands(full_ci["application-test-wheel"])
+    assert "scripts/build_manylinux_wheel.py" in application_commands
+    assert "maturin build" not in application_commands
+
+    fpe_prepare = _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]
+    assert fpe_prepare["container"]["image"].startswith(expected_images["amd64"])
+    assert "scripts/build_manylinux_wheel.py" in _run_commands(fpe_prepare)
+
+    release_builder = (REPOSITORY_ROOT / "scripts" / "build_release_artifacts.py").read_text()
+    assert 'sys.platform.startswith("linux")' in release_builder
+    assert '"build_manylinux_wheel.py"' in release_builder
+
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
+    assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
+    assert "auditwheel repair" in dockerfile
+    assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
+    assert "--compatibility manylinux_2_28" not in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "manylinux_2_28_x86_64"),
+        ("amd64", "manylinux_2_28_x86_64"),
+        ("aarch64", "manylinux_2_28_aarch64"),
+        ("arm64", "manylinux_2_28_aarch64"),
+    ],
+)
+def test_manylinux_platform_maps_native_architectures(machine: str, expected: str) -> None:
+    assert manylinux_platform(machine) == expected
+
+
+def test_manylinux_platform_rejects_unknown_architecture() -> None:
+    with pytest.raises(SystemExit, match="unsupported wheel architecture"):
+        manylinux_platform("riscv64")
+
+
+def _manylinux_build_case(
+    tmp_path, monkeypatch, *, machine="x86_64", raw_count=1, repaired_count=1, repaired_tag=None, fail_repair=False
+):
+    monkeypatch.setattr(manylinux_builder.sys, "platform", "linux")
+    monkeypatch.setattr(manylinux_builder.platform, "machine", lambda: machine)
+    monkeypatch.setattr(manylinux_builder.shutil, "which", lambda _: "/usr/bin/auditwheel")
+    calls = []
+    output = tmp_path / "dist"
+
+    def run(*command, cwd=REPOSITORY_ROOT):
+        calls.append((command, cwd))
+        if command[:3] == (sys.executable, "-m", "maturin"):
+            raw_output = Path(command[command.index("--out") + 1])
+            for index in range(raw_count):
+                (raw_output / f"aisimulate-0.12.{index}-cp311-abi3-linux_{machine}.whl").touch()
+        elif command[:2] == ("auditwheel", "repair"):
+            if fail_repair:
+                raise subprocess.CalledProcessError(1, command)
+            tag = repaired_tag or f"manylinux_2_28_{machine}"
+            for index in range(repaired_count):
+                (output / f"aisimulate-0.12.{index}-cp311-abi3-{tag}.whl").touch()
+        else:
+            assert command[:2] == ("auditwheel", "show")
+
+    monkeypatch.setattr(manylinux_builder, "_run", run)
+    return output, calls
+
+
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, monkeypatch, machine):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, machine=machine)
+    repaired = manylinux_builder.build(output)
+    raw_output = calls[0][0][-1]
+    raw_wheel = str(Path(raw_output) / f"aisimulate-0.12.0-cp311-abi3-linux_{machine}.whl")
+    assert repaired == output / f"aisimulate-0.12.0-cp311-abi3-manylinux_2_28_{machine}.whl"
+    assert list(output.iterdir()) == [repaired]
+    assert calls == [
+        (
+            (sys.executable, "-m", "maturin", "build", "--release", "--auditwheel", "skip", "--out", raw_output),
+            manylinux_builder.PYTHON_PROJECT,
+        ),
+        (
+            ("auditwheel", "repair", "--plat", f"manylinux_2_28_{machine}", "--wheel-dir", str(output), raw_wheel),
+            REPOSITORY_ROOT,
+        ),
+        (("auditwheel", "show", str(repaired)), REPOSITORY_ROOT),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"raw_count": 0}, "exactly one unrepaired"),
+        ({"raw_count": 2}, "exactly one unrepaired"),
+        ({"repaired_count": 0}, "exactly one repaired"),
+        ({"repaired_count": 2}, "exactly one repaired"),
+        ({"repaired_tag": "manylinux_2_17_x86_64"}, "required tag manylinux_2_28_x86_64"),
+    ],
+)
+def test_manylinux_build_rejects_missing_duplicate_or_wrong_policy_wheels(tmp_path, monkeypatch, options, message):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, **options)
+    with pytest.raises(SystemExit, match=message):
+        manylinux_builder.build(output)
+    assert not any(command[:2] == ("auditwheel", "show") for command, _ in calls)
+
+
+def test_manylinux_build_propagates_repair_failure(tmp_path, monkeypatch):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, fail_repair=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        manylinux_builder.build(output)
+    assert not any(command[:2] == ("auditwheel", "show") for command, _ in calls)
+
+
 def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> None:
     jobs = _workflow("prediction-regression-gate.yml")["jobs"]
     report_commands = _run_commands(jobs["report"])
@@ -702,17 +830,98 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
         "rust",
         "rust-feature-modes",
         "public-api-rust",
-        "application-test-wheel",
         "python-compatibility",
         "engine-golden-regression",
-        "release-artifact-contract",
     ):
         assert any(step.get("uses") == action_path for step in full_ci[job_name]["steps"])
 
     assert any(step.get("uses") == action_path for step in _workflow("collector-check.yml")["jobs"]["check"]["steps"])
-    assert any(
-        step.get("uses") == action_path
-        for step in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
+
+
+def test_manylinux_jobs_select_bundled_python_without_setup_python() -> None:
+    action_path = "./.github/actions/setup-manylinux-python-rust"
+    for workflow_name, job_name in (
+        ("ci.yml", "application-test-wheel"),
+        ("ci.yml", "release-artifact-contract"),
+        ("fpe-support-matrix.yml", "prepare-wheel"),
+    ):
+        steps = _workflow(workflow_name)["jobs"][job_name]["steps"]
+        assert any(step.get("uses") == action_path for step in steps)
+        assert not any(
+            step.get("uses", "").startswith(("actions/setup-python@", "./.github/actions/setup-python-rust"))
+            for step in steps
+        )
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    assert action["runs"]["steps"][0]["env"]["MANYLINUX_PYTHON_ROOT"] == "/opt/python/cp312-cp312"
+    assert not any(step.get("uses", "").startswith("actions/setup-python@") for step in action["runs"]["steps"])
+    rust = next(step for step in action["runs"]["steps"] if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
+    assert rust["with"]["toolchain"] == _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["env"]["RUST_TOOLCHAIN"]
+
+
+@pytest.mark.parametrize(
+    "missing", [None, "python", "cc", "c++", "make", "auditwheel", "patchelf", "auditwheel-broken", "patchelf-broken"]
+)
+def test_manylinux_bootstrap_exports_working_python_or_fails_before_build(tmp_path: Path, missing: str | None) -> None:
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    bootstrap = action["runs"]["steps"][0]["run"]
+    python_root = tmp_path / "bundled-python"
+    binaries = python_root / "bin"
+    binaries.mkdir(parents=True)
+    if missing != "python":
+        (binaries / "python").symlink_to(sys.executable)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    tool_log = tmp_path / "tool-log"
+    for name in ("cc", "c++", "make", "auditwheel", "patchelf"):
+        if name != missing:
+            binary = tools / name
+            if name in ("auditwheel", "patchelf"):
+                binary.write_text(
+                    f'#!/bin/bash\necho "{name} $*" >> "$AUDIT_TOOL_LOG"\n'
+                    + ("exit 1\n" if missing == f"{name}-broken" else 'test "$1" = --version\n')
+                )
+                binary.chmod(0o755)
+            else:
+                binary.symlink_to("/usr/bin/true")
+    env_file = tmp_path / "github-env"
+    path_file = tmp_path / "github-path"
+    env_file.touch()
+    path_file.touch()
+    runner_temp = tmp_path / "runner-temp"
+    result = subprocess.run(
+        ["/bin/bash", "-c", bootstrap],
+        env={
+            **os.environ,
+            "PATH": str(tools),
+            "MANYLINUX_PYTHON_ROOT": str(python_root),
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_ENV": str(env_file),
+            "GITHUB_PATH": str(path_file),
+            "AUDIT_TOOL_LOG": str(tool_log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if missing:
+        assert result.returncode != 0
+        assert env_file.read_text() == path_file.read_text() == ""
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert tool_log.read_text().splitlines() == ["auditwheel --version", "patchelf --version"]
+    exported = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    assert exported == {
+        "PYO3_PYTHON": str(binaries / "python"),
+        "LIBRARY_PATH": str(python_root / "lib"),
+        "CARGO_HOME": str(runner_temp / "cargo"),
+        "RUSTUP_HOME": str(runner_temp / "rustup"),
+    }
+    assert path_file.read_text().splitlines() == [str(binaries)]
+    subprocess.run(
+        ["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"],
+        env={**os.environ, **exported, "PATH": path_file.read_text().strip()},
+        check=True,
+        timeout=10,
     )
 
 

@@ -29,7 +29,8 @@ jobs:
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -44,15 +45,13 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: test -n "${EXPECTED_SHA}" && test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
-      - uses: ./.github/actions/setup-python-rust
+      - uses: ./.github/actions/setup-manylinux-python-rust
         if: inputs.wheel_artifact == ''
-        with:
-          python-version: "3.12"
       - name: Build one wheel for standalone qualification
         if: inputs.wheel_artifact == ''
         run: |
           python -m pip install 'maturin>=1.12,<2'
-          (cd python/aisimulate && python -m maturin build --release --out ../../fpe-wheel)
+          python scripts/build_manylinux_wheel.py --output-dir fpe-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.wheel_artifact != ''
         with:
