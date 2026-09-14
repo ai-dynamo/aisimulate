@@ -41,6 +41,10 @@ pub struct ReplayReport {
     /// AIC's latency-weighted coverage threshold while `coverage` explains
     /// why the estimate was withheld.
     pub power: Option<TracePowerStats>,
+    /// Complete typed operation-energy diagnostics for bindings and direct
+    /// Rust consumers. `None` means the caller did not request or attach
+    /// diagnostics; an attached payload carries its own availability status.
+    pub power_diagnostics: Option<ReplayPowerDiagnostics>,
     /// Per-request records, one per admitted request. Populated by
     /// `TraceCollector::finish`. Intentionally NOT serialized into the summary
     /// JSON (see custom `Serialize` impl below) — consumers that want per-
@@ -120,6 +124,66 @@ pub struct TracePowerStats {
     pub coverage: f64,
 }
 
+/// Complete replay power diagnostics shared by Rust and serialized bindings.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPowerDiagnostics {
+    pub schema_version: &'static str,
+    pub scope: &'static str,
+    pub power_w_unit: &'static str,
+    pub energy_unit: &'static str,
+    pub latency_unit: &'static str,
+    pub coverage_gate: f64,
+    pub publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covered_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_coverage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<&'static str>,
+    pub phases: Vec<ReplayPhasePowerDiagnostics>,
+}
+
+/// Per-phase operation-energy diagnostics.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPhasePowerDiagnostics {
+    pub name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    pub publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub operations: Vec<ReplayOperationPowerDiagnostics>,
+}
+
+/// Per-operation energy evidence and provenance.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayOperationPowerDiagnostics {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_contribution: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncovered_reason: Option<&'static str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceDistributionStats {
     pub mean_ms: f64,
@@ -168,6 +232,14 @@ impl ReplayReport {
 
     pub fn with_power(mut self, power: Option<TracePowerStats>) -> Self {
         self.power = power;
+        self
+    }
+
+    pub fn with_power_diagnostics(
+        mut self,
+        power_diagnostics: Option<ReplayPowerDiagnostics>,
+    ) -> Self {
+        self.power_diagnostics = power_diagnostics;
         self
     }
 
@@ -320,6 +392,9 @@ impl Serialize for ReplayReport {
                 map.serialize_entry("power_w", &power_w)?;
             }
             map.serialize_entry("power_coverage", &power.coverage)?;
+        }
+        if let Some(power_diagnostics) = &self.power_diagnostics {
+            map.serialize_entry("power_diagnostics", power_diagnostics)?;
         }
         map.serialize_entry("processed_tokens", &self.processed_tokens())?;
         map.serialize_entry("processed_tokens_per_s", &self.processed_tokens_per_s())?;
@@ -1618,6 +1693,7 @@ impl TraceCollector {
             agentic_graph,
             goodput,
             power: None,
+            power_diagnostics: None,
             per_request,
             runtime_evidence,
         }
@@ -2010,9 +2086,38 @@ mod tests {
 
         let absent = TraceCollector::default().finish();
         assert_eq!(absent.power, None);
+        assert_eq!(absent.power_diagnostics, None);
         let summary = serde_json::to_value(&absent).unwrap();
         assert!(summary.get("power_w").is_none());
         assert!(summary.get("power_coverage").is_none());
+        assert!(summary.get("power_diagnostics").is_none());
+
+        let diagnostics = ReplayPowerDiagnostics {
+            schema_version: "1.0",
+            scope: "active_forward_pass_per_gpu",
+            power_w_unit: "W",
+            energy_unit: "W-ms",
+            latency_unit: "ms",
+            coverage_gate: POWER_DATA_COVERAGE_THRESHOLD,
+            publication_status: "unsupported",
+            energy_wms: None,
+            latency_ms: None,
+            covered_latency_ms: None,
+            power_w: None,
+            power_coverage: None,
+            unavailable_reason: Some("timing provider has no operation-energy evidence"),
+            phases: Vec::new(),
+        };
+        let typed = TraceCollector::default()
+            .finish()
+            .with_power_diagnostics(Some(diagnostics.clone()));
+        assert_eq!(typed.power_diagnostics, Some(diagnostics));
+        let summary = serde_json::to_value(&typed).unwrap();
+        assert_eq!(summary["power_diagnostics"]["schema_version"], "1.0");
+        assert_eq!(
+            summary["power_diagnostics"]["publication_status"],
+            "unsupported"
+        );
     }
 
     #[test]

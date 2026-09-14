@@ -74,6 +74,8 @@ The `predict` verb is intentional: one pinned configuration predicts serving beh
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--diagnostics power` | enum | None | Add the native timing-energy evidence to standard output. JSON is complete; table output is bounded. |
+| `--diagnostics-top-n N` | positive integer | `12` | Maximum operations shown per phase in the power diagnostics table. It never truncates `prediction.json` or JSON standard output. |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
@@ -1180,6 +1182,25 @@ When every replay role uses the AIC timing provider, prediction output includes
 per GPU, not idle, host, network, whole-server, or wall-plug power. Table output labels the metric
 with watts and shows gated values as `N/A`; JSON omits unavailable `power_w` instead of writing zero.
 
+The engine runner also writes a complete `power_diagnostics` object in `prediction.json`. Its
+schema-versioned contract contains aggregate and `prefill` / `decode` `energy_wms`, `latency_ms`,
+`covered_latency_ms`, `power_coverage`, and gated `power_w`, followed by every name-folded operation.
+Each operation includes its latency, optional positive energy, coverage, phase-energy contribution,
+raw source tag, normalized `source_kind`, and publication status. The normalized source kinds are
+`measured`, `transferred`, `modeled`, `mixed`, `other`, and `missing`; the raw source remains present
+so a provider-specific tag is never discarded. Missing energy is omitted, never serialized as zero.
+
+`--diagnostics power` selects this object for standard output. With `--format json`, stdout contains
+both `summary` and the complete `power_diagnostics` object. With `--format table`, stdout includes
+phase totals and at most `--diagnostics-top-n` operations per phase, sorted deterministically by
+energy contribution and name. The complete durable export remains in `prediction.json`.
+
+Latency-only and whole-model FPM timing providers return `publication_status: unsupported` with an
+actionable `unavailable_reason`; they do not fabricate an energy estimate. Attention/FFN and encoder
+disaggregated topologies remain unavailable until their runtime projects expose executable topology
+contracts. The compatibility AIC detail workflow remains supported for those cases and for exact
+single-pass `static`, `static_ctx`, and `static_gen` reports.
+
 ### Prediction Directory
 
 ```text
@@ -1190,7 +1211,8 @@ with watts and shows gated values as `N/A`; JSON omits unavailable `power_w` ins
 └── afd-qualification.json         # only for AFD
 ```
 
-- `prediction.json` preserves the selected runner's existing full prediction report.
+- `prediction.json` preserves the selected runner's existing full prediction report, including the
+  complete, untruncated `power_diagnostics` object when the runner exposes timing evidence.
 - `requests.jsonl` contains one record per request when explicitly enabled.
 - `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
   including topology, measurement provenance, workload, goal, and any P/D companion.
@@ -1239,7 +1261,9 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 ### Standard Output
 
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
-one JSON value for shell automation. Durable artifact formats do not change with this option.
+one JSON value for shell automation. With `--diagnostics power`, JSON stdout becomes an object with
+`summary` and complete `power_diagnostics` members; table stdout adds the bounded diagnostic table.
+Durable artifact formats do not change with this option.
 
 ## Errors and Exit Codes
 

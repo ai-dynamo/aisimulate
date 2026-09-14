@@ -117,8 +117,41 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         }
     )
 
-    assert report.metrics["power_coverage"] == 0.0
+    coverage = report.metrics["power_coverage"]
+    assert coverage == 0.0
     assert "power_w" not in report.metrics
+    diagnostics = report.metadata["native_report"]["power_diagnostics"]
+    assert diagnostics["schema_version"] == "1.0"
+    assert diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert diagnostics["power_coverage"] == pytest.approx(coverage)
+    assert [phase["name"] for phase in diagnostics["phases"]] == [
+        "prefill",
+        "decode",
+    ]
+    phase_energies = [phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase]
+    if phase_energies:
+        assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
+    else:
+        assert "energy_wms" not in diagnostics
+    assert diagnostics["latency_ms"] == pytest.approx(sum(phase["latency_ms"] for phase in diagnostics["phases"]))
+    assert diagnostics["covered_latency_ms"] == pytest.approx(
+        sum(phase["covered_latency_ms"] for phase in diagnostics["phases"])
+    )
+    for phase in diagnostics["phases"]:
+        operations = phase["operations"]
+        assert [operation["name"] for operation in operations] == sorted(operation["name"] for operation in operations)
+        for operation in operations:
+            assert operation["source_kind"] in {
+                "measured",
+                "transferred",
+                "modeled",
+                "mixed",
+                "other",
+                "missing",
+            }
+            if operation["status"] == "missing":
+                assert "energy_wms" not in operation
+                assert operation["uncovered_reason"]
 
 
 def test_power_report_table_surfaces_available_power_and_coverage() -> None:

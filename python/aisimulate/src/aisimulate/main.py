@@ -52,6 +52,13 @@ class _CliExecutionError(RuntimeError):
     pass
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aisimulate",
@@ -73,6 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics",
+        choices=("power",),
+        help="include an AISimulate-native diagnostic section in stdout",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics-top-n",
+        type=_positive_int,
+        default=12,
+        metavar="N",
+        help="maximum operations shown per phase in the diagnostics table (default: 12)",
+    )
     subparsers.choices["predict"].add_argument(
         "--online",
         action="store_true",
@@ -200,6 +219,25 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     summary = native.get("summary", native)
     if not isinstance(summary, dict):
         raise RuntimeError("prediction report summary must be a JSON mapping")
+    power_diagnostics: dict[str, Any] | None = None
+    if args.diagnostics == "power":
+        raw_diagnostics = native.get("power_diagnostics")
+        if isinstance(raw_diagnostics, dict):
+            power_diagnostics = raw_diagnostics
+        else:
+            power_diagnostics = {
+                "schema_version": "1.0",
+                "scope": "active_forward_pass_per_gpu",
+                "publication_status": "unsupported",
+                "unavailable_reason": (
+                    "selected runner did not provide typed timing-energy evidence; "
+                    "use engine timing.forward_model=op_level on a supported topology"
+                ),
+                "coverage_gate": 0.9,
+                "phases": [],
+            }
+            native = dict(native)
+            native["power_diagnostics"] = power_diagnostics
     resolved_basis = native.get("weka_nested_timestamp_basis")
     if isinstance(resolved_basis, str):
         source = config.traffic.source
@@ -223,7 +261,14 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    sys.stdout.write(format_prediction_stdout(summary, args.format))
+    sys.stdout.write(
+        format_prediction_stdout(
+            summary,
+            args.format,
+            power_diagnostics=power_diagnostics,
+            diagnostics_top_n=args.diagnostics_top_n,
+        )
+    )
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
