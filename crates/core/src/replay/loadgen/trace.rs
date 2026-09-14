@@ -1440,6 +1440,7 @@ impl AgenticTraceBuilder {
             hash_ids,
             not_before_ms: raw.not_before_ms,
             recorded_api_time_ms: raw.recorded_api_time_ms,
+            recorded_interval_ms: None,
             priority: raw.priority.unwrap_or(0),
             strict_priority: raw.strict_priority.unwrap_or(0),
             policy_class: raw.policy_class,
