@@ -5,6 +5,7 @@ mod arrival;
 mod driver;
 mod dynamo;
 mod generated;
+mod prompt;
 mod steppable;
 mod trace;
 mod types;
@@ -16,6 +17,7 @@ use rand::rngs::StdRng;
 pub use driver::WorkloadDriver;
 pub use dynamo::DynamoRequestTrace;
 pub use generated::GeneratedRequests;
+pub use prompt::AgenticPromptMaterializer;
 pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
@@ -52,3 +54,6 @@ pub(super) fn planned_output_token_ids(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod prefix_tests;

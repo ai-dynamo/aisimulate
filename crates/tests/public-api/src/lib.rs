@@ -6,7 +6,9 @@
 //! Compile-time contract tests from an external crate's point of view.
 
 use std::path::Path;
+use std::sync::Arc;
 
+use aiconfigurator_core::replay::loadgen::{AgenticPromptMaterializer, ValidatedAgenticGraph};
 use aiconfigurator_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
     ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
@@ -85,9 +87,21 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
     request
 }
 
+/// Retain the validated graph's shared prompt identity from an external crate.
+pub fn agentic_prompt_materializer(
+    graph: &ValidatedAgenticGraph,
+) -> &Arc<AgenticPromptMaterializer> {
+    graph.prompt_materializer()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aiconfigurator_core::replay::loadgen::{
+        AgenticGraphBuilder, AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow,
+        AgenticSourceProvenance, ReplayRequestHashes, AGENTIC_MOONCAKE_SCHEMA,
+        AGENTIC_MOONCAKE_VERSION,
+    };
     use aiconfigurator_core::{
         ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
@@ -148,5 +162,59 @@ mod tests {
         assert_eq!(options.regression_attention_kv_weight, 2.0);
         assert_eq!(options.regression_prefill_attention_pair_weight, 3.0);
         assert_eq!(options.regression_ffn_token_weight, 4.0);
+    }
+
+    #[test]
+    fn agentic_prefix_materialization_is_available_to_external_crates() {
+        let mut builder = AgenticGraphBuilder::new(AgenticMooncakeHeader {
+            schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+            version: AGENTIC_MOONCAKE_VERSION,
+            block_size: 64,
+            hash_id_scope: AgenticHashIdScope::Local,
+            source: AgenticSourceProvenance {
+                format: "public-api-fixture".to_string(),
+                digest: "self-authored-prefix-fixture".to_string(),
+            },
+        })
+        .expect("valid graph header");
+        builder
+            .push(AgenticMooncakeRow {
+                request_id: "request".to_string(),
+                play_id: "play".to_string(),
+                session_id: "session".to_string(),
+                model: "fixture-model".to_string(),
+                input_length: Some(129),
+                output_length: Some(1),
+                hash_ids: Some(vec![90, 10, 50]),
+                ..AgenticMooncakeRow::default()
+            })
+            .expect("valid request row");
+        let graph = builder.finish().expect("valid graph");
+        let cloned_graph = graph.clone();
+        let materializer = agentic_prompt_materializer(&graph);
+        assert!(Arc::ptr_eq(
+            materializer,
+            agentic_prompt_materializer(&cloned_graph)
+        ));
+        assert_eq!(materializer.block_size(), 64);
+
+        let node = &graph.nodes()[0];
+        let full_prompt = materializer
+            .materialize_prefix(node, node.input_length())
+            .expect("materialize full prompt");
+        let prefix = materializer
+            .materialize_prefix(node, 65)
+            .expect("materialize prefix across source unit boundary");
+        assert_eq!(prefix, full_prompt[..65]);
+        let hashes: ReplayRequestHashes = materializer
+            .replay_hashes(node, 65, 32)
+            .expect("re-block prefix for engine");
+        assert_eq!(hashes.local_block_hashes.len(), 2);
+        assert_eq!(hashes.sequence_hashes.len(), 2);
+        assert_eq!(hashes, ReplayRequestHashes::from_tokens(&prefix, 32));
+        assert!(materializer
+            .materialize_prefix(node, node.input_length() + 1)
+            .is_err());
+        assert!(materializer.replay_hashes(node, 65, 0).is_err());
     }
 }

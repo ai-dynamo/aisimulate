@@ -16,6 +16,9 @@ mod scheduler;
 mod timing;
 mod trace;
 
+#[cfg(test)]
+pub(crate) use common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
+
 pub(crate) use host_offload::{
     HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
 };

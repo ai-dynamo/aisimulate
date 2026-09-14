@@ -45,6 +45,68 @@ the importer against two revision-pinned rows from the public SemiAnalysis
 `cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
 and deleted when the check exits; the complete 570 MB corpus is not downloaded.
 
+### Agentic prompt and cache identity
+
+Each `ValidatedAgenticGraph` owns an immutable `AgenticPromptMaterializer` shared
+through an `Arc`; cloning the graph preserves that same materializer. Graph
+validation assigns distinct `u32` synthetic token IDs to the sorted, deduplicated
+set of `u64` source hashes across the complete graph. Source hashes are neither
+truncated nor hashed into `u32`, and dictionary capacity overflow is an error.
+Request traversal order therefore does not change prompt tokens for the same
+complete identity set. Independently constructing a graph from a different set
+does not promise the same token IDs. Source provenance and graph digests continue
+to describe source data and graph structure, rather than synthetic token IDs.
+
+Weka normalization establishes the source identities before graph validation:
+complete source units share identity within their namespace; missing hashes and
+partial source tails receive request-private identities; excess hashes are
+discarded. A source unit expands to repeated synthetic tokens, with the final
+unit limited by the original input length. The source unit size and the engine
+cache block size are independent. Only complete engine blocks enter
+`ReplayRequestHashes`: `local_block_hashes` identify each block's tokens, and
+`sequence_hashes` incorporate all preceding blocks. Identical local blocks after
+a divergent prefix consequently have different sequence hashes.
+
+Consumers access this mapping with `graph.prompt_materializer()`:
+
+- `block_size()` returns the source unit size.
+- `materialize_prefix(node, prefix_length)` expands the original node's source
+  identities and returns its requested token prefix.
+- `replay_hashes(node, prefix_length, engine_block_size)` returns the existing
+  `ReplayRequestHashes` representation for complete blocks in that prefix.
+
+Prefix length must not exceed the original input length, and unknown source
+identities are errors. A zero-length prefix is valid; the hash interface requires
+a positive engine block size representable by `u32`. Primer and profile consumers
+must retain the complete graph's materializer and use the original node identity.
+Do not shorten a Weka request and normalize it again: the shortened final source
+unit would acquire a private tail identity and change an otherwise shared prefix.
+The existing workload driver entrypoints use this same mapping and keep prompt
+expansion deferred until dispatch.
+
+For theoretical reuse analysis, retain request and play identity, original input
+length, selected prefix length, source unit size, engine block size, and
+`ReplayRequestHashes`. Compare contiguous sequence-hash prefixes to measure
+potential shared complete blocks. This describes identity overlap; realized
+reuse also depends on cache state, placement, and scheduler behavior.
+
+For realized reuse in aggregated replay, use the first entry in each request's
+`admission_history` and its `reused_input_tokens`. The collector's internal
+`first_admission_reused_input_tokens` counter feeds
+`ReplayReport::first_admission_prefix_cache_reused_ratio`, whose denominator is
+the total input tokens of completed, admitted requests. Router-reported overlap is a placement estimate,
+not an engine cache-hit observation. The legacy per-request
+`reused_input_tokens` and `prefix_cache_reused_ratio` retain maximum reuse across
+admissions and can include a request's own previously computed prefix after
+readmission; they are unsuitable for measuring first-admission shared reuse.
+
+AIC-1889's static re-blocking contract supplies the prompt identity foundation
+for AIC-1811. AIC-1811 owns the per-play identity lifecycle and subsequent joint
+validation of turn-zero/snapshot equivalence and actual cross-play engine cache
+isolation. Stable prompt materialization alone does not establish those lifecycle
+properties. Synthetic output RNG, trace schemas, and YAML configuration are
+outside this change.
+
 ## File Map
 
 - `src/replay/replayer.rs`

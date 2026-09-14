@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rand::rngs::StdRng;
@@ -21,7 +22,7 @@ use super::types::{
     LengthSpec, MooncakeRow, ReplayRequestHashes, SessionPartitionSpec, SessionTrace,
     SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, effective_replay_key,
 };
-use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use super::{AgenticPromptMaterializer, SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
 use crate::replay::protocol::DirectRequest;
 
 #[derive(Debug, Deserialize)]
@@ -1554,11 +1555,16 @@ impl AgenticTraceBuilder {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
         let graph_digest = canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes)?;
+        let prompt_materializer = Arc::new(AgenticPromptMaterializer::new(
+            self.header.block_size,
+            &self.nodes,
+        )?);
 
         Ok(AgenticTrace {
             block_size: self.header.block_size,
             source: self.header.source,
             graph_digest,
+            prompt_materializer,
             nodes: self.nodes,
             plays,
         })

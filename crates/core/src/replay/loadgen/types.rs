@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::AgenticPromptMaterializer;
 use super::trace::synthesize_validated_trace_tokens;
 use crate::replay::protocol::DirectRequest;
 
@@ -44,6 +46,7 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    pub(super) prompt_materializer: Arc<AgenticPromptMaterializer>,
 }
 
 pub type AgenticTrace = ValidatedAgenticGraph;
@@ -252,6 +255,14 @@ pub struct AgenticPlay {
 }
 
 impl ValidatedAgenticGraph {
+    /// Shared source-to-token context for this graph and its prefix views.
+    ///
+    /// Retain this context across primer/profile phases instead of rebuilding
+    /// an identity dictionary from only the nodes selected for a phase.
+    pub fn prompt_materializer(&self) -> &Arc<AgenticPromptMaterializer> {
+        &self.prompt_materializer
+    }
+
     pub fn block_size(&self) -> usize {
         self.block_size
     }

@@ -681,8 +681,7 @@ impl WorkloadDriver {
             u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
         let agentic_graph_identity = trace.identity();
         let trace_block_size = trace.block_size;
-        let mut hash_id_interner = FxHashMap::default();
-        let mut next_hash_id = 0_u32;
+        let prompt_materializer = trace.prompt_materializer;
         let mut index_by_id = FxHashMap::default();
         for (node_index, node) in trace.nodes.iter().enumerate() {
             index_by_id.insert(node.request_id.clone(), node_index);
@@ -715,21 +714,7 @@ impl WorkloadDriver {
             remaining_dependencies.push(node.dependencies.len());
             authored_not_before_ms.push(node.not_before_ms);
 
-            let hash_ids = node
-                .hash_ids
-                .into_iter()
-                .map(|hash_id| {
-                    if let Some(&interned) = hash_id_interner.get(&hash_id) {
-                        return Ok(interned);
-                    }
-                    let interned = next_hash_id;
-                    next_hash_id = next_hash_id
-                        .checked_add(1)
-                        .context("trace contains more unique hash IDs than u32 can represent")?;
-                    hash_id_interner.insert(hash_id, interned);
-                    Ok(interned)
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let hash_ids = prompt_materializer.interned_hash_ids(&node)?;
 
             let prompt_tokens =
                 PromptTokens::deferred(node.input_length, hash_ids, trace_block_size)?;
@@ -1495,6 +1480,9 @@ mod tests {
         plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         AgenticTrace {
             block_size: 1,
+            prompt_materializer: std::sync::Arc::new(
+                super::super::AgenticPromptMaterializer::new(1, &nodes).unwrap(),
+            ),
             source: AgenticSourceProvenance {
                 format: "test".into(),
                 digest: "fixture".into(),

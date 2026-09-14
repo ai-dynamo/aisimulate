@@ -35,6 +35,9 @@ mod spec;
 pub(crate) mod state;
 mod telemetry;
 
+#[cfg(test)]
+mod weka_prefix_tests;
+
 #[derive(Clone)]
 pub(crate) struct OfflineDisaggReplayConfig {
     pub(crate) prefill_factory: crate::replay::engine::ReplayRoleFactory,
