@@ -1,0 +1,402 @@
+{
+  "gb200-fresh-diagnostic": {
+    "comparison": {
+      "bytes": 126678,
+      "sha256": "e06fb050df21cf1a79806a71063d97edc8d97a29dd0d0e6734c9bcd86c550ae9"
+    },
+    "receipt": {
+      "bytes": 4455,
+      "sha256": "3f12856871efaaca4c52910ce09c8bf48390a331ae93ce337efc9cb00ca418d2"
+    },
+    "source_inputs": {
+      "audit": {
+        "bytes": 66505,
+        "sha256": "48f0b69ffdc3ff8062d9b7659fd30bac535da1ef02c9cac52351dcdf81737e07"
+      },
+      "decode": {
+        "bytes": 66679,
+        "sha256": "d27ccd341f3132fdb06e0194467afd5ec8b4d6b2c8d63487cedfc86f3945c086"
+      },
+      "original-comparison": {
+        "bytes": 115873,
+        "sha256": "9d2ead8420448da13508ab0407f58287ddc12891e0b073cdaa94d4a9e48d4c75"
+      },
+      "point-index": {
+        "bytes": 14851,
+        "sha256": "865727cb66aae227c10c6c85014a7fd5b8b2f7a40ad174e43774d527f1a767dd"
+      },
+      "prediction-config": {
+        "bytes": 544,
+        "sha256": "3560da7a682f9fcbb436c6d9596791d11d914aa45c0fe1fb205b4475fe24be83"
+      },
+      "prefill": {
+        "bytes": 65196,
+        "sha256": "e861fa4b45a933805a1c8a230045f36248a3ac3d8066a3325cfeecb9e30798c4"
+      }
+    }
+  },
+  "gb200-ordinary-e2e": {
+    "comparison": {
+      "bytes": 1206545,
+      "sha256": "c210a3548af1acb8c15c3466219c82a620c2ac671fc2c2b6a6693c6288a63d28"
+    },
+    "receipt": {
+      "bytes": 4575,
+      "sha256": "2e7dea768982aac3ffcd0bc444ba0f3f8b6dd546bc2234a7a8c6ee796798653e"
+    },
+    "source_inputs": {
+      "audit": {
+        "bytes": 98499397,
+        "sha256": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de"
+      },
+      "client-summary": {
+        "bytes": 2758133,
+        "sha256": "07ee41c79f675a7988e1e0c36219624f6160406fe350458b128a079432e0a3a8"
+      },
+      "measurement": {
+        "bytes": 4055,
+        "sha256": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a"
+      },
+      "plan": {
+        "bytes": 7468307,
+        "sha256": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1"
+      },
+      "prediction-config": {
+        "bytes": 544,
+        "sha256": "3560da7a682f9fcbb436c6d9596791d11d914aa45c0fe1fb205b4475fe24be83"
+      },
+      "scheduler-receipt": {
+        "bytes": 10381,
+        "sha256": "0c2f04da6ac61d8cbda75750c2fcc8b150f2e90d380b80f516b88cfc2d0827f0"
+      }
+    }
+  },
+  "gb200-ordinary-trace": {
+    "comparison": {
+      "bytes": 20710980,
+      "sha256": "28a3c35a39288b1b6f611bd2d98dee4bbc635e0533a3e7db7a1d443421052aa5"
+    },
+    "receipt": {
+      "bytes": 4000,
+      "sha256": "bfb4c8a98ac0c274a979214baaab67ac1d0214641cd0c43fec8a0a2f674da374"
+    },
+    "source_inputs": {
+      "audit": {
+        "bytes": 98499397,
+        "sha256": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de"
+      },
+      "measurement": {
+        "bytes": 4055,
+        "sha256": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a"
+      },
+      "plan": {
+        "bytes": 7468307,
+        "sha256": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1"
+      },
+      "prediction-config": {
+        "bytes": 544,
+        "sha256": "3560da7a682f9fcbb436c6d9596791d11d914aa45c0fe1fb205b4475fe24be83"
+      }
+    }
+  },
+  "gb200-retained-holdout": {
+    "comparison": {
+      "bytes": 115873,
+      "sha256": "9d2ead8420448da13508ab0407f58287ddc12891e0b073cdaa94d4a9e48d4c75"
+    },
+    "receipt": {
+      "bytes": 5121,
+      "sha256": "be80f1b9cbc00400a58e75c56386f13868f9a0f4a56b60fd749056efde8f9cee"
+    },
+    "source_inputs": {
+      "admission": {
+        "bytes": 4685,
+        "sha256": "22cf1f25a9f5bd71b909cbd2ef35313dc7bee83fc27856cfd19d2f023f90098f"
+      },
+      "holdout": {
+        "bytes": 350117,
+        "sha256": "98664d2d97c90cb01855a15c65cac1a272989404d03aaeaf83a28dcd546a1917"
+      },
+      "original-comparison": {
+        "bytes": 7537,
+        "sha256": "940608572a3e359ac07488c8ad73985b099a4debfc2b4c4d3700b2493e6a49ae"
+      },
+      "prediction-config": {
+        "bytes": 544,
+        "sha256": "3560da7a682f9fcbb436c6d9596791d11d914aa45c0fe1fb205b4475fe24be83"
+      }
+    }
+  },
+  "gb300-holdout-off": {
+    "comparison": {
+      "bytes": 65471,
+      "sha256": "1d772aa12164b8d110fc6b50418b4328d496b98fe5ca3006451b0fe124f7663f"
+    },
+    "receipt": {
+      "bytes": 3752,
+      "sha256": "df5b7992eaed5803eb2c0e43b5e79984a7340074ab3247c8ef63ed6d9a33f541"
+    },
+    "source_inputs": {
+      "heldout-plan": {
+        "bytes": 7945,
+        "sha256": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def"
+      },
+      "observations": {
+        "bytes": 23871,
+        "sha256": "d4bf262698790520abd704dae04bed269cad7cc8c10c2e5a7b90ac90a9ddc410"
+      },
+      "prediction-config": {
+        "bytes": 565,
+        "sha256": "1d47d2888fcb61405bffa94e95331c7d0835b705126340bae57e559c67696ee3"
+      }
+    }
+  },
+  "gb300-holdout-on": {
+    "comparison": {
+      "bytes": 68427,
+      "sha256": "236faab0d229b518aea48b4d845a628cbcd99f56f2a49b112557312b1e410cd0"
+    },
+    "receipt": {
+      "bytes": 3760,
+      "sha256": "51a1b926bdd996d885802c7a780aa256d9d2bd890872d1f422d05957e641fe2a"
+    },
+    "source_inputs": {
+      "heldout-plan": {
+        "bytes": 7945,
+        "sha256": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def"
+      },
+      "observations": {
+        "bytes": 23913,
+        "sha256": "a468a4e5364bebdfd28677a51fe489e4c17d5778ab11009b41dd69a7dc8a7568"
+      },
+      "prediction-config": {
+        "bytes": 575,
+        "sha256": "5aac0504f5ea5f18b9feb37941f0ce6ddf62d396a4a64143f702a1e68af0cbfa"
+      }
+    }
+  },
+  "gb300-retained-e2e-core-off": {
+    "comparison": {
+      "bytes": 1700421,
+      "sha256": "de755d00c7ab516df8188d5d56f0f93ad38b59c9551ae10b84559469fc8dbaa7"
+    },
+    "receipt": {
+      "bytes": 3218,
+      "sha256": "6be684127ddda88466c66b34a5ff91411fafdb667c9e372c56467a3d85ff8a41"
+    },
+    "source_inputs": {
+      "prediction-config": {
+        "bytes": 565,
+        "sha256": "1d47d2888fcb61405bffa94e95331c7d0835b705126340bae57e559c67696ee3"
+      },
+      "shared-workloads": {
+        "bytes": 245455,
+        "sha256": "ca98d203890a856a7a89e0b3070c2206b67729591dec4467799985437f4f7007"
+      }
+    }
+  },
+  "gb300-retained-e2e-core-on": {
+    "comparison": {
+      "bytes": 3985086,
+      "sha256": "2b75f29cb8cf5175a1735c0be932442ab52abced401890b0c4b33c76883af2bf"
+    },
+    "receipt": {
+      "bytes": 3216,
+      "sha256": "544ea254bfc67f7c8514ba47d3949341d1d3ed0e31b650f9dc39686e2dd940b9"
+    },
+    "source_inputs": {
+      "prediction-config": {
+        "bytes": 575,
+        "sha256": "5aac0504f5ea5f18b9feb37941f0ce6ddf62d396a4a64143f702a1e68af0cbfa"
+      },
+      "shared-workloads": {
+        "bytes": 579412,
+        "sha256": "c5446a862e47e1f6dbdf31716e32a14bd00d69f5b7712f82529dc856115bb091"
+      }
+    }
+  },
+  "gb300-retained-e2e-field-off": {
+    "comparison": {
+      "bytes": 108079,
+      "sha256": "7fb4cb51992d579721c22e112f59ac7f4e4a68bd7dfb7a2e3a2731117a26eac6"
+    },
+    "receipt": {
+      "bytes": 663,
+      "sha256": "a756524fa0374b5e1f73e62bc2889af9e8463d961d830ea7934440181db27edf"
+    },
+    "source_inputs": {
+      "historical-report": {
+        "bytes": 47301,
+        "sha256": "230f1f8320364454a4ea70bd6460ce37442db8092065e23e50cb1e00bc3aaefd"
+      }
+    }
+  },
+  "gb300-retained-e2e-field-on": {
+    "comparison": {
+      "bytes": 108009,
+      "sha256": "21d39da655a1439cc79f34482fd29a371a2ad19cc45c4be201d612a364c38aca"
+    },
+    "receipt": {
+      "bytes": 663,
+      "sha256": "fcb5c584b17674a842402e792139c6888b6e622b9ae2b11dbbc810e28057d552"
+    },
+    "source_inputs": {
+      "historical-report": {
+        "bytes": 47466,
+        "sha256": "58bb8c5239b6a547b738a17e74f816cbfbc0f117e11f41b43e0433785a1128a8"
+      }
+    }
+  },
+  "gb300-retained-e2e-service-off": {
+    "comparison": {
+      "bytes": 108588,
+      "sha256": "b7d0c2789c37e48d5946b217a083913abc71eef8e8877ae6d6e65e033e025d1b"
+    },
+    "receipt": {
+      "bytes": 666,
+      "sha256": "a87fa22ccbd80f40e75ec995c29abf116841a3d91d0e93a24ed4afe759b6ae7d"
+    },
+    "source_inputs": {
+      "historical-report": {
+        "bytes": 47331,
+        "sha256": "300c0a7d251e210eb1b7edc32bf50b4feb68ddd8340f7e739da6b5a4ba3c2ad9"
+      }
+    }
+  },
+  "gb300-retained-e2e-service-on": {
+    "comparison": {
+      "bytes": 108532,
+      "sha256": "2ab627e4e53ab873cb7aaebb9e0cfc191ec8d15f9c5805d6057006268524bd21"
+    },
+    "receipt": {
+      "bytes": 664,
+      "sha256": "71423af7e31f42f3033238c8a362fb0617a7ebe4314af3c14cb344a773a94a05"
+    },
+    "source_inputs": {
+      "historical-report": {
+        "bytes": 47365,
+        "sha256": "0afdc29d231eb1fc0a66e86cd0ffc71fc62c864286346a3ea881ef3716aac0f5"
+      }
+    }
+  },
+  "gb300-retained-native-core-off": {
+    "comparison": {
+      "bytes": 32480510,
+      "sha256": "5a9d35d81f822e7d1e217ac9c70eaeae351b08c828b1860d5365a2ed4a16b661"
+    },
+    "receipt": {
+      "bytes": 5343,
+      "sha256": "cde7aef5524662f40ec4cd0950c2a447ef3a525e5415efb4181b7ed2cfe43cd3"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 1000556,
+        "sha256": "5039857f033fa080263db5d9fe6574635c6938fc38c3d01390e94e3eee4385a0"
+      },
+      "prediction-config": {
+        "bytes": 565,
+        "sha256": "1d47d2888fcb61405bffa94e95331c7d0835b705126340bae57e559c67696ee3"
+      }
+    }
+  },
+  "gb300-retained-native-core-on": {
+    "comparison": {
+      "bytes": 81275532,
+      "sha256": "f37571e798f9261dc96aac4552d594231126607035417247ceff4a07e63ff94f"
+    },
+    "receipt": {
+      "bytes": 5333,
+      "sha256": "80553cb5ac1ca5b9a6735bc26d160e71a9b2d0219ad63e68f94737efd11b9dc0"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 3210159,
+        "sha256": "f81ca971bc1f0d9854ecc2ac07e104f1d9d6d5d9c86bb16bf77c3bcbabd24c5e"
+      },
+      "prediction-config": {
+        "bytes": 575,
+        "sha256": "5aac0504f5ea5f18b9feb37941f0ce6ddf62d396a4a64143f702a1e68af0cbfa"
+      }
+    }
+  },
+  "gb300-retained-native-field-off": {
+    "comparison": {
+      "bytes": 7218971,
+      "sha256": "9d7f6d8e5e812a1818d5a0ba8b562e84392e6f108590665e610e8efae2aceda9"
+    },
+    "receipt": {
+      "bytes": 5348,
+      "sha256": "e1c8050e3a4cd2c4723dc41601cc07f396321e9a45623c93c0fbb67936abe75b"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 232812,
+        "sha256": "81ecc330cb530359aa0717f52a19bba37931f1d7d7103f758c7413107c570624"
+      },
+      "prediction-config": {
+        "bytes": 565,
+        "sha256": "1d47d2888fcb61405bffa94e95331c7d0835b705126340bae57e559c67696ee3"
+      }
+    }
+  },
+  "gb300-retained-native-field-on": {
+    "comparison": {
+      "bytes": 7225651,
+      "sha256": "157a6f4c1d3b95f286291f579767fc75a53c6434f00f10f20087a179c6482a39"
+    },
+    "receipt": {
+      "bytes": 5345,
+      "sha256": "ce530f7b2f50af6c58ac32f92f74dbce185cb7a6e8a3fa596938cd17f7c6af55"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 232636,
+        "sha256": "4310659db5730b7463b30b742033985cc1fb9d33006a3afcd38bb4c5629b7d42"
+      },
+      "prediction-config": {
+        "bytes": 575,
+        "sha256": "5aac0504f5ea5f18b9feb37941f0ce6ddf62d396a4a64143f702a1e68af0cbfa"
+      }
+    }
+  },
+  "gb300-retained-native-service-off": {
+    "comparison": {
+      "bytes": 7231330,
+      "sha256": "0100c2659d76f20d9cc6df5dc88b60f03724d28d22223d3d32b1f7005b930420"
+    },
+    "receipt": {
+      "bytes": 5350,
+      "sha256": "a127756db0657935f3de143d508688f0780ca2d78a703ef4b8dc2ddfff923398"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 233174,
+        "sha256": "5689b7eeb2c2a0d14b59c7a6bc255d81731d5a924b9dcf8c30cadf1279981cfe"
+      },
+      "prediction-config": {
+        "bytes": 565,
+        "sha256": "1d47d2888fcb61405bffa94e95331c7d0835b705126340bae57e559c67696ee3"
+      }
+    }
+  },
+  "gb300-retained-native-service-on": {
+    "comparison": {
+      "bytes": 7227571,
+      "sha256": "dcd2dcead5dc9c28cbc42cdf0309ec128768f02e4aeb627c64be35f7d727c643"
+    },
+    "receipt": {
+      "bytes": 5349,
+      "sha256": "2eda4916d5e9132dfb1633b15311cc5d1a4c1d0c9a3ff211cecd45ac349410a7"
+    },
+    "source_inputs": {
+      "original-comparison": {
+        "bytes": 232817,
+        "sha256": "5f2ed32038bfacddd97fbfb9eba1c44e8be7c106c82d3e453b058bf9dccc7973"
+      },
+      "prediction-config": {
+        "bytes": 575,
+        "sha256": "5aac0504f5ea5f18b9feb37941f0ce6ddf62d396a4a64143f702a1e68af0cbfa"
+      }
+    }
+  }
+}

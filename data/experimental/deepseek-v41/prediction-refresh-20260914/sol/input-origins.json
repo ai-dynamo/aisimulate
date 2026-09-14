@@ -1,0 +1,153 @@
+{
+  "gb200-ordinary-e2e": {
+    "audit": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 98499397,
+      "sha256": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de"
+    },
+    "client-summary": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 2758133,
+      "sha256": "07ee41c79f675a7988e1e0c36219624f6160406fe350458b128a079432e0a3a8"
+    },
+    "measurement": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 4055,
+      "sha256": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a"
+    },
+    "plan": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 7468307,
+      "sha256": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1"
+    },
+    "scheduler-receipt": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 10381,
+      "sha256": "0c2f04da6ac61d8cbda75750c2fcc8b150f2e90d380b80f516b88cfc2d0827f0"
+    }
+  },
+  "gb200-ordinary-trace": {
+    "audit": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 98499397,
+      "sha256": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de"
+    },
+    "measurement": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 4055,
+      "sha256": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a"
+    },
+    "plan": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 7468307,
+      "sha256": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1"
+    }
+  },
+  "gb200-retained-holdout": {
+    "admission": {
+      "bytes": 4685,
+      "commit": "df04d9edec7efc1a97dbf67782c026a94f4b0761",
+      "path": "data/experimental/deepseek-v41/gb200-fpm/holdout-v1/admission-receipt.json",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "22cf1f25a9f5bd71b909cbd2ef35313dc7bee83fc27856cfd19d2f023f90098f"
+    },
+    "holdout": {
+      "availability": "Privately retained closed source; immutable hash only",
+      "bytes": 350117,
+      "sha256": "98664d2d97c90cb01855a15c65cac1a272989404d03aaeaf83a28dcd546a1917"
+    },
+    "original-comparison": {
+      "bytes": 7537,
+      "commit": "df04d9edec7efc1a97dbf67782c026a94f4b0761",
+      "path": "data/experimental/deepseek-v41/gb200-fpm/holdout-sol-review-v2/sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "940608572a3e359ac07488c8ad73985b099a4debfc2b4c4d3700b2493e6a49ae"
+    }
+  },
+  "gb300-holdout-off": {
+    "heldout-plan": {
+      "bytes": 7945,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/heldout-points.json",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def"
+    },
+    "observations": {
+      "bytes": 23871,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/full/heldout/forward-results.json",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "d4bf262698790520abd704dae04bed269cad7cc8c10c2e5a7b90ac90a9ddc410"
+    }
+  },
+  "gb300-holdout-on": {
+    "heldout-plan": {
+      "bytes": 7945,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/heldout-points.json",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def"
+    },
+    "observations": {
+      "bytes": 23913,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/decoder_bounded/heldout/forward-results.json",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "a468a4e5364bebdfd28677a51fe489e4c17d5778ab11009b41dd69a7dc8a7568"
+    }
+  },
+  "gb300-retained-native-core-off": {
+    "original-comparison": {
+      "bytes": 1000556,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/off/trace-sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "5039857f033fa080263db5d9fe6574635c6938fc38c3d01390e94e3eee4385a0"
+    }
+  },
+  "gb300-retained-native-core-on": {
+    "original-comparison": {
+      "bytes": 3210159,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/on/sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "f81ca971bc1f0d9854ecc2ac07e104f1d9d6d5d9c86bb16bf77c3bcbabd24c5e"
+    }
+  },
+  "gb300-retained-native-field-off": {
+    "original-comparison": {
+      "bytes": 232812,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/field-off/trace-sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "81ecc330cb530359aa0717f52a19bba37931f1d7d7103f758c7413107c570624"
+    }
+  },
+  "gb300-retained-native-field-on": {
+    "original-comparison": {
+      "bytes": 232636,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/field-on/trace-sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "4310659db5730b7463b30b742033985cc1fb9d33006a3afcd38bb4c5629b7d42"
+    }
+  },
+  "gb300-retained-native-service-off": {
+    "original-comparison": {
+      "bytes": 233174,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/service-off/trace-sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "5689b7eeb2c2a0d14b59c7a6bc255d81731d5a924b9dcf8c30cadf1279981cfe"
+    }
+  },
+  "gb300-retained-native-service-on": {
+    "original-comparison": {
+      "bytes": 232817,
+      "commit": "5b6309570bb7e1ccf5fa461afa92392df11d9a50",
+      "path": "data/experimental/deepseek-v41/gb300-silicon/report/sol-review-v2/service-on/trace-sol-results.json.gz",
+      "repository": "https://github.com/ai-dynamo/aisimulate",
+      "sha256": "5f2ed32038bfacddd97fbfb9eba1c44e8be7c106c82d3e453b058bf9dccc7973"
+    }
+  }
+}
