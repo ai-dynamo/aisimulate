@@ -28,8 +28,7 @@ runs:
     - name: Install native build toolchain
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends build-essential
+        bash scripts/ci_install_build_tools.sh
     - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       with:
         components: ${{ inputs.rust-components }}

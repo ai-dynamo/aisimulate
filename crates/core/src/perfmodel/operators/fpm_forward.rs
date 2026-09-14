@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/fpm_forward.rs
 
 //! Whole-model forward-pass op (Python `forward_model="fpm"`, class
 //! `FPMForwardOp` in `sdk/operations/fpm_forward.py`).
@@ -75,7 +77,24 @@ pub struct FpmForwardOp {
     /// path does not read it.
     #[serde(default)]
     pub weight_bytes: f64,
+    /// Speculative verify width (tokens verified per request per decode
+    /// step). Default 1 = plain AR decode (bit-compatible with pre-field
+    /// specs). When > 1, the decode query maps the WIDENED token batch onto
+    /// the AR-collected surface at the equivalent-AR point: the engine hands
+    /// this op `batch = requests x width` tokens, and the true step reads
+    /// each request's KV once, so the coordinates are
+    /// `(tokens = batch, total_kv = batch / width * s)` — total new tokens
+    /// AND total KV bytes both match the real verify step exactly; only the
+    /// per-token QK-PV compute (memory-shadowed in decode) is folded onto
+    /// the AR curve. Prefill is unaffected (draft prefill work rides
+    /// separate op-level draft ops).
+    #[serde(default = "default_verify_width")]
+    pub verify_width: u32,
     pub sol_ops: Vec<Op>,
+}
+
+fn default_verify_width() -> u32 {
+    1
 }
 
 fn data_err(msg: String) -> AicError {
@@ -90,6 +109,19 @@ impl FpmForwardOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
+        if self.verify_width == 0 || (self.phase == FpmPhase::Prefill && self.verify_width != 1) {
+            return Err(data_err(format!(
+                "invalid FPM verify_width={} for {}",
+                self.verify_width,
+                self.phase.as_str()
+            )));
+        }
+        if self.phase == FpmPhase::Decode && ctx.batch_size % self.verify_width != 0 {
+            return Err(data_err(format!(
+                "FPM decode batch_size={} must be divisible by verify_width={}",
+                ctx.batch_size, self.verify_width
+            )));
+        }
         let batch_size = ctx.batch_size;
         let s = ctx.s;
         if batch_size < 1 || s < 1 {
@@ -113,9 +145,17 @@ impl FpmForwardOp {
                 let prefix = ctx.prefix as f64;
                 vec![b, b * s as f64, b * prefix]
             }
-            // One new token per request; `s` is the per-request KV length at
-            // this decode step, so the iteration reads batch*s KV tokens.
-            FpmPhase::Decode => vec![b, b * s as f64],
+            // `s` is the per-request KV length at this decode step. Plain AR
+            // (verify_width == 1): one new token per request, the iteration
+            // reads batch*s KV tokens. Verify (width w > 1): `batch` arrives
+            // WIDENED (requests x w new tokens); the step still reads each
+            // request's KV once, so total KV = (batch / w) * s — the
+            // equivalent-AR point on the collected surface (same token count,
+            // same KV bytes as the real block-verify step).
+            FpmPhase::Decode => {
+                let w = f64::from(self.verify_width);
+                vec![b, b / w * s as f64]
+            }
         };
         self.resolve(db, cell, &coords)
     }
@@ -619,6 +659,7 @@ mod tests {
             model_path: "org/model-a".to_string(),
             match_identity: default_identity(4),
             weight_bytes: 0.0,
+            verify_width: 1,
             // Empty sol_ops: exact hits and in-curve lerps never call SOL.
             sol_ops: vec![],
         }
@@ -1282,5 +1323,31 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("no Rust implementation"), "{err}");
+    }
+    #[test]
+    fn verify_query_rejects_invalid_width_before_table_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        let ctx = RuntimeContext {
+            batch_size: 8,
+            s: 4096,
+            ..Default::default()
+        };
+        for (phase, width) in [
+            (FpmPhase::Decode, 0),
+            (FpmPhase::Decode, 3),
+            (FpmPhase::Prefill, 8),
+        ] {
+            let mut query = op(phase);
+            query.verify_width = width;
+            assert!(
+                query
+                    .query(&db, &ctx)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("verify_width")
+            );
+        }
     }
 }

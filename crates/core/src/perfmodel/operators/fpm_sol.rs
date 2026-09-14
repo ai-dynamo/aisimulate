@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/fpm_sol.rs
 
 //! SOL-mode op queries for the FPM whole-model roofline.
 //!
@@ -102,6 +104,13 @@ pub(crate) fn op_sol_latency_ms(
 ) -> Result<f64, AicError> {
     let spec = &db.system_spec;
     match op {
+        Op::TokenScale(o) => {
+            // Reject malformed directly constructed Rust values as well as
+            // serialized input (which validates the widths on deserialize).
+            o.scale_tokens(0)?;
+            let ratio = f64::from(o.numerator) / f64::from(o.denominator);
+            op_sol_latency_ms(&o.op, db, x * ratio, batch * ratio, s, prefix)
+        }
         Op::Gemm(o) => Ok(gemm_sol(o, spec, x)),
         Op::Embedding(o) => Ok(embedding_sol(o, spec, x)),
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
@@ -779,6 +788,8 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
             use_qk_norm: false,
+            scale_num_tokens: 1,
+            verify_query_tokens: 0,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
