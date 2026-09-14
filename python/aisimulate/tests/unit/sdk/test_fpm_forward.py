@@ -603,3 +603,28 @@ class TestFPMStaticAndMixed:
         )
         assert per_op["fpm_forward_decode"] == pytest.approx(7.0)
         assert total == pytest.approx(7.0)
+
+
+def test_explicit_selector_emits_matched_cell_warning_once(fpm_session, capfd):
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+    baseline, database, _backend, _isl, _osl = fpm_session
+    selected = models.get_model(
+        baseline.model_path,
+        _model_config(forward_model="fpm", fpm_fmha_quant_mode=baseline.config.fmha_quant_mode),
+        BACKEND,
+    )
+    original = baseline.config.fmha_quant_mode.name
+    capfd.readouterr()
+    handle = _cached_engine_handle(selected, database)
+    first = handle.evaluate_context_ops([0], batch_size=1, s=512)
+    warning = capfd.readouterr().err
+    assert first[0][1] == 22.0
+    assert "WARNING: FPM table FMHA selector" in warning
+    assert f'original_model_mode="{original}"' in warning
+    assert f'selector="{original}"' in warning
+    assert "matched_cell_ids=" in warning
+    assert "fpm-test-prefill" in warning and "fpm-test-decode" in warning
+    assert "does not independently verify runtime attention precision" in warning
+    assert handle.evaluate_context_ops([0], batch_size=1, s=512) == first
+    assert "FPM table FMHA selector" not in capfd.readouterr().err

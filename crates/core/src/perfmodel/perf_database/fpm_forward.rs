@@ -39,9 +39,9 @@
 //! online-tuning model over Dynamo ForwardPassMetrics telemetry — an
 //! unrelated concept that also abbreviates to "FPM".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -148,6 +148,24 @@ pub struct FpmForwardCell {
     pub decode_batches: Vec<u32>,
     pub decode_rungs: Vec<u32>,
     pub decode_curve_bounds: BTreeMap<u32, (u32, u32)>,
+    /// Diagnostic state only; no change to table identity, values, or schema.
+    warned_fmha_model_modes: Mutex<BTreeSet<String>>,
+}
+
+impl FpmForwardCell {
+    pub(crate) fn fmha_selector_warning(&self, original: &str) -> Option<String> {
+        let mut warned = self
+            .warned_fmha_model_modes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !warned.insert(original.to_owned()) {
+            return None;
+        }
+        Some(format!(
+            "FPM table FMHA selector: original_model_mode={original:?}, selector={:?}, matched_cell_ids={:?}, model_path={:?}. Exact recorded-label matching does not independently verify runtime attention precision; arithmetic and memory modes are unchanged.",
+            self.match_identity[2], self.cell_ids, self.model_path
+        ))
+    }
 }
 
 /// One loaded parquet/sidecar pair: the grouped cells plus the
@@ -891,6 +909,7 @@ fn load_pair(
                 decode_batches: Vec::new(),
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
+                warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
         if !building.cell.cell_ids.contains(&row.cell_id) {

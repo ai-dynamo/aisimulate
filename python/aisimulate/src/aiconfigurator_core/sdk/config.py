@@ -133,6 +133,8 @@ class ModelConfig:
     # DeepSeek-V4.1 text AR: use the backend-verified bounded decoder replay profile.
     decoder_replay: bool = False
     # Whole-forward database identity only; never changes arithmetic or memory.
+    # Selection emits a warning with the original model mode and matched cell IDs.
+    # Exact table-label matching is not independent runtime-precision proof.
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:

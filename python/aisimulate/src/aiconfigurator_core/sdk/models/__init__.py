@@ -120,6 +120,10 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
         getattr(model, "raw_config", {}),
         decoder_replay=getattr(model.config, "decoder_replay", False),
         backend=backend_name,
+        # The SDK supports this prediction contract; the producer separately
+        # verifies actual runtime residency and token-only requests.
+        engram_cpu_offload=False,
+        input_modality="text",
     )
     for op in (prefill_op, decode_op):
         op._match_identity = (*op._match_identity[:15], *identity)

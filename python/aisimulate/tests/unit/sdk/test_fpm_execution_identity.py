@@ -19,17 +19,22 @@ def config():
 
 def test_v41_config_and_execution_cannot_borrow_a_table():
     raw = config()
-    off = execution_identity(raw)
-    on = execution_identity(raw, decoder_replay=True, backend="sglang")
+    off = execution_identity(raw, engram_cpu_offload=False, input_modality="text")
+    on = execution_identity(raw, decoder_replay=True, backend="sglang", engram_cpu_offload=False, input_modality="text")
     assert off[1:] == ("full", "hbm_tp_sharded", "text")
     assert on[0] == off[0] and on[1] == "decoder_bounded"
     altered = copy.deepcopy(raw)
     altered["text_config"]["kv_source_layer_ids"] = [2, 8, 14]
-    assert execution_identity(altered)[0] != off[0]
-    assert execution_identity(_attach_inferred_quant_fields(copy.deepcopy(raw))) == off
+    assert execution_identity(altered, engram_cpu_offload=False, input_modality="text")[0] != off[0]
+    assert (
+        execution_identity(
+            _attach_inferred_quant_fields(copy.deepcopy(raw)), engram_cpu_offload=False, input_modality="text"
+        )
+        == off
+    )
     assert raw == config()
     with pytest.raises(NotImplementedError, match="not verified for vllm"):
-        execution_identity(raw, decoder_replay=True)
+        execution_identity(raw, decoder_replay=True, engram_cpu_offload=False, input_modality="text")
 
 
 def test_existing_model_identity_stays_legacy():
@@ -41,7 +46,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
 
     from collector.fpm_forward.native_artifact import _validate_execution_provenance
 
-    identity = execution_identity(config())
+    identity = execution_identity(config(), engram_cpu_offload=False, input_modality="text")
     cell = SimpleNamespace(execution_identity=identity, input_text_sha256="a" * 64)
     fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
     payload = {
@@ -91,7 +96,9 @@ def test_v41_fpm_wrap_retains_resident_inventory_and_serialized_stages(replay, b
     for ops in (wrapped.context_ops, wrapped.generation_ops):
         assert len(ops) == 1
         assert ops[0].get_weights() == granular.get_resident_weights_bytes()
-        assert ops[0]._match_identity[-4:] == execution_identity(config(), decoder_replay=replay, backend=backend)
+        assert ops[0]._match_identity[-4:] == execution_identity(
+            config(), decoder_replay=replay, backend=backend, engram_cpu_offload=False, input_modality="text"
+        )
         native = json.loads(build_ops_json(ops))[0]["FpmForward"]
         assert len(native["match_identity"]) == 19
         stages = [item["Dsv41Stage"] for item in native["sol_ops"] if "Dsv41Stage" in item]
@@ -132,6 +139,8 @@ def test_table_selector_preserves_checkpoint_graph_residency_and_cache_identity(
         assert query["sol_ops"] != arithmetic["sol_ops"]
         assert query["match_identity"][2] == arithmetic["match_identity"][2] == "fp8"
         assert baseline["match_identity"][2] == "bfloat16"
+        assert query["original_fmha_quant_mode"] == "bfloat16"
+        assert baseline["original_fmha_quant_mode"] is None
     for model in (native, selected):
         assert model.get_resident_weights_bytes() == granular.get_resident_weights_bytes()
         assert model.get_additional_activation_bytes(512) == granular.get_additional_activation_bytes(512)
@@ -255,3 +264,15 @@ def test_real_v41_fpm_rejects_ambiguous_aggregates_but_keeps_identifiable_inputs
             # Fully cached prefill metadata schedules no new prefill compute.
             exact.update(num_prefill_requests=2, sum_prefill_kv_tokens=1024)
             assert predictor.estimate_forward_pass_time_ms(metrics) == row["latency_ms"]
+
+
+@pytest.mark.parametrize("offload", [None, True, 0, "false"])
+def test_v41_identity_rejects_missing_or_unverified_residency(offload):
+    with pytest.raises(ValueError, match="explicit engram_cpu_offload=False"):
+        execution_identity(config(), engram_cpu_offload=offload, input_modality="text")
+
+
+@pytest.mark.parametrize("modality", [None, "image", "multimodal", ""])
+def test_v41_identity_rejects_missing_or_nontext_input(modality):
+    with pytest.raises(ValueError, match="explicit input_modality='text'"):
+        execution_identity(config(), engram_cpu_offload=False, input_modality=modality)

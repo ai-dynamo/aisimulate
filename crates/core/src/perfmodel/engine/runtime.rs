@@ -2971,6 +2971,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
@@ -2998,6 +2999,7 @@ mod tests {
             match_identity: default_identity(4),
             weight_bytes: 0.0,
             verify_width: 1,
+            original_fmha_quant_mode: None,
             sol_ops: vec![],
         });
         let spec = EngineSpec::new(
@@ -3055,6 +3057,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
@@ -3599,6 +3602,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })],
             vec![],
@@ -3916,6 +3920,7 @@ mod tests {
             match_identity: default_identity(4),
             weight_bytes: 0.0,
             verify_width: 8,
+            original_fmha_quant_mode: None,
             sol_ops: vec![],
         };
         // 8 requests x width 8 arrive as batch = 8 widened tokens with ...
@@ -3961,6 +3966,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: width,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };

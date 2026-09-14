@@ -80,7 +80,9 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19 (FPM selector review): FpmForwardOp carries the original model FMHA
+//   mode for visible table-selection diagnostics (positional bincode change).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

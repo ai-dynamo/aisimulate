@@ -19,6 +19,13 @@ reads:
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.parquet
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.metadata.json
 
+An explicit ``fpm_fmha_quant_mode`` selects a recorded table label while
+preserving the model's arithmetic and memory modes. The compiled selector emits
+a WARNING containing those modes and all matched ``cell_ids`` once per loaded
+cell/model mode. A different recorded label remains an exact-match miss. Neither
+the selector nor that comparison independently proves the runtime's resolved
+attention precision; an engine-derived precision contract remains separate.
+
 (The former Python-side query/loader machinery — the per-call ``query()``
 family, the parquet/sidecar validators, and the per-op ``DatabaseMode.SOL``
 roofline closure — was retired with the Python engine-step path; the Rust
@@ -128,6 +135,7 @@ class FPMForwardOp(PythonOperation):
         self._model_path = str(model_path)
         self._weight_bytes = float(weight_bytes)
         fmha_selector = getattr(model_config, "fpm_fmha_quant_mode", None)
+        self._original_fmha_quant_mode = None if fmha_selector is None else _norm_identity(model_config.fmha_quant_mode)
         self._match_identity = (
             _norm_identity(model_config.gemm_quant_mode),
             _norm_identity(model_config.moe_quant_mode),
