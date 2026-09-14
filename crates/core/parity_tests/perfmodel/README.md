@@ -117,3 +117,19 @@ The relative Rust-vs-Python CI perf gate (`test_engine_step_perf.py`)
 retired with the Python step: its floors encoded "Rust must not lose to
 Python", which the migration completed. If an absolute perf tripwire is
 wanted, pin per-case wall-clock budgets from this benchmark on a quiet host.
+
+### B200 power-import golden delta
+
+The power import from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` adds measured B200 TensorRT-LLM
+1.3.0rc20 power columns while preserving timing identities. The per-op goldens
+for GPT-OSS-20B and Nemotron-Super-49B were regenerated with the repository
+`pin_goldens.py --refresh` workflow at AISimulate commit
+`36dcc8f3afe9e6e2e9de976737b6337fad8c4d74`, using that checkout's rebuilt native
+extension. All 29 changed numeric fields are energy values moving from zero
+to positive W-ms. Every latency and source tag is unchanged. For example,
+GPT-OSS context attention changes from 0 to 443.84428875568517 W-ms and
+Nemotron context all-reduce changes from 0 to 1241.060314309411 W-ms.
+Both cases now require a nonzero energy comparison in `_POWER_SUBSET_IDS`.
+These are regression expectations derived from imported operation measurements,
+not independent silicon-accuracy qualification.
