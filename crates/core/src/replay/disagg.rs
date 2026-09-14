@@ -3331,6 +3331,9 @@ where
         if let Some(identity) = self.admission.agentic_graph_identity() {
             self.collector.set_agentic_graph(identity);
         }
+        if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
+            self.collector.set_agentic_snapshots(snapshots);
+        }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
         }

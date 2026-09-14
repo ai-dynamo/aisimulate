@@ -165,6 +165,65 @@ qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/
 and must be rerun against matching AISimulate artifacts before declaring the
 cross-repository M1 milestone complete.
 
+### Seeded request-boundary snapshots
+
+Opt into initial snapshots through the existing traffic load configuration:
+
+```yaml
+traffic:
+  source:
+    type: trace
+    format: weka
+    paths: [corpus]
+  load:
+    type: trace_timestamps
+    agentic_lanes: 2
+    agentic_snapshot:
+      seed: 42
+```
+
+The seed is an unsigned 64-bit integer. The same corpus, lane count, and seed
+reproduce each lane's source play, sampled cut, and play/cache identity. Initial
+lanes take source plays in corpus order, wrapping when necessary. Each cut is
+uniformly sampled between 25% and 75% of that play's first-to-last request-start
+span; a zero-width span uses its single timestamp. Sampling uses original source
+time. The configured `speedup` applies only to remaining execution timers.
+Omitting `agentic_snapshot` preserves turn-zero replay. CLI users can set the
+seed with `--set traffic.load.agentic_snapshot.seed=42`; prediction and
+recommendation use the same field.
+
+This is a request-boundary snapshot. Requests whose recorded start is strictly
+before the cut are history, including requests whose recorded service interval
+crosses the cut. Requests at or after the cut remain in the continuation.
+Recorded service intervals provide dependency-timer provenance; the snapshot
+does not estimate partial decode progress or restore a physical engine checkpoint.
+For each continuing conversation with earlier history, its primer description
+references the latest prior request's complete original input. No prompt is
+renormalized after truncation, and no synthetic response is appended to a primer.
+
+Rust consumers call `ValidatedAgenticGraph::prepare_snapshots` with
+`AgenticSnapshotOptions`, inspect `PreparedAgenticSnapshots::snapshots`, and pass
+the preparation to `WorkloadDriver::new_agentic_snapshots`. The retained
+`AgenticReplayContext` can prepare further explicit play instances with fresh
+ordinals. Every incarnation receives disjoint logical token identities and
+request-instance identities; primer and profile prefix views share their play's
+mapping. Identity capacity exhaustion fails instead of reusing an old range.
+These APIs reuse the existing dependency executor and runtime feedback contract.
+
+Public snapshot execution currently runs the remaining requests against a cold
+engine. Primer descriptions are evidence for AIC-1812; they are not submitted as
+hidden warmup requests. Physical warmup and its profile barrier belong to
+AIC-1812, fixed-duration lane recycling to AIC-1813, and Dynamo placement policy
+to AIC-1817. Aggregated vLLM/SGLang, HBM-only, non-speculative public qualification
+continues to apply; snapshot output remains `functional_only`.
+
+The native report's `agentic_snapshots` collection records source/graph identity,
+seed, lane/play/cache identity, sampled cut, recorded request intervals, retained
+frontier and remaining dependency timers, and primer descriptions. Default Python
+results retain it in metadata; full native reports and CLI JSON preserve the same
+evidence. Per-request agentic identities allow events to be attributed to their
+original play even when a future phase reuses its lane.
+
 ## File Map
 
 - `src/replay/replayer.rs`

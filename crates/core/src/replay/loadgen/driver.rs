@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rand::SeedableRng;
@@ -17,7 +18,10 @@ use super::types::{
     AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
     ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
-use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use super::{
+    AgenticPlay, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
+    SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
+};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::{
     AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
@@ -768,6 +772,8 @@ pub struct WorkloadDriver {
     engine_block_size: u32,
     include_replay_hashes: bool,
     agentic_graph_identity: Option<AgenticGraphIdentity>,
+    agentic_replay_context: Option<Arc<AgenticReplayContext>>,
+    agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     sessions: Vec<SessionRuntime>,
     in_flight: FxHashMap<Uuid, InFlightTurn>,
     agentic_settling: FxHashMap<Uuid, usize>,
@@ -775,6 +781,111 @@ pub struct WorkloadDriver {
 }
 
 impl WorkloadDriver {
+    /// Execute the retained request suffix with a cold runtime. This consumes
+    /// prepared logical state; it does not execute primers or restore native KV.
+    /// Source history was compiled before this view and is never submitted.
+    pub fn new_agentic_snapshots(
+        prepared: PreparedAgenticSnapshots,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+    ) -> Result<Self> {
+        if !speedup.is_finite() || speedup <= 0.0 {
+            bail!("snapshot speedup must be finite and greater than zero");
+        }
+        let context = Arc::clone(&prepared.context);
+        let mut view = AgenticTrace {
+            block_size: context.graph.block_size,
+            source: context.graph.source.clone(),
+            graph_digest: context.graph.graph_digest.clone(),
+            nodes: Vec::new(),
+            plays: Vec::new(),
+        };
+        let mut source_nodes = Vec::new();
+        for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
+            let mut nodes = Vec::new();
+            let mut root_nodes = Vec::new();
+            for request in &snapshot.evidence.requests {
+                if request.historical {
+                    continue;
+                }
+                let source_index = snapshot.source_index(&request.source_request_id)?;
+                let mut node = context.graph.nodes[source_index].clone();
+                node.request_id = request.identity.request_id.clone();
+                node.play_id = snapshot.evidence.play_id.clone();
+                node.source_play_ordinal = Some(cohort_index);
+                node.session_id = request.identity.conversation_id.clone();
+                node.not_before_ms = request.remaining_delay_ms / speedup;
+                node.dependencies.retain(|edge| {
+                    request
+                        .pending_dependencies
+                        .contains(&snapshot.instance_request_id(&edge.request_id))
+                });
+                for edge in &mut node.dependencies {
+                    edge.request_id = snapshot.instance_request_id(&edge.request_id);
+                    edge.delay_ms /= speedup;
+                }
+                if !node.not_before_ms.is_finite()
+                    || node.dependencies.iter().any(|e| !e.delay_ms.is_finite())
+                {
+                    bail!("snapshot speedup overflows replay timing");
+                }
+                let index = view.nodes.len();
+                if node.dependencies.is_empty() {
+                    root_nodes.push(index);
+                }
+                nodes.push(index);
+                view.nodes.push(node);
+                source_nodes.push((cohort_index, source_index));
+            }
+            if nodes.is_empty() || root_nodes.is_empty() {
+                bail!("snapshot has no executable request frontier");
+            }
+            view.plays.push(AgenticPlay {
+                play_id: snapshot.evidence.play_id.clone(),
+                source_play_ordinal: Some(cohort_index),
+                nodes,
+                root_nodes,
+            });
+        }
+        // The existing executor compiles the retained dependency structure. Its
+        // temporary numbering is replaced by the full prepared context below.
+        // No lane activation may renormalize the restored initial timers.
+        let mut driver = Self::new_agentic_trace_with_options(
+            view,
+            engine_block_size,
+            include_replay_hashes,
+            None,
+        )?;
+        let SchedulingPolicy::Agentic(state) = &mut driver.policy else {
+            unreachable!()
+        };
+        for (index, (cohort, source_index)) in source_nodes.into_iter().enumerate() {
+            let snapshot = &prepared.plays[cohort];
+            let source = &context.graph.nodes[source_index];
+            let turn = &mut driver.sessions[index].turns[0];
+            turn.prompt_tokens = PromptTokens::deferred(
+                source.input_length,
+                snapshot.token_ids(source_index)?,
+                context.graph.block_size,
+            )?;
+            turn.output_token_ids = Some(context.outputs[source_index].clone());
+            turn.deterministic_request_id = Some(snapshot.request_uuid(source_index)?);
+            // Keep authored correlation separate from incarnation identity.
+            turn.request_id = Some(source.request_id.clone());
+            state.identities[index] = snapshot.identity_at(source_index);
+        }
+        for play in &mut state.plays {
+            // Suffix duration is anchored at activation, even for a rootless
+            // background frontier. No historical dispatch event is fabricated.
+            play.root_dispatch_ms = Some(0.0);
+        }
+        driver.agentic_graph_identity = Some(context.graph.identity());
+        driver.agentic_snapshots = Some(prepared.snapshots().to_vec());
+        driver.agentic_replay_context = Some(context);
+        Ok(driver)
+    }
+
     pub fn is_agentic(&self) -> bool {
         matches!(self.policy, SchedulingPolicy::Agentic(_))
     }
@@ -1124,6 +1235,8 @@ impl WorkloadDriver {
             engine_block_size: engine_block_size_u32,
             include_replay_hashes,
             agentic_graph_identity: Some(agentic_graph_identity),
+            agentic_replay_context: None,
+            agentic_snapshots: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1234,6 +1347,8 @@ impl WorkloadDriver {
             engine_block_size: engine_block_size_u32,
             include_replay_hashes,
             agentic_graph_identity: None,
+            agentic_replay_context: None,
+            agentic_snapshots: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1253,6 +1368,11 @@ impl WorkloadDriver {
     }
 
     pub(crate) fn set_deterministic_request_ids(&mut self, first_id: u128) {
+        // Prepared UUIDs address the complete play, including omitted history.
+        // Canonical replay must not renumber the retained suffix or a new play.
+        if self.agentic_replay_context.is_some() {
+            return;
+        }
         let mut next_id = first_id;
         for session in &mut self.sessions {
             for turn in &mut session.turns {
@@ -1817,6 +1937,14 @@ impl WorkloadDriver {
 
     pub fn agentic_graph_identity(&self) -> Option<AgenticGraphIdentity> {
         self.agentic_graph_identity.clone()
+    }
+
+    pub fn agentic_snapshot_evidence(&self) -> Option<&[AgenticSnapshotEvidence]> {
+        self.agentic_snapshots.as_deref()
+    }
+
+    pub fn agentic_replay_context(&self) -> Option<&Arc<AgenticReplayContext>> {
+        self.agentic_replay_context.as_ref()
     }
 
     pub fn agentic_play_outcomes(&self) -> Option<Vec<AgenticPlayOutcome>> {

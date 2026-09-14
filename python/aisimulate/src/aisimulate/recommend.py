@@ -577,6 +577,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             )
             if load.get("agentic_lanes") is not None:
                 result["agentic_lanes"] = load["agentic_lanes"]
+            if load.get("agentic_snapshot") is not None:
+                result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result

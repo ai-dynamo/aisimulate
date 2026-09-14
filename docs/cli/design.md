@@ -30,6 +30,15 @@ The design does not cover:
 - Online replay runtime internals. `predict` can request online execution from a capable optional
   stack; `recommend` remains offline-only.
 
+Seeded AgentX snapshots are optional under `traffic.load.agentic_snapshot`:
+`{seed: 42}` requires `trace_timestamps` load and positive `agentic_lanes`, with
+Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-bit
+integer. Omit this field for turn-zero replay. The existing `--set
+traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
+recommendation. Snapshot evidence is retained in JSON results. This executes the
+remaining request suffix against a cold engine; primer execution and benchmark
+warmup are separate phase-orchestration work.
+
 ## Commands
 
 ### Predict
