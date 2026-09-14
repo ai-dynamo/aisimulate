@@ -35,17 +35,20 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             return None
         report = json.loads(bundle.read("fpe-qualification.json"))
         if (
-            report.get("schema_version") != 1
+            type(report.get("schema_version")) is not int
+            or report["schema_version"] != 1
             or report.get("qualification") != QUALIFICATION
             or report.get("source_sha") != source_sha
             or not re.fullmatch(r"[0-9a-f]{64}", str(report.get("wheel_sha256", "")))
-            or not isinstance(report.get("shard_count"), int)
+            or type(report.get("shard_count")) is not int
             or report["shard_count"] <= 0
-            or not isinstance(report.get("required_probe_count"), int)
+            or type(report.get("required_probe_count")) is not int
             or report["required_probe_count"] <= 0
         ):
             raise ValueError("invalid FPE qualification or mismatched source commit")
         statuses = report.get("status_counts", {})
+        if not isinstance(statuses, dict) or any(type(count) is not int or count < 0 for count in statuses.values()):
+            raise ValueError("FPE qualification status counts must be nonnegative integers")
         if not statuses.get("PASS", 0) or statuses.get("BUILD_FAILED", 0) or statuses.get("QUERY_FAILED", 0):
             raise ValueError("FPE qualification has no passes or unexpected native failures")
         index = json.loads(bundle.read(DATA_PREFIX + "index.json"))

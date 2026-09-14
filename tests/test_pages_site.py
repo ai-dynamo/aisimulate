@@ -204,6 +204,33 @@ class FpePagesTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 FPE.qualified_files(qualified_archive(row_updates=changes), NEW_SHA)
 
+    def test_qualification_numeric_fields_reject_boolean_and_coerced_values(self):
+        for field in ("schema_version", "shard_count", "required_probe_count"):
+            for value in (True, False, 1.0, "1", None):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    FPE.qualified_files(qualified_archive(report_updates={field: value}), NEW_SHA)
+
+    def test_status_counts_reject_malformed_objects_and_values(self):
+        for statuses in (
+            None,
+            [],
+            "PASS",
+            {"PASS": True},
+            {"PASS": -1},
+            {"PASS": 4.0},
+            {"PASS": "4"},
+            {"PASS": 4, "PERF_DATA_MISSING": False},
+            {"PASS": 4, "PERF_DATA_MISSING": -1},
+        ):
+            with self.subTest(statuses=statuses), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(report_updates={"status_counts": statuses}), NEW_SHA)
+
+    def test_zero_nonpassing_status_count_remains_valid(self):
+        files = FPE.qualified_files(
+            qualified_archive(report_updates={"status_counts": {"PASS": 4, "BUILD_FAILED": 0}}), NEW_SHA
+        )
+        self.assertIn("b200_sxm.csv", files)
+
     def test_missing_or_unsafe_indexed_csv_is_rejected(self):
         with self.assertRaises(KeyError):
             FPE.qualified_files(qualified_archive(missing=FPE.DATA_PREFIX + "b200_sxm.csv"), NEW_SHA)
