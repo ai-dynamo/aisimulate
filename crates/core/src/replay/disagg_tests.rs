@@ -247,6 +247,14 @@ struct TestDisaggConfig {
 
 impl TestDisaggConfig {
     fn runtime_config(&self, emit_kv_events: bool) -> anyhow::Result<OfflineDisaggReplayConfig> {
+        self.runtime_config_with_factory(emit_kv_events, ReplayEngineFactory::new())
+    }
+
+    fn runtime_config_with_factory(
+        &self,
+        emit_kv_events: bool,
+        factory: ReplayEngineFactory,
+    ) -> anyhow::Result<OfflineDisaggReplayConfig> {
         let engine = ReplayEngineConfig {
             dp_size: 1,
             tensor_parallel_size: 1,
@@ -265,7 +273,6 @@ impl TestDisaggConfig {
                 rank: self.decode_args.clone(),
             }),
         };
-        let factory = ReplayEngineFactory::new();
         let prefill_factory =
             factory.role_factory(&engine, crate::replay::WorkerStage::Prefill, emit_kv_events)?;
         let decode_factory =
@@ -1342,7 +1349,7 @@ fn agentic_pd_edges_use_emission_and_final_decode_boundaries(#[case] engine_type
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
-fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineType) {
+fn agentic_lane_waits_for_background_child_terminal(#[case] engine_type: EngineType) {
     let mut config = cleanup_overtake_config(engine_type);
     config.num_prefill_workers = 1;
     config.num_decode_workers = 1;
@@ -1395,12 +1402,250 @@ fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineTyp
     for request_id in ["first-root", "long-prefill-child"] {
         let prior = by_id[request_id];
         assert!(next_dispatch >= prior.terminal_time_ms);
-        assert!(next_dispatch >= prior.source_released_ms.unwrap());
     }
+    assert_eq!(
+        next_dispatch,
+        by_id["first-root"]
+            .terminal_time_ms
+            .max(by_id["long-prefill-child"].terminal_time_ms)
+    );
     let trajectories = report.trajectories.unwrap();
     assert_eq!(trajectories.total, 2);
     assert_eq!(trajectories.completed, 2);
     assert_eq!(trajectories.incomplete, 0);
+}
+
+#[rstest::rstest]
+#[case(EngineType::Vllm)]
+#[case(EngineType::Sglang)]
+fn agentic_lane_submission_is_independent_of_pd_source_cleanup(#[case] engine_type: EngineType) {
+    struct BusyPrefillTiming {
+        large_prefill_ms: f64,
+    }
+
+    impl crate::engine::TimingModel for BusyPrefillTiming {
+        fn predict_prefill_ms(
+            &self,
+            batch_size: usize,
+            mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 {
+                0.0
+            } else if mean_isl >= 1_024 {
+                self.large_prefill_ms
+            } else {
+                1.0
+            })
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 { 0.0 } else { 1.0 })
+        }
+    }
+
+    let mut config = match engine_type {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        EngineType::Trtllm => unreachable!(),
+    };
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    for args in [&mut config.prefill_args, &mut config.decode_args] {
+        args.speedup_ratio = 1.0;
+        args.decode_speedup_ratio = 1.0;
+    }
+    let block_size = config.prefill_args.block_size;
+    // Play IDs sort into lane 0's first-play then next-play. An independent play on lane 1
+    // starts a long prefill at t=2, after both short roots finish prefill but
+    // before their transfers finish at t=3. Its busy source worker delays
+    // ReleaseSource without changing first-root's final decode terminal.
+    let trace = agentic_trace(
+        block_size,
+        vec![
+            agentic_row(
+                "first-root",
+                "00-first-play",
+                4,
+                2,
+                block_size,
+                10_000,
+                vec![],
+            ),
+            agentic_row(
+                "other-root",
+                "01-other-play",
+                4,
+                1,
+                block_size,
+                20_000,
+                vec![],
+            ),
+            agentic_row(
+                "busy-prefill",
+                "01-other-play",
+                4_096,
+                1,
+                block_size,
+                30_000,
+                vec![AgenticDependency {
+                    request_id: "other-root".to_string(),
+                    trigger: AgenticDependencyTrigger::Dispatch,
+                    delay_ms: 2.0,
+                    relation: AgenticDependencyRelation::Spawn,
+                }],
+            ),
+            agentic_row(
+                "next-root",
+                "02-next-play",
+                4,
+                1,
+                block_size,
+                40_000,
+                vec![],
+            ),
+        ],
+    );
+
+    let run = |large_prefill_ms, stepped| {
+        let factory = ReplayEngineFactory::with_timing_model(Arc::new(BusyPrefillTiming {
+            large_prefill_ms,
+        }));
+        let mut runtime_config = config.runtime_config_with_factory(false, factory).unwrap();
+        runtime_config.handoff_latency_ms = 2.0;
+        let driver =
+            WorkloadDriver::new_agentic_trace_with_lanes(trace.clone(), block_size, 2).unwrap();
+        let mut runtime = RoundRobinDisaggRuntime::new_round_robin_workload(
+            &runtime_config,
+            driver,
+            ReplayMode::Trace,
+        )
+        .unwrap()
+        .with_per_request_records(true);
+
+        if stepped {
+            let mut observed_terminal_with_source_held = false;
+            while !runtime.is_done() {
+                runtime.step().unwrap();
+                let first = runtime
+                    .collector
+                    .per_request_records()
+                    .into_iter()
+                    .find(|record| record.request_id.as_deref() == Some("first-root"));
+                if let Some(first) = first
+                    && !observed_terminal_with_source_held
+                {
+                    assert_eq!(first.terminal_status, ReplayTerminalStatus::Completed);
+                    assert!(first.source_released_ms.is_none());
+                    let uuid = Uuid::parse_str(&first.uuid).unwrap();
+                    let state = runtime.state(uuid).unwrap();
+                    assert_eq!(state.phase, DisaggPhase::CleanupPending);
+                    assert!(!state.counted_in_flight);
+                    assert!(!state.coordinator.is_complete());
+                    assert!(
+                        runtime
+                            .flow
+                            .requests_by_handoff
+                            .contains_key(&state.handoff_id)
+                    );
+                    assert!(runtime.flow.action_queues.contains(uuid));
+                    assert!(runtime.prefill_engine.worker_is_busy(0).unwrap());
+                    assert!(!runtime.prefill_engine.is_drained());
+                    assert!(!CoreAdmissionSource::is_drained(&runtime.admission));
+                    let transcript = runtime.admission.agentic_lifecycle_transcript().unwrap();
+                    assert!(
+                        transcript.events.iter().any(|event| {
+                            event.request_id.as_deref() == Some("next-root")
+                                && event.event
+                                    == crate::replay::loadgen::AgenticLifecycleEventKind::Dispatch
+                                && event.at_ms == first.terminal_time_ms
+                        }),
+                        "the next play must be submitted while source cleanup is still pending"
+                    );
+                    observed_terminal_with_source_held = true;
+                }
+            }
+            assert!(observed_terminal_with_source_held);
+        } else {
+            runtime.run_to_completion().unwrap();
+        }
+
+        assert!(runtime.is_done());
+        assert!(runtime.prefill_engine.is_drained());
+        assert!(runtime.decode_engine.is_drained());
+        assert!(runtime.flow.action_queues.is_empty());
+        assert!(runtime.flow.requests_by_handoff.is_empty());
+        assert!(CoreAdmissionSource::is_drained(&runtime.admission));
+        let drained_at_ms = runtime.now_ms;
+        let (collector, stats) = runtime.run().unwrap();
+        assert!(
+            stats
+                .request_snapshots
+                .values()
+                .all(|state| state.phase == DisaggPhase::Done)
+        );
+        let report = collector.finish();
+        assert_eq!(report.request_counts.completed_requests, 4);
+        assert_eq!(report.request_counts.total_output_tokens, 5);
+        (report, drained_at_ms)
+    };
+
+    let mut observations = Vec::new();
+    for large_prefill_ms in [20.0, 40.0] {
+        let (report, drained_at_ms) = run(large_prefill_ms, false);
+        let (stepped, stepped_drained_at_ms) = run(large_prefill_ms, true);
+        assert_eq!(drained_at_ms, stepped_drained_at_ms);
+        assert_eq!(report.agentic_lifecycle, stepped.agentic_lifecycle);
+        assert_eq!(
+            serde_json::to_vec(&report.per_request).unwrap(),
+            serde_json::to_vec(&stepped.per_request).unwrap()
+        );
+        let by_id = report
+            .per_request
+            .iter()
+            .map(|record| (record.request_id.as_deref().unwrap(), record))
+            .collect::<std::collections::HashMap<_, _>>();
+        let first = by_id["first-root"];
+        let next = by_id["next-root"];
+        let source_released_ms = first.source_released_ms.unwrap();
+        let next_dispatch_ms = next.dispatched_at_ms.unwrap();
+        let next_admit_ms = next.first_admit_ms.unwrap();
+        assert_eq!(next_dispatch_ms, first.terminal_time_ms);
+        assert!(source_released_ms > first.terminal_time_ms);
+        assert!(next_admit_ms >= source_released_ms);
+        assert!(next_admit_ms > next_dispatch_ms);
+        assert!(drained_at_ms > source_released_ms);
+        observations.push((
+            first.terminal_time_ms,
+            next_dispatch_ms,
+            source_released_ms,
+            next_admit_ms,
+            drained_at_ms,
+        ));
+    }
+    let [short, long] = observations.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(short.0, long.0, "client terminal must stay fixed");
+    assert_eq!(short.1, long.1, "client lane timing must stay fixed");
+    assert!(
+        short.2 < long.2,
+        "source ownership must reflect the cleanup delay"
+    );
+    assert!(
+        short.3 < long.3,
+        "backend admission must respect the occupied worker"
+    );
+    assert!(
+        short.4 < long.4,
+        "final drain must still wait for all server work"
+    );
 }
 
 #[test]

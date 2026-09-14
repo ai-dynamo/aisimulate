@@ -54,10 +54,28 @@ of logical time. At each timestamp it collects engine feedback and applies it
 as one `AgenticRuntimeFeedback`, ordered by immutable graph ordinal: output
 progress first, causal terminals second, and resource quiescence last.
 
-A causal terminal releases completion-triggered graph edges. Quiescence means
-the engine/router/handoff state owned by that request has settled; a failed
-play does not release its lane until every already-dispatched request is
-quiescent. Equal-time event phases are engine pass completion, worker ready,
+A causal terminal resolves a request's client-visible outcome; successful
+completion releases completion-triggered graph edges. Client lanes limit whole
+plays, including background requests. A successful play releases its lane only
+after all authored nodes complete, including delayed or blocked nodes. Under the
+current failure policy, a failed play skips undispatched nodes and releases its
+lane after every already-dispatched request becomes terminal. Merely finishing
+the root or a blocking join does not finish still-running background requests.
+
+Quiescence means the engine/router/handoff state owned by a request has settled.
+It controls resource settlement and final drain, independently of client lane
+reuse. The next play can therefore submit while an earlier play retains P/D
+source holds or has pending cancellation actions; engine admission still queues
+requests when those resources are unavailable. Late cleanup records the earlier
+play's settlement without releasing the lane again. Request quiescence does not
+require flushing reusable prefix-cache entries or ending an agent conversation.
+
+In this in-process timing model, final decode or an observed request failure
+stands in for the client response terminal. HTTP/SSE delivery and client task
+teardown latency are not modeled. The strict failed-play policy above is an
+explicit replay contract, not a claim of full AIPerf error-policy parity.
+
+Equal-time event phases are engine pass completion, worker ready,
 transfer completion, admission, telemetry, then scaling. Within a phase,
 stable worker/pass/handoff identities replace insertion order as the primary
 tie-breaker.

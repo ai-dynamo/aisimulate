@@ -164,9 +164,11 @@ struct AgenticPlayState {
     nodes: Vec<usize>,
     root_nodes: Vec<usize>,
     lane_index: Option<usize>,
+    pending_terminals: usize,
     emitted_in_flight: usize,
     completed_nodes: usize,
     failed: bool,
+    client_finished: bool,
     quiescent: bool,
     root_dispatch_ms: Option<f64>,
     max_terminal_ms: Option<f64>,
@@ -534,6 +536,7 @@ impl AgenticState {
         debug_assert_eq!(self.node_states[node_index], AgenticNodeState::Ready);
         self.node_states[node_index] = AgenticNodeState::Emitted;
         let play = &mut self.plays[self.node_to_play[node_index]];
+        play.pending_terminals += 1;
         play.emitted_in_flight += 1;
         if play.root_nodes.contains(&node_index) {
             play.root_dispatch_ms = Some(
@@ -575,6 +578,10 @@ impl AgenticState {
         let was_failed = self.plays[play_index].failed;
         {
             let play = &mut self.plays[play_index];
+            play.pending_terminals = play
+                .pending_terminals
+                .checked_sub(1)
+                .expect("a dispatched agentic node becomes terminal exactly once");
             play.max_terminal_ms =
                 Some(play.max_terminal_ms.map_or(now_ms, |seen| seen.max(now_ms)));
         }
@@ -615,15 +622,18 @@ impl AgenticState {
                 }
             }
         }
+
+        let play = &self.plays[play_index];
+        let all_completed = !play.failed && play.completed_nodes == play.nodes.len();
+        // A failed play skips undispatched work, but every dispatched request,
+        // including background children, still owns client work until terminal.
+        // Successful plays must also finish delayed and blocked authored nodes.
+        if (all_completed || play.failed) && play.pending_terminals == 0 {
+            self.release_lane(play_index, now_ms, sessions, ready_sessions);
+        }
     }
 
-    fn on_node_quiescent(
-        &mut self,
-        sessions: &mut [SessionRuntime],
-        ready_sessions: &mut BinaryHeap<ReadySession>,
-        node_index: usize,
-        now_ms: f64,
-    ) -> Result<()> {
+    fn on_node_quiescent(&mut self, node_index: usize, now_ms: f64) -> Result<()> {
         let play_index = self.node_to_play[node_index];
         self.record_lifecycle(
             now_ms,
@@ -637,11 +647,15 @@ impl AgenticState {
             .emitted_in_flight
             .checked_sub(1)
             .context("agentic play settlement count underflow")?;
-        let play = &self.plays[play_index];
-        let all_completed = !play.failed && play.completed_nodes == play.nodes.len();
-        let failed_and_settled = play.failed && play.emitted_in_flight == 0;
-        if (all_completed || failed_and_settled) && play.emitted_in_flight == 0 {
-            self.release_lane(play_index, now_ms, sessions, ready_sessions);
+        if !play.quiescent && play.client_finished && play.emitted_in_flight == 0 {
+            play.quiescent = true;
+            self.record_lifecycle(
+                now_ms,
+                play_index,
+                None,
+                AgenticLifecycleEventKind::PlayQuiescent,
+                None,
+            );
         }
         Ok(())
     }
@@ -653,17 +667,10 @@ impl AgenticState {
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
     ) {
-        if self.plays[play_index].quiescent {
+        if self.plays[play_index].client_finished {
             return;
         }
-        self.plays[play_index].quiescent = true;
-        self.record_lifecycle(
-            now_ms,
-            play_index,
-            None,
-            AgenticLifecycleEventKind::PlayQuiescent,
-            None,
-        );
+        self.plays[play_index].client_finished = true;
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
@@ -979,9 +986,11 @@ impl WorkloadDriver {
                     nodes: play.nodes,
                     root_nodes: play.root_nodes,
                     lane_index: None,
+                    pending_terminals: 0,
                     emitted_in_flight: 0,
                     completed_nodes: 0,
                     failed: false,
+                    client_finished: false,
                     quiescent: false,
                     root_dispatch_ms: None,
                     max_terminal_ms: None,
@@ -1537,11 +1546,12 @@ impl WorkloadDriver {
         self.on_quiescent(request_uuid, now_ms)
     }
 
-    /// Resolve the logical request outcome and update causal successors.
+    /// Resolve the logical request outcome and update client scheduling.
     ///
     /// Disaggregated replay calls this as soon as final decode succeeds or a
-    /// failure is observed, then calls [`Self::on_quiescent`] only after all
-    /// P/D resources and coordinator actions settle. Aggregated replay uses
+    /// failure is observed. A play releases its client lane once all required
+    /// requests are terminal, independently of the later [`Self::on_quiescent`]
+    /// callbacks for P/D resources and coordinator actions. Aggregated replay uses
     /// [`Self::on_terminal`], where both events coincide.
     #[allow(clippy::collapsible_if)] // Keep agentic-only duplicate detection explicit.
     pub fn on_causal_terminal(
@@ -1584,12 +1594,7 @@ impl WorkloadDriver {
         let Some(node_index) = self.agentic_settling.remove(&request_uuid) else {
             bail!("agentic request {request_uuid} became quiescent before its causal terminal");
         };
-        state.on_node_quiescent(
-            &mut self.sessions,
-            &mut self.ready_sessions,
-            node_index,
-            now_ms,
-        )
+        state.on_node_quiescent(node_index, now_ms)
     }
 
     fn resolve_turn(
@@ -2731,26 +2736,149 @@ mod tests {
     }
 
     #[test]
-    fn agentic_lane_waits_for_quiescence_after_causal_completion() {
+    fn agentic_lane_recycles_at_client_terminal_but_drain_waits_for_cleanup() {
+        for status in [
+            ReplayTerminalStatus::Completed,
+            ReplayTerminalStatus::Rejected,
+            ReplayTerminalStatus::Canceled,
+            ReplayTerminalStatus::Failed,
+        ] {
+            for cleanup_at_ms in [20.0, 40.0] {
+                let trace = agentic_trace(vec![
+                    agentic_node("a", "play-a", 0.0, Vec::new()),
+                    agentic_node("b", "play-b", 0.0, Vec::new()),
+                ]);
+                let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+                let first = driver.pop_ready(0.0, 1).pop().unwrap();
+                driver
+                    .on_causal_terminal(first.request_uuid, 10.0, status)
+                    .unwrap();
+
+                assert_eq!(driver.next_ready_time_ms(), Some(10.0));
+                let second = driver.pop_ready(10.0, 1).pop().unwrap();
+                assert_eq!(second.authored_request_id.as_deref(), Some("b"));
+                assert_eq!(second.dispatched_at_ms, 10.0);
+                driver.on_complete(second.request_uuid, 12.0).unwrap();
+                assert!(!driver.is_drained(), "play-a still owns server cleanup");
+
+                driver
+                    .on_quiescent(first.request_uuid, cleanup_at_ms)
+                    .unwrap();
+                assert!(driver.is_drained());
+                let transcript = driver.agentic_lifecycle_transcript().unwrap();
+                let settlements = transcript
+                    .events
+                    .iter()
+                    .filter(|event| event.event == AgenticLifecycleEventKind::PlayQuiescent)
+                    .map(|event| (event.play_id.as_str(), event.at_ms))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    settlements,
+                    vec![("play-b", 12.0), ("play-a", cleanup_at_ms)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn late_quiescence_cannot_release_a_lane_owned_by_the_next_play() {
         let trace = agentic_trace(vec![
             agentic_node("a", "play-a", 0.0, Vec::new()),
             agentic_node("b", "play-b", 0.0, Vec::new()),
+            agentic_node("c", "play-c", 0.0, Vec::new()),
         ]);
         let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
-
-        let first = driver.pop_ready(0.0, usize::MAX);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].authored_request_id.as_deref(), Some("a"));
+        let first = driver.pop_ready(0.0, 1).pop().unwrap();
         driver
-            .on_causal_terminal(first[0].request_uuid, 10.0, ReplayTerminalStatus::Completed)
+            .on_causal_terminal(first.request_uuid, 10.0, ReplayTerminalStatus::Completed)
             .unwrap();
-        assert!(driver.pop_ready(20.0, usize::MAX).is_empty());
+        let second = driver.pop_ready(10.0, 1).pop().unwrap();
 
-        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
-        let second = driver.pop_ready(20.0, usize::MAX);
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].authored_request_id.as_deref(), Some("b"));
-        assert_eq!(second[0].dispatched_at_ms, 20.0);
+        driver.on_quiescent(first.request_uuid, 20.0).unwrap();
+        assert!(driver.pop_ready(20.0, usize::MAX).is_empty());
+        driver
+            .on_causal_terminal(second.request_uuid, 30.0, ReplayTerminalStatus::Completed)
+            .unwrap();
+        let third = driver.pop_ready(30.0, 1).pop().unwrap();
+        assert_eq!(third.authored_request_id.as_deref(), Some("c"));
+        driver.on_complete(third.request_uuid, 31.0).unwrap();
+        assert!(!driver.is_drained());
+        driver.on_quiescent(second.request_uuid, 35.0).unwrap();
+        assert!(driver.is_drained());
+    }
+
+    #[test]
+    fn agentic_lane_waits_for_background_terminals_even_after_root_failure() {
+        for status in [
+            ReplayTerminalStatus::Completed,
+            ReplayTerminalStatus::Rejected,
+            ReplayTerminalStatus::Canceled,
+            ReplayTerminalStatus::Failed,
+        ] {
+            let trace = agentic_trace(vec![
+                agentic_node("root", "play-a", 0.0, Vec::new()),
+                agentic_node(
+                    "background",
+                    "play-a",
+                    0.0,
+                    vec![dependency(
+                        "root",
+                        AgenticDependencyTrigger::Dispatch,
+                        0.0,
+                        AgenticDependencyRelation::Spawn,
+                    )],
+                ),
+                agentic_node("next", "play-b", 0.0, Vec::new()),
+            ]);
+            let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+            let ready = driver.pop_ready(0.0, usize::MAX);
+            assert_eq!(ready.len(), 2);
+            driver
+                .on_terminal(ready[0].request_uuid, 10.0, status)
+                .unwrap();
+            assert!(driver.pop_ready(10.0, usize::MAX).is_empty());
+
+            driver
+                .on_causal_terminal(ready[1].request_uuid, 15.0, ReplayTerminalStatus::Completed)
+                .unwrap();
+            let next = driver.pop_ready(15.0, 1).pop().unwrap();
+            assert_eq!(next.authored_request_id.as_deref(), Some("next"));
+            driver.on_complete(next.request_uuid, 16.0).unwrap();
+            assert!(!driver.is_drained());
+            driver.on_quiescent(ready[1].request_uuid, 20.0).unwrap();
+            assert!(driver.is_drained());
+        }
+    }
+
+    #[test]
+    fn agentic_lane_waits_for_delayed_authored_requests() {
+        let trace = agentic_trace(vec![
+            agentic_node("root", "play-a", 0.0, Vec::new()),
+            agentic_node(
+                "delayed",
+                "play-a",
+                0.0,
+                vec![dependency(
+                    "root",
+                    AgenticDependencyTrigger::Completion,
+                    5.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+            agentic_node("next", "play-b", 0.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+        let root = driver.pop_ready(0.0, 1).pop().unwrap();
+        driver.on_complete(root.request_uuid, 10.0).unwrap();
+        assert!(driver.pop_ready(14.0, usize::MAX).is_empty());
+        let delayed = driver.pop_ready(15.0, usize::MAX);
+        assert_eq!(delayed.len(), 1);
+        assert_eq!(delayed[0].authored_request_id.as_deref(), Some("delayed"));
+        driver.on_complete(delayed[0].request_uuid, 20.0).unwrap();
+        let next = driver.pop_ready(20.0, 1).pop().unwrap();
+        assert_eq!(next.authored_request_id.as_deref(), Some("next"));
+        driver.on_complete(next.request_uuid, 21.0).unwrap();
+        assert!(driver.is_drained());
     }
 
     #[test]
@@ -2776,21 +2904,21 @@ mod tests {
         driver
             .on_causal_terminal(first[0].request_uuid, 10.0, ReplayTerminalStatus::Completed)
             .unwrap();
-        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
-
-        let second_root = driver.pop_ready(20.0, usize::MAX);
+        let second_root = driver.pop_ready(10.0, usize::MAX);
         assert_eq!(second_root.len(), 1);
         assert_eq!(
             second_root[0].authored_request_id.as_deref(),
             Some("second-root")
         );
-        assert!(driver.pop_ready(24.9, usize::MAX).is_empty());
-        let second_child = driver.pop_ready(25.0, usize::MAX);
+        assert_eq!(second_root[0].scheduled_ready_at_ms, 10.0);
+        assert!(driver.pop_ready(14.9, usize::MAX).is_empty());
+        let second_child = driver.pop_ready(15.0, usize::MAX);
         assert_eq!(second_child.len(), 1);
         assert_eq!(
             second_child[0].authored_request_id.as_deref(),
             Some("second-child")
         );
+        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
     }
 
     #[test]
