@@ -368,8 +368,10 @@ reuse from the workload and cache state; the command above does not recreate tha
 Host offload is an additional serving feature with no matching AIC CLI flag. This vLLM example uses
 prefix caching and attention DP=1, as required by the
 [host-offload contract](user-guide.md#native-vllm-host-offload-prediction). Host capacity and bandwidth
-stay fixed during recommendation, which also requires fixed parallelism. Other `kv_cache` controls
-include block size, fixed GPU capacity, and CUDA-graph memory reservation.
+stay fixed during recommendation. Recommendation requires concrete aggregated vLLM, a disabled
+parallelism preset (`preset: false`), and fixed `attention_data: 1`; other supported fields, such as
+`tensor` and `replicas`, may still be searched. Other `kv_cache` controls include block size, fixed
+GPU capacity, and CUDA-graph memory reservation.
 
 <a id="include-dynamo-routing-and-planning"></a>
 
@@ -941,7 +943,7 @@ feature's restrictions before migrating:
 | [Analytical EPD](#predict-and-search-analytical-epd) | Fixed synthetic images and concurrency; no event-level encoder queueing or embedding transfer. |
 | [AFD](#afd-translation) | Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
 | [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Sweeper SDK only; both roles share one model, backend, and backend version. |
-| [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation also requires fixed parallelism. |
+| [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation requires `preset: false` and fixed `attention_data: 1`, while other supported parallelism fields may be searched. |
 
 ## 6. Reference
 
