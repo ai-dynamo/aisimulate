@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_seventeen():
-    """Context RoPE policy is an always-serialized positional payload change."""
+def test_engine_spec_schema_version_is_eighteen():
+    """Verification width fields extend the positional operation payload."""
     from aiconfigurator.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 17
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 18
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

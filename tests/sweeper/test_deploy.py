@@ -118,6 +118,38 @@ def test_disagg_backend_deployment_preserves_both_roles():
     assert deployment.decode_engine_args["engine_type"] == "sglang"
 
 
+def test_disagg_backend_deployment_uses_role_hardware():
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 2),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend="vllm",
+        prefill_max_num_batched_tokens=8192,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=256,
+    )
+    sample = unroll_sample(
+        search_space=_space(
+            prefill_hardware_sku="h200_sxm",
+            decode_hardware_sku="gb200",
+        ),
+        selection=selection,
+        parallel_config=parallel,
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
+    assert deployment.decode_engine_args["aic_system"] == "gb200"
+    assert deployment.performance_model_metadata["prefill"]["config"]["system"] == "h200_sxm"
+    assert deployment.performance_model_metadata["decode"]["config"]["system"] == "gb200"
+    assert deployment.parallel_config["prefill_hardware_sku"] == "h200_sxm"
+    assert deployment.parallel_config["decode_hardware_sku"] == "gb200"
+
+
 def test_dense_shape_omits_moe_sizes():
     dense = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     engine = _agg_deployment(

@@ -529,10 +529,6 @@ impl EngineConfig {
         }
         if self.backend == Backend::Sglang {
             ensure!(
-                !self.emit_kv_token_ids,
-                "emit_kv_token_ids=true is not supported for backend=sglang"
-            );
-            ensure!(
                 self.enable_chunked_prefill,
                 "enable_chunked_prefill=false is not supported for backend=sglang"
             );
@@ -968,37 +964,34 @@ mod tests {
     }
 
     #[test]
-    fn sglang_supports_disabled_prefix_caching() {
-        let config = EngineConfig {
-            enable_prefix_caching: false,
-            ..EngineConfig::for_backend(Backend::Sglang)
-        };
-        config.validate().unwrap();
-        crate::engine::EngineFactory::new(config).unwrap();
+    fn sglang_supports_prefix_caching_and_token_id_controls() {
+        for (enable_prefix_caching, emit_kv_token_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let config = EngineConfig {
+                enable_prefix_caching,
+                emit_kv_events: true,
+                emit_kv_token_ids,
+                ..EngineConfig::for_backend(Backend::Sglang)
+            };
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config).unwrap();
+        }
     }
 
     #[test]
-    fn sglang_rejects_remaining_unsupported_controls_at_validation_and_factory_boundaries() {
-        let cases = [
-            ("emit_kv_token_ids", true, true, true),
-            ("enable_chunked_prefill", false, true, false),
-        ];
-
-        for (field, emit_kv_token_ids, enable_prefix_caching, enable_chunked_prefill) in cases {
-            let config = EngineConfig {
-                emit_kv_events: emit_kv_token_ids,
-                emit_kv_token_ids,
-                enable_prefix_caching,
-                enable_chunked_prefill,
-                ..EngineConfig::for_backend(Backend::Sglang)
-            };
-            assert!(config.validate().unwrap_err().to_string().contains(field));
-            let error = match crate::engine::EngineFactory::new(config) {
-                Ok(_) => panic!("expected EngineFactory to reject {field}"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(field));
-        }
+    fn sglang_rejects_disabled_chunked_prefill_at_validation_and_factory_boundaries() {
+        let config = EngineConfig {
+            enable_chunked_prefill: false,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        let field = "enable_chunked_prefill";
+        assert!(config.validate().unwrap_err().to_string().contains(field));
+        let error = match crate::engine::EngineFactory::new(config) {
+            Ok(_) => panic!("expected EngineFactory to reject {field}"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(field));
     }
 
     #[test]

@@ -1012,14 +1012,14 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
         let Some(summary) = source.timing.evidence_summary() else {
             return Ok(None);
         };
-        combined.accumulate(scale_power_phase(
+        combined.try_accumulate(scale_power_phase(
             summary.prefill,
             source.prefill_speedup_ratio,
-        )?);
-        combined.accumulate(scale_power_phase(
+        )?)?;
+        combined.try_accumulate(scale_power_phase(
             summary.decode,
             source.decode_speedup_ratio,
-        )?);
+        )?)?;
     }
     if combined.latency_ms <= 0.0 {
         return Ok(Some(TracePowerStats {
@@ -1597,6 +1597,48 @@ mod tests {
         let power = replay_power_stats(&[source]).unwrap().unwrap();
         assert_eq!(power.power_w, Some(500.0));
         assert!((power.coverage - 170.0 / 175.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn replay_power_returns_errors_for_non_finite_derived_evidence() {
+        // Each input is finite and positive. Scaling or combining it can still
+        // overflow; the provider boundary must return Err instead of panicking.
+        for (energy, latency, speedup) in [
+            (1.0, 1.0, f64::from_bits(1)),
+            (f64::MAX, 1.0, 0.5),
+            (1.0, f64::MAX, 0.5),
+            (f64::MAX, 1.0, 1.0),
+        ] {
+            let phase = TimingPhaseEvidence {
+                energy_wms: Some(energy),
+                latency_ms: latency,
+                covered_latency_ms: latency,
+                ..Default::default()
+            };
+            for failing_prefill in [true, false] {
+                let summary = if failing_prefill {
+                    TimingEvidenceSummary {
+                        prefill: phase.clone(),
+                        decode: phase.clone(),
+                    }
+                } else {
+                    TimingEvidenceSummary {
+                        prefill: TimingPhaseEvidence::default(),
+                        decode: phase.clone(),
+                    }
+                };
+                let source = TimingPowerSource {
+                    timing: Arc::new(PowerTiming(summary)),
+                    prefill_speedup_ratio: speedup,
+                    decode_speedup_ratio: speedup,
+                };
+                // The final case overflows only when two phases are summed.
+                if energy == f64::MAX && speedup == 1.0 && !failing_prefill {
+                    continue;
+                }
+                assert!(replay_power_stats(&[source]).is_err());
+            }
+        }
     }
 
     #[test]
