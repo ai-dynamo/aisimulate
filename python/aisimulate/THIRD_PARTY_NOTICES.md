@@ -406,12 +406,19 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/layers/engram.py`
 - `python/sglang/srt/layers/attention/dsv4/compressor.py`
 - `python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py`
+- `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
+- `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
 
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
-Copyright SGLang contributors. Licensed under Apache-2.0; its terms are
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
 reproduced in the repository `LICENSE`. These are analytical adaptations,
-not a copy of the model execution implementation.
+not a copy of the model execution implementation. The modified analytical
+scoring/storage adaptations and their independently written regression cases
+also appear in `python/aisimulate/tests/unit/sdk/models/test_deepseek_v41.py`,
+Rust operator/spec unit tests, `docs/deepseek-v41.md`, and
+`docs/deepseek-v41-storage.md`. They distinguish candidate masking from scoring
+and physical FlashMLA cache payload from logical FP4 values.
 
 ## DeepSeek model configuration files
 

@@ -733,6 +733,7 @@ mod tests {
                 bounded_prefill: false,
                 gemm_quant_mode: GemmQuantMode::Fp8Block,
                 fmha_quant_mode: FmhaQuantMode::Fp8,
+                kv_cache_layout: crate::operators::dsv41::Dsv41KvCacheLayout::SglangFp8Bf16,
             }),
             OpSpec::Dsv41Mhc(Dsv41MhcOp {
                 name: "v41_mhc".into(),
@@ -1088,6 +1089,37 @@ mod tests {
         }
     }
 
+    /// The backend layout is positional even though legacy JSON has a default.
+    #[test]
+    fn dsv41_layout_round_trip_and_stale_v18_payload_rejection() {
+        let attention = all_op_variants()
+            .into_iter()
+            .find(|op| matches!(op, OpSpec::Dsv41Attention(_)))
+            .unwrap();
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![attention]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // SglangFp8Bf16 is enum1 (four bytes), the final field of the final op.
+        // Removing it restores the actual prior Dsv41Attention schema18 shape.
+        assert_eq!(&bytes[bytes.len() - 4..], &1u32.to_le_bytes());
+        bytes.truncate(bytes.len() - 4);
+        bytes[..4].copy_from_slice(&18u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 18,
+                expected: 19
+            })
+        ));
+        // A false schema19 stamp cannot silently use the JSON-only default.
+        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::EngineSpec(_))
+        ));
+    }
+
     /// v11 -> v12 regression (PR-6): `DsaModuleOp` gained
     /// `attn_projection_quant_modes`, a positional bincode layout change. A
     /// pre-PR v11 producer's DSA payload must be rejected by the VERSION GATE
@@ -1233,7 +1265,7 @@ mod tests {
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 got: 17,
-                expected: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
         ));
@@ -1255,7 +1287,8 @@ mod tests {
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 got: 18,
-                expected: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+
                 ..
             })
         ));

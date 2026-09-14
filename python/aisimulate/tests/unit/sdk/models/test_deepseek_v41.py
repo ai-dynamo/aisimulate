@@ -10,8 +10,10 @@ from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.deepseek_v41 import (
     MODEL_PATH,
     DeepSeekV41Config,
+    DeepSeekV41KVCacheLayout,
     V41RequestWorkload,
     resolve_execution_profile,
+    resolve_kv_cache_layout,
     stage_workloads,
 )
 from aiconfigurator_core.sdk.models.helpers import _infer_quant_modes_from_raw_config
@@ -79,6 +81,36 @@ def test_shared_pool_memory_slope_and_odd_decode(descriptor):
     assert descriptor.engram_table_bytes(1) == 202758032400
 
 
+def test_sglang_physical_payload_owners_and_publication_boundaries(descriptor):
+    layout = DeepSeekV41KVCacheLayout.SGLANG_FP8_BF16
+    assert descriptor.kv_entry_bytes(layout) == (584, 584, 68)
+    # 40 SWA pools; one full-rate and three half-rate shared KV/index owners.
+    # Reindex layers share both physical pools, rather than allocating copies.
+    assert descriptor.kvcache_bytes(131072, layout) == 216662016 == 206.625 * 2**20
+    assert descriptor.kvcache_bytes(129, layout) - descriptor.kvcache_bytes(128, layout) == 652
+    assert descriptor.kvcache_bytes(130, layout) - descriptor.kvcache_bytes(129, layout) == 4 * 652
+    assert descriptor.kvcache_bytes(130, layout) - descriptor.kvcache_bytes(128, layout) == 3260
+    for invalid in (replace(descriptor, head_dim=256), replace(descriptor, qk_rope_head_dim=32)):
+        with pytest.raises(ValueError, match="pinned SGLang"):
+            invalid.kv_entry_bytes(layout)
+    with pytest.raises(ValueError, match="unknown"):
+        descriptor.kv_entry_bytes("unknown")
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_kv_cache_layout("unknown")
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("tokens", [127, 128, 129, 130, 16384, 131072])
+def test_physical_and_theoretical_capacity_inverse(backend, tokens, descriptor):
+    model = _build_model(backend=backend)
+    expected = DeepSeekV41KVCacheLayout.SGLANG_FP8_BF16 if backend == "sglang" else DeepSeekV41KVCacheLayout.LOGICAL_FP4
+    assert model.kv_cache_layout == expected
+    capacity = descriptor.kvcache_bytes(tokens, expected)
+    assert model.get_kvcache_bytes_per_sequence(tokens) == capacity
+    assert model.get_kvcache_max_tokens(capacity) == tokens
+    assert model.get_kvcache_max_tokens(capacity - 1) < tokens
+
+
 def test_replay_tail_is_bounded_per_actual_request(descriptor):
     requests = (V41RequestWorkload(256, 1024), V41RequestWorkload(3, 4096))
     full = stage_workloads(descriptor, "full", requests, 39)
@@ -116,6 +148,13 @@ def test_v41_text_graph_full_profile_all_backends(backend):
     specs = [json.loads(op._spec_json()) for op in model.context_ops]
     stages = [op["Dsv41Stage"] for op in specs if "Dsv41Stage" in op]
     assert len(stages) == 40
+    layouts = {
+        child["Dsv41Attention"]["kv_cache_layout"]
+        for stage in stages
+        for child in stage["children"]
+        if "Dsv41Attention" in child
+    }
+    assert layouts == {resolve_kv_cache_layout(backend).value}
     assert sum(stage["bounded"] for stage in stages) == 19
     assert all(not stage["decoder_replay"] for stage in stages)
     roles = Counter(
@@ -135,8 +174,8 @@ def test_replay_keeps_inventory_and_kv_pool_capacity():
 
 def test_batch_capacity_reserves_each_request_window(descriptor):
     model = _build_model()
-    fixed = 40 * 128 * 512 + 3 * 2 * 2 * 512 * 4
-    assert model.get_kvcache_batch_capacity(4 * fixed + 4096 * 890, 4) == 4096
+    fixed = 40 * 128 * 584 + 3 * 2 * 2 * 512 * 4
+    assert model.get_kvcache_batch_capacity(4 * fixed + 4096 * 1630, 4) == 4096
     assert model.get_kvcache_batch_capacity(4 * fixed - 1, 4) == 0
     assert model.get_additional_activation_bytes(1024) > 1024 * 4 * 5120 * 2
 

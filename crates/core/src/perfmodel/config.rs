@@ -80,8 +80,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-// - 19 (FPM selector review): FpmForwardOp carries the original model FMHA
-//   mode for visible table-selection diagnostics (positional bincode change).
+// - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
+//   separating physical backend KV payload from attention arithmetic precision.
+//   FpmForwardOp also carries original_fmha_quant_mode for table-selection
+//   diagnostics. Both append positional fields; defaults support old JSON only.
 pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an

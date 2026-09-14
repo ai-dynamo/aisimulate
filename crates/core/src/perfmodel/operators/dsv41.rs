@@ -6,7 +6,12 @@
 //! Architecture source: deepseek-ai/DeepSeek-V4.1-Flash, revision
 //! fb2764a5cf321eaa5070ca8f9e892818f477c16d, config.json / inference/model.py
 //! and DeepSeek_V41_Tech_Report.pdf (MIT, Copyright (c) 2023 DeepSeek).
-//! These are performance-model adaptations; see THIRD_PARTY_NOTICES.md.
+//! Serving layout/scoring source: sgl-project/sglang at
+//! 1aa0e962b206102b7c439a4a0c4981cfec6e87bc,
+//! python/sglang/srt/layers/attention/deepseek_v4_backend.py and
+//! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py (Apache-2.0,
+//! Copyright SGLang contributors). Independently expressed analytical
+//! adaptations; see THIRD_PARTY_NOTICES.md and docs/deepseek-v41-storage.md.
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +74,16 @@ fn compressed_pairs(query: f64, prefix: f64, ratio: f64, topk: f64) -> f64 {
     antiderivative(prefix + query) - antiderivative(prefix)
 }
 
+/// Persistent payload layout, independent of attention arithmetic precision.
+/// LogicalFp4 is the legacy theoretical layout, not a qualified runtime layout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dsv41KvCacheLayout {
+    #[default]
+    LogicalFp4,
+    SglangFp8Bf16,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Dsv41AttentionOp {
     pub name: String,
@@ -90,6 +105,9 @@ pub struct Dsv41AttentionOp {
     pub bounded_prefill: bool,
     pub gemm_quant_mode: GemmQuantMode,
     pub fmha_quant_mode: FmhaQuantMode,
+    // Appended in schema 19. The default accepts older JSON; bincode is positional.
+    #[serde(default)]
+    pub kv_cache_layout: Dsv41KvCacheLayout,
 }
 
 impl Dsv41AttentionOp {
@@ -144,6 +162,19 @@ impl Dsv41AttentionOp {
             self.head_dim as f64,
             self.o_groups as f64,
         );
+        let (window_entry_bytes, main_entry_bytes) = match self.kv_cache_layout {
+            Dsv41KvCacheLayout::LogicalFp4 => (d, d * 0.5625),
+            Dsv41KvCacheLayout::SglangFp8Bf16 => {
+                // Only the pinned V4.1 low-ratio, 512-wide FlashMLA contract.
+                if self.head_dim != 512 || self.index_head_dim != 128 || self.compress_ratio > 2 {
+                    return Err(AicError::ModelConfig(
+                        "SGLang V4.1 KV layout requires head_dim=512, index=128, ratio=0/1/2"
+                            .into(),
+                    ));
+                }
+                (584.0, 584.0)
+            }
+        };
         let tokens = if self.is_context { batch * s } else { batch };
         let bf16 = quant_tc_flops(spec, GemmQuantMode::Bfloat16.mapping())?;
         let fp8 = quant_tc_flops(spec, GemmQuantMode::Fp8.mapping())?;
@@ -173,6 +204,16 @@ impl Dsv41AttentionOp {
                 bf16,
             ))
             .plus(mm(g * o, h, tokens, w8, gemm));
+        if self.kv_cache_layout == Dsv41KvCacheLayout::SglangFp8Bf16 {
+            // Fused norm/RoPE/store reads the BF16 projection output and writes
+            // one physical SWA row. Projection's own BF16 output write is above.
+            result = result.plus(leaf(
+                spec,
+                0.0,
+                tokens * (d * 2.0 + window_entry_bytes),
+                bf16,
+            ));
+        }
         let end = if self.is_context { prefix + s } else { s };
         let ratio = self.compress_ratio as f64;
         let compressed_len = if ratio > 0.0 {
@@ -190,8 +231,9 @@ impl Dsv41AttentionOp {
             };
             let ihd = self.index_head_dim as f64;
             result = result.plus(mm(d, ihd, batch * produced, 2.0, bf16));
-            // Compressed main KV packs E2M1 + E4M3/16; index packs E2M1 + UE8M0/32.
-            let packed = d * 0.5625 + ihd * 0.53125;
+            // Main FP4 rounding is temporary: SGLang persists only the 584-byte
+            // FlashMLA row, not an additional packed main cache. Index stays FP4.
+            let packed = main_entry_bytes + ihd * 0.53125;
             result = result.plus(leaf(spec, 0.0, batch * produced * (d * 2.0 + packed), bf16));
         }
         if self.role == "full" || self.role == "reindex" {
@@ -199,11 +241,10 @@ impl Dsv41AttentionOp {
             result = result
                 .plus(mm(q, inh * ihd, tokens, w8, fp8))
                 .plus(mm(h, inh, tokens, 2.0, bf16));
-            let index_len = if self.candidate_limit > 0 {
-                compressed_len.min(self.candidate_limit as f64)
-            } else {
-                compressed_len
-            };
+            // Dense/paged index GEMMs score the full compressed context before
+            // two_level_decode_logits / _mask_topk_scores masks candidates.
+            // candidate_limit describes eligibility, not a pre-GEMM gather.
+            let index_len = compressed_len;
             let fp4 = quant_tc_flops(spec, GemmQuantMode::Nvfp4.mapping())?;
             result = result.plus(leaf(
                 spec,
@@ -260,7 +301,7 @@ impl Dsv41AttentionOp {
         result = result.plus(leaf(
             spec,
             4.0 * n * d * (wp + cp),
-            (window_rows * d + cp * d * 0.5625) + tokens * n * d * 4.0,
+            (window_rows * window_entry_bytes + cp * main_entry_bytes) + tokens * n * d * 4.0,
             attn,
         ));
         Ok(result)
@@ -512,6 +553,7 @@ mod tests {
             bounded_prefill: false,
             gemm_quant_mode: GemmQuantMode::Bfloat16,
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
+            kv_cache_layout: Dsv41KvCacheLayout::LogicalFp4,
         }
     }
 
@@ -561,6 +603,103 @@ mod tests {
         // The empty hidden->KV projection writes each KV row in BF16;
         // attention then reads each row once in FP8: (2+1)*4096*512 bytes.
         assert_components(op.sol(&spec, 1.0, 4096.0, 0.0).unwrap(), 0.0, 6_291_456.0);
+    }
+
+    #[test]
+    fn candidate_eligibility_never_caps_full_context_scoring() {
+        let spec = unit_spec();
+        let mut op = attention("reindex", 1);
+        op.is_context = false;
+        op.index_topk = 3; // Attention selection has saturated well before these inputs.
+        op.candidate_limit = 16_384;
+        for context in [16_384.0, 16_385.0, 131_072.0] {
+            let limited = op.sol(&spec, 1.0, context, 0.0).unwrap();
+            op.candidate_limit = 0;
+            assert_eq!(limited, op.sol(&spec, 1.0, context, 0.0).unwrap());
+            op.candidate_limit = 16_384;
+        }
+        let lo = op.sol(&spec, 1.0, 16_384.0, 0.0).unwrap().sol.unwrap();
+        let hi = op.sol(&spec, 1.0, 131_072.0, 0.0).unwrap().sol.unwrap();
+        // Per extra key: 2*4 heads*2 dimensions =16 FLOPs; 2*17/32=1.0625
+        // packed K bytes, plus4 score-write and4 score-read bytes. All other
+        // geometry is saturated and constant in this independent decode ledger.
+        let extra = 131_072.0 - 16_384.0;
+        assert!((hi.math_ms - lo.math_ms - 16.0 * extra / 1e6).abs() < 1e-10);
+        assert!((hi.mem_ms - lo.mem_ms - 9.0625 * extra / 1e3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn prefixed_prefill_scores_across_candidate_boundary() {
+        let spec = unit_spec();
+        let mut op = attention("reindex", 1);
+        op.candidate_limit = 16_384;
+        // Three actual queries with a long cached prefix. Their sparse/window
+        // attention is saturated; the full index matrix still grows with end.
+        for end in [16_384.0, 16_385.0, 131_072.0] {
+            let limited = op.sol(&spec, 1.0, 3.0, end - 3.0).unwrap();
+            op.candidate_limit = 0;
+            assert_eq!(limited, op.sol(&spec, 1.0, 3.0, end - 3.0).unwrap());
+            op.candidate_limit = 16_384;
+        }
+        let lo = op.sol(&spec, 1.0, 3.0, 16_381.0).unwrap().sol.unwrap();
+        let hi = op.sol(&spec, 1.0, 3.0, 16_382.0).unwrap().sol.unwrap();
+        // One extra K row: 3 queries *16 FLOPs; 1.0625 K bytes plus
+        // 3*(4-byte score write +4-byte score read). Prefix is not re-executed.
+        assert!((hi.math_ms - lo.math_ms - 48.0 / 1e6).abs() < 1e-10);
+        assert!((hi.mem_ms - lo.mem_ms - 25.0625 / 1e3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sglang_physical_reads_and_publication_count_one_persistent_record() {
+        let spec = unit_spec();
+        let mut op = attention("full", 2);
+        op.is_context = false;
+        op.head_dim = 512;
+        op.index_head_dim = 128;
+        // Relative to the separately hand-tested logical ledger: every token
+        // stores its SWA row (1024-byte source read +584-byte write), the128
+        // resident window rows add72 bytes each, and the three selected main
+        // entries add296 each. Even tokens publish one more main row (+296).
+        for (context, published) in [(129.0, 0.0), (130.0, 1.0)] {
+            let logical = op.sol(&spec, 1.0, context, 0.0).unwrap().sol.unwrap();
+            op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+            let physical = op.sol(&spec, 1.0, context, 0.0).unwrap().sol.unwrap();
+            assert_eq!(physical.math_ms, logical.math_ms);
+            let added = 1024.0 + 584.0 + 128.0 * 72.0 + (3.0 + published) * 296.0;
+            assert!((physical.mem_ms - logical.mem_ms - added / 1e3).abs() < 1e-10);
+            op.kv_cache_layout = Dsv41KvCacheLayout::LogicalFp4;
+        }
+        op.role = "swa".into();
+        op.compress_ratio = 0;
+        op.is_context = true;
+        op.hidden_size = 0;
+        op.q_lora_rank = 0;
+        op.o_lora_rank = 0;
+        op.num_heads = 0;
+        op.o_groups = 0;
+        op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+        // Per query: BF16 projection write1024, store read1024/write584,
+        // attention read584 =3216 bytes. No persistent packed FP4 record.
+        assert_components(op.sol(&spec, 1.0, 4096.0, 0.0).unwrap(), 0.0, 13_172_736.0);
+    }
+
+    #[test]
+    fn physical_layout_rejects_unqualified_geometry_and_json_defaults_are_theoretical() {
+        let mut op = attention("full", 2);
+        let mut json = serde_json::to_value(&op).unwrap();
+        json.as_object_mut().unwrap().remove("kv_cache_layout");
+        let legacy: Dsv41AttentionOp = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(legacy.kv_cache_layout, Dsv41KvCacheLayout::LogicalFp4);
+        json["kv_cache_layout"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<Dsv41AttentionOp>(json).is_err());
+        op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+        assert!(op.sol(&unit_spec(), 1.0, 128.0, 0.0).is_err());
+        op.head_dim = 512;
+        op.index_head_dim = 128;
+        for ratio in [4, 128] {
+            op.compress_ratio = ratio;
+            assert!(op.sol(&unit_spec(), 1.0, 128.0, 0.0).is_err());
+        }
     }
 
     #[test]
