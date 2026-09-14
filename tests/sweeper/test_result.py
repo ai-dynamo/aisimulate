@@ -263,6 +263,26 @@ def test_candidate_provenance_uses_the_materialized_replay_spec():
     ]
 
 
+def test_candidate_provenance_preserves_role_hardware_without_replay_spec():
+    provenance = make_candidate_provenance(
+        {
+            "deployment_mode": "disagg",
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "prefill_tp": 1,
+            "decode_tp": 2,
+        }
+    )
+
+    assert provenance.topology == {
+        "deployment_mode": "disagg",
+        "prefill_hardware_sku": "h200_sxm",
+        "decode_hardware_sku": "gb200",
+        "prefill_tp": 1,
+        "decode_tp": 2,
+    }
+
+
 class _Sampler:
     def __init__(self, branch, study_id, objectives=None, algorithm=None, seed=None):
         del study_id, objectives, algorithm, seed

@@ -111,6 +111,25 @@ def test_disagg_unroll_preserves_both_roles():
     assert "agg_max_num_seqs" not in sample
 
 
+def test_disagg_unroll_materializes_effective_role_hardware():
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        prefill_max_num_batched_tokens=16384,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=512,
+    )
+
+    sample = unroll_sample(
+        search_space=_space(prefill_hardware_sku="prefill_sku"),
+        selection=selection,
+        parallel_config=DISAGG_CONFIG,
+    )
+
+    assert sample["prefill_hardware_sku"] == "prefill_sku"
+    assert sample["decode_hardware_sku"] == "example_sku"
+
+
 def test_unroll_folds_only_backend_pinned_values():
     sample = unroll_sample(
         search_space=_space(

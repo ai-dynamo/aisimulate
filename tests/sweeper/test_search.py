@@ -10,7 +10,7 @@ import pytest
 import aisimulate.sweeper.search as search_mod
 from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
 from aisimulate.sweeper.kv_load import KVLoadResolution
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
     ReplayReport,
@@ -205,6 +205,100 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     assert candidates
     assert all(candidate.config["backend_version"] == "0.18.0" for candidate in candidates)
     assert all(spec.backend_deployment.backend_version == "0.18.0" for spec in factory.runner.specs)
+
+
+def test_heterogeneous_disagg_materializes_role_hardware_and_provenance(monkeypatch):
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = DisaggParallelConfig(prefill=role, decode=role)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"vllm"})},
+        knob_choices={
+            "backend": ["vllm"],
+            "prefill_max_num_batched_tokens": [8192],
+            "prefill_max_num_seqs": [1],
+            "decode_max_num_batched_tokens": [8192],
+            "decode_max_num_seqs": [256],
+        },
+    )
+    monkeypatch.setattr(
+        search_mod,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+    )
+    version_calls = []
+
+    def resolve_version(hardware, backend):
+        version_calls.append((hardware, backend))
+        return "0.24.0"
+
+    monkeypatch.setattr(search_mod, "resolve_backend_version", resolve_version)
+
+    class Sampler:
+        def __init__(self, branch, study_id, objectives=None):
+            del study_id, objectives
+            self.branch = branch
+
+        def suggest(self, count):
+            selection = {
+                "deployment_mode": "disagg",
+                **{name: values[0] for name, values in self.branch.knob_choices.items()},
+            }
+            return [Suggestion(selection=selection, parallel_config=parallel, handle=selection) for _ in range(count)]
+
+        def observe(self, suggestion, metrics):
+            del suggestion, metrics
+
+        def observe_infeasible(self, suggestion, reason):
+            pytest.fail(f"unexpected infeasible candidate: {suggestion}, {reason}")
+
+    class Runner:
+        def __init__(self):
+            self.specs = []
+
+        def run(self, spec):
+            self.specs.append(spec)
+            return ReplayReport(metrics={"output_throughput_tok_s": 1.0})
+
+        def close(self):
+            pass
+
+    config = SmartSearchConfig(
+        search_space={
+            "model_name": "example/model",
+            "hardware_sku": "h200_sxm",
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "backend": ["vllm"],
+            "deployment_mode": ["disagg"],
+            "gpu_budget": 2,
+            "prefill_max_num_batched_tokens": [8192],
+            "prefill_max_num_seqs": [1],
+            "decode_max_num_batched_tokens": [8192],
+            "decode_max_num_seqs": [256],
+        },
+        workload={"trace_path": TRACE},
+        sweep={"max_rounds": 1, "candidates_per_round": 1, "parallel_evals": 1},
+        goal={"target": "throughput"},
+    )
+    runner = Runner()
+
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner=runner),
+        sampler_factory=Sampler,
+        show_progress=False,
+    ).run(config, top_n=None)
+    (candidate,) = result.selected_candidates
+
+    assert version_calls == [("h200_sxm", "vllm"), ("gb200", "vllm")]
+    assert candidate.config["prefill_hardware_sku"] == "h200_sxm"
+    assert candidate.config["decode_hardware_sku"] == "gb200"
+    deployment = runner.specs[0].backend_deployment
+    assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
+    assert deployment.decode_engine_args["aic_system"] == "gb200"
+    assert result.candidates[0].provenance.topology["prefill_hardware_sku"] == "h200_sxm"
+    assert result.candidates[0].provenance.topology["decode_hardware_sku"] == "gb200"
 
 
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
