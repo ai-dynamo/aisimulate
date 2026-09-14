@@ -19,11 +19,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.12.0"
-# Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
-# PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-dev.YYYYMMDD` in
-# the crate (cargo rejects the PEP 440 spelling). The release contract still
-# anchors on VERSION; only this suffix pair is additionally accepted.
-DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}")
+# CI stamps a numeric dev suffix via scripts/apply_dev_version.py: PEP 440
+# `0.12.0.devN` in the wheel and SemVer `0.12.0-dev.N` in the crate (cargo
+# rejects the PEP 440 spelling). Nightly builds use an eight-digit date for N.
+# The release contract still anchors on VERSION; only this suffix pair is
+# additionally accepted.
+DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]+")
 
 EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
@@ -73,9 +74,9 @@ def check_manifests() -> tuple[str, str]:
     dev_suffix = py_version.removeprefix(VERSION)
     assert py_version.startswith(VERSION) and (
         dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)
-    ), f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
+    ), f"wheel version must be {VERSION} or {VERSION}.devN, got {py_version}"
     expected_crate_version = (
-        f"{VERSION}-dev.{dev_suffix[len('.dev'):]}" if dev_suffix else VERSION
+        f"{VERSION}-dev.{dev_suffix[len('.dev') :]}" if dev_suffix else VERSION
     )
     assert crate_version == expected_crate_version, (
         f"crate version {crate_version} does not match wheel version "

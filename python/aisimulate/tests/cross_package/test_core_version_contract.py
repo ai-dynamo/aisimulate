@@ -29,6 +29,14 @@ def _crate_version(path: Path) -> str:
     return str(tomllib.loads(path.read_text())["package"]["version"])
 
 
+def _cargo_version_for_python(version: str) -> str:
+    match = re.fullmatch(r"(?P<release>\d+\.\d+\.\d+)(?:\.dev(?P<dev>\d+))?", version)
+    assert match is not None, f"unsupported Python release version {version}"
+    release = match.group("release")
+    dev = match.group("dev")
+    return release if dev is None else f"{release}-dev.{dev}"
+
+
 def _rust_u32_constant(path: Path, name: str) -> int:
     source = path.read_text()
     match = re.search(rf"^pub const {re.escape(name)}: u32 = (\d+);$", source, re.MULTILINE)
@@ -37,7 +45,8 @@ def _rust_u32_constant(path: Path, name: str) -> int:
 
 
 def test_aisimulate_wheel_and_core_crate_versions_match() -> None:
-    assert _project_version(APPLICATION_ROOT / "pyproject.toml") == _crate_version(RUST_CRATE / "Cargo.toml")
+    python_version = _project_version(APPLICATION_ROOT / "pyproject.toml")
+    assert _cargo_version_for_python(python_version) == _crate_version(RUST_CRATE / "Cargo.toml")
 
 
 def test_python_and_numpy_support_contracts_match() -> None:
