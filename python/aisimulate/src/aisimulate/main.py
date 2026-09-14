@@ -39,6 +39,7 @@ from .output import (
     write_requests,
 )
 from .stack import StackResolutionError, resolve_runner_factory
+from .support.cli import add_support_parser, run_support_command
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
 
@@ -77,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="pace prediction against the real wall clock instead of virtual time",
     )
+    add_support_parser(subparsers)
     return parser
 
 
@@ -301,6 +303,13 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.command == "support":
+        try:
+            return run_support_command(args)
+        except (ValidationError, ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)
