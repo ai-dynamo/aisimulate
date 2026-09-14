@@ -1,12 +1,16 @@
-# FPM predictions after the main-branch integration
+# FPM predictions after review fixes
 
-Actual CPU predictions were rerun at `bd51394fc13ef1a018eb92728add8dd24be1beac`, after merging main through the updated SOL base. The native extension was rebuilt from this checkout; its SHA-256 is `d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d`. Observations, calibration files and model precision were preserved. There was no fitting, fallback predictor, new GPU measurement or replacement of historical reports.
+Actual CPU predictions were rerun at `430ed5e79abaf667c026d980c18ec240261fc800`, after the shared SOL scoring/storage fixes and integration of main `be8f69749589aea5a376083436e054d75810d379`. The native extension was built at `f541c436067d5d185e9cb712d72b75e44ae524f9`; subsequent Collector-only changes were verified to leave all predictor/build inputs unchanged; its SHA-256 is `50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0`. Observations, calibration files and model precision were preserved. There was no fitting, fallback predictor, new GPU measurement or replacement of historical reports.
+
+**GB200 admission remains blocked:** the retained 126-point table is historical, environment-specific evidence and is not admitted for prediction or reusable serving calibration. See the [admission disclosure](../../gb200-fpm/calibration-v1/README.md). These replays document its failures without requalifying it.
+
+The GB300 results are development validation: coverage gaps in the original verification informed the 18-point calibration extension per profile, after which the same verification population was reused. Calibration and verification timings are distinct, but this is not a blind final test. No current prediction is fitted to its observed target.
 
 The refreshed FPM remains accurate on the GB300 native-forward observations and strongly overpredicts GB200 ordinary-serving latency. The separate DL diagnostic reproduces this discrepancy on both native benchmark and ordinary-serving paths.
 
 | Scope | Native-forward MAPE | Native coverage | TTFT MAPE | TPOT MAPE | Throughput MAPE | HTTP coverage |
 |---|---:|---:|---:|---:|---:|---:|
-| GB300 Decoder OFF, core | 1.2409% | 15,756 / 15,756 | 40.4646% | 2.4796% | 7.1762% | 560 / 600 cold cohorts |
+| GB300 Decoder OFF, core | 1.2412% | 15,756 / 15,756 | 40.4646% | 2.4796% | 7.1762% | 560 / 600 cold cohorts |
 | GB300 Decoder ON, core | 2.0103% | 38,997 / 39,393 | 42.0729% | 3.7009% | 8.5979% | 1,300 / 1,500 cold cohorts |
 | GB200 Decoder OFF, ordinary serving | 432.3291% | 12,531 / 12,531 | 838.9658% | 435.9172% | 82.2571% | 450 / 450 cohorts; 660 requests |
 
@@ -18,7 +22,7 @@ Additional native-forward results:
 |---|---:|---:|
 | GB300 OFF field / service | 0.7507% / 0.7217% | 3,503 / 3,503; 3,509 / 3,509 |
 | GB300 ON field / service | 1.1918% / 1.0313% | 3,466 / 3,503; 3,468 / 3,504 |
-| GB300 OFF / ON, 46-point forward validation corpus | 3.1933% / 7.4034% | 45 / 46; 29 / 46 |
+| GB300 OFF / ON, 46-point forward validation corpus | 3.2423% / 7.4274% | 45 / 46; 29 / 46 |
 | GB200 independent 38-point holdout | 4.8942% | 38 / 38 |
 | GB200 DL native diagnostic | 431.4790% | 30 / 30 |
 | GB200 DL ordinary diagnostic | 430.8405% | 20 / 30 |
@@ -33,9 +37,9 @@ The GB200 ordinary study retains 30 full trials, all 450 primary cohorts, 660 re
 
 ## Files and checks
 
-[summary.csv](results/summary.csv) contains full-precision MAPE, WAPE and coverage. The native, HTTP, configuration and diagnostic CSVs preserve every row, including unsupported results; runtime identifiers are replaced by ordinal positions. [source-bindings.json](results/source-bindings.json) binds completed raw prediction outputs, original inputs, checkpoint identity and unchanged system tables. [artifact-hashes.json](results/artifact-hashes.json) verifies the numerical export. The original [GB200 calibration](../../gb200-fpm/calibration-v1/README.md) and GB300 [OFF](../../gb300-fpm/off-union-v3-tracewait2/README.md)/[ON](../../gb300-fpm/on-union-v3-tracewait2/README.md) reports remain unchanged.
+[summary.csv](results/summary.csv) contains full-precision MAPE, WAPE and coverage. The native, HTTP, configuration and diagnostic CSVs preserve every row, including unsupported results; runtime identifiers are replaced by ordinal positions. [source-bindings.json](results/source-bindings.json) binds completed raw prediction outputs, original inputs, checkpoint identity and unchanged system tables. [artifact-hashes.json](results/artifact-hashes.json) verifies the numerical export. The original GB200 and GB300 [OFF](../../gb300-fpm/off-union-v3-tracewait2/README.md)/[ON](../../gb300-fpm/on-union-v3-tracewait2/README.md) table bytes remain unchanged. The [GB200 admission disclosure](../../gb200-fpm/calibration-v1/README.md) now reflects completed contrary serving evidence.
 
-Run `python verify_public.py` from this directory to verify hashes and independently recompute every published MAPE, WAPE and denominator without a model or private files. The merge was also checked by 306 passing SDK tests covering FPM forward/identity, speculation and DeepSeek-V4.1. All new Python sources pass project Ruff lint and formatting. The public export preserves the exact current numerical pairs; it does not rerun predictions.
+Run `python verify_public.py` from this directory to verify hashes and independently recompute every published MAPE, WAPE and denominator without a model or private files. The integrated source passed 501 Python SDK/Collector tests and 706 Rust perfmodel tests (one pre-existing local-data test ignored). Public API/wire checks and repository policy validation are recorded with the PR. All new Python sources pass project Ruff lint and formatting. The public export preserves the exact current numerical pairs; it does not rerun predictions.
 
 ## Reproduce actual predictions
 
@@ -68,7 +72,7 @@ For the 46-point corpus, use a checkout containing PR #160's original public obs
   --output /path/to/new-forward-off.json --expected-head "$FPM_REV" --expected-native-sha256 "$FPM_NATIVE"
 ```
 
-Repeat with `on.json` and `--profile on`. The actual FPM selector is `fpm_fmha_dtype=fp8`; it does not override analytical activation precision.
+Repeat with `on.json` and `--profile on`. The actual FPM selector is `fpm_fmha_dtype=fp8`; it does not override analytical activation precision. An explicit selector now emits a WARNING with the original model mode and matched cell IDs. Exact recorded-label matching rejects other table precisions; it does not independently establish the engine-resolved runtime precision. The shared SOL layout changes the roofline used for interpolation, so a few predictions change despite unchanged calibration timings.
 
 For cold replay, PR #160's portable `prediction-refresh-20260914/silicon/recover_cold_workloads.py` accepts `--repo` for the SILICON checkout, `--fpm-repo` for this checkout and a new `--output` directory. It reconstructs the shared 560 OFF / 1,300 ON exact original specifications. Regenerated packet hashes depend on provenance paths, so pass the freshly recorded packet SHA explicitly:
 

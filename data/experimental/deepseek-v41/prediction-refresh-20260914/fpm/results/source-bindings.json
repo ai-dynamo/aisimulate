@@ -1,5 +1,5 @@
 {
-  "exporter_sha256": "4afb414ece06f08a3f3e4372c333965461b466865cdf2bafaf15385e46f49c2f",
+  "exporter_sha256": "38f0b74982194b2a9a51be752361ea3fc1c06d10e8ddeda8c298dfa76a5c68b5",
   "inputs": {
     "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/reports/field/e2e.json.gz": {
       "original_input_sha256": {
@@ -55,7 +55,7 @@
         "point_index": "865727cb66aae227c10c6c85014a7fd5b8b2f7a40ad174e43774d527f1a767dd",
         "prefill": "e861fa4b45a933805a1c8a230045f36248a3ac3d8066a3325cfeecb9e30798c4"
       },
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "vllm",
@@ -76,8 +76,8 @@
         "tp_size": 4
       },
       "prediction_config_sha256": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "e09219c2202d2bb09b1f09c6cf6b9daaaefcf183ce49473a20c2ae01480b4f90",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "53a2d7b912d7d1036045745d05a3a044fa422af1db3589779bfe16a239b32e51",
       "source_sha256": "6c24442bf8afeda7d78cfadc39f4676ef0079eb147a8110f963a73cb705be186",
       "systems_identity": {
         "files_sha256": {
@@ -101,10 +101,10 @@
       "prediction_sources": {
         "adapter": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
         "comparison": "19808d0638f3662a2857207d5a2b0e931a33a16ac0737db1217a4adc3a4dafb2",
-        "engine": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
-        "model": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "engine": "b6caf0f09fcf42c4073a19c835d0ff9bf27e34b9d91ae212655a99bc385c822e",
+        "model": "3eb3a379544c4e377531d9f0c2e6265c0c87d0b8650cac24640fe03c28ccb151",
         "model_resolution": "c512c6647503cab6fe28ca0cb50cd7f7f9430f46e6748b7ab280806dc22d4214",
-        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "native_extension": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
         "normalization": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9"
       },
       "resolved_model_identity": {
@@ -117,7 +117,7 @@
         "precision_contract": "qualified_fpm_table_fmha_fp8_selector_not_analytical_operand_precision",
         "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
       },
-      "sha256": "792d7a2376dda846b7b275a97fdba2e44c6922f15f6560024f3a3b91f785f430"
+      "sha256": "4de9c404658be6c6916e83f8405dc13d176a69e4d4ed7d987f0fa48463670ee8"
     },
     "gb200-refresh-v1/ordinary-e2e.json": {
       "bytes": 1202063,
@@ -129,7 +129,7 @@
         "prediction_config": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
         "scheduler_receipt": "0c2f04da6ac61d8cbda75750c2fcc8b150f2e90d380b80f516b88cfc2d0827f0"
       },
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "vllm",
@@ -152,10 +152,10 @@
       "prediction_sources": {
         "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
         "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
-        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "engine_compiler": "b6caf0f09fcf42c4073a19c835d0ff9bf27e34b9d91ae212655a99bc385c822e",
         "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
-        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
-        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "model_graph": "3eb3a379544c4e377531d9f0c2e6265c0c87d0b8650cac24640fe03c28ccb151",
+        "native_extension": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
         "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
         "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
         "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
@@ -170,7 +170,7 @@
         "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
         "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
       },
-      "sha256": "fb75237924a724e8ed45fb000defdd6f8e7aee72ef82fc931cbbad10ebcf1228",
+      "sha256": "4f2fd3797a767eed4ee317d3bcb06dcf61071ba73f5a1e3d889a28d49d28b274",
       "systems_identity": {
         "files_sha256": {
           "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
@@ -212,10 +212,10 @@
       "prediction_sources_sha256": {
         "adapter": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
         "analysis": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
-        "engine": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "engine": "b6caf0f09fcf42c4073a19c835d0ff9bf27e34b9d91ae212655a99bc385c822e",
         "forward_comparison": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
-        "model": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
-        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "model": "3eb3a379544c4e377531d9f0c2e6265c0c87d0b8650cac24640fe03c28ccb151",
+        "native_extension": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
         "normalization": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
         "statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
       },
@@ -229,7 +229,7 @@
         "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
         "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
       },
-      "sha256": "6eed526d590d8c5c65db7249306f5e025f7325fbe978d845d502111cf02f864d",
+      "sha256": "13970bbeb7414541b2fb1e108f4a668af07052a52ecb273d966d6f40eb887750",
       "systems_identity": {
         "files_sha256": {
           "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
@@ -242,9 +242,9 @@
       }
     },
     "gb300-native-v2/gb300-off-core-native.json.gz": {
-      "bytes": 1062697,
+      "bytes": 1062699,
       "input_sha256": "a82402ae0a2f181171db55e44cba162f9de462c7b98790c9a76544572e88fbfe",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -264,8 +264,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "352e0563b39834abf01e9af6d7c7680b7a6173d200999a66f86141e9cbcf6a29",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "b0898f0a8c498ef93ad5505c2dc4d4e0a91a54975091283b4e416506c95a0964",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
@@ -278,9 +278,9 @@
       }
     },
     "gb300-native-v2/gb300-off-field-native.json.gz": {
-      "bytes": 247217,
+      "bytes": 247209,
       "input_sha256": "0ffe3962927490e9bc45191ab481f6eb53be67cd6ec9309161340b637d98d45f",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -300,8 +300,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "30fe6f0c19c4220d7493bbe9db1e6bc790af48be3241822e5c68087cefe163e9",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "fd25a869dcb181a64cc54e52c4f07511226d1ffdf53ce6334335525723fa108c",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
@@ -314,9 +314,9 @@
       }
     },
     "gb300-native-v2/gb300-off-service-native.json.gz": {
-      "bytes": 247828,
+      "bytes": 247819,
       "input_sha256": "b49e624ed5bf68cac22695c6267ef91aaaa1f4797173af16b7f3b4291d155502",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -336,8 +336,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "5af00148baa74a08c61567b1650cd77623168efb4023ff422c35c317efa147ee",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "94f079c835c79cee702b378fd2a5d2f99cf97186557d8e1387680ff17eb4fc9a",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
@@ -350,9 +350,9 @@
       }
     },
     "gb300-native-v2/gb300-on-core-native.json.gz": {
-      "bytes": 2721075,
+      "bytes": 2721073,
       "input_sha256": "9c23e7cce528d04f5bf1aa75f026498edc03bb430a64792edc8dba5cf44e56be",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -372,8 +372,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "ba6bd27f62690893be5b16b1d13c31229518ea2eb07f5c5be9887db11345b9a7",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "86bb3055bd21b3646a8aee3155b0832d124cd5e91ac856bf726c6747d3bb119e",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
@@ -386,9 +386,9 @@
       }
     },
     "gb300-native-v2/gb300-on-field-native.json.gz": {
-      "bytes": 252949,
+      "bytes": 252945,
       "input_sha256": "da728c5e66f251f6cc03721d39702d543418635feeec3bbe5f2cb7cc08717506",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -408,8 +408,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "26fb6aaffc524ea8c15b188fcbbe86e70e2af7941a8f93c9eeb1d0600bd4d9be",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "40d19122cd25c9d6be4606262af2cad31582909b36a07efd253cee90316d4305",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
@@ -422,9 +422,9 @@
       }
     },
     "gb300-native-v2/gb300-on-service-native.json.gz": {
-      "bytes": 253021,
+      "bytes": 253016,
       "input_sha256": "a60bfeb41fe729dedb818f95f5db2d3901a7958f00180f352e912b4e2a149e5c",
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -444,8 +444,8 @@
         "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
         "tp_size": 4
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
-      "sha256": "0089c7fc9851dd7ee2cac8ca5c2094c4e8d494ac3d8f290ea29c37b56e4c25c6",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
+      "sha256": "b88c781dd5e37b2056891bd63c27af3a06077e8bb13674afacc6afb92c573531",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
@@ -459,7 +459,7 @@
     },
     "gb300-off-cold-v3.json.gz": {
       "bytes": 217612,
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "packet_sha256": "ca98d203890a856a7a89e0b3070c2206b67729591dec4467799985437f4f7007",
       "prediction_config": {
         "attention_dp_size": 1,
@@ -484,17 +484,17 @@
       "prediction_sources": {
         "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
         "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
-        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "engine_compiler": "b6caf0f09fcf42c4073a19c835d0ff9bf27e34b9d91ae212655a99bc385c822e",
         "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
-        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
-        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "model_graph": "3eb3a379544c4e377531d9f0c2e6265c0c87d0b8650cac24640fe03c28ccb151",
+        "native_extension": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
         "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
         "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
         "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
       "script_sha256": "1e0cac961bcaa40dd367f75363cc2e67c6b572d3bb7a194a6f8a1b9a546fb152",
-      "sha256": "8191a8862d7b8e2e3e9b8a452f5c92547a90364e415f24b2f008945ccf2d4cc9",
+      "sha256": "8fd6bd02d75781f5e5cf87c5464d0f6f0572256e950e0aab9801a366ffd4a0b2",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
@@ -507,12 +507,12 @@
       }
     },
     "gb300-off-forward46-v1.json": {
-      "bytes": 64416,
+      "bytes": 64414,
       "input_sha256": {
         "heldout-plan": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def",
         "observations": "d4bf262698790520abd704dae04bed269cad7cc8c10c2e5a7b90ac90a9ddc410"
       },
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -533,7 +533,7 @@
         "tp_size": 4
       },
       "prediction_config_sha256": "e7b273a372d14767e8423639603e8c9d027d0415a0f69890f5c423d1e12bccb8",
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
       "resolved_model_identity": {
         "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
         "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
@@ -544,7 +544,7 @@
         "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
         "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
       },
-      "sha256": "600eed6d0b15b649ad6c0984889e47360a121f7d3bd513d55cc1fb7bee0433a8",
+      "sha256": "f09bfe2054f53aa6fe5b2e4b462215e9b660ef027d475a8cab486ba98701dd99",
       "source_sha256": "9871b0d758101e7fdefc56e31334d8952e92611aadb178fd54eb25c8884f887e",
       "systems_identity": {
         "data_dir": "data/gb300",
@@ -560,7 +560,7 @@
     },
     "gb300-on-cold-v3.json.gz": {
       "bytes": 430483,
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "packet_sha256": "c5446a862e47e1f6dbdf31716e32a14bd00d69f5b7712f82529dc856115bb091",
       "prediction_config": {
         "attention_dp_size": 1,
@@ -585,17 +585,17 @@
       "prediction_sources": {
         "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
         "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
-        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "engine_compiler": "b6caf0f09fcf42c4073a19c835d0ff9bf27e34b9d91ae212655a99bc385c822e",
         "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
-        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
-        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "model_graph": "3eb3a379544c4e377531d9f0c2e6265c0c87d0b8650cac24640fe03c28ccb151",
+        "native_extension": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
         "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
         "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
         "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
       },
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
       "script_sha256": "1e0cac961bcaa40dd367f75363cc2e67c6b572d3bb7a194a6f8a1b9a546fb152",
-      "sha256": "a8d7e95166e47d00152f4b4672e875b0ab23e207766b5809af4dfdfd790219dc",
+      "sha256": "9bd1e82afeb4b89471acb14f68b78284240ac4e39920fa70970cfba6a15d6fb1",
       "systems_identity": {
         "files_sha256": {
           "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
@@ -608,12 +608,12 @@
       }
     },
     "gb300-on-forward46-v1.json": {
-      "bytes": 67302,
+      "bytes": 67299,
       "input_sha256": {
         "heldout-plan": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def",
         "observations": "a468a4e5364bebdfd28677a51fe489e4c17d5778ab11009b41dd69a7dc8a7568"
       },
-      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
       "prediction_config": {
         "attention_dp_size": 1,
         "backend": "sglang",
@@ -634,7 +634,7 @@
         "tp_size": 4
       },
       "prediction_config_sha256": "788bf13431f4227117d8aa96ebf1e109ffda8a646882e94336f5598726597997",
-      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
       "resolved_model_identity": {
         "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
         "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
@@ -645,7 +645,7 @@
         "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
         "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
       },
-      "sha256": "83f6cde6593f013bfc9cef34f427de3f8b5137149b891b381cb1a5ffd5e35e4e",
+      "sha256": "5b5fbac671ca0fca7932b5ea0347ad4b85b50956ae4a581af54f8d41467a9115",
       "source_sha256": "9871b0d758101e7fdefc56e31334d8952e92611aadb178fd54eb25c8884f887e",
       "systems_identity": {
         "data_dir": "data/gb300",
@@ -660,9 +660,9 @@
       }
     }
   },
-  "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+  "native_extension_sha256": "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0",
   "no_new_observations": true,
   "no_refit": true,
-  "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+  "predictor_commit": "430ed5e79abaf667c026d980c18ec240261fc800",
   "projection": "Exact numeric pairs and denominators; private runtime identifiers omitted."
 }

@@ -20,8 +20,8 @@ from pathlib import Path
 
 from refresh_reported_native import read, require, sha, write
 
-HEAD = "bd51394fc13ef1a018eb92728add8dd24be1beac"
-NATIVE = "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d"
+HEAD = "430ed5e79abaf667c026d980c18ec240261fc800"
+NATIVE = "50d3010ee04daaa23158fe5ef873b363a61b096ec755b1bc46a7a1ba6a8117b0"
 SHAPE = (
     "num_prefill_requests",
     "sum_prefill_tokens",
