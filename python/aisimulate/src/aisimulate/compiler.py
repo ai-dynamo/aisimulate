@@ -380,6 +380,8 @@ def _worker_engine_args(
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
     if host_offload is not None:
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
+    if cache.g3_offload is not None:
+        payload["g3_offload"] = cache.g3_offload.model_dump(mode="json")
     if engine.kv_transfer is not None:
         transfer = engine.kv_transfer
         if transfer.bandwidth_gb_per_second is not None:

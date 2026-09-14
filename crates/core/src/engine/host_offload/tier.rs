@@ -321,6 +321,18 @@ impl HostTier {
         blocks: &[HostBlockKey],
         now_ms: f64,
     ) -> StoreOutcome {
+        self.reserve_store(request_id, blocks, now_ms, true)
+    }
+
+    /// Both sources mutate the same physical capacity. Only a GPU source
+    /// prepares a native D2H; eviction and capacity observations apply to both.
+    fn reserve_store(
+        &mut self,
+        request_id: Uuid,
+        blocks: &[HostBlockKey],
+        now_ms: f64,
+        native_d2h: bool,
+    ) -> StoreOutcome {
         let now_ms = self.prepare_mutation(now_ms);
         let mut protected = FxHashSet::default();
         let mut missing = Vec::new();
@@ -398,14 +410,16 @@ impl HostTier {
             );
         }
         let stored_blocks = missing.len();
-        self.observe(HostOffloadObservation {
-            request_id,
-            event: HostOffloadObservationData::StorePrepared {
-                at_ms: now_ms,
-                transfer_id,
-                blocks: &missing,
-            },
-        });
+        if native_d2h {
+            self.observe(HostOffloadObservation {
+                request_id,
+                event: HostOffloadObservationData::StorePrepared {
+                    at_ms: now_ms,
+                    transfer_id,
+                    blocks: &missing,
+                },
+            });
+        }
         self.transfers.insert(
             transfer_id,
             Transfer::Store {
@@ -414,11 +428,92 @@ impl HostTier {
                 completes_at_ms: None,
             },
         );
-        self.prepared_stores.push_back(transfer_id);
+        if native_d2h {
+            self.prepared_stores.push_back(transfer_id);
+        }
         StoreOutcome::Prepared {
             transfer_id,
             stored_blocks,
         }
+    }
+
+    /// Pure feasibility check: no LRU touch, allocation, eviction or observation.
+    pub(crate) fn can_reserve_external_prefix(&self, keys: &[HostBlockKey]) -> bool {
+        let protected: FxHashSet<_> = keys.iter().copied().collect();
+        let missing = protected
+            .iter()
+            .filter(|key| !self.entries.contains_key(key))
+            .count();
+        let free = self.config.capacity_blocks - self.entries.len();
+        let needed = missing.saturating_sub(free);
+        self.lru
+            .victims(needed, |key| {
+                !protected.contains(&key)
+                    && self.entries.get(&key).is_some_and(|entry| {
+                        entry.state == EntryState::Resident && entry.load_pins == 0
+                    })
+            })
+            .len()
+            == needed
+    }
+
+    /// Secondary reads reserve real G2 entries without fabricating a D2H job.
+    pub(crate) fn reserve_external(
+        &mut self,
+        owner: Uuid,
+        keys: &[HostBlockKey],
+        now: f64,
+    ) -> StoreOutcome {
+        self.reserve_store(owner, keys, now, false)
+    }
+
+    pub(crate) fn complete_external(&mut self, id: TransferId) {
+        let Some(Transfer::Store {
+            blocks,
+            completes_at_ms: None,
+            ..
+        }) = self.transfers.remove(&id)
+        else {
+            panic!("external G2 reservation missing");
+        };
+        for key in blocks {
+            let entry = self.entries.get_mut(&key).unwrap();
+            assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
+            entry.state = EntryState::Resident;
+            if entry.load_pins == 0 {
+                self.lru.touch(key);
+            }
+        }
+    }
+
+    pub(crate) fn cancel_external(&mut self, id: TransferId) {
+        let Some(Transfer::Store {
+            blocks,
+            completes_at_ms: None,
+            ..
+        }) = self.transfers.remove(&id)
+        else {
+            panic!("external G2 reservation missing");
+        };
+        for key in blocks {
+            let entry = self.entries.remove(&key).unwrap();
+            assert_eq!(entry.load_pins, 0);
+        }
+    }
+
+    /// Explicit G2 source/destination ownership for G3, independent of H2D.
+    pub(crate) fn pin_external(&mut self, keys: &[HostBlockKey]) {
+        for key in keys {
+            self.entries
+                .get_mut(key)
+                .expect("G3 pin requires G2 ownership")
+                .load_pins += 1;
+            self.lru.remove(*key);
+        }
+    }
+
+    pub(crate) fn unpin_external(&mut self, keys: &[HostBlockKey]) {
+        self.release_load_pins(keys);
     }
 
     /// Submit stores prepared during the preceding engine step.
@@ -747,7 +842,7 @@ impl HostTier {
                 .load_pins
                 .checked_sub(1)
                 .expect("terminal host load did not hold a pin");
-            if entry.load_pins == 0 {
+            if entry.load_pins == 0 && entry.state == EntryState::Resident {
                 newly_unpinned.push(*key);
             }
         }
@@ -854,6 +949,76 @@ mod tests {
         Uuid::from_u128(1)
     }
 
+    type ExternalReservationEvent = (Uuid, f64, Vec<HostBlockKey>, Option<bool>);
+
+    #[derive(Default)]
+    struct ExternalReservationObserver(Mutex<Vec<ExternalReservationEvent>>);
+
+    impl HostOffloadObserver for ExternalReservationObserver {
+        fn record(&self, observation: HostOffloadObservation<'_>) {
+            let event = match observation.event {
+                HostOffloadObservationData::Evicted { at_ms, block } => {
+                    (observation.request_id, at_ms, vec![block], None)
+                }
+                HostOffloadObservationData::CapacityRetry {
+                    at_ms,
+                    blocks,
+                    structurally_unfittable,
+                } => (
+                    observation.request_id,
+                    at_ms,
+                    blocks.to_vec(),
+                    Some(structurally_unfittable),
+                ),
+                _ => panic!("external reservation fabricated a native transport event"),
+            };
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[test]
+    fn external_reservation_keeps_capacity_events_without_native_transport() {
+        let mut tier = tier(1);
+        let at = make_resident(&mut tier, &[key(1)], 0.0);
+        let observer = Arc::new(ExternalReservationObserver::default());
+        tier.set_observer(observer.clone());
+        let owner = Uuid::from_u128(2);
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(owner, &[key(2)], at)
+        else {
+            panic!("resident block should be evictable");
+        };
+        assert_eq!(
+            tier.reserve_external(owner, &[key(2)], at),
+            StoreOutcome::AlreadyPresent
+        );
+        assert!(matches!(
+            tier.reserve_external(owner, &[key(3)], at),
+            StoreOutcome::RetryCapacity {
+                structurally_unfittable: false
+            }
+        ));
+        assert!(matches!(
+            tier.reserve_external(owner, &[key(3), key(4)], at),
+            StoreOutcome::RetryCapacity {
+                structurally_unfittable: true
+            }
+        ));
+        assert_eq!(tier.submit_prepared_stores(at), 0);
+        assert!(tier.next_deadline().is_none());
+        tier.complete_external(transfer_id);
+        assert!(tier.tick(at + 1.0).is_empty());
+        assert_eq!(tier.lookup(key(2)), Lookup::Hit);
+        assert_eq!(
+            *observer.0.lock().unwrap(),
+            vec![
+                (owner, at, vec![key(1)], None),
+                (owner, at, vec![key(3)], Some(false)),
+                (owner, at, vec![key(3), key(4)], Some(true)),
+            ]
+        );
+    }
+
     fn tier(capacity_blocks: usize) -> HostTier {
         HostTier::new(HostTierConfig {
             capacity_blocks,
@@ -907,6 +1072,68 @@ mod tests {
         assert!(tier.tick(9.0).is_empty());
         assert_eq!(tier.tick(10.0).len(), 1);
         assert_eq!(tier.resident_snapshot(), vec![key(1), key(2)]);
+    }
+
+    #[test]
+    fn load_input_order_preserves_pins_and_terminal_lru() {
+        for cancel in [false, true] {
+            let make = || {
+                let mut tier = HostTier::new(HostTierConfig {
+                    capacity_blocks: 4,
+                    block_bytes: 1_000_000,
+                    d2h_bandwidth_gbps: 0.0,
+                    h2d_bandwidth_gbps: 1.0,
+                })
+                .unwrap();
+                assert!(matches!(
+                    tier.prepare_store(request_id(), &[key(1), key(2), key(3), key(4)], 0.0),
+                    StoreOutcome::Prepared { .. }
+                ));
+                tier.submit_prepared_stores(0.0);
+                tier.tick(0.0);
+                tier
+            };
+            let mut a = make();
+            let mut b = make();
+            let LoadOutcome::Queued(ia) =
+                a.schedule_load(request_id(), &[key(1), key(2)], 1.0, 1.0)
+            else {
+                panic!("load")
+            };
+            let LoadOutcome::Queued(ib) =
+                b.schedule_load(request_id(), &[key(2), key(1)], 1.0, 1.0)
+            else {
+                panic!("load")
+            };
+            assert_eq!(a.next_deadline(), b.next_deadline());
+            for k in [key(1), key(2), key(3), key(4)] {
+                assert_eq!(a.entries[&k].load_pins, b.entries[&k].load_pins);
+                assert_eq!(a.entries[&k].state, b.entries[&k].state);
+            }
+            assert_eq!(a.lru.oldest_first, b.lru.oldest_first);
+            if cancel {
+                assert!(a.cancel_load(ia, 1.0, 1.0));
+                assert!(b.cancel_load(ib, 1.0, 1.0));
+            } else {
+                a.tick(3.0);
+                b.tick(3.0);
+            }
+            assert_eq!(a.lru.oldest_first, b.lru.oldest_first);
+            for k in [key(1), key(2), key(3), key(4)] {
+                assert_eq!(a.entries[&k].load_pins, 0);
+                assert_eq!(b.entries[&k].load_pins, 0);
+            }
+            assert!(matches!(
+                a.prepare_store(request_id(), &[key(5)], 3.0),
+                StoreOutcome::Prepared { .. }
+            ));
+            assert!(matches!(
+                b.prepare_store(request_id(), &[key(5)], 3.0),
+                StoreOutcome::Prepared { .. }
+            ));
+            assert_eq!(a.resident_snapshot(), b.resident_snapshot());
+            assert_eq!(a.lookup(key(3)), Lookup::Miss);
+        }
     }
 
     #[test]

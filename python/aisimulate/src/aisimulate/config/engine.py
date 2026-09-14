@@ -103,12 +103,29 @@ class HostOffloadConfig(StrictModel):
     h2d_bandwidth_gbps: NonNegativeFloat = 32.0
 
 
+class G3OffloadConfig(StrictModel):
+    scope: Literal["worker_local", "cluster_shared"]
+    num_g3_blocks: PositiveInt
+    latency_to_first_byte_ms: NonNegativeFloat = 0.1
+    read_bandwidth_gbps: NonNegativeFloat = 10.0
+    write_bandwidth_gbps: NonNegativeFloat = 10.0
+    shared_read_bandwidth_gbps: NonNegativeFloat = 80.0
+    shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
+    g3_offload: G3OffloadConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_g3(self):
+        if self.g3_offload is not None and self.host_offload is None:
+            raise ValueError("g3_offload requires host_offload")
+        return self
 
 
 class TimingConfig(StrictModel):
