@@ -1,8 +1,9 @@
 # Strict-native FPE coverage matrix
 
-The Forward Pass Engine (FPE) matrix answers one narrow question: can the
-supported public native estimator build a resolved engine identity and return
-positive, finite latency estimates for representative forward-pass shapes?
+The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+answers one narrow question: can the supported public native estimator build a
+resolved engine identity and return positive, finite latency estimates for
+representative forward-pass shapes?
 
 It does **not** certify the AISimulate CLI, Sweeper, scheduler, Replay,
 disaggregated rate matching, deployment validity, or prediction accuracy.

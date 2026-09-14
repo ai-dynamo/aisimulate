@@ -1,7 +1,8 @@
 # Support-matrix model roster
 
-The legacy AIC support-matrix generation roster is curated separately from the
-model configurations bundled with AISimulate.
+The generation roster for the published
+[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+is curated separately from the model configurations bundled with AISimulate.
 
 A bundled model remains available for explicit SDK and CLI use even after it
 is retired from default matrix generation. This keeps historical workflows and
