@@ -181,6 +181,7 @@ class RunnerCapabilities:
     supported_agentic_backends: tuple[str, ...] = ("*",)
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
+    supports_agentic_snapshots: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -256,6 +257,21 @@ class RunnerCapabilities:
                 raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic dynamo input")
             if not self.supports_agentic_lanes:
                 raise ValueError("runner does not support agentic_lanes")
+        agentic_snapshot = spec.workload.get("agentic_snapshot")
+        if agentic_snapshot is not None:
+            if (
+                not isinstance(agentic_snapshot, Mapping)
+                or set(agentic_snapshot) != {"seed"}
+                or type(agentic_snapshot["seed"]) is not int
+                or not 0 <= agentic_snapshot["seed"] <= 0xFFFF_FFFF_FFFF_FFFF
+            ):
+                raise ValueError("agentic_snapshot requires exactly one unsigned 64-bit integer seed")
+            if agentic_lanes is None or spec.workload.get("load_type") != "trace_timestamps":
+                raise ValueError("agentic_snapshot requires trace_timestamps load with positive agentic_lanes")
+            if spec.workload.get("source_type") != "trace" or spec.workload.get("replay_concurrency") is not None:
+                raise ValueError("agentic_snapshot requires agentic trace input without replay_concurrency")
+            if not self.supports_agentic_snapshots:
+                raise ValueError("runner does not support agentic snapshots")
         agentic_topology_required = trace_format in {"weka", "agentic_mooncake"} or (
             trace_format == "dynamo" and agentic_lanes is not None
         )

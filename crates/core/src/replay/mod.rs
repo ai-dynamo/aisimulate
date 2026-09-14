@@ -169,6 +169,8 @@ pub use report::{
     TraceThroughputStats, TraceTrajectoryStats,
 };
 pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
+#[cfg(test)]
+mod snapshot_tests;
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
