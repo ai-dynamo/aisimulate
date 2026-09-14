@@ -74,7 +74,7 @@ def _copy_dataset(source: Path, destination: Path) -> None:
         _copy_file(csv_path, destination / filename)
 
 
-def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
+def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None = None) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
     output_dir = output_dir.resolve()
@@ -102,7 +102,9 @@ def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
         dataset_name = PUBLIC_DATASETS.get(public_name)
         if dataset_name:
             _copy_dataset(
-                repo_root / SYSTEMS_ROOT / dataset_name,
+                fpe_data_dir
+                if public_name == "fpe-support-matrix" and fpe_data_dir is not None
+                else repo_root / SYSTEMS_ROOT / dataset_name,
                 output_dir / "data" / public_name,
             )
 
@@ -113,9 +115,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--fpe-data-dir", type=Path, help="Qualified FPE data prepared for this deployment")
     args = parser.parse_args()
 
-    files = build_site(args.repo_root, args.output_dir)
+    files = build_site(args.repo_root, args.output_dir, fpe_data_dir=args.fpe_data_dir)
     print(f"Built {len(files)} public files in {args.output_dir.resolve()}")
 
 

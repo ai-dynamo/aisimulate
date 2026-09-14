@@ -135,6 +135,24 @@ every classified failure and representative error in the matrix artifacts.
 Refresh-time claims must name both runner concurrency and per-runner thread
 count, plus the source SHA from the measured run.
 
+## Website publication
+
+GitHub Pages rebuilds after a successful main-branch FPE or Nightly run and on
+public-documentation changes. Every deployment selects the retained qualified
+FPE artifact with the newest tested source commit in the current main history.
+Re-running an older commit cannot displace a newer qualified snapshot. The page
+shows the snapshot's source SHA, artifact creation time, and producing CI run.
+
+Pages checks the producing workflow, successful main-branch run, qualification
+manifest, row source identities, and complete shard count. It copies only the
+indexed CSV data; HTML and scripts always come from main. Pull request previews
+use repository data and cannot deploy. If no eligible artifact remains, Pages
+fails and preserves the existing website instead of republishing stale committed
+data. Run **FPE Support Matrix** on main with the current full main SHA, then
+rerun **GitHub Pages** if needed. Web artifacts are retained for 90 days, subject
+to the repository's retention policy. Artifacts generated before the qualification
+manifest was introduced cannot be published by this path.
+
 Staging waits for the complete matrix. Each shard has a 480-minute timeout;
 the eight-shard concurrency limit and runner queues can make the total wait
 longer than that per-shard limit. A successful wheel build alone does not make

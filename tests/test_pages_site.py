@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import csv
 import importlib.util
+import io
+import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
@@ -14,6 +19,197 @@ SPEC = importlib.util.spec_from_file_location("build_pages_site", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 PAGES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PAGES)
+FPE_SPEC = importlib.util.spec_from_file_location("prepare_fpe_pages", ROOT / "scripts" / "prepare_fpe_pages.py")
+assert FPE_SPEC and FPE_SPEC.loader
+FPE = importlib.util.module_from_spec(FPE_SPEC)
+FPE_SPEC.loader.exec_module(FPE)
+
+NEW_SHA = "a" * 40
+OLD_SHA = "b" * 40
+REPOSITORY = "ai-dynamo/aisimulate"
+
+
+def qualified_archive(sha=NEW_SHA, *, report_updates=None, row_updates=None, missing=None, index_files=None):
+    report = {
+        "schema_version": 1,
+        "qualification": FPE.QUALIFICATION,
+        "source_sha": sha,
+        "wheel_sha256": "c" * 64,
+        "shard_count": 1,
+        "required_probe_count": 1,
+        "status_counts": {"PASS": 4},
+    }
+    report.update(report_updates or {})
+    row = {
+        "HuggingFaceID": "example/model",
+        "Architecture": "ExampleForCausalLM",
+        "System": "b200_sxm",
+        "Backend": "vllm",
+        "Version": "0.24.0",
+        "Status": "PASS",
+        "SourceSHA": sha,
+    }
+    row.update(row_updates or {})
+    csv_output = io.StringIO()
+    writer = csv.DictWriter(csv_output, fieldnames=list(row))
+    writer.writeheader()
+    writer.writerow(row)
+    files = {
+        "fpe-qualification.json": json.dumps(report),
+        FPE.DATA_PREFIX + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
+        FPE.DATA_PREFIX + "b200_sxm.csv": csv_output.getvalue(),
+        "python/aisimulate/docs/fpe-support-matrix/index.html": "untrusted artifact HTML",
+        "../../escape.py": "untrusted artifact code",
+    }
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as bundle:
+        for name, value in files.items():
+            if name != missing:
+                bundle.writestr(name, value)
+    return output.getvalue()
+
+
+def artifact(identifier, sha=NEW_SHA, **updates):
+    value = {
+        "id": identifier,
+        "name": FPE.ARTIFACT_NAME,
+        "expired": False,
+        "created_at": "2026-09-14T22:00:00Z",
+        "workflow_run": {"id": identifier, "head_branch": "main", "head_sha": sha},
+    }
+    value.update(updates)
+    return value
+
+
+def run(sha=NEW_SHA, **updates):
+    value = {
+        "path": ".github/workflows/fpe-support-matrix.yml",
+        "head_sha": sha,
+        "head_branch": "main",
+        "head_repository": {"full_name": REPOSITORY},
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    value.update(updates)
+    return value
+
+
+class FpePagesTest(unittest.TestCase):
+    def prepare(self, artifacts, runs, archives):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        output = Path(temporary.name) / "data"
+
+        def api(repository, endpoint):
+            self.assertEqual(repository, REPOSITORY)
+            if endpoint.startswith("actions/artifacts?"):
+                batch = artifacts[int(endpoint.rsplit("=", 1)[1])] if isinstance(artifacts, dict) else artifacts
+                return json.dumps({"artifacts": batch}).encode()
+            if endpoint.startswith("actions/runs/"):
+                return json.dumps(runs[int(endpoint.split("/")[-1])]).encode()
+            return archives[int(endpoint.split("/")[-2])]
+
+        with patch.object(FPE.subprocess, "check_output", return_value=f"{NEW_SHA}\n{OLD_SHA}\n"):
+            snapshot = FPE.prepare(REPOSITORY, ROOT, output, api=api)
+        return snapshot, output
+
+    def test_qualified_data_is_published_without_artifact_code(self):
+        snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive()})
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+        self.assertEqual({p.name for p in output.iterdir()}, {"index.json", "b200_sxm.csv"})
+        self.assertEqual(json.loads((output / "index.json").read_text())["snapshot"], snapshot)
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            self.assertEqual(
+                (site / "data/fpe-support-matrix/b200_sxm.csv").read_bytes(), (output / "b200_sxm.csv").read_bytes()
+            )
+            self.assertEqual(
+                (site / "data/support-matrix/b200_sxm.csv").read_bytes(),
+                (ROOT / PAGES.SYSTEMS_ROOT / "support_matrix/b200_sxm.csv").read_bytes(),
+            )
+            self.assertNotIn("untrusted artifact", (site / "fpe-support-matrix/index.html").read_text())
+
+    def test_later_rerun_of_old_commit_cannot_displace_newer_source(self):
+        snapshot, _ = self.prepare(
+            [artifact(20, OLD_SHA), artifact(10)],
+            {10: run(), 20: run(OLD_SHA)},
+            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+        )
+        self.assertEqual(snapshot["artifact_id"], 10)
+
+    def test_latest_run_of_same_source_wins(self):
+        snapshot, _ = self.prepare([artifact(1), artifact(2)], {2: run()}, {2: qualified_archive()})
+        self.assertEqual(snapshot["artifact_id"], 2)
+
+    def test_newest_source_can_be_on_a_later_artifact_page(self):
+        snapshot, _ = self.prepare(
+            {1: [artifact(i, OLD_SHA) for i in range(100, 200)], 2: [artifact(1)]},
+            {1: run()},
+            {1: qualified_archive()},
+        )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
+    def test_nightly_parent_run_is_eligible(self):
+        snapshot, _ = self.prepare(
+            [artifact(1)], {1: run(path=".github/workflows/nightly-ci.yml", event="schedule")}, {1: qualified_archive()}
+        )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
+    def test_ineligible_producers_cannot_publish(self):
+        for changes in [
+            {"conclusion": "failure"},
+            {"status": "in_progress"},
+            {"event": "pull_request"},
+            {"path": ".github/workflows/other.yml"},
+            {"head_branch": "feature"},
+            {"head_repository": {"full_name": "someone/fork"}},
+            {"head_sha": OLD_SHA},
+        ]:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "no retained qualified"):
+                self.prepare([artifact(1)], {1: run(**changes)}, {})
+
+    def test_source_outside_main_history_cannot_publish(self):
+        with self.assertRaisesRegex(ValueError, "no retained qualified"):
+            self.prepare([artifact(1, "d" * 40)], {}, {})
+
+    def test_expired_newer_snapshot_does_not_fall_back_to_old_data(self):
+        with self.assertRaisesRegex(ValueError, "has expired"):
+            self.prepare([artifact(1, expired=True), artifact(2, OLD_SHA)], {1: run()}, {})
+
+    def test_pre_qualification_artifact_is_not_published(self):
+        with self.assertRaisesRegex(ValueError, "no retained qualified"):
+            self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(missing="fpe-qualification.json")})
+
+    def test_no_artifact_fails_instead_of_using_committed_snapshot(self):
+        with self.assertRaisesRegex(ValueError, "no retained qualified"):
+            self.prepare([], {}, {})
+
+    def test_invalid_qualification_is_rejected(self):
+        for changes in [
+            {"qualification": "incomplete"},
+            {"source_sha": OLD_SHA},
+            {"wheel_sha256": ""},
+            {"shard_count": 2},
+            {"required_probe_count": 0},
+            {"status_counts": {"PASS": 4, "BUILD_FAILED": 1}},
+            {"status_counts": {"PERF_DATA_MISSING": 4}},
+        ]:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(report_updates=changes), NEW_SHA)
+
+    def test_mixed_row_identity_or_unknown_status_is_rejected(self):
+        for changes in [{"SourceSHA": OLD_SHA}, {"System": "h200_sxm"}, {"Status": "HYBRID_PASS"}, {"Backend": ""}]:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(row_updates=changes), NEW_SHA)
+
+    def test_missing_or_unsafe_indexed_csv_is_rejected(self):
+        with self.assertRaises(KeyError):
+            FPE.qualified_files(qualified_archive(missing=FPE.DATA_PREFIX + "b200_sxm.csv"), NEW_SHA)
+        for files in [["../../secret.csv"], ["b200_sxm.csv", "b200_sxm.csv"]]:
+            with self.subTest(files=files), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(index_files=files), NEW_SHA)
 
 
 class PagesSiteTest(unittest.TestCase):
