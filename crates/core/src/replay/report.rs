@@ -19,6 +19,9 @@ use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 const DDSKETCH_RELATIVE_ACCURACY: f64 = 0.001;
 const DDSKETCH_MAX_BINS: usize = 32_768;
 
+/// Match AIC's fail-closed publication gate for modeled power.
+pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
+
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
@@ -33,6 +36,11 @@ pub struct ReplayReport {
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
     pub goodput: Option<TraceGoodputStats>,
+    /// Modeled forward-pass power per GPU. Present only when the selected
+    /// timing provider exposes power evidence. `power_w` remains absent below
+    /// AIC's latency-weighted coverage threshold while `coverage` explains
+    /// why the estimate was withheld.
+    pub power: Option<TracePowerStats>,
     /// Per-request records, one per admitted request. Populated by
     /// `TraceCollector::finish`. Intentionally NOT serialized into the summary
     /// JSON (see custom `Serialize` impl below) — consumers that want per-
@@ -101,6 +109,17 @@ pub struct TraceGoodputStats {
     pub output_throughput_tok_s: f64,
 }
 
+/// Replay-level power summary derived from timing-provider energy evidence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TracePowerStats {
+    /// Active forward-pass average power per GPU, in watts. `None` means the
+    /// underlying measured-energy coverage did not meet the publication gate.
+    pub power_w: Option<f64>,
+    /// Latency-weighted fraction of modeled forward-pass work with positive
+    /// measured energy, in `[0, 1]`.
+    pub coverage: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceDistributionStats {
     pub mean_ms: f64,
@@ -144,6 +163,11 @@ pub struct TraceInterTokenLatencyStats {
 impl ReplayReport {
     pub fn with_wall_time_ms(mut self, wall_time_ms: f64) -> Self {
         self.throughput.wall_time_ms = wall_time_ms;
+        self
+    }
+
+    pub fn with_power(mut self, power: Option<TracePowerStats>) -> Self {
+        self.power = power;
         self
     }
 
@@ -205,6 +229,13 @@ impl Display for ReplayReport {
         )?;
         writeln!(f, "  mean_ttft_ms: {:.6}", self.latency.ttft.mean_ms)?;
         writeln!(f, "  mean_e2e_latency_ms: {:.6}", self.latency.e2e.mean_ms)?;
+        if let Some(power) = self.power {
+            match power.power_w {
+                Some(power_w) => writeln!(f, "  power_w: {power_w:.6}")?,
+                None => writeln!(f, "  power_w: unavailable")?,
+            }
+            writeln!(f, "  power_coverage: {:.6}", power.coverage)?;
+        }
         writeln!(
             f,
             "  prefix_cache_reused_ratio: {:.6}",
@@ -283,6 +314,12 @@ impl Serialize for ReplayReport {
                 "goodput_output_throughput_tok_s",
                 &goodput.output_throughput_tok_s,
             )?;
+        }
+        if let Some(power) = self.power {
+            if let Some(power_w) = power.power_w {
+                map.serialize_entry("power_w", &power_w)?;
+            }
+            map.serialize_entry("power_coverage", &power.coverage)?;
         }
         map.serialize_entry("processed_tokens", &self.processed_tokens())?;
         map.serialize_entry("processed_tokens_per_s", &self.processed_tokens_per_s())?;
@@ -1580,6 +1617,7 @@ impl TraceCollector {
             trajectories,
             agentic_graph,
             goodput,
+            power: None,
             per_request,
             runtime_evidence,
         }
@@ -1946,6 +1984,35 @@ mod tests {
         assert_eq!(summary["num_ttft_samples"], 0);
         assert_eq!(summary["num_tpot_samples"], 0);
         assert_eq!(summary["num_e2e_latency_samples"], 0);
+    }
+
+    #[test]
+    fn power_serialization_preserves_coverage_and_fails_closed() {
+        let available = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: Some(487.5),
+                coverage: 0.95,
+            }));
+        let summary = serde_json::to_value(&available).unwrap();
+        assert_eq!(summary["power_w"], 487.5);
+        assert_eq!(summary["power_coverage"], 0.95);
+
+        let unavailable = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: None,
+                coverage: 0.42,
+            }));
+        let summary = serde_json::to_value(&unavailable).unwrap();
+        assert!(summary.get("power_w").is_none());
+        assert_eq!(summary["power_coverage"], 0.42);
+
+        let absent = TraceCollector::default().finish();
+        assert_eq!(absent.power, None);
+        let summary = serde_json::to_value(&absent).unwrap();
+        assert!(summary.get("power_w").is_none());
+        assert!(summary.get("power_coverage").is_none());
     }
 
     #[test]

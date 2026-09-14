@@ -191,6 +191,12 @@ fn validate_report_finite(report: &ReplayReport) -> Result<()> {
             goodput.output_throughput_tok_s,
         )?;
     }
+    if let Some(power) = report.power {
+        ensure_finite("/summary/power_coverage", power.coverage)?;
+        if let Some(power_w) = power.power_w {
+            ensure_finite("/summary/power_w", power_w)?;
+        }
+    }
     for record in &report.per_request {
         validate_per_request_finite(record)?;
     }
