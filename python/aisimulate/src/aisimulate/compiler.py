@@ -285,6 +285,7 @@ def _worker_performance_model_metadata(
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
             "forward_model": worker.timing.forward_model,
+            **({"systems_path": engine.systems_path} if engine.systems_path is not None else {}),
         },
     }
 
@@ -323,6 +324,8 @@ def _worker_engine_args(
     }
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.systems_path is not None:
+        payload["systems_path"] = engine.systems_path
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:

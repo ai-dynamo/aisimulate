@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from .common import Choices, IntegerRange, NumericRange, StrictModel
+from .common import Choices, IntegerRange, NumericRange, StrictModel, SystemsPath
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
@@ -185,6 +185,7 @@ class EnginePredictionConfig(StrictModel):
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    systems_path: SystemsPath | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
@@ -206,6 +207,7 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        _validate_systems_path_modes(self, {self.mode})
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:
@@ -357,6 +359,7 @@ class EngineRecommendationConfig(StrictModel):
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
+    systems_path: SystemsPath | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
@@ -372,6 +375,7 @@ class EngineRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
+        _validate_systems_path_modes(self, modes)
         if "afd" in modes:
             if modes != {"afd"}:
                 raise ValueError("AFD recommendation mode cannot be mixed with aggregated/disaggregated modes")
@@ -388,6 +392,15 @@ class EngineRecommendationConfig(StrictModel):
         _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_systems_path_modes(engine, modes: set[str]) -> None:
+    if engine.systems_path is None:
+        return
+    if "afd" in modes:
+        raise ValueError("engine.systems_path does not support AFD")
+    if engine.workers.encoder is not None:
+        raise ValueError("engine.systems_path does not support analytical encoder pools")
 
 
 def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:

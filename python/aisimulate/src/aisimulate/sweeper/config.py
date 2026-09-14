@@ -27,6 +27,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..config.common import SystemsPath
+
 
 class OptimizationTarget(str, Enum):
     """What the search optimizes for.
@@ -482,6 +484,7 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    systems_path: SystemsPath | None = None
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
     decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
@@ -558,6 +561,11 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.systems_path is not None:
+            if any(mode in {"afd", "afd+pd"} for mode in self.deployment_mode):
+                raise ValueError("systems_path does not support AFD")
+            if self.encoder is not None:
+                raise ValueError("systems_path does not support analytical encoder pools")
         for field_name, allowed in SEARCH_CHOICES.items():
             values = getattr(self, field_name)
             if not values:
