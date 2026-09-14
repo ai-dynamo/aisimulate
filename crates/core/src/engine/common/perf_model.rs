@@ -6,7 +6,7 @@
 //! Scheduler algorithms keep their historical polynomial fallback while
 //! provider-backed timing enters through the runtime-neutral engine contract.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
 /// Performance model for predicting prefill and decode timing
@@ -63,6 +63,11 @@ impl PerfModel {
                 .predict_prefill_ms(batch_size, prefix + new_tokens_per_req, prefix)
                 .context("external prefill prediction failed")?,
         };
+        // Validate before the floor: f64::max would hide NaN or -infinity.
+        ensure!(
+            time.is_finite(),
+            "prefill timing provider returned non-finite duration {time}ms"
+        );
         Ok(time.max(0.0))
     }
 
@@ -96,6 +101,11 @@ impl PerfModel {
                 )
                 .context("external decode prediction failed")?,
         };
+        // Validate before the floor: f64::max would hide NaN or -infinity.
+        ensure!(
+            time.is_finite(),
+            "decode timing provider returned non-finite duration {time}ms"
+        );
         // Token-emitting decode steps should not collapse onto the same timestamp.
         let result = time.max(1.0);
         tracing::trace!(

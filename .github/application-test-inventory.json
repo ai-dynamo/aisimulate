@@ -1,0 +1,14 @@
+{
+  "manual_suites": {
+    "tests/e2e/cli/test_cli_api_equivalence.py": "Full CLI subprocess/API comparison; run manually for compatibility qualification.",
+    "tests/e2e/cli/test_cli_compat_matrix.py": "Broad model/system/backend sweep; run manually for compatibility qualification.",
+    "tests/e2e/cli/test_cli_estimate_static.py": "Extended static-estimate E2E suite; run manually for compatibility qualification.",
+    "tests/e2e/cli/test_cli_estimate_vs_default.py": "Extended default/estimate comparison; run manually for compatibility qualification.",
+    "tests/e2e/cli/test_cli_experiments.py": "Non-build experiment combinations remain manual; the build-marked subset runs in cli-build."
+  },
+  "optional_collection_skips": {
+    "tests/unit/collector/test_dsv4_megamoe_workload.py": "real torch required for tensor operations",
+    "tests/unit/collector/test_helper_moe_distribution.py": "real torch required for tensor operations",
+    "tests/unit/collector/test_sglang_moe_ep_routing.py": "real torch required for tensor operations"
+  }
+}

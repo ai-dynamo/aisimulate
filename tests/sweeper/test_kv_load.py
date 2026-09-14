@@ -81,6 +81,35 @@ def test_disagg_load_uses_decode_capacity_but_validates_prefill(monkeypatch):
     assert resolution.concurrency == 200
 
 
+def test_disagg_kv_capacity_uses_role_hardware(monkeypatch):
+    config = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    sample = _sample("disagg")
+    sample.update(
+        prefill_hardware_sku="prefill_sku",
+        decode_hardware_sku="decode_sku",
+    )
+    seen = []
+
+    def fake_capacity(*args, hardware_sku, **kwargs):
+        seen.append(hardware_sku)
+        return 100_000
+
+    monkeypatch.setattr("aisimulate.sweeper.kv_load._per_rank_capacity_tokens", fake_capacity)
+
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=1000, osl=1000, kv_load_ratio=1.0, num_request_ratio=10),
+        parallel_config=config,
+        ratio=1.0,
+        backend_version="v",
+    )
+
+    assert seen == ["prefill_sku", "decode_sku"]
+
+
 def test_zero_ratio_maps_to_one_request(monkeypatch):
     config = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     monkeypatch.setattr(
