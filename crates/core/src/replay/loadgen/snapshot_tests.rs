@@ -193,7 +193,10 @@ fn snapshot_driver_scales_timers_and_waits_for_actual_live_completion() {
     );
     assert_eq!(
         first.replay_hashes,
-        Some(play.replay_hashes("at-cut", 128, 48).unwrap())
+        Some(ReplayRequestHashes::from_tokens(
+            &play.materialize_prefix("at-cut", 128).unwrap(),
+            48,
+        ))
     );
     assert_eq!(driver.next_ready_time_ms(), Some(20.0));
     let child = driver.pop_ready(20.0, usize::MAX).pop().unwrap();
@@ -481,17 +484,11 @@ fn original_weka_prefix_keeps_shared_units_and_private_partial_tail() {
             play.materialize_prefix(&original, length).unwrap(),
             full[..length]
         );
-        for block_size in [16, 32, 48, 64, 96, 128, 256] {
-            assert_eq!(
-                play.replay_hashes(&original, length, block_size).unwrap(),
-                ReplayRequestHashes::from_tokens(&full[..length], block_size as u32)
-            );
-        }
     }
 }
 
 #[test]
-fn encounter_allocated_prompt_and_cross_source_engine_blocks_have_literal_goldens() {
+fn encounter_allocated_prompt_preserves_full_width_source_ids_and_lane_offsets() {
     let mut authored = row("golden", "main", 0.0, None);
     authored.input_length = Some(257);
     authored.hash_ids = Some(vec![u64::MAX - 1, 0, 1_u64 << 32, u64::MAX, 7]);
@@ -508,47 +505,6 @@ fn encounter_allocated_prompt_and_cross_source_engine_blocks_have_literal_golden
         next.materialize_prefix("golden", 257).unwrap(),
         expected.iter().map(|token| token + 5).collect::<Vec<_>>()
     );
-    // Independently calculated XXH3 seed-1337 literals over little-endian
-    // u32 tokens and (parent, local) chains; the 48-token blocks cross 64-token source units.
-    let goldens: &[(usize, &[u64], &[u64])] = &[
-        (
-            48,
-            &[
-                5668416277218608172,
-                14058210135089406444,
-                6754173385707188877,
-                9744416516818080641,
-                10861956436164017793,
-            ],
-            &[
-                5668416277218608172,
-                3476548722019456492,
-                15586773222372520177,
-                12324737480133932217,
-                17869052026612087845,
-            ],
-        ),
-        (
-            64,
-            &[
-                15480293642169978529,
-                16951273711404654616,
-                2439962053643786207,
-                15232596819325015918,
-            ],
-            &[
-                15480293642169978529,
-                16972514322484578542,
-                7711429637831522643,
-                15046190559102504818,
-            ],
-        ),
-    ];
-    for &(block_size, local, sequence) in goldens {
-        let hashes = play.replay_hashes("golden", 257, block_size).unwrap();
-        assert_eq!(hashes.local_block_hashes, local);
-        assert_eq!(hashes.sequence_hashes, sequence);
-    }
 }
 
 #[test]
@@ -577,9 +533,6 @@ fn invalid_snapshot_inputs_and_exhausted_identity_ranges_fail_before_execution()
     assert!(play.materialize_prefix("missing", 0).is_err());
     assert!(play.materialize_prefix("b0", 1).is_err());
     assert!(play.materialize_prefix("a0", 65).is_err());
-    assert!(play.replay_hashes("a0", 64, 0).is_err());
-    #[cfg(target_pointer_width = "64")]
-    assert!(play.replay_hashes("a0", 64, u32::MAX as usize + 1).is_err());
     assert!(PreparedAgenticSnapshots::from_plays(Vec::new()).is_err());
     assert!(PreparedAgenticSnapshots::from_plays(vec![play.clone(), play.clone()]).is_err());
     let independent = graph

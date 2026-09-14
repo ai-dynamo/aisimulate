@@ -216,15 +216,11 @@ fn qualify_prefix(case: PrefixCase) {
 
     for backend in [Backend::Vllm, Backend::Sglang] {
         for block_size in ENGINE_BLOCK_SIZES {
-            let primer_hashes = play
-                .replay_hashes(&primer_id, case.input_length, block_size)
-                .unwrap();
-            let profile_hashes = play
-                .replay_hashes(&profile_id, case.input_length, block_size)
-                .unwrap();
-            let next_play_hashes = next_play
-                .replay_hashes(&profile_id, case.input_length, block_size)
-                .unwrap();
+            let primer_hashes = ReplayRequestHashes::from_tokens(&primer_tokens, block_size as u32);
+            let profile_hashes =
+                ReplayRequestHashes::from_tokens(&profile_tokens, block_size as u32);
+            let next_play_hashes =
+                ReplayRequestHashes::from_tokens(&next_play_tokens, block_size as u32);
             assert_eq!(
                 primer_hashes
                     .sequence_hashes
@@ -465,8 +461,10 @@ fn snapshot_consumes_recorded_active_history_and_drains_live_child_join_without_
         let child_id = play.identity("child").unwrap().request_id;
         let join_id = play.identity("join").unwrap().request_id;
         let historical_id = play.identity("root").unwrap().request_id;
-        let child_hashes = play.replay_hashes("child", 192, 64).unwrap();
-        let join_hashes = play.replay_hashes("join", 256, 64).unwrap();
+        let child_hashes =
+            ReplayRequestHashes::from_tokens(&play.materialize_prefix("child", 192).unwrap(), 64);
+        let join_hashes =
+            ReplayRequestHashes::from_tokens(&play.materialize_prefix("join", 256).unwrap(), 64);
         let driver = WorkloadDriver::new_agentic_snapshots(
             PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
             64,
@@ -789,7 +787,7 @@ fn snapshot_original_prompt_has_fixed_token_and_native_hash_vectors() {
             sequence_hashes: sequence,
         };
         assert_eq!(
-            play.replay_hashes(&source_id, 257, block_size).unwrap(),
+            ReplayRequestHashes::from_tokens(&tokens, block_size as u32),
             expected
         );
         for backend in [Backend::Vllm, Backend::Sglang] {

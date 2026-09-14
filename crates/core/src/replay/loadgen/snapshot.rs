@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticNode,
-    ReplayRequestHashes, SYNTHETIC_OUTPUT_SEED, ValidatedAgenticGraph, planned_output_token_ids,
+    SYNTHETIC_OUTPUT_SEED, ValidatedAgenticGraph, planned_output_token_ids,
 };
 use crate::replay::AgenticRuntimeIdentity;
 
@@ -470,20 +470,6 @@ impl AgenticPlaySnapshot {
             .flat_map(|id| std::iter::repeat_n(id, self.context.graph.block_size))
             .take(length)
             .collect())
-    }
-    pub fn replay_hashes(
-        &self,
-        source_request_id: &str,
-        length: usize,
-        engine_block_size: usize,
-    ) -> Result<ReplayRequestHashes> {
-        if engine_block_size == 0 {
-            bail!("engine_block_size must be greater than 0");
-        }
-        let block_size =
-            u32::try_from(engine_block_size).context("engine block size exceeds u32")?;
-        let tokens = self.materialize_prefix(source_request_id, length)?;
-        Ok(ReplayRequestHashes::from_tokens(&tokens, block_size))
     }
 }
 
