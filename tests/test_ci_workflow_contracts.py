@@ -463,6 +463,211 @@ def _run_comparison_base(
     return result, output
 
 
+def test_fast_ci_whitespace_receives_the_verified_pr_base() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    assert jobs["verify-target"]["outputs"]["whitespace-base"] == "${{ steps.pr-target.outputs.base_sha }}"
+    assert jobs["fast-ci"]["with"]["base_sha"] == "${{ needs.verify-target.outputs.whitespace-base }}"
+    fast_ci = _workflow("fast-ci.yml")
+    base_input = fast_ci["on"]["workflow_call"]["inputs"]["base_sha"]
+    assert base_input["required"] == "false"
+    assert base_input["type"] == "string"
+    assert fast_ci["jobs"]["python-static"]["env"]["BASE_SHA"] == (
+        "${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}"
+    )
+
+
+def test_fast_ci_missing_base_fetch_uses_temporary_checkout_authentication() -> None:
+    workflow = _workflow("fast-ci.yml")
+    job = workflow["jobs"]["python-static"]
+    checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    whitespace = next(step for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
+
+    assert workflow["permissions"]["contents"] == "read"
+    assert checkout["with"]["persist-credentials"] == "false"
+    assert whitespace["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "printf 'x-access-token:%s' \"${GH_TOKEN}\"" in whitespace["run"]
+    assert (
+        'git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch' in whitespace["run"]
+    )
+    assert '--no-tags origin "${BASE_SHA}"' in whitespace["run"]
+
+
+def _run_pr_target(
+    tmp_path: Path, head: str, base: str, api_status: int = 0
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+    step = next(step for step in _workflow("ci.yml")["jobs"]["verify-target"]["steps"] if step.get("id") == "pr-target")
+    gh = tmp_path / "gh"
+    gh.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "${GH_CALLED}"\n'
+        'if [[ "${TEST_API_STATUS}" != 0 ]]; then exit "${TEST_API_STATUS}"; fi\n'
+        'printf "%s\\t%s\\n" "${TEST_PR_HEAD}" "${TEST_PR_BASE}"\n'
+    )
+    gh.chmod(0o755)
+    output_path = tmp_path / "pr-output"
+    calls_path = tmp_path / "gh-called"
+    result = _run_workflow_script(
+        step["run"],
+        {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF": "refs/heads/pull-request/121",
+            "RUN_SHA": "a" * 40,
+            "REPOSITORY": "ai-dynamo/aisimulate",
+            "GITHUB_OUTPUT": str(output_path),
+            "GH_CALLED": str(calls_path),
+            "TEST_PR_HEAD": head,
+            "TEST_PR_BASE": base,
+            "TEST_API_STATUS": str(api_status),
+        },
+    )
+    assert calls_path.read_text().splitlines() == [
+        "api -X GET repos/ai-dynamo/aisimulate/pulls/121 --jq [.head.sha, .base.sha] | @tsv"
+    ]
+    output = dict(line.split("=", 1) for line in output_path.read_text().splitlines()) if output_path.exists() else {}
+    return result, output
+
+
+def test_full_ci_trusted_copy_exports_the_stacked_pr_base(tmp_path: Path) -> None:
+    result, output = _run_pr_target(tmp_path, "a" * 40, "d" * 40)
+    assert result.returncode == 0, result.stderr
+    assert output == {"base_sha": "d" * 40}
+
+
+@pytest.mark.parametrize(
+    ("head", "base", "api_status"),
+    [
+        pytest.param("b" * 40, "d" * 40, 0, id="head-changed"),
+        pytest.param("a" * 40, "main", 0, id="mutable-base"),
+        pytest.param("a" * 40, "d" * 39, 0, id="short-base"),
+        pytest.param("a" * 40, "", 0, id="missing-base"),
+        pytest.param("a" * 40, "d" * 40, 1, id="api-failure"),
+    ],
+)
+def test_full_ci_trusted_copy_base_fails_closed(tmp_path: Path, head: str, base: str, api_status: int) -> None:
+    result, output = _run_pr_target(tmp_path, head, base, api_status)
+    assert result.returncode != 0
+    assert output == {}
+
+
+def _git(repository: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI contract test",
+            "-c",
+            "user.email=ci-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repository),
+            *arguments,
+        ],
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _commit_file(repository: Path, name: str, contents: str) -> str:
+    (repository / name).write_text(contents)
+    _git(repository, "add", name)
+    _git(repository, "commit", "--quiet", "-m", name)
+    return _git(repository, "rev-parse", "HEAD").stdout.strip()
+
+
+def _run_whitespace_step(repository: Path, base: str, target: str) -> subprocess.CompletedProcess[str]:
+    job = _workflow("fast-ci.yml")["jobs"]["python-static"]
+    script = next(step["run"] for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+        cwd=repository,
+        env={
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF": "refs/heads/pull-request/121",
+            "BEFORE_SHA": "f" * 40,
+            "BASE_SHA": base,
+            "TARGET_SHA": target,
+            "GH_TOKEN": "ci-contract-dummy-token",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("earlier_whitespace", [False, True], ids=["clean-rebased-copy", "earlier-pr-commit"])
+def test_fast_ci_whitespace_checks_the_whole_pr_above_its_stacked_base(
+    tmp_path: Path, earlier_whitespace: bool
+) -> None:
+    _git(tmp_path, "init", "--quiet")
+    _commit_file(tmp_path, "root.txt", "root\n")
+    base = _commit_file(tmp_path, "parent-pr.txt", "outside this PR \n")
+    _commit_file(tmp_path, "first-pr.txt", "first change \n" if earlier_whitespace else "first change\n")
+    target = _commit_file(tmp_path, "last-pr.txt", "last change\n")
+    assert _git(tmp_path, "cat-file", "-e", f"{'f' * 40}^{{commit}}", check=False).returncode != 0
+    assert _git(tmp_path, "diff", "--check", f"{target}^", target).returncode == 0
+
+    result = _run_whitespace_step(tmp_path, base, target)
+
+    assert (result.returncode != 0) is earlier_whitespace, result.stdout + result.stderr
+    assert "parent-pr.txt" not in result.stdout
+    if earlier_whitespace:
+        assert "first-pr.txt" in result.stdout
+        assert "trailing whitespace" in result.stdout
+
+
+@pytest.mark.parametrize("base", ["", "0" * 40], ids=["manual-run", "new-release-branch"])
+def test_fast_ci_without_a_base_preserves_the_last_commit_range(tmp_path: Path, base: str) -> None:
+    _git(tmp_path, "init", "--quiet")
+    _commit_file(tmp_path, "earlier.txt", "outside the last commit \n")
+    target = _commit_file(tmp_path, "last.txt", "last change\n")
+
+    result = _run_whitespace_step(tmp_path, base, target)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "earlier.txt" not in result.stdout
+
+
+@pytest.mark.parametrize("available", [True, False], ids=["fetch-base-history", "missing-base-fails-closed"])
+def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tmp_path: Path, available: bool) -> None:
+    origin = tmp_path / "origin"
+    checkout = tmp_path / "checkout"
+    origin.mkdir()
+    checkout.mkdir()
+    _git(origin, "init", "--quiet")
+    common = _commit_file(origin, "root.txt", "root\n")
+    target = _commit_file(origin, "pr.txt", "PR change\n")
+    _git(origin, "checkout", "--quiet", "-b", "base", common)
+    _commit_file(origin, "base-first.txt", "first base change\n")
+    base = _commit_file(origin, "base-last.txt", "last base change\n")
+    _git(origin, "tag", "not-needed-for-whitespace", base)
+    _git(checkout, "init", "--quiet")
+    _git(checkout, "remote", "add", "origin", origin.as_uri())
+    _git(checkout, "fetch", "--no-tags", "origin", target)
+    _git(checkout, "checkout", "--quiet", "--detach", target)
+    assert _git(checkout, "cat-file", "-e", f"{base}^{{commit}}", check=False).returncode != 0
+
+    result = _run_whitespace_step(checkout, base if available else "f" * 40, target)
+
+    if available:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert _git(checkout, "merge-base", base, target).stdout.strip() == common
+        assert _git(checkout, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+        assert not _git(checkout, "tag", "--list").stdout.strip()
+        assert _git(checkout, "config", "--local", "--get-regexp", "extraheader", check=False).returncode == 1
+    else:
+        assert result.returncode != 0
+        assert "upload-pack: not our ref" in result.stderr
+        assert "Invalid symmetric difference expression" not in result.stderr
+
+
 def test_collector_comparison_fetch_preserves_full_history() -> None:
     commands = _run_commands(_workflow("collector-check.yml")["jobs"]["check"])
 
@@ -577,7 +782,7 @@ def _run_workflow_script(
     env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", "-c", script],
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         cwd=REPOSITORY_ROOT,
         env={**os.environ, **env},
         capture_output=True,
