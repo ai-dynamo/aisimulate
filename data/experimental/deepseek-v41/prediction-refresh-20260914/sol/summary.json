@@ -1,9 +1,9 @@
 {
   "correction_fitting": false,
-  "native_build_commit": "8dc02dca8d7f33cc3c0448474f417aeb99345828",
-  "native_extension_sha256": "c30d6f8864bb9f047c8fb283993e1d9a6924dfcf9ce1bb8b2fed5761302d1226",
+  "native_build_commit": "dd43dd3b87f6ef19067b2e372a2458605dfc58b3",
+  "native_extension_sha256": "eaa67bc03d410356b767f9fd285452613ae3a4c0e9f83734c751590d667b686b",
   "new_gpu_observations": false,
-  "predictor_source_commit": "8dc02dca8d7f33cc3c0448474f417aeb99345828",
+  "predictor_source_commit": "dd43dd3b87f6ef19067b2e372a2458605dfc58b3",
   "rows": 100081,
   "schema": "dsv41.current-sol.public-summary.v1",
   "summary_rows": [
@@ -1558,242 +1558,242 @@
     {
       "dataset": "gb300-holdout-off",
       "group": "overall",
-      "mape_percent": 96.15126572142134,
+      "mape_percent": 96.12908903053403,
       "metric": "forward_ms",
       "observed_mean": 180.25733532672547,
       "planned": 46,
       "population": "native-forward",
       "predicted": 46,
-      "predicted_mean": 7.151427460103255,
-      "wape_percent": 96.03265661997004
+      "predicted_mean": 7.192565741407603,
+      "wape_percent": 96.00983464646767
     },
     {
       "dataset": "gb300-holdout-off",
       "group": "context",
-      "mape_percent": 95.19175786374186,
+      "mape_percent": 95.16353648307046,
       "metric": "forward_ms",
       "observed_mean": 187.1126375675279,
       "planned": 36,
       "population": "native-forward",
       "predicted": 36,
-      "predicted_mean": 8.967189580855894,
-      "wape_percent": 95.20759810912307
+      "predicted_mean": 9.019574426105894,
+      "wape_percent": 95.17960168625662
     },
     {
       "dataset": "gb300-holdout-off",
       "group": "generation",
-      "mape_percent": 99.6054940090675,
+      "mape_percent": 99.60507820140285,
       "metric": "forward_ms",
       "observed_mean": 155.57824725983664,
       "planned": 10,
       "population": "native-forward",
       "predicted": 10,
-      "predicted_mean": 0.6146838253937509,
-      "wape_percent": 99.60490374700834
+      "predicted_mean": 0.615334476493751,
+      "wape_percent": 99.60448553230836
     },
     {
       "dataset": "gb300-holdout-on",
       "group": "overall",
-      "mape_percent": 96.88916853793287,
+      "mape_percent": 96.87636935207708,
       "metric": "forward_ms",
       "observed_mean": 181.55836388274716,
       "planned": 46,
       "population": "native-forward",
       "predicted": 30,
-      "predicted_mean": 5.829784564052773,
-      "wape_percent": 96.78903001801793
+      "predicted_mean": 5.853507540552772,
+      "wape_percent": 96.77596370920536
     },
     {
       "dataset": "gb300-holdout-on",
       "group": "context",
-      "mape_percent": 95.517723065214,
+      "mape_percent": 95.49871762942892,
       "metric": "forward_ms",
       "observed_mean": 188.99538678233512,
       "planned": 36,
       "population": "native-forward",
       "predicted": 20,
-      "predicted_mean": 8.437334933382283,
-      "wape_percent": 95.53569265523952
+      "predicted_mean": 8.472594072582282,
+      "wape_percent": 95.51703657066501
     },
     {
       "dataset": "gb300-holdout-on",
       "group": "generation",
-      "mape_percent": 99.63205948337065,
+      "mape_percent": 99.6316727973734,
       "metric": "forward_ms",
       "observed_mean": 166.68431808357127,
       "planned": 10,
       "population": "native-forward",
       "predicted": 10,
-      "predicted_mean": 0.6146838253937509,
-      "wape_percent": 99.63122876077308
+      "predicted_mean": 0.615334476493751,
+      "wape_percent": 99.63083841145439
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 99.57157376417976,
+      "mape_percent": 99.57074951643055,
       "metric": "average_tpot_ms",
       "observed_mean": 158.98206324437376,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 0.6831877987052887,
-      "wape_percent": 99.57027366184377
+      "predicted_mean": 0.6845155074171604,
+      "wape_percent": 99.56943853070709
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 99.65152481323436,
+      "mape_percent": 99.65139784604787,
       "metric": "average_tpot_ms",
       "observed_mean": 156.81919501833335,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459940666666669,
-      "wape_percent": 99.65183212003936
+      "predicted_mean": 0.5461930000000002,
+      "wape_percent": 99.65170526482034
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 99.65051955270967,
+      "mape_percent": 99.65039157940913,
       "metric": "average_tpot_ms",
       "observed_mean": 156.33202204166668,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459950666666671,
-      "wape_percent": 99.65074649484086
+      "predicted_mean": 0.5461950000000002,
+      "wape_percent": 99.65061860464235
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 99.65291568030929,
+      "mape_percent": 99.65278790663662,
       "metric": "average_tpot_ms",
       "observed_mean": 157.591647425,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459962666666671,
-      "wape_percent": 99.65353730633059
+      "predicted_mean": 0.5461972666666668,
+      "wape_percent": 99.65340976149982
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.47335177773945,
+      "mape_percent": 99.47193108459072,
       "metric": "average_tpot_ms",
       "observed_mean": 161.77263632379032,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8516190483870969,
-      "wape_percent": 99.47357039624265
+      "predicted_mean": 0.8539163870967742,
+      "wape_percent": 99.47215029284207
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.48342410607736,
+      "mape_percent": 99.48237606110071,
       "metric": "average_tpot_ms",
       "observed_mean": 161.70488252661292,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8351545483870969,
-      "wape_percent": 99.48353164398135
+      "predicted_mean": 0.836848935483871,
+      "wape_percent": 99.48248381718089
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 99.48340383066488,
+      "mape_percent": 99.48284867179157,
       "metric": "average_tpot_ms",
       "observed_mean": 162.36028001612902,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8383092580645163,
-      "wape_percent": 99.48367343417907
+      "predicted_mean": 0.8392101451612901,
+      "wape_percent": 99.48311856503453
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 99.4731931850378,
+      "mape_percent": 99.47177206406731,
       "metric": "average_tpot_ms",
       "observed_mean": 161.72703202459678,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8516190483870969,
-      "wape_percent": 99.47342195196065
+      "predicted_mean": 0.8539163870967742,
+      "wape_percent": 99.4720014481148
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 99.45582590223236,
+      "mape_percent": 99.4519909685371,
       "metric": "average_tpot_ms",
       "observed_mean": 161.9424110794355,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8810453870967739,
-      "wape_percent": 99.45595142049316
+      "predicted_mean": 0.8872543387096767,
+      "wape_percent": 99.4521173713571
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.65305919992406,
+      "mape_percent": 99.65288308894556,
       "metric": "average_tpot_ms",
       "observed_mean": 157.4888663233871,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5460747096774193,
-      "wape_percent": 99.65326138766146
+      "predicted_mean": 0.5463519032258064,
+      "wape_percent": 99.65308537931568
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 99.65093055246741,
+      "mape_percent": 99.6506217369805,
       "metric": "average_tpot_ms",
       "observed_mean": 156.5460212766129,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5462870000000002,
-      "wape_percent": 99.65103744218787
+      "predicted_mean": 0.5467702903225806,
+      "wape_percent": 99.65072872126439
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 99.64946862168645,
+      "mape_percent": 99.64902347427169,
       "metric": "average_tpot_ms",
       "observed_mean": 155.9138934217742,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5465157741935484,
-      "wape_percent": 99.64947589839531
+      "predicted_mean": 0.547209806451613,
+      "wape_percent": 99.6490307602214
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 99.42362001570366,
+      "mape_percent": 99.42215504371663,
       "metric": "average_tpot_ms",
       "observed_mean": 162.7488646153226,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.937857483870968,
-      "wape_percent": 99.42373946135494
+      "predicted_mean": 0.9402412150537633,
+      "wape_percent": 99.42227479296022
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 99.64923380627405,
+      "mape_percent": 99.64879009037006,
       "metric": "average_tpot_ms",
       "observed_mean": 155.8101294,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5465126666666666,
-      "wape_percent": 99.6492444562037
+      "predicted_mean": 0.5472040000000002,
+      "wape_percent": 99.6488007537718
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -1810,182 +1810,182 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 99.65156165445578,
+      "mape_percent": 99.65152361356236,
       "metric": "average_tpot_ms",
       "observed_mean": 156.99100392857142,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5456488571428573,
-      "wape_percent": 99.6524330417104
+      "predicted_mean": 0.5457084285714286,
+      "wape_percent": 99.65239509595104
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 99.57157376417976,
+      "mape_percent": 99.57074951643055,
       "metric": "exact_itl_ms",
       "observed_mean": 158.98206324437376,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 0.6831877987052887,
-      "wape_percent": 99.57027366184377
+      "predicted_mean": 0.6845155074171604,
+      "wape_percent": 99.56943853070709
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 99.65152481323436,
+      "mape_percent": 99.65139784604787,
       "metric": "exact_itl_ms",
       "observed_mean": 156.81919501833335,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459940666666669,
-      "wape_percent": 99.65183212003936
+      "predicted_mean": 0.5461930000000002,
+      "wape_percent": 99.65170526482034
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 99.65051955270967,
+      "mape_percent": 99.65039157940913,
       "metric": "exact_itl_ms",
       "observed_mean": 156.33202204166668,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459950666666671,
-      "wape_percent": 99.65074649484086
+      "predicted_mean": 0.5461950000000002,
+      "wape_percent": 99.65061860464235
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 99.65291568030929,
+      "mape_percent": 99.65278790663662,
       "metric": "exact_itl_ms",
       "observed_mean": 157.591647425,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5459962666666671,
-      "wape_percent": 99.65353730633059
+      "predicted_mean": 0.5461972666666668,
+      "wape_percent": 99.65340976149982
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.47335177773945,
+      "mape_percent": 99.47193108459072,
       "metric": "exact_itl_ms",
       "observed_mean": 161.77263632379032,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8516190483870969,
-      "wape_percent": 99.47357039624265
+      "predicted_mean": 0.8539163870967742,
+      "wape_percent": 99.47215029284207
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.48342410607736,
+      "mape_percent": 99.48237606110071,
       "metric": "exact_itl_ms",
       "observed_mean": 161.70488252661292,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8351545483870969,
-      "wape_percent": 99.48353164398135
+      "predicted_mean": 0.836848935483871,
+      "wape_percent": 99.48248381718089
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 99.48340383066488,
+      "mape_percent": 99.48284867179157,
       "metric": "exact_itl_ms",
       "observed_mean": 162.36028001612902,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8383092580645163,
-      "wape_percent": 99.48367343417907
+      "predicted_mean": 0.8392101451612901,
+      "wape_percent": 99.48311856503453
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 99.4731931850378,
+      "mape_percent": 99.47177206406731,
       "metric": "exact_itl_ms",
       "observed_mean": 161.72703202459678,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8516190483870969,
-      "wape_percent": 99.47342195196065
+      "predicted_mean": 0.8539163870967742,
+      "wape_percent": 99.4720014481148
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 99.45582590223236,
+      "mape_percent": 99.4519909685371,
       "metric": "exact_itl_ms",
       "observed_mean": 161.9424110794355,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.8810453870967739,
-      "wape_percent": 99.45595142049316
+      "predicted_mean": 0.8872543387096767,
+      "wape_percent": 99.4521173713571
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.65305919992406,
+      "mape_percent": 99.65288308894556,
       "metric": "exact_itl_ms",
       "observed_mean": 157.4888663233871,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5460747096774193,
-      "wape_percent": 99.65326138766144
+      "predicted_mean": 0.5463519032258064,
+      "wape_percent": 99.65308537931567
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 99.65093055246741,
+      "mape_percent": 99.6506217369805,
       "metric": "exact_itl_ms",
       "observed_mean": 156.5460212766129,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5462870000000002,
-      "wape_percent": 99.65103744218787
+      "predicted_mean": 0.5467702903225806,
+      "wape_percent": 99.65072872126439
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 99.64946862168645,
+      "mape_percent": 99.64902347427169,
       "metric": "exact_itl_ms",
       "observed_mean": 155.9138934217742,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5465157741935484,
-      "wape_percent": 99.64947589839531
+      "predicted_mean": 0.547209806451613,
+      "wape_percent": 99.6490307602214
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 99.42362001570366,
+      "mape_percent": 99.42215504371663,
       "metric": "exact_itl_ms",
       "observed_mean": 162.7488646153226,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.937857483870968,
-      "wape_percent": 99.42373946135494
+      "predicted_mean": 0.9402412150537633,
+      "wape_percent": 99.42227479296022
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 99.64923380627405,
+      "mape_percent": 99.64879009037006,
       "metric": "exact_itl_ms",
       "observed_mean": 155.8101294,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5465126666666666,
-      "wape_percent": 99.6492444562037
+      "predicted_mean": 0.5472040000000002,
+      "wape_percent": 99.6488007537718
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -2002,182 +2002,182 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 99.65156165445578,
+      "mape_percent": 99.65152361356236,
       "metric": "exact_itl_ms",
       "observed_mean": 156.99100392857142,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 0.5456488571428573,
-      "wape_percent": 99.6524330417104
+      "predicted_mean": 0.5457084285714286,
+      "wape_percent": 99.65239509595104
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 99.30840880174661,
+      "mape_percent": 99.30466847285211,
       "metric": "last_token_latency_ms",
       "observed_mean": 4318.2652475357145,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 30.30802712946429,
-      "wape_percent": 99.29814345826117
+      "predicted_mean": 30.48432434375,
+      "wape_percent": 99.29406086480802
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 99.34849454602974,
+      "mape_percent": 99.34802130893678,
       "metric": "last_token_latency_ms",
       "observed_mean": 2698.60255835,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.569444000000004,
-      "wape_percent": 99.3489428835811
+      "predicted_mean": 17.582206000000003,
+      "wape_percent": 99.3484699721492
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 99.34647237753066,
+      "mape_percent": 99.34599179209107,
       "metric": "last_token_latency_ms",
       "observed_mean": 2690.3748022,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.573436000000004,
-      "wape_percent": 99.34680342732804
+      "predicted_mean": 17.586359,
+      "wape_percent": 99.34632308533298
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 99.35015806195398,
+      "mape_percent": 99.3496742692948,
       "metric": "last_token_latency_ms",
       "observed_mean": 2708.645523375,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.577430000000007,
-      "wape_percent": 99.35106200319272
+      "predicted_mean": 17.590516000000004,
+      "wape_percent": 99.35057888349738
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.22316165114596,
+      "mape_percent": 99.21955534347602,
       "metric": "last_token_latency_ms",
       "observed_mean": 5410.183833425,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 42.002342375000005,
-      "wape_percent": 99.2236429728043
+      "predicted_mean": 42.197329374999995,
+      "wape_percent": 99.22003889933835
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.24280379315888,
+      "mape_percent": 99.2398918956551,
       "metric": "last_token_latency_ms",
       "observed_mean": 5414.553605925,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 40.982612950000004,
-      "wape_percent": 99.24310264644618
+      "predicted_mean": 41.140216949999996,
+      "wape_percent": 99.2401918986455
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 99.25600991329583,
+      "mape_percent": 99.25490201158655,
       "metric": "last_token_latency_ms",
       "observed_mean": 5432.5339671125,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 40.389853550000005,
-      "wape_percent": 99.25651907941096
+      "predicted_mean": 40.449999549999994,
+      "wape_percent": 99.25541193492988
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 99.2223503841162,
+      "mape_percent": 99.21874026396912,
       "metric": "last_token_latency_ms",
       "observed_mean": 5404.498011275,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 42.001796750000004,
-      "wape_percent": 99.22283629927563
+      "predicted_mean": 42.196783749999994,
+      "wape_percent": 99.21922843413083
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 99.15998935827812,
+      "mape_percent": 99.14818601045936,
       "metric": "last_token_latency_ms",
       "observed_mean": 5431.3084384875,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 45.60617338749999,
-      "wape_percent": 99.16030963985907
+      "predicted_mean": 46.247005387499975,
+      "wape_percent": 99.1485107886751
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.49168981063322,
+      "mape_percent": 99.49111447139454,
       "metric": "last_token_latency_ms",
       "observed_mean": 5229.52401335,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 26.568506,
-      "wape_percent": 99.49195173533623
+      "predicted_mean": 26.598578,
+      "wape_percent": 99.49137669256133
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 99.47385746916217,
+      "mape_percent": 99.47198356245283,
       "metric": "last_token_latency_ms",
       "observed_mean": 5204.1641312,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 27.373970000000007,
-      "wape_percent": 99.47399871891265
+      "predicted_mean": 27.471465,
+      "wape_percent": 99.47212531527778
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 99.43728992620282,
+      "mape_percent": 99.43111034335688,
       "metric": "last_token_latency_ms",
       "observed_mean": 5185.208202075,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 29.177121,
-      "wape_percent": 99.43730087851971
+      "predicted_mean": 29.497539000000007,
+      "wape_percent": 99.43112141595017
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 99.11992964239037,
+      "mape_percent": 99.11226139722206,
       "metric": "last_token_latency_ms",
       "observed_mean": 5508.885665475,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 48.46957280000001,
-      "wape_percent": 99.1201564936487
+      "predicted_mean": 48.8918988,
+      "wape_percent": 99.1124902245401
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 99.23997478264157,
+      "mape_percent": 99.22847097376739,
       "metric": "last_token_latency_ms",
       "observed_mean": 2688.5082976,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 20.432821999999998,
-      "wape_percent": 99.23999408823695
+      "predicted_mean": 20.742095000000003,
+      "wape_percent": 99.22849057157397
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -2194,182 +2194,182 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 99.40554150791293,
+      "mape_percent": 99.40545497626718,
       "metric": "last_token_latency_ms",
       "observed_mean": 1448.72241565,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 8.587299000000002,
-      "wape_percent": 99.40725021527695
+      "predicted_mean": 8.588549,
+      "wape_percent": 99.40716393235715
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 14535.954698326357,
+      "mape_percent": 14468.94204456855,
       "metric": "output_tokens_per_second",
       "observed_mean": 8.873472163103154,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 1229.134971306981,
-      "wape_percent": 13751.792722333155
+      "predicted_mean": 1222.898232777841,
+      "wape_percent": 13681.507512502068
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 15016.794373025912,
+      "mape_percent": 15005.99660537767,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.932314583909938,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 896.1589094495882,
-      "wape_percent": 15006.395602826198
+      "predicted_mean": 895.5187924844603,
+      "wape_percent": 14995.605261955468
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 14961.444005185995,
+      "mape_percent": 14950.556874766302,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.949363730889907,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 895.6089325938564,
-      "wape_percent": 14953.860767391525
+      "predicted_mean": 894.961541735821,
+      "wape_percent": 14942.979085125671
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 15062.622729110248,
+      "mape_percent": 15051.525121706945,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.914472996075211,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 895.5491750372067,
-      "wape_percent": 15041.656334072113
+      "predicted_mean": 894.8937121186998,
+      "wape_percent": 15030.573978654445
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 12585.669206816605,
+      "mape_percent": 12527.945009648412,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.834641707577067,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1500.377887798492,
-      "wape_percent": 12577.84800648323
+      "predicted_mean": 1493.5506281620378,
+      "wape_percent": 12520.159233091103
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 12905.613418767785,
+      "mape_percent": 12856.574658531583,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.822310618771601,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1536.9556087518467,
-      "wape_percent": 12900.467153277557
+      "predicted_mean": 1531.160392957672,
+      "wape_percent": 12851.447837332898
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 13145.629404027628,
+      "mape_percent": 13126.236886081973,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.786778439855125,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1560.1631181691112,
-      "wape_percent": 13136.552516281012
+      "predicted_mean": 1557.8789349591939,
+      "wape_percent": 13117.173317617246
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 12570.781678822006,
+      "mape_percent": 12513.13210501011,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.847185466953945,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1500.201426020112,
-      "wape_percent": 12562.935261752358
+      "predicted_mean": 1493.3757678796126,
+      "wape_percent": 12505.321086980312
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 11618.691657091125,
+      "mape_percent": 11458.902194762792,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.785644080682724,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1380.5918279369253,
-      "wape_percent": 11614.182258395076
+      "predicted_mean": 1361.766930248891,
+      "wape_percent": 11454.454902306927
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 19358.800920768925,
+      "mape_percent": 19337.052991880297,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.121848191383893,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1190.6227193158086,
-      "wape_percent": 19348.746229799253
+      "predicted_mean": 1189.2920338487165,
+      "wape_percent": 19327.009567512116
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 18687.87181169318,
+      "mape_percent": 18621.979990551863,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.150156985343514,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1155.1770535918338,
-      "wape_percent": 18682.887271735417
+      "predicted_mean": 1151.1256654273996,
+      "wape_percent": 18617.0127229379
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 17449.561430552727,
+      "mape_percent": 17261.297105284288,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.171076413215031,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1082.9760218155118,
-      "wape_percent": 17449.223981352367
+      "predicted_mean": 1071.3583071382914,
+      "wape_percent": 17260.963232346865
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 11037.441961402488,
+      "mape_percent": 10943.181667445913,
       "metric": "output_tokens_per_second",
       "observed_mean": 17.425446616840897,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 1940.2553377067331,
-      "wape_percent": 11034.608945010139
+      "predicted_mean": 1923.834190176489,
+      "wape_percent": 10940.37235015366
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 12824.66490134583,
+      "mape_percent": 12635.342675768858,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.9505933733381955,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 769.0742343141026,
-      "wape_percent": 12824.328483945177
+      "predicted_mean": 757.8087384946542,
+      "wape_percent": 12635.011299714044
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -2386,182 +2386,182 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 16277.778277958541,
+      "mape_percent": 16275.464737142682,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.536777078607107,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 904.1773457966069,
-      "wape_percent": 16230.391001114169
+      "predicted_mean": 904.049623257834,
+      "wape_percent": 16228.084198131863
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 99.30850063821019,
+      "mape_percent": 99.30476080945677,
       "metric": "request_latency_ms",
       "observed_mean": 4318.797853785714,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 30.30802712946429,
-      "wape_percent": 99.29823001317607
+      "predicted_mean": 30.48432434375,
+      "wape_percent": 99.29414792319979
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 99.34857831954757,
+      "mape_percent": 99.34810514330557,
       "metric": "request_latency_ms",
       "observed_mean": 2698.9491242,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.569444000000004,
-      "wape_percent": 99.34902648432812
+      "predicted_mean": 17.582206000000003,
+      "wape_percent": 99.3485536336217
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 99.34655773271552,
+      "mape_percent": 99.34607721004369,
       "metric": "request_latency_ms",
       "observed_mean": 2690.7262201,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.573436000000004,
-      "wape_percent": 99.34688873699878
+      "predicted_mean": 17.586359,
+      "wape_percent": 99.34640845773798
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 99.35024228077873,
+      "mape_percent": 99.34975855081856,
       "metric": "request_latency_ms",
       "observed_mean": 2708.997087675,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 17.577430000000007,
-      "wape_percent": 99.35114622012806
+      "predicted_mean": 17.590516000000004,
+      "wape_percent": 99.35066316313033
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.22326069588715,
+      "mape_percent": 99.21965484801109,
       "metric": "request_latency_ms",
       "observed_mean": 5410.8734511,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 42.002342375000005,
-      "wape_percent": 99.22374191977339
+      "predicted_mean": 42.197329374999995,
+      "wape_percent": 99.22013830564784
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.24290746930751,
+      "mape_percent": 99.23999597050485,
       "metric": "request_latency_ms",
       "observed_mean": 5415.295548875,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 40.982612950000004,
-      "wape_percent": 99.24320634801708
+      "predicted_mean": 41.140216949999996,
+      "wape_percent": 99.24029599901438
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 99.25610287557413,
+      "mape_percent": 99.25499511229819,
       "metric": "request_latency_ms",
       "observed_mean": 5433.213799475,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 40.389853550000005,
-      "wape_percent": 99.25661210766448
+      "predicted_mean": 40.449999549999994,
+      "wape_percent": 99.25550510171514
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 99.2224500845987,
+      "mape_percent": 99.21884042729735,
       "metric": "request_latency_ms",
       "observed_mean": 5405.1905014125,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 42.001796750000004,
-      "wape_percent": 99.22293586620076
+      "predicted_mean": 42.196783749999994,
+      "wape_percent": 99.21932846328039
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 99.16010854654135,
+      "mape_percent": 99.14830687349074,
       "metric": "request_latency_ms",
       "observed_mean": 5432.0789049875,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 45.60617338749999,
-      "wape_percent": 99.16042873851436
+      "predicted_mean": 46.247005387499975,
+      "wape_percent": 99.1486315608369
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.4917238737379,
+      "mape_percent": 99.49114857305412,
       "metric": "request_latency_ms",
       "observed_mean": 5229.874976925,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 26.568506,
-      "wape_percent": 99.49198582915989
+      "predicted_mean": 26.598578,
+      "wape_percent": 99.49141082497465
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 99.47389308496224,
+      "mape_percent": 99.47201930510197,
       "metric": "request_latency_ms",
       "observed_mean": 5204.51660595,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 27.373970000000007,
-      "wape_percent": 99.47403434223449
+      "predicted_mean": 27.471465,
+      "wape_percent": 99.47216106547546
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 99.43733048997306,
+      "mape_percent": 99.43115135259129,
       "metric": "request_latency_ms",
       "observed_mean": 5185.582011475,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 29.177121,
-      "wape_percent": 99.43734144141517
+      "predicted_mean": 29.497539000000007,
+      "wape_percent": 99.43116242430018
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 99.12009932964692,
+      "mape_percent": 99.11243256299937,
       "metric": "request_latency_ms",
       "observed_mean": 5509.9467989,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 48.46957280000001,
-      "wape_percent": 99.12032593836157
+      "predicted_mean": 48.8918988,
+      "wape_percent": 99.11266114566187
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 99.24007865505125,
+      "mape_percent": 99.22857641839906,
       "metric": "request_latency_ms",
       "observed_mean": 2688.875837425,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 20.432821999999998,
-      "wape_percent": 99.2400979727064
+      "predicted_mean": 20.742095000000003,
+      "wape_percent": 99.22859602844794
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -2578,182 +2578,182 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 99.40567549662067,
+      "mape_percent": 99.40558898447883,
       "metric": "request_latency_ms",
       "observed_mean": 1449.0490845,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 8.587299000000002,
-      "wape_percent": 99.40738384283489
+      "predicted_mean": 8.588549,
+      "wape_percent": 99.40729757936643
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "overall",
-      "mape_percent": 96.67701112196902,
+      "mape_percent": 96.64172914250082,
       "metric": "ttft_ms",
       "observed_mean": 375.00928670625,
       "planned": 600,
       "population": "http-cohort",
       "predicted": 560,
-      "predicted_mean": 12.561172629464286,
-      "wape_percent": 96.65043691589868
+      "predicted_mean": 12.69788865327381,
+      "wape_percent": 96.61398021238332
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-127",
-      "mape_percent": 97.2913003685088,
+      "mape_percent": 97.2884765962595,
       "metric": "ttft_ms",
       "observed_mean": 346.314633075,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 9.379533,
-      "wape_percent": 97.29161516603641
+      "predicted_mean": 9.389311,
+      "wape_percent": 97.28879172195805
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-128",
-      "mape_percent": 97.28315637376835,
+      "mape_percent": 97.2802830400002,
       "metric": "ttft_ms",
       "observed_mean": 345.394471575,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 9.38351,
-      "wape_percent": 97.28324835159893
+      "predicted_mean": 9.393434000000001,
+      "wape_percent": 97.28037511510654
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "boundary-129",
-      "mape_percent": 97.27712461524699,
+      "mape_percent": 97.27420348407301,
       "metric": "ttft_ms",
       "observed_mean": 344.770812,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 9.387486,
-      "wape_percent": 97.2771807608818
+      "predicted_mean": 9.397557,
+      "wape_percent": 97.27425968994147
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 95.98964369001354,
+      "mape_percent": 95.9578302413048,
       "metric": "ttft_ms",
       "observed_mean": 395.2321073875,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 15.602151875,
-      "wape_percent": 96.05240779193502
+      "predicted_mean": 15.725921374999999,
+      "wape_percent": 96.02109214280465
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 96.18081097436779,
+      "mape_percent": 96.15422132341875,
       "metric": "ttft_ms",
       "observed_mean": 401.7022476,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 15.092821950000001,
-      "wape_percent": 96.24278379317686
+      "predicted_mean": 15.19789995,
+      "wape_percent": 96.21662561242786
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 96.34197648826509,
+      "mape_percent": 96.33379335073529,
       "metric": "ttft_ms",
       "observed_mean": 399.36528661250003,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 14.40226655,
-      "wape_percent": 96.39371096267203
+      "predicted_mean": 14.43448505,
+      "wape_percent": 96.3856435364134
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 95.95145211559003,
+      "mape_percent": 95.91933453067912,
       "metric": "ttft_ms",
       "observed_mean": 390.96001851249997,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 15.601606250000001,
-      "wape_percent": 96.00941131797568
+      "predicted_mean": 15.72537575,
+      "wape_percent": 95.97775347724024
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 95.48188215692853,
+      "mape_percent": 95.37115071210238,
       "metric": "ttft_ms",
       "observed_mean": 411.093695025,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 18.2937663875,
-      "wape_percent": 95.54997641440656
+      "predicted_mean": 18.7421208875,
+      "wape_percent": 95.44091259138375
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 97.22453112102822,
+      "mape_percent": 97.21834718730373,
       "metric": "ttft_ms",
       "observed_mean": 347.369157325,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 9.64019,
-      "wape_percent": 97.2247996701156
+      "predicted_mean": 9.661669,
+      "wape_percent": 97.21861633473678
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 97.02778914428015,
+      "mape_percent": 97.00429605879852,
       "metric": "ttft_ms",
       "observed_mean": 351.237471625,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 10.439073,
-      "wape_percent": 97.0279159134976
+      "predicted_mean": 10.521586,
+      "wape_percent": 97.00442383003102
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 96.52267263239723,
+      "mape_percent": 96.43772188710422,
       "metric": "ttft_ms",
       "observed_mean": 351.877506,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 12.235132,
-      "wape_percent": 96.52290021630424
+      "predicted_mean": 12.534035000000001,
+      "wape_percent": 96.43795503086237
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "heterogeneous",
-      "mape_percent": 95.7720695101471,
+      "mape_percent": 95.69611932185556,
       "metric": "ttft_ms",
       "observed_mean": 463.67086240000003,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 19.3959908,
-      "wape_percent": 95.81686226742723
+      "predicted_mean": 19.744421133333333,
+      "wape_percent": 95.74171621845407
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 96.51760799313767,
+      "mape_percent": 96.43253351923521,
       "metric": "ttft_ms",
       "observed_mean": 351.3563566,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 12.235132,
-      "wape_percent": 96.51774280721808
+      "predicted_mean": 12.534035000000001,
+      "wape_percent": 96.43267162680955
     },
     {
       "dataset": "gb300-retained-e2e-core-off",
@@ -2770,158 +2770,158 @@
     {
       "dataset": "gb300-retained-e2e-core-off",
       "group": "short",
-      "mape_percent": 98.61613852388672,
+      "mape_percent": 98.6158967421412,
       "metric": "ttft_ms",
       "observed_mean": 349.78538815,
       "planned": 40,
       "population": "http-cohort",
       "predicted": 40,
-      "predicted_mean": 4.7677570000000005,
-      "wape_percent": 98.63694792249142
+      "predicted_mean": 4.76859,
+      "wape_percent": 98.63670977646582
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 99.58917664628548,
+      "mape_percent": 99.58855613584952,
       "metric": "average_tpot_ms",
       "observed_mean": 160.36712407535828,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 0.6606473076751744,
-      "wape_percent": 99.58804068384694
+      "predicted_mean": 0.6616560389140966,
+      "wape_percent": 99.58741167011065
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 99.65527035801067,
+      "mape_percent": 99.65514475551612,
       "metric": "average_tpot_ms",
       "observed_mean": 158.56745925266668,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.545994066666667,
-      "wape_percent": 99.65567079825837
+      "predicted_mean": 0.5461930000000002,
+      "wape_percent": 99.65554534166455
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 99.65420537716639,
+      "mape_percent": 99.65407875354684,
       "metric": "average_tpot_ms",
       "observed_mean": 157.96375524,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5459950666666671,
-      "wape_percent": 99.65435421192846
+      "predicted_mean": 0.5461950000000002,
+      "wape_percent": 99.65422764280946
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 99.65478227318937,
+      "mape_percent": 99.65465518667371,
       "metric": "average_tpot_ms",
       "observed_mean": 158.256609044,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5459962666666671,
-      "wape_percent": 99.65499307108567
+      "predicted_mean": 0.5461972666666668,
+      "wape_percent": 99.65486606217198
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.48515876725268,
+      "mape_percent": 99.48399492080591,
       "metric": "average_tpot_ms",
       "observed_mean": 164.10950955451614,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8439692741935485,
-      "wape_percent": 99.48572798950863
+      "predicted_mean": 0.8458771451612903,
+      "wape_percent": 99.48456542984165
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.4900756828148,
+      "mape_percent": 99.48904134633983,
       "metric": "average_tpot_ms",
       "observed_mean": 163.83013055048386,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8351520645161292,
-      "wape_percent": 99.49023292497543
+      "predicted_mean": 0.8368460967741934,
+      "wape_percent": 99.4891989074523
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 99.48809908778166,
+      "mape_percent": 99.48756471980374,
       "metric": "average_tpot_ms",
       "observed_mean": 163.53880883451612,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8364653870967744,
-      "wape_percent": 99.48852178081889
+      "predicted_mean": 0.8373385645161289,
+      "wape_percent": 99.48798785408579
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 99.4844173926426,
+      "mape_percent": 99.48325309436876,
       "metric": "average_tpot_ms",
       "observed_mean": 163.77904743919356,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8438811020967742,
-      "wape_percent": 99.48474416276595
+      "predicted_mean": 0.8457868346774193,
+      "wape_percent": 99.48358056301956
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 99.47526512929042,
+      "mape_percent": 99.4728686806825,
       "metric": "average_tpot_ms",
       "observed_mean": 164.0119315382258,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8599227641935484,
-      "wape_percent": 99.47569499601126
+      "predicted_mean": 0.8638501695161283,
+      "wape_percent": 99.47330041088213
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.65482348259187,
+      "mape_percent": 99.65464826718272,
       "metric": "average_tpot_ms",
       "observed_mean": 158.2913872635484,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5460747096774193,
-      "wape_percent": 99.65501931651643
+      "predicted_mean": 0.5463519032258064,
+      "wape_percent": 99.65484420051475
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 99.6546333307933,
+      "mape_percent": 99.65432779108805,
       "metric": "average_tpot_ms",
       "observed_mean": 158.22735251451613,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5462870000000002,
-      "wape_percent": 99.65474553462563
+      "predicted_mean": 0.5467702903225807,
+      "wape_percent": 99.6544400941851
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 99.65442147601546,
+      "mape_percent": 99.65398261833803,
       "metric": "average_tpot_ms",
       "observed_mean": 158.26227504741937,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5465157741935484,
-      "wape_percent": 99.65467716546486
+      "predicted_mean": 0.547209806451613,
+      "wape_percent": 99.65423863249303
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -2938,14 +2938,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 99.65489392298218,
+      "mape_percent": 99.65445736707208,
       "metric": "average_tpot_ms",
       "observed_mean": 158.553604982,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5465126666666665,
-      "wape_percent": 99.65531362927463
+      "predicted_mean": 0.5472040000000001,
+      "wape_percent": 99.65487760428903
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -2962,158 +2962,158 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 99.65325012117982,
+      "mape_percent": 99.65321226462544,
       "metric": "average_tpot_ms",
       "observed_mean": 157.38074171857141,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5456488571428574,
-      "wape_percent": 99.65329375679359
+      "predicted_mean": 0.5457084285714286,
+      "wape_percent": 99.65325590500312
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 99.58917664628548,
+      "mape_percent": 99.58855613584952,
       "metric": "exact_itl_ms",
       "observed_mean": 160.36712407535828,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 0.6606473076751744,
-      "wape_percent": 99.58804068384694
+      "predicted_mean": 0.6616560389140966,
+      "wape_percent": 99.58741167011065
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 99.65527035801067,
+      "mape_percent": 99.65514475551612,
       "metric": "exact_itl_ms",
       "observed_mean": 158.56745925266665,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.545994066666667,
-      "wape_percent": 99.65567079825837
+      "predicted_mean": 0.5461930000000002,
+      "wape_percent": 99.65554534166455
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 99.65420537716639,
+      "mape_percent": 99.65407875354684,
       "metric": "exact_itl_ms",
       "observed_mean": 157.96375524,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5459950666666671,
-      "wape_percent": 99.65435421192848
+      "predicted_mean": 0.5461950000000002,
+      "wape_percent": 99.65422764280947
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 99.65478227318937,
+      "mape_percent": 99.65465518667371,
       "metric": "exact_itl_ms",
       "observed_mean": 158.256609044,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5459962666666671,
-      "wape_percent": 99.65499307108567
+      "predicted_mean": 0.5461972666666668,
+      "wape_percent": 99.65486606217198
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.48515876725268,
+      "mape_percent": 99.48399492080591,
       "metric": "exact_itl_ms",
       "observed_mean": 164.10950955451614,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8439692741935485,
-      "wape_percent": 99.48572798950863
+      "predicted_mean": 0.8458771451612903,
+      "wape_percent": 99.48456542984165
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.4900756828148,
+      "mape_percent": 99.48904134633983,
       "metric": "exact_itl_ms",
       "observed_mean": 163.83013055048386,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8351520645161292,
-      "wape_percent": 99.49023292497543
+      "predicted_mean": 0.8368460967741934,
+      "wape_percent": 99.4891989074523
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 99.48809908778166,
+      "mape_percent": 99.48756471980374,
       "metric": "exact_itl_ms",
       "observed_mean": 163.53880883451612,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8364653870967744,
-      "wape_percent": 99.48852178081889
+      "predicted_mean": 0.8373385645161289,
+      "wape_percent": 99.48798785408579
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 99.4844173926426,
+      "mape_percent": 99.48325309436876,
       "metric": "exact_itl_ms",
       "observed_mean": 163.77904743919356,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8438811020967742,
-      "wape_percent": 99.48474416276595
+      "predicted_mean": 0.8457868346774193,
+      "wape_percent": 99.48358056301956
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 99.47526512929042,
+      "mape_percent": 99.4728686806825,
       "metric": "exact_itl_ms",
       "observed_mean": 164.0119315382258,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.8599227641935484,
-      "wape_percent": 99.47569499601126
+      "predicted_mean": 0.8638501695161283,
+      "wape_percent": 99.47330041088213
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.65482348259187,
+      "mape_percent": 99.65464826718272,
       "metric": "exact_itl_ms",
       "observed_mean": 158.2913872635484,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5460747096774193,
-      "wape_percent": 99.65501931651643
+      "predicted_mean": 0.5463519032258064,
+      "wape_percent": 99.65484420051475
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 99.6546333307933,
+      "mape_percent": 99.65432779108805,
       "metric": "exact_itl_ms",
       "observed_mean": 158.22735251451613,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5462870000000002,
-      "wape_percent": 99.65474553462563
+      "predicted_mean": 0.5467702903225807,
+      "wape_percent": 99.6544400941851
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 99.65442147601546,
+      "mape_percent": 99.65398261833803,
       "metric": "exact_itl_ms",
       "observed_mean": 158.26227504741937,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5465157741935484,
-      "wape_percent": 99.65467716546485
+      "predicted_mean": 0.547209806451613,
+      "wape_percent": 99.65423863249302
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3130,14 +3130,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 99.65489392298218,
+      "mape_percent": 99.65445736707208,
       "metric": "exact_itl_ms",
       "observed_mean": 158.553604982,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5465126666666665,
-      "wape_percent": 99.65531362927463
+      "predicted_mean": 0.5472040000000001,
+      "wape_percent": 99.65487760428903
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3154,158 +3154,158 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 99.65325012117982,
+      "mape_percent": 99.65321226462544,
       "metric": "exact_itl_ms",
       "observed_mean": 157.38074171857144,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 0.5456488571428574,
-      "wape_percent": 99.65329375679359
+      "predicted_mean": 0.5457084285714286,
+      "wape_percent": 99.65325590500312
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 99.34324057269909,
+      "mape_percent": 99.34105658788967,
       "metric": "last_token_latency_ms",
       "observed_mean": 4270.958664034615,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 28.26563484692308,
-      "wape_percent": 99.33818992244187
+      "predicted_mean": 28.36804558153846,
+      "wape_percent": 99.33579208292453
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 99.35470361719888,
+      "mape_percent": 99.35423489021825,
       "metric": "last_token_latency_ms",
       "observed_mean": 2725.21197961,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.569444000000004,
-      "wape_percent": 99.3552999131277
+      "predicted_mean": 17.582206,
+      "wape_percent": 99.35483161928134
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 99.35366502577111,
+      "mape_percent": 99.35318972959841,
       "metric": "last_token_latency_ms",
       "observed_mean": 2720.42486507,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.573436000000004,
-      "wape_percent": 99.35401869665134
+      "predicted_mean": 17.586359,
+      "wape_percent": 99.35354366055806
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 99.35370097136962,
+      "mape_percent": 99.35321995189682,
       "metric": "last_token_latency_ms",
       "observed_mean": 2720.7949876,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.57566600000001,
-      "wape_percent": 99.3540246111853
+      "predicted_mean": 17.588747,
+      "wape_percent": 99.35354383258715
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.25130339266008,
+      "mape_percent": 99.24862825010234,
       "metric": "last_token_latency_ms",
       "observed_mean": 5490.10531801,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 41.0551973,
-      "wape_percent": 99.25219654411146
+      "predicted_mean": 41.2018903,
+      "wape_percent": 99.24952459172614
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.26178029348533,
+      "mape_percent": 99.25934863357992,
       "metric": "last_token_latency_ms",
       "observed_mean": 5490.612266195,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 40.509074445,
-      "wape_percent": 99.26221207251496
+      "predicted_mean": 40.642509444999995,
+      "wape_percent": 99.25978183352647
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 99.26354522620969,
+      "mape_percent": 99.26250538513877,
       "metric": "last_token_latency_ms",
       "observed_mean": 5458.80709574,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 40.164167070000005,
-      "wape_percent": 99.26423179340145
+      "predicted_mean": 40.22087706999999,
+      "wape_percent": 99.26319292173949
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 99.24980701861523,
+      "mape_percent": 99.24712857775891,
       "metric": "last_token_latency_ms",
       "observed_mean": 5476.064709615,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 41.048173,
-      "wape_percent": 99.25040745176136
+      "predicted_mean": 41.19473342,
+      "wape_percent": 99.24773106958234
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 99.21611270790208,
+      "mape_percent": 99.20957916090146,
       "metric": "last_token_latency_ms",
       "observed_mean": 5491.65907714,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 43.002329195,
-      "wape_percent": 99.21695195220686
+      "predicted_mean": 43.36075732499998,
+      "wape_percent": 99.21042517905934
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.49701807585473,
+      "mape_percent": 99.49647897215759,
       "metric": "last_token_latency_ms",
       "observed_mean": 5262.98260078,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 26.454186,
-      "wape_percent": 99.49735372493765
+      "predicted_mean": 26.48254,
+      "wape_percent": 99.49681498099433
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 99.48800567012269,
+      "mape_percent": 99.48660960316117,
       "metric": "last_token_latency_ms",
       "observed_mean": 5255.46256383,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 26.899684000000008,
-      "wape_percent": 99.48815763268615
+      "predicted_mean": 26.973032,
+      "wape_percent": 99.48676198008452
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 99.46934066548334,
+      "mape_percent": 99.46592462113534,
       "metric": "last_token_latency_ms",
       "observed_mean": 5257.24169152,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 27.879448,
-      "wape_percent": 99.46969438279832
+      "predicted_mean": 28.058918000000006,
+      "wape_percent": 99.46628061545546
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3322,14 +3322,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 99.29856831649944,
+      "mape_percent": 99.29239807512191,
       "metric": "last_token_latency_ms",
       "observed_mean": 2730.70180534,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 19.135149,
-      "wape_percent": 99.29925893180352
+      "predicted_mean": 19.303474,
+      "wape_percent": 99.29309476551958
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3346,158 +3346,158 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 99.40457646391602,
+      "mape_percent": 99.40448979179477,
       "metric": "last_token_latency_ms",
       "observed_mean": 1442.393672,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 8.587299000000002,
-      "wape_percent": 99.40464942638766
+      "predicted_mean": 8.588549,
+      "wape_percent": 99.40456276488712
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 15224.537967516684,
+      "mape_percent": 15178.28454227438,
       "metric": "output_tokens_per_second",
       "observed_mean": 8.133763612917745,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 1197.943484744756,
-      "wape_percent": 14628.034176481675
+      "predicted_mean": 1194.0577387182354,
+      "wape_percent": 14580.261137929763
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 15167.96069672455,
+      "mape_percent": 15157.053440633897,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.8757786232568545,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 896.2883316199052,
-      "wape_percent": 15153.949971367476
+      "predicted_mean": 895.6480294428577,
+      "wape_percent": 15143.052655146043
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 15130.692560312296,
+      "mape_percent": 15119.682236219867,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.883906972996552,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 895.6755376311643,
-      "wape_percent": 15122.4625872189
+      "predicted_mean": 895.0280459487744,
+      "wape_percent": 15111.458135833767
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 15130.221548430922,
+      "mape_percent": 15119.078979117206,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.882832427109039,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 895.5295539045263,
-      "wape_percent": 15122.761569372296
+      "predicted_mean": 894.8743691125816,
+      "wape_percent": 15111.624335734203
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 13067.595209265048,
+      "mape_percent": 13021.438243978095,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.669110420570354,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1534.7099420008617,
-      "wape_percent": 13051.901787607298
+      "predicted_mean": 1529.3302516761366,
+      "wape_percent": 13005.799812985122
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 13243.40871921169,
+      "mape_percent": 13200.287153471707,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.660847049528469,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1555.0560447181283,
-      "wape_percent": 13235.703985423683
+      "predicted_mean": 1550.0305743566562,
+      "wape_percent": 13192.607027371436
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 13288.66094665707,
+      "mape_percent": 13270.067669595099,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.733032482999034,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1569.439506839736,
-      "wape_percent": 13276.247863575143
+      "predicted_mean": 1567.2599631940236,
+      "wape_percent": 13257.67173119956
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 13031.636507491261,
+      "mape_percent": 12985.654588917214,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.694463099644345,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1534.4512081177684,
-      "wape_percent": 13021.177048003465
+      "predicted_mean": 1529.0783038893376,
+      "wape_percent": 12975.233047131856
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 12456.250426358876,
+      "mape_percent": 12354.209591899682,
       "metric": "output_tokens_per_second",
       "observed_mean": 11.664248554526495,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1463.033556481228,
-      "wape_percent": 12442.887350539828
+      "predicted_mean": 1451.1442840228847,
+      "wape_percent": 12340.95817436731
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 19574.415622323762,
+      "mape_percent": 19553.585123676887,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.083889999215247,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1196.1798534586012,
-      "wape_percent": 19561.431314716323
+      "predicted_mean": 1194.9133758103146,
+      "wape_percent": 19540.61440894633
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 19206.170314083352,
+      "mape_percent": 19154.293598071305,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.090306275392151,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1175.4604422745454,
-      "wape_percent": 19200.514442499996
+      "predicted_mean": 1172.3019047877365,
+      "wape_percent": 19148.652724156353
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 18513.175720812378,
+      "mape_percent": 18395.6601473308,
       "metric": "output_tokens_per_second",
       "observed_mean": 6.090495963248174,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 1132.8830241528447,
-      "wape_percent": 18500.83367576287
+      "predicted_mean": 1125.7304634490831,
+      "wape_percent": 18383.395609192885
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3514,14 +3514,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 13902.66127978655,
+      "mape_percent": 13782.847645384201,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.864293525823041,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 820.3620963591318,
-      "wape_percent": 13889.103593582411
+      "predicted_mean": 813.3425617041154,
+      "wape_percent": 13769.404014696971
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3538,158 +3538,158 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 16206.14402625914,
+      "mape_percent": 16203.840631270958,
       "metric": "output_tokens_per_second",
       "observed_mean": 5.545721573620927,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 904.1962041233877,
-      "wape_percent": 16204.392352193363
+      "predicted_mean": 904.0684759425598,
+      "wape_percent": 16202.0891680336
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 99.34332274597566,
+      "mape_percent": 99.34113902567267,
       "metric": "request_latency_ms",
       "observed_mean": 4271.445082505769,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 28.26563484692308,
-      "wape_percent": 99.33826528725164
+      "predicted_mean": 28.36804558153846,
+      "wape_percent": 99.33586772079259
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 99.35478647826432,
+      "mape_percent": 99.35431781147189,
       "metric": "request_latency_ms",
       "observed_mean": 2725.56182084,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.569444000000004,
-      "wape_percent": 99.3553826640195
+      "predicted_mean": 17.582206,
+      "wape_percent": 99.35491443028133
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 99.35374710862557,
+      "mape_percent": 99.35327187281425,
       "metric": "request_latency_ms",
       "observed_mean": 2720.77046914,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.573436000000004,
-      "wape_percent": 99.35410075199931
+      "predicted_mean": 17.586359,
+      "wape_percent": 99.35362577624717
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 99.35378313829476,
+      "mape_percent": 99.35330217997614,
       "metric": "request_latency_ms",
       "observed_mean": 2721.14101792,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 17.57566600000001,
-      "wape_percent": 99.35410675579632
+      "predicted_mean": 17.588747,
+      "wape_percent": 99.35362603833578
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.25139784964283,
+      "mape_percent": 99.248723044586,
       "metric": "request_latency_ms",
       "observed_mean": 5490.797195665,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 41.0551973,
-      "wape_percent": 99.25229077241437
+      "predicted_mean": 41.2018903,
+      "wape_percent": 99.24961915671318
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.26187622727447,
+      "mape_percent": 99.25944488336994,
       "metric": "request_latency_ms",
       "observed_mean": 5491.325487485,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 40.509074445,
-      "wape_percent": 99.26230789747719
+      "predicted_mean": 40.642509444999995,
+      "wape_percent": 99.25987797413164
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 99.2636353361434,
+      "mape_percent": 99.26259562230365,
       "metric": "request_latency_ms",
       "observed_mean": 5459.4749773250005,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 40.164167070000005,
-      "wape_percent": 99.26432180316212
+      "predicted_mean": 40.22087706999999,
+      "wape_percent": 99.26328305858988
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 99.24990232308468,
+      "mape_percent": 99.24722422249735,
       "metric": "request_latency_ms",
       "observed_mean": 5476.7602108,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 41.048173,
-      "wape_percent": 99.25050264353268
+      "predicted_mean": 41.19473342,
+      "wape_percent": 99.24782660123107
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 99.21622559729748,
+      "mape_percent": 99.20969299121829,
       "metric": "request_latency_ms",
       "observed_mean": 5492.44859108,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 43.002329195,
-      "wape_percent": 99.21706451172183
+      "predicted_mean": 43.36075732499998,
+      "wape_percent": 99.2105386767676
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.49704888236631,
+      "mape_percent": 99.49650981168807,
       "metric": "request_latency_ms",
       "observed_mean": 5263.30528033,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 26.454186,
-      "wape_percent": 99.49738454087274
+      "predicted_mean": 26.48254,
+      "wape_percent": 99.49684582995842
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 99.4880396429023,
+      "mape_percent": 99.48664366857514,
       "metric": "request_latency_ms",
       "observed_mean": 5255.81138276,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 26.899684000000008,
-      "wape_percent": 99.48819160276118
+      "predicted_mean": 26.973032,
+      "wape_percent": 99.48679604278654
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 99.46937604530754,
+      "mape_percent": 99.46596022871215,
       "metric": "request_latency_ms",
       "observed_mean": 5257.59261662,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 27.879448,
-      "wape_percent": 99.46972977876094
+      "predicted_mean": 28.058918000000006,
+      "wape_percent": 99.46631623927459
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3706,14 +3706,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 99.29866168502275,
+      "mape_percent": 99.29249226497441,
       "metric": "request_latency_ms",
       "observed_mean": 2731.06559463,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 19.135149,
-      "wape_percent": 99.29935227342672
+      "predicted_mean": 19.303474,
+      "wape_percent": 99.29318892823535
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3730,158 +3730,158 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 99.40471538345709,
+      "mape_percent": 99.4046287315575,
       "metric": "request_latency_ms",
       "observed_mean": 1442.73142798,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 8.587299000000002,
-      "wape_percent": 99.40478880313691
+      "predicted_mean": 8.588549,
+      "wape_percent": 99.40470216192455
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "overall",
-      "mape_percent": 96.90484790234518,
+      "mape_percent": 96.88544615002701,
       "metric": "ttft_ms",
       "observed_mean": 369.624022125,
       "planned": 1500,
       "population": "http-cohort",
       "predicted": 1300,
-      "predicted_mean": 11.481533050384616,
-      "wape_percent": 96.89372649959917
+      "predicted_mean": 11.554372263846155,
+      "wape_percent": 96.87402020100883
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-127",
-      "mape_percent": 97.29415326629623,
+      "mape_percent": 97.29133246814327,
       "metric": "ttft_ms",
       "observed_mean": 346.70009082,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 9.379533,
-      "wape_percent": 97.29462632160958
+      "predicted_mean": 9.389311,
+      "wape_percent": 97.29180601660853
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-128",
-      "mape_percent": 97.30938533670196,
+      "mape_percent": 97.30653974268454,
       "metric": "ttft_ms",
       "observed_mean": 350.96853647,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 9.38351,
-      "wape_percent": 97.32639566658075
+      "predicted_mean": 9.393434000000001,
+      "wape_percent": 97.32356806268787
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "boundary-129",
-      "mape_percent": 97.29426887367724,
+      "mape_percent": 97.29136703090825,
       "metric": "ttft_ms",
       "observed_mean": 346.94585194,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 9.385722000000001,
-      "wape_percent": 97.29475883700056
+      "predicted_mean": 9.395788,
+      "wape_percent": 97.29185751970746
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 96.24314288392239,
+      "mape_percent": 96.22105685387189,
       "metric": "ttft_ms",
       "observed_mean": 402.71052182,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 14.892149799999999,
-      "wape_percent": 96.30202118069904
+      "predicted_mean": 14.979698800000001,
+      "wape_percent": 96.28028124710994
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 96.38110743669147,
+      "mape_percent": 96.3610765561474,
       "metric": "ttft_ms",
       "observed_mean": 411.87821913,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 14.619360445,
-      "wape_percent": 96.45056238325006
+      "predicted_mean": 14.700280445,
+      "wape_percent": 96.43091579932266
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 96.29452768934229,
+      "mape_percent": 96.28681108660918,
       "metric": "ttft_ms",
       "observed_mean": 389.10402187,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 14.233740070000001,
-      "wape_percent": 96.34191905763556
+      "predicted_mean": 14.26338157,
+      "wape_percent": 96.3343011718431
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 96.21102671390392,
+      "mape_percent": 96.18876388197118,
       "metric": "ttft_ms",
       "observed_mean": 398.914239,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 14.887858835,
-      "wape_percent": 96.267904882934
+      "predicted_mean": 14.975341545000001,
+      "wape_percent": 96.24597467803096
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 95.91129695050928,
+      "mape_percent": 95.8520954725819,
       "metric": "ttft_ms",
       "observed_mean": 407.289199455,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 16.344723505,
-      "wape_percent": 95.98694894760992
+      "predicted_mean": 16.58140207,
+      "wape_percent": 95.92883825738866
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 97.28775543815743,
+      "mape_percent": 97.28212900563351,
       "metric": "ttft_ms",
       "observed_mean": 355.94959561,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 9.525870000000001,
-      "wape_percent": 97.32381491158172
+      "predicted_mean": 9.545631,
+      "wape_percent": 97.31826328285568
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 97.15588619193322,
+      "mape_percent": 97.13922757730136,
       "metric": "ttft_ms",
       "observed_mean": 350.41463588,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 9.964787,
-      "wape_percent": 97.1562868728427
+      "predicted_mean": 10.023153,
+      "wape_percent": 97.13963060508911
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 96.88451614712227,
+      "mape_percent": 96.83952340685406,
       "metric": "ttft_ms",
       "observed_mean": 351.11116505,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 10.937459,
-      "wape_percent": 96.88490139627363
+      "predicted_mean": 11.095414,
+      "wape_percent": 96.83991421964039
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3898,14 +3898,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 96.89547914307256,
+      "mape_percent": 96.85064472660015,
       "metric": "ttft_ms",
       "observed_mean": 352.39773061,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 10.937459,
-      "wape_percent": 96.89627428046506
+      "predicted_mean": 11.095414,
+      "wape_percent": 96.85145134709187
     },
     {
       "dataset": "gb300-retained-e2e-core-on",
@@ -3922,14 +3922,14 @@
     {
       "dataset": "gb300-retained-e2e-core-on",
       "group": "short",
-      "mape_percent": 98.60047665915704,
+      "mape_percent": 98.60023214104444,
       "metric": "ttft_ms",
       "observed_mean": 340.72847997,
       "planned": 100,
       "population": "http-cohort",
       "predicted": 100,
-      "predicted_mean": 4.7677570000000005,
-      "wape_percent": 98.6007166174017
+      "predicted_mean": 4.76859,
+      "wape_percent": 98.60047214121349
     },
     {
       "dataset": "gb300-retained-e2e-field-off",
@@ -5374,626 +5374,626 @@
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "overall",
-      "mape_percent": 99.35414722552346,
+      "mape_percent": 99.35046072101744,
       "metric": "forward_ms",
       "observed_mean": 157.00117988034413,
       "planned": 15756,
       "population": "native-forward",
       "predicted": 15756,
-      "predicted_mean": 1.0817961156901712,
-      "wape_percent": 99.3109630663192
+      "predicted_mean": 1.0885261156988029,
+      "wape_percent": 99.30667647432435
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "boundary-127",
-      "mape_percent": 99.36345616964834,
+      "mape_percent": 99.36302007229125,
       "metric": "forward_ms",
       "observed_mean": 155.6001770019531,
       "planned": 680,
       "population": "native-forward",
       "predicted": 680,
-      "predicted_mean": 1.065614447150736,
-      "wape_percent": 99.31515858935215
+      "predicted_mean": 1.0663773603272064,
+      "wape_percent": 99.31466828581189
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "boundary-128",
-      "mape_percent": 99.36258314835383,
+      "mape_percent": 99.36214133917072,
       "metric": "forward_ms",
       "observed_mean": 154.94221913954792,
       "planned": 680,
       "population": "native-forward",
       "predicted": 680,
-      "predicted_mean": 1.0658494367352955,
-      "wape_percent": 99.31209876645994
+      "predicted_mean": 1.066621941676472,
+      "wape_percent": 99.31160019031623
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "boundary-129",
-      "mape_percent": 99.36214342273728,
+      "mape_percent": 99.36169541278242,
       "metric": "forward_ms",
       "observed_mean": 156.03140541525448,
       "planned": 680,
       "population": "native-forward",
       "predicted": 680,
-      "predicted_mean": 1.0660843866801482,
-      "wape_percent": 99.31675012229563
+      "predicted_mean": 1.0668665203860304,
+      "wape_percent": 99.31624885544886
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.3398337261311,
+      "mape_percent": 99.3366008566859,
       "metric": "forward_ms",
       "observed_mean": 158.89285319498453,
       "planned": 1334,
       "population": "native-forward",
       "predicted": 1334,
-      "predicted_mean": 1.110590854091132,
-      "wape_percent": 99.30104417425981
+      "predicted_mean": 1.1164675787687932,
+      "wape_percent": 99.29734562863017
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.32913718458892,
+      "mape_percent": 99.32589727561944,
       "metric": "forward_ms",
       "observed_mean": 158.63178088260213,
       "planned": 1337,
       "population": "native-forward",
       "predicted": 1337,
-      "predicted_mean": 1.127788927331089,
-      "wape_percent": 99.28905234433084
+      "predicted_mean": 1.1336524656407374,
+      "wape_percent": 99.2853560242889
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-burst-192",
-      "mape_percent": 99.35531188462083,
+      "mape_percent": 99.35428251292375,
       "metric": "forward_ms",
       "observed_mean": 159.21477368739264,
       "planned": 1337,
       "population": "native-forward",
       "predicted": 1337,
-      "predicted_mean": 1.077773414955752,
-      "wape_percent": 99.3230694677418
+      "predicted_mean": 1.0795904778727303,
+      "wape_percent": 99.3219282024717
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-burst-384",
-      "mape_percent": 99.34211253938372,
+      "mape_percent": 99.33887248233208,
       "metric": "forward_ms",
       "observed_mean": 158.84442452318402,
       "planned": 1333,
       "population": "native-forward",
       "predicted": 1333,
-      "predicted_mean": 1.104840960637313,
-      "wape_percent": 99.30445090285427
+      "predicted_mean": 1.110722093960644,
+      "wape_percent": 99.30074845415896
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-burst-768",
-      "mape_percent": 99.2610121296599,
+      "mape_percent": 99.25060517034404,
       "metric": "forward_ms",
       "observed_mean": 158.72722404821596,
       "planned": 1340,
       "population": "native-forward",
       "predicted": 1340,
-      "predicted_mean": 1.2552030112004806,
-      "wape_percent": 99.2092074823792
+      "predicted_mean": 1.2743741873198833,
+      "wape_percent": 99.19712941811873
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.49636365260278,
+      "mape_percent": 99.49583514649153,
       "metric": "forward_ms",
       "observed_mean": 155.2052980596369,
       "planned": 1320,
       "population": "native-forward",
       "predicted": 1320,
-      "predicted_mean": 0.8216545023333341,
-      "wape_percent": 99.470601511285
+      "predicted_mean": 0.8225747345757584,
+      "wape_percent": 99.47000859837935
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-single-384",
-      "mape_percent": 99.48431215434992,
+      "mape_percent": 99.48266648099877,
       "metric": "forward_ms",
       "observed_mean": 154.43882507555412,
       "planned": 1320,
       "population": "native-forward",
       "predicted": 1320,
-      "predicted_mean": 0.8460689590024253,
-      "wape_percent": 99.45216563348724
+      "predicted_mean": 0.849038485790304,
+      "wape_percent": 99.45024284834145
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heldout-single-768",
-      "mape_percent": 99.45463872184474,
+      "mape_percent": 99.44934828752,
       "metric": "forward_ms",
       "observed_mean": 153.8383086349025,
       "planned": 1320,
       "population": "native-forward",
       "predicted": 1320,
-      "predicted_mean": 0.9007164936099418,
-      "wape_percent": 99.41450442246632
+      "predicted_mean": 0.9104473178523661,
+      "wape_percent": 99.40817906415425
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "heterogeneous",
-      "mape_percent": 99.15465737779907,
+      "mape_percent": 99.14825558850644,
       "metric": "forward_ms",
       "observed_mean": 159.19083256457566,
       "planned": 1355,
       "population": "native-forward",
       "predicted": 1355,
-      "predicted_mean": 1.4318323977805378,
-      "wape_percent": 99.10055599640154
+      "predicted_mean": 1.4434933409657777,
+      "wape_percent": 99.09323086153204
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "prefix-cold-control",
-      "mape_percent": 99.27832123825738,
+      "mape_percent": 99.26849307703297,
       "metric": "forward_ms",
       "observed_mean": 154.7411855361041,
       "planned": 680,
       "population": "native-forward",
       "predicted": 680,
-      "predicted_mean": 1.2340787365075332,
-      "wape_percent": 99.20248850864621
+      "predicted_mean": 1.2523121449781216,
+      "wape_percent": 99.19070534412707
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "prefix-reuse-B",
-      "mape_percent": 99.34174822635545,
+      "mape_percent": 99.33637180258495,
       "metric": "forward_ms",
       "observed_mean": 155.37680758307962,
       "planned": 680,
       "population": "native-forward",
       "predicted": 680,
-      "predicted_mean": 1.1035161285000006,
-      "wape_percent": 99.28978066568271
+      "predicted_mean": 1.1132123525000006,
+      "wape_percent": 99.28354020795236
     },
     {
       "dataset": "gb300-retained-native-core-off",
       "group": "short",
-      "mape_percent": 99.38865943289623,
+      "mape_percent": 99.38857301159378,
       "metric": "forward_ms",
       "observed_mean": 157.50492782592772,
       "planned": 360,
       "population": "native-forward",
       "predicted": 360,
-      "predicted_mean": 1.0147737238055563,
-      "wape_percent": 99.35571938109322
+      "predicted_mean": 1.014919850472223,
+      "wape_percent": 99.35562660516
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "overall",
-      "mape_percent": 99.42583533494295,
+      "mape_percent": 99.4241055909438,
       "metric": "forward_ms",
       "observed_mean": 158.38833385821346,
       "planned": 39393,
       "population": "native-forward",
       "predicted": 38997,
-      "predicted_mean": 0.9496869762090322,
-      "wape_percent": 99.40040598125165
+      "predicted_mean": 0.9527328067565102,
+      "wape_percent": 99.39848296680147
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "boundary-127",
-      "mape_percent": 99.36282736378723,
+      "mape_percent": 99.36238774769527,
       "metric": "forward_ms",
       "observed_mean": 156.95512786865234,
       "planned": 1700,
       "population": "native-forward",
       "predicted": 1700,
-      "predicted_mean": 1.065614447150736,
-      "wape_percent": 99.32107063870988
+      "predicted_mean": 1.0663773603272064,
+      "wape_percent": 99.32058456782654
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "boundary-128",
-      "mape_percent": 99.36503339076769,
+      "mape_percent": 99.36459123297662,
       "metric": "forward_ms",
       "observed_mean": 156.65930972828585,
       "planned": 1700,
       "population": "native-forward",
       "predicted": 1700,
-      "predicted_mean": 1.0658494367352955,
-      "wape_percent": 99.31963862308348
+      "predicted_mean": 1.066621941676472,
+      "wape_percent": 99.31914551166703
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "boundary-129",
-      "mape_percent": 99.36299370782201,
+      "mape_percent": 99.36254402717206,
       "metric": "forward_ms",
       "observed_mean": 156.67815654081457,
       "planned": 1700,
       "population": "native-forward",
       "predicted": 1700,
-      "predicted_mean": 1.0659805955428934,
-      "wape_percent": 99.3196367514924
+      "predicted_mean": 1.066762453189952,
+      "wape_percent": 99.31913773001787
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.44205753504751,
+      "mape_percent": 99.44064695788703,
       "metric": "forward_ms",
       "observed_mean": 160.41295780827735,
       "planned": 3342,
       "population": "native-forward",
       "predicted": 3284,
-      "predicted_mean": 0.9206565080361518,
-      "wape_percent": 99.42607098540225
+      "predicted_mean": 0.9230922429155671,
+      "wape_percent": 99.42455257011169
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.42412682495339,
+      "mape_percent": 99.42260495571006,
       "metric": "forward_ms",
       "observed_mean": 160.18824608812054,
       "planned": 3348,
       "population": "native-forward",
       "predicted": 3296,
-      "predicted_mean": 0.9535841668397095,
-      "wape_percent": 99.40471027673583
+      "predicted_mean": 0.9562235313833988,
+      "wape_percent": 99.40306261243576
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-burst-192",
-      "mape_percent": 99.47587493855092,
+      "mape_percent": 99.47531816437787,
       "metric": "forward_ms",
       "observed_mean": 159.96968389959898,
       "planned": 3332,
       "population": "native-forward",
       "predicted": 3264,
-      "predicted_mean": 0.8562165238782689,
-      "wape_percent": 99.46476325825857
+      "predicted_mean": 0.8571486451723864,
+      "wape_percent": 99.46418057204491
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-burst-384",
-      "mape_percent": 99.44759869291566,
+      "mape_percent": 99.4462243390769,
       "metric": "forward_ms",
       "observed_mean": 160.11624767954757,
       "planned": 3340,
       "population": "native-forward",
       "predicted": 3280,
-      "predicted_mean": 0.9096270808596756,
-      "wape_percent": 99.43189582941002
+      "predicted_mean": 0.9119946080791878,
+      "wape_percent": 99.43041719919367
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-burst-768",
-      "mape_percent": 99.42789604060508,
+      "mape_percent": 99.42482693496675,
       "metric": "forward_ms",
       "observed_mean": 160.43628513275777,
       "planned": 3342,
       "population": "native-forward",
       "predicted": 3284,
-      "predicted_mean": 0.9459812482054905,
-      "wape_percent": 99.41036951371524
+      "predicted_mean": 0.9513743261884376,
+      "wape_percent": 99.40700800607468
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.49917656048808,
+      "mape_percent": 99.49867295835648,
       "metric": "forward_ms",
       "observed_mean": 156.22993862267697,
       "planned": 3300,
       "population": "native-forward",
       "predicted": 3300,
-      "predicted_mean": 0.8181902650808094,
-      "wape_percent": 99.4762909898743
+      "predicted_mean": 0.8190584488383852,
+      "wape_percent": 99.47573528092042
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-single-384",
-      "mape_percent": 99.49321162813348,
+      "mape_percent": 99.49194471533637,
       "metric": "forward_ms",
       "observed_mean": 155.95650062792228,
       "planned": 3300,
       "population": "native-forward",
       "predicted": 3300,
-      "predicted_mean": 0.8316966587195972,
-      "wape_percent": 99.46671241315947
+      "predicted_mean": 0.8339344482953547,
+      "wape_percent": 99.46527753255701
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heldout-single-768",
-      "mape_percent": 99.47707348631019,
+      "mape_percent": 99.47403226696599,
       "metric": "forward_ms",
       "observed_mean": 156.01243880763198,
       "planned": 3300,
       "population": "native-forward",
       "predicted": 3300,
-      "predicted_mean": 0.8613930898639358,
-      "wape_percent": 99.44786896708534
+      "predicted_mean": 0.8668527325306025,
+      "wape_percent": 99.44436947518047
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "heterogeneous",
-      "mape_percent": 99.34744233643424,
+      "mape_percent": 99.34523878179886,
       "metric": "forward_ms",
       "observed_mean": 160.40656972939064,
       "planned": 3389,
       "population": "native-forward",
       "predicted": 3289,
-      "predicted_mean": 1.0733993966656021,
-      "wape_percent": 99.33082578944462
+      "predicted_mean": 1.0771995446133065,
+      "wape_percent": 99.32845671693462
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "prefix-cold-control",
-      "mape_percent": 99.31872899588019,
+      "mape_percent": 99.31326493751719,
       "metric": "forward_ms",
       "observed_mean": 157.17724054673138,
       "planned": 1700,
       "population": "native-forward",
       "predicted": 1700,
-      "predicted_mean": 1.157745070412345,
-      "wape_percent": 99.26341430452322
+      "predicted_mean": 1.167687361706463,
+      "wape_percent": 99.25708877592918
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "prefix-reuse-B",
-      "mape_percent": 99.35091341017232,
+      "mape_percent": 99.3470046236846,
       "metric": "forward_ms",
       "observed_mean": 157.22598156199734,
       "planned": 1700,
       "population": "native-forward",
       "predicted": 1700,
-      "predicted_mean": 1.0875708234019614,
-      "wape_percent": 99.30827538006301
+      "predicted_mean": 1.0945256212254908,
+      "wape_percent": 99.30385193951302
     },
     {
       "dataset": "gb300-retained-native-core-on",
       "group": "short",
-      "mape_percent": 99.38362826550005,
+      "mape_percent": 99.38354076254807,
       "metric": "forward_ms",
       "observed_mean": 156.75749872843426,
       "planned": 900,
       "population": "native-forward",
       "predicted": 900,
-      "predicted_mean": 1.0147737238055563,
-      "wape_percent": 99.35264741269982
+      "predicted_mean": 1.014919850472223,
+      "wape_percent": 99.35255419440541
     },
     {
       "dataset": "gb300-retained-native-field-off",
       "group": "overall",
-      "mape_percent": 99.38017042263066,
+      "mape_percent": 99.37809117283236,
       "metric": "forward_ms",
       "observed_mean": 155.98927151186956,
       "planned": 3503,
       "population": "native-forward",
       "predicted": 3503,
-      "predicted_mean": 1.0268294864999417,
-      "wape_percent": 99.34173069945915
+      "predicted_mean": 1.0305603583783316,
+      "wape_percent": 99.33933895043549
     },
     {
       "dataset": "gb300-retained-native-field-off",
       "group": "boundary-129",
-      "mape_percent": 99.35816213191175,
+      "mape_percent": 99.35771148590001,
       "metric": "forward_ms",
       "observed_mean": 154.28835682588465,
       "planned": 510,
       "population": "native-forward",
       "predicted": 510,
-      "predicted_mean": 1.0660843866801482,
-      "wape_percent": 99.30903121362346
+      "predicted_mean": 1.0668665203860304,
+      "wape_percent": 99.30852428379285
     },
     {
       "dataset": "gb300-retained-native-field-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.3206364461795,
+      "mape_percent": 99.31738471914133,
       "metric": "forward_ms",
       "observed_mean": 158.2896800250171,
       "planned": 1004,
       "population": "native-forward",
       "predicted": 1004,
-      "predicted_mean": 1.1373101049963041,
-      "wape_percent": 99.28150078715394
+      "predicted_mean": 1.1431663430839536,
+      "wape_percent": 99.27780109044171
     },
     {
       "dataset": "gb300-retained-native-field-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.34122622316617,
+      "mape_percent": 99.33796238489421,
       "metric": "forward_ms",
       "observed_mean": 157.46302077529188,
       "planned": 999,
       "population": "native-forward",
       "predicted": 999,
-      "predicted_mean": 1.0990824337098395,
-      "wape_percent": 99.30200600223573
+      "predicted_mean": 1.1049679822984282,
+      "wape_percent": 99.29826826841123
     },
     {
       "dataset": "gb300-retained-native-field-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.49118213564947,
+      "mape_percent": 99.49064832332884,
       "metric": "forward_ms",
       "observed_mean": 153.04541376287287,
       "planned": 990,
       "population": "native-forward",
       "predicted": 990,
-      "predicted_mean": 0.8216545023333341,
-      "wape_percent": 99.46313026824417
+      "predicted_mean": 0.8225747345757584,
+      "wape_percent": 99.46252898773547
     },
     {
       "dataset": "gb300-retained-native-field-on",
       "group": "overall",
-      "mape_percent": 99.44813862208086,
+      "mape_percent": 99.44715870697064,
       "metric": "forward_ms",
       "observed_mean": 157.02501848400223,
       "planned": 3503,
       "population": "native-forward",
       "predicted": 3466,
-      "predicted_mean": 0.901291110127878,
-      "wape_percent": 99.42602069477246
+      "predicted_mean": 0.9029647428041618,
+      "wape_percent": 99.42495485654335
     },
     {
       "dataset": "gb300-retained-native-field-on",
       "group": "boundary-129",
-      "mape_percent": 99.36455600091178,
+      "mape_percent": 99.3641106468725,
       "metric": "forward_ms",
       "observed_mean": 155.96295279708562,
       "planned": 510,
       "population": "native-forward",
       "predicted": 510,
-      "predicted_mean": 1.0659805955428934,
-      "wape_percent": 99.31651679041383
+      "predicted_mean": 1.066762453189952,
+      "wape_percent": 99.31601548056233
     },
     {
       "dataset": "gb300-retained-native-field-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.43337551160488,
+      "mape_percent": 99.43193070256632,
       "metric": "forward_ms",
       "observed_mean": 159.43747853555737,
       "planned": 1003,
       "population": "native-forward",
       "predicted": 986,
-      "predicted_mean": 0.9279945447783104,
-      "wape_percent": 99.41795708681423
+      "predicted_mean": 0.9304756591961604,
+      "wape_percent": 99.4164009191925
     },
     {
       "dataset": "gb300-retained-native-field-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.46153672863028,
+      "mape_percent": 99.46027246139882,
       "metric": "forward_ms",
       "observed_mean": 158.0620211698571,
       "planned": 1000,
       "population": "native-forward",
       "predicted": 980,
-      "predicted_mean": 0.8726672453009532,
-      "wape_percent": 99.44789568117494
+      "predicted_mean": 0.8748062072601368,
+      "wape_percent": 99.44654243898344
     },
     {
       "dataset": "gb300-retained-native-field-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.49263702542139,
+      "mape_percent": 99.49212622581217,
       "metric": "forward_ms",
       "observed_mean": 154.14290258234197,
       "planned": 990,
       "population": "native-forward",
       "predicted": 990,
-      "predicted_mean": 0.8181902650808094,
-      "wape_percent": 99.46920016985943
+      "predicted_mean": 0.8190584488383852,
+      "wape_percent": 99.46863693681851
     },
     {
       "dataset": "gb300-retained-native-service-off",
       "group": "overall",
-      "mape_percent": 99.3732774595075,
+      "mape_percent": 99.37120481566036,
       "metric": "forward_ms",
       "observed_mean": 155.87762566841235,
       "planned": 3509,
       "population": "native-forward",
       "predicted": 3509,
-      "predicted_mean": 1.0400783368986855,
-      "wape_percent": 99.33275970015661
+      "predicted_mean": 1.0438028294008228,
+      "wape_percent": 99.33037033061998
     },
     {
       "dataset": "gb300-retained-native-service-off",
       "group": "boundary-129",
-      "mape_percent": 99.35922131151577,
+      "mape_percent": 99.35877192796752,
       "metric": "forward_ms",
       "observed_mean": 154.24700670429306,
       "planned": 510,
       "population": "native-forward",
       "predicted": 510,
-      "predicted_mean": 1.0660843866801482,
-      "wape_percent": 99.30884598057457
+      "predicted_mean": 1.0668665203860304,
+      "wape_percent": 99.3083389148476
     },
     {
       "dataset": "gb300-retained-native-service-off",
       "group": "engram-distinct-text",
-      "mape_percent": 99.31586715046393,
+      "mape_percent": 99.31261680916427,
       "metric": "forward_ms",
       "observed_mean": 157.72169733000038,
       "planned": 1005,
       "population": "native-forward",
       "predicted": 1005,
-      "predicted_mean": 1.1449099942729566,
-      "wape_percent": 99.2740948051824
+      "predicted_mean": 1.1507604052580311,
+      "wape_percent": 99.27038547977942
     },
     {
       "dataset": "gb300-retained-native-service-off",
       "group": "engram-repeated-text",
-      "mape_percent": 99.32120735241452,
+      "mape_percent": 99.31797042754107,
       "metric": "forward_ms",
       "observed_mean": 157.69953696566273,
       "planned": 1004,
       "population": "native-forward",
       "predicted": 1004,
-      "predicted_mean": 1.1373101049963041,
-      "wape_percent": 99.27881202007339
+      "predicted_mean": 1.1431663430839536,
+      "wape_percent": 99.2750984783596
     },
     {
       "dataset": "gb300-retained-native-service-off",
       "group": "heldout-single-192",
-      "mape_percent": 99.49160511969534,
+      "mape_percent": 99.49107253780551,
       "metric": "forward_ms",
       "observed_mean": 152.99795365767045,
       "planned": 990,
       "population": "native-forward",
       "predicted": 990,
-      "predicted_mean": 0.8216545023333341,
-      "wape_percent": 99.4629637307622
+      "predicted_mean": 0.8225747345757584,
+      "wape_percent": 99.46236226373573
     },
     {
       "dataset": "gb300-retained-native-service-on",
       "group": "overall",
-      "mape_percent": 99.4424428905822,
+      "mape_percent": 99.44143870684886,
       "metric": "forward_ms",
       "observed_mean": 155.97148580672143,
       "planned": 3504,
       "population": "native-forward",
       "predicted": 3468,
-      "predicted_mean": 0.906518039587289,
-      "wape_percent": 99.41879245754534
+      "predicted_mean": 0.9082243668329638,
+      "wape_percent": 99.41769845806404
     },
     {
       "dataset": "gb300-retained-native-service-on",
       "group": "boundary-129",
-      "mape_percent": 99.36092165996142,
+      "mape_percent": 99.36047330437293,
       "metric": "forward_ms",
       "observed_mean": 155.43808363372204,
       "planned": 510,
       "population": "native-forward",
       "predicted": 510,
-      "predicted_mean": 1.0659805955428934,
-      "wape_percent": 99.31420886656402
+      "predicted_mean": 1.066762453189952,
+      "wape_percent": 99.31370586393506
     },
     {
       "dataset": "gb300-retained-native-service-on",
       "group": "engram-distinct-text",
-      "mape_percent": 99.45949567323706,
+      "mape_percent": 99.45822629179627,
       "metric": "forward_ms",
       "observed_mean": 157.53664142842194,
       "planned": 1000,
       "population": "native-forward",
       "predicted": 980,
-      "predicted_mean": 0.8726672453009532,
-      "wape_percent": 99.44605443064656
+      "predicted_mean": 0.8748062072601368,
+      "wape_percent": 99.44469667543494
     },
     {
       "dataset": "gb300-retained-native-service-on",
       "group": "engram-repeated-text",
-      "mape_percent": 99.41851446221261,
+      "mape_percent": 99.41699196721329,
       "metric": "forward_ms",
       "observed_mean": 157.2029548830349,
       "planned": 1004,
       "population": "native-forward",
       "predicted": 988,
-      "predicted_mean": 0.9462876464948455,
-      "wape_percent": 99.39804716317266
+      "predicted_mean": 0.9488818882438335,
+      "wape_percent": 99.39639691318153
     },
     {
       "dataset": "gb300-retained-native-service-on",
       "group": "heldout-single-192",
-      "mape_percent": 99.49143823183877,
+      "mape_percent": 99.49092749550965,
       "metric": "forward_ms",
       "observed_mean": 153.46794151537347,
       "planned": 990,
       "population": "native-forward",
       "predicted": 990,
-      "predicted_mean": 0.8181902650808094,
-      "wape_percent": 99.46686568087
+      "predicted_mean": 0.8190584488383852,
+      "wape_percent": 99.46629997069691
     }
   ]
 }
