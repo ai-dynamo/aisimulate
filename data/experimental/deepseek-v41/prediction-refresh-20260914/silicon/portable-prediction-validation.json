@@ -1,0 +1,36 @@
+{
+  "native_actual_calls": 69298,
+  "native_status_number_error_exact_matches": 69298,
+  "cold_specs_identical": 1860,
+  "original_cohorts_retained": 2100,
+  "cold_replay_prediction_request_cache_fields_and_summaries_exact": true,
+  "raw_native_result_sha256_not_required_identical": "Native result also includes host wall-time/rate telemetry and generated request UUIDs; the existing projection intentionally excludes those fields. All retained prediction/cache/request fields are identical.",
+  "native_digest_repeat_check": {
+    "two_identical_spec_actual_calls": true,
+    "changed_native_json_paths": [
+      "/wall_time_ms",
+      "/per_request/0/uuid",
+      "/processed_tokens_per_s",
+      "/processed_output_tokens_per_s"
+    ],
+    "note": "The native raw report includes a generated request UUID and host throughput telemetry; those are omitted from the retained prediction projection."
+  },
+  "cold_recovery_scope_loop_ast_identical": true,
+  "cold_replay_scope_loop_ast_identical_except_input_path": true,
+  "immutable_analysis_files_identical": 15,
+  "source_differences": "Portable CLI/path binding, source-equivalence guard allowing report-only descendants, metric-source hash guard and working-directory selection; no changes to input construction, prediction or statistics arithmetic.",
+  "public_program_sha256": {
+    "export.py": "67414c631a98a8db60def3ab50ba6784602662e580ec88dcf3beabc9d203f032",
+    "export_e2e.py": "e2891e86de66dad87863a78e1bf0de2af2f4b49b6300751b1e3e2ee691b1c646",
+    "extract_analysis_tools.py": "a339e643bbd881675c47e9a724f46b5e937be45d4e4a7d770bb4615f88e64939",
+    "predict_native_rows.py": "035bf3d82ed67193480ba7df0c23ae37ecd40ce8004904cf6a54587ceaa63be1",
+    "recover_cold_workloads.py": "cc817f6420665df75cd6db003343fc566042de5599d307d01ff9b4292780b23a",
+    "replay_cold_workloads.py": "a62a0e838893987eeadb82d48eaa15e2c9af24f2d840171b6cf402a245c3547a"
+  },
+  "execution_artifact_sha256": {
+    "native_completion": "f791e649e662a7a85f9f2906ef123c49a5c5fa373ad90e85736897f97802c568",
+    "cold_recovery_completion": "78061c301babaf238f4a7146c9709c30463b9e268455ebc718a3ca0685b3ff3a",
+    "cold_replay_completion": "bf5226af08200b5b684d9e69e9dc02767712809fe540d8a2511bb43fc8a5f7a8"
+  },
+  "frozen_cold_table_inventory_guard_passed": true
+}

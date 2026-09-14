@@ -61,6 +61,8 @@ lack seed timing and 100 lack request metadata. All are retained. Field/service
 HTTP remains **0 / 120** in each scope because original token-bearing plans are
 unavailable; the historical observed metrics remain present. These are input
 availability limits, not zero-error predictions or new runtime failures.
+Current cache-reuse disagreement remains included in the metrics for 40 of the
+520 supported OFF cohorts and 102 of the 1,300 supported ON cohorts.
 
 Current SGLang replay emits its first output token at final prefill completion.
 The historical extra first-output decode charge is not retained. Hence current
@@ -95,8 +97,51 @@ The current source passed 147 targeted Python model/database/Collector contract
 tests, 35 Rust DSv41 tests and 40 existing report/statistics tests. Packaged legal
 files and generated ownership files match their source definitions.
 
-Reproduce the public projection from the preserved fresh comparison artifact
-root (the output directory must not already contain these product filenames):
+Actual prediction reproduction is available directly from this public bundle.
+`predict_native_rows.py` queries the native predictor for every published
+geometry, including all missing rows and all 38 GB200 probes, then compares the
+new results with the recorded outputs. Recorded predictions are never model
+inputs. It checks the exact operation-table inventories and permits report-only
+descendants of the recorded predictor source. A native binary rebuilt on another
+platform may have a different file hash; its actual identity is recorded.
+
+The cold recovery and replay programs are portable adaptations of the actual
+executed sources, with CLI paths replacing session-specific constants. The
+input reconstruction, original-spec hash check and prediction calls are
+unchanged; [prediction-runner-provenance.json](prediction-runner-provenance.json)
+binds the executed source and validation. No captured cluster paths or IDs are
+embedded in these programs. Recovered workload files contain request/token
+inputs and should be written to a private output directory. Relocating their
+source files changes the outer packet hash, while each original ReplaySpec hash
+remains unchanged and is checked before replay.
+
+Use the merged SILICON checkout for `W`, and an FPM checkout retaining the
+original experimental reports/GB200 overlay for `F`. `O` must name a new private
+output directory; these programs do not overwrite old output files:
+
+```bash
+W=/path/to/merged-silicon-checkout
+F=/path/to/fpm-checkout
+O=/path/to/new-private-reproduction
+P="$W/data/experimental/deepseek-v41/prediction-refresh-20260914/silicon"
+cd "$W"
+CARGO_BUILD_JOBS=6 uv sync --project python/aisimulate --extra dev --reinstall-package aisimulate
+export PYTHONPATH="$W/python/aisimulate/src:$W/python/aisimulate"
+PY="$W/python/aisimulate/.venv/bin/python"
+"$PY" "$P/predict_native_rows.py" --repo "$W" --fpm-repo "$F" --output "$O/native"
+"$PY" "$P/extract_analysis_tools.py" --repo "$W" --output "$O/analysis-tools"
+"$PY" "$P/recover_cold_workloads.py" --repo "$W" --fpm-repo "$F" --output "$O/cold-inputs"
+"$PY" "$P/replay_cold_workloads.py" --repo "$W" --workloads "$O/cold-inputs" --analysis-tools "$O/analysis-tools" --output "$O/cold-replay"
+```
+
+The public native runner actually reproduced **69,298 / 69,298** statuses,
+predictions and typed errors. The portable recovery reproduces all 1,860 exact
+specs and preserves all 240 missing-input cohorts; the portable cold runner
+reproduces the current HTTP results on those same inputs. These are CPU
+prediction checks, with no GPU execution, new raw admission or fitted factors.
+
+Separately, reproduce the public projection from the preserved fresh comparison
+artifact root (the output directory must not already contain these filenames):
 
 ```bash
 python export.py --input-root /path/to/fresh-comparison-artifacts --output /path/to/new-public-projection

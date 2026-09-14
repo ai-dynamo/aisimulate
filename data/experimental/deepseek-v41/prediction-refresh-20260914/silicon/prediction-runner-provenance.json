@@ -1,0 +1,14 @@
+{
+  "portable_original_source": {
+    "recover_cold_workloads.py": {
+      "private_executed_source_sha256": "b87e737d99aac0aa67989eeba2632fc617b1c49a5a11e57430ff40be5edde771",
+      "changes": "CLI paths, SPDX header, formatting only; exact reconstruction/hash/metadata policy preserved"
+    },
+    "replay_cold_workloads.py": {
+      "private_executed_source_sha256": "fbb8027036d3462a3c3576ff3cb0f2cfa74de509427cc0ef28fa0a3084c80876",
+      "changes": "CLI paths/analysis-tool import, SPDX header, source-equivalence guard permits report-only descendants, formatting; actual replay and metrics unchanged; explicit frozen-table inventory guard before replay"
+    }
+  },
+  "validation_sha256": "5a43b0a891bdbc0dadd008002508559a3332b0f2ef095f08f3d1d0577c9b87b4",
+  "predict_native_rows.py": "Original portable driver; API and geometry construction match the executed original holdout/native/GB200 probes; every actual result rechecked against publication."
+}

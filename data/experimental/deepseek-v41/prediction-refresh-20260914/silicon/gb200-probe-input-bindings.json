@@ -1,0 +1,26 @@
+{
+  "prediction_config": {
+    "attention_dp_size": 1,
+    "backend": "vllm",
+    "backend_version": "0.1.dev20904+g179dd0fa9",
+    "database_mode": "SILICON",
+    "decoder_replay": false,
+    "enable_shared_layer": false,
+    "forward_model": "op_level",
+    "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "moe_ep_size": 1,
+    "moe_tp_size": 4,
+    "pp_size": 1,
+    "schema_version": 1,
+    "strict_provenance": true,
+    "system_name": "gb200",
+    "systems_path": "data/experimental/deepseek-v41/gb200-fpm/calibration-v1/systems",
+    "tp_size": 4
+  },
+  "systems_files_sha256": {
+    "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+    "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+    "gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+  },
+  "relocation": "Only systems_path is repository-relative; original table bytes and every query setting preserved."
+}
