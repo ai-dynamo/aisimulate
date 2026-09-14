@@ -87,6 +87,60 @@ def _run_commands(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
 
 
+def test_actions_artifacts_never_contain_wheels() -> None:
+    forbidden_names = {
+        "aisimulate-wheel",
+        "aisimulate-wheel-amd64",
+        "aisimulate-wheel-arm64",
+        "application-test-wheel-${{ matrix.arch }}",
+        "application-wheel-${{ matrix.arch }}",
+        "fpe-qualified-wheel",
+        "nightly-dist-${{ matrix.arch }}",
+    }
+    upload_steps = []
+    for workflow_path in sorted(WORKFLOW_ROOT.glob("*.y*ml")):
+        workflow = yaml.load(workflow_path.read_text(), Loader=yaml.BaseLoader)
+        for job in workflow.get("jobs", {}).values():
+            upload_steps.extend(
+                (workflow_path, step)
+                for step in job.get("steps", [])
+                if step.get("uses", "").startswith("actions/upload-artifact@")
+            )
+    for action_path in sorted(ACTION_ROOT.glob("*/action.yml")):
+        action = yaml.load(action_path.read_text(), Loader=yaml.BaseLoader)
+        upload_steps.extend(
+            (action_path, step)
+            for step in action.get("runs", {}).get("steps", [])
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        )
+
+    for source, step in upload_steps:
+        inputs = step.get("with", {})
+        assert inputs.get("name") not in forbidden_names, source
+        paths = [line.strip() for line in inputs.get("path", "").splitlines() if line.strip()]
+        assert not [path for path in paths if ".whl" in path and not path.startswith("!")], source
+
+    nightly = next(step for source, step in upload_steps if source.name == "nightly-ci.yml")
+    nightly_paths = nightly["with"]["path"].splitlines()
+    assert "!${{ runner.temp }}/nightly-dist/*.whl" in nightly_paths
+
+
+def test_wheel_handoff_and_final_staging_use_separate_environments() -> None:
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in ("application-test-wheel", "application-tests", "application-wheel"):
+        assert full_ci[job_name]["environment"] == "pr-wheel-staging"
+    assert full_ci["stage-application-wheel"]["environment"] == "automated-release"
+
+    nightly = _workflow("nightly-ci.yml")["jobs"]
+    for job_name in ("build-artifacts", "smoke-test"):
+        assert nightly[job_name]["environment"] == "pr-wheel-staging"
+    assert nightly["stage-artifactory"]["environment"] == "automated-release"
+
+    fpe = _workflow("fpe-support-matrix.yml")["jobs"]
+    for job_name in ("prepare-wheel", "discover-shards", "generate"):
+        assert fpe[job_name]["environment"] == "pr-wheel-staging"
+
+
 def _run_resolve_step(script: str, event_name: str, old_ref: str, tmp_path: Path) -> dict[str, str]:
     output_path = tmp_path / f"{event_name}.out"
     output_path.unlink(missing_ok=True)
@@ -226,9 +280,15 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert any(
         step.get("uses", "").startswith("dtolnay/rust-toolchain@") for step in jobs["application-wheel"]["steps"]
     )
-    assert any(
-        step.get("with", {}).get("name") == "application-test-wheel-${{ matrix.arch }}"
+    assert "artifactory_wheel_handoff.sh download dist" in application_wheel_commands
+    fetch_step = next(
+        step
         for step in jobs["application-wheel"]["steps"]
+        if "artifactory_wheel_handoff.sh download" in step.get("run", "")
+    )
+    assert fetch_step["env"]["ARTIFACTORY_SUBPATH"].endswith("application-test/${{ matrix.arch }}")
+    assert not any(
+        step.get("uses", "").startswith("actions/download-artifact@") for step in jobs["application-wheel"]["steps"]
     )
 
 
