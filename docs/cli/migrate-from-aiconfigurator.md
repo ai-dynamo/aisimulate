@@ -41,11 +41,11 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | Keep AIC `generate`. | [Deployment files](#deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, diagnostics, and [power reports](#power-and-energy-analysis). |
+| `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, diagnostics, and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
-| `recommend` | [Keep AIC for minimum-GPU sizing](#keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#search-under-a-request-rate), with a different objective. |
-| `default` | `aisimulate recommend`. [Example](#search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
+| `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
+| `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
 | `exp` | Keep AIC for existing experiment files. | Translate individual experiments to `predict` or `recommend`; no equivalent file orchestration. |
 
 ## 3. General migration examples
@@ -57,7 +57,9 @@ Save the YAML files as named and run commands from that directory, using fresh o
 For Dynamo Router/Planner integration, see
 [execution stacks](user-guide.md#choose-an-execution-stack).
 
-### Migrate one concrete deployment
+<a id="migrate-one-concrete-deployment"></a>
+
+### 3.1 Migrate one concrete deployment
 
 **Before — AIC estimates a batch at a fixed parallel configuration:**
 
@@ -108,7 +110,9 @@ keeps up to 64 requests in flight while the scheduler forms batches. Here TP=2 a
 use two GPUs, but the latency and throughput results describe serving traffic. Use AIC when you
 need its original batch-level result.
 
-### Search with a fixed GPU budget
+<a id="search-with-a-fixed-gpu-budget"></a>
+
+### 3.2 Search with a fixed GPU budget
 
 **Before — AIC searches within an eight-GPU budget:**
 
@@ -177,7 +181,9 @@ eight random trials to keep the walkthrough bounded; increase the trial budget f
 It ranks configurations under the supplied traffic and does not reproduce AIC's full capacity
 sweep. With `strict_sla: true`, candidates must pass the configured aggregate-mean latency bounds.
 
-### Search under a request rate
+<a id="search-under-a-request-rate"></a>
+
+### 3.3 Search under a request rate
 
 **Before — AIC sizes the minimum GPUs for four requests/s:**
 
@@ -222,21 +228,23 @@ required result, keep the AIC command above.
 
 ## 4. Advanced migration examples
 
-- [Regular prefill/decode disaggregation](#predict-regular-prefilldecode-disaggregation)
-- [Parallelism and throughput tradeoffs](#search-parallelism-and-throughput-tradeoffs)
-- [Traces and multi-turn sessions](#replay-traces-and-multi-turn-sessions)
-- [Cache capacity and host offload](#model-cache-capacity-and-host-offload)
-- [Dynamo routing and planning](#include-dynamo-routing-and-planning)
-- [Op-level and FPM timing](#select-op-level-or-whole-forward-fpm-timing)
-- [Analytical EPD](#predict-and-search-analytical-epd)
-- [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper)
-- [AFD](#afd-translation)
+- [4.1 Regular prefill/decode disaggregation](#41-predict-regular-prefilldecode-disaggregation)
+- [4.2 Parallelism and throughput tradeoffs](#42-search-parallelism-and-throughput-tradeoffs)
+- [4.3 Traces and multi-turn sessions](#43-replay-traces-and-multi-turn-sessions)
+- [4.4 Cache capacity and host offload](#44-model-cache-capacity-and-host-offload)
+- [4.5 Dynamo routing and planning](#45-include-dynamo-routing-and-planning)
+- [4.6 Op-level and FPM timing](#46-select-op-level-or-whole-forward-fpm-timing)
+- [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
+- [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware-with-sweeper)
+- [4.9 AFD](#49-afd-translation)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
 run from the repository root. Feature guides describe model, data, and topology restrictions.
 
-### Predict regular prefill/decode disaggregation
+<a id="predict-regular-prefilldecode-disaggregation"></a>
+
+### 4.1 Predict regular prefill/decode disaggregation
 
 **Before — AIC estimates separate prefill and decode workers:**
 
@@ -268,9 +276,11 @@ model, hardware, backend, and backend version; their parallelism, scheduler, and
 can differ. `engine.kv_transfer` controls transfer bandwidth and which prompt KV bytes are charged.
 For search, use the same two roles with recommendation domains; see the
 [engine fields](user-guide.md#engine-fields). Different P/D hardware requires the
-[Sweeper SDK path](#migrate-heterogeneous-pd-hardware-with-sweeper) below.
+[Sweeper SDK path](#48-migrate-heterogeneous-pd-hardware-with-sweeper) below.
 
-### Search parallelism and throughput tradeoffs
+<a id="search-parallelism-and-throughput-tradeoffs"></a>
+
+### 4.2 Search parallelism and throughput tradeoffs
 
 **Before — AIC searches parallel configurations within an eight-GPU budget:**
 
@@ -302,7 +312,9 @@ and supported backend choices; one run uses one hardware SKU. See
 [parallelism presets](user-guide.md#parallelism-preset-behavior) and
 [optimization goals](user-guide.md#optimization-goal).
 
-### Replay traces and multi-turn sessions
+<a id="replay-traces-and-multi-turn-sessions"></a>
+
+### 4.3 Replay traces and multi-turn sessions
 
 **AIC counterpart:** the AIC CLI has no corresponding trace/session replay command. This is an
 additional AISimulate serving-simulation capability.
@@ -325,7 +337,9 @@ Their shared-prefix ratio is a workload model, not a direct translation of AIC's
 token count. Analytical EPD does not support traces, sessions, or per-request capture; AFD requires
 fixed synthetic requests.
 
-### Model cache capacity and host offload
+<a id="model-cache-capacity-and-host-offload"></a>
+
+### 4.4 Model cache capacity and host offload
 
 **Before — AIC estimates a fixed cached prefix and GPU-memory allocation:**
 
@@ -357,7 +371,9 @@ prefix caching and attention DP=1, as required by the
 stay fixed during recommendation, which also requires fixed parallelism. Other `kv_cache` controls
 include block size, fixed GPU capacity, and CUDA-graph memory reservation.
 
-### Include Dynamo routing and planning
+<a id="include-dynamo-routing-and-planning"></a>
+
+### 4.5 Include Dynamo routing and planning
 
 **AIC counterpart:** the AIC CLI can size configurations and generate deployment files; it has no
 corresponding Router/Planner replay command.
@@ -378,7 +394,9 @@ configuration in addition to the core serving inputs. For a search that includes
 use the [Dynamo search example](user-guide.md#dynamo-scalar-recommendation-example). Planner runtime
 scaling limits and the search's candidate GPU budget are separate controls.
 
-### Select op-level or whole-forward FPM timing
+<a id="select-op-level-or-whole-forward-fpm-timing"></a>
+
+### 4.6 Select op-level or whole-forward FPM timing
 
 **Before — AIC estimates a batch using collected whole-forward profiles:**
 
@@ -411,7 +429,9 @@ requires the shown unlisted-version override. FPM requires
 `timing.type: default` and matching profile coverage; a missing profile fails explicitly. See the
 [FPM guide](../../python/aisimulate/docs/fpm/README.md).
 
-### Predict and search analytical EPD
+<a id="predict-and-search-analytical-epd"></a>
+
+### 4.7 Predict and search analytical EPD
 
 **Before — AIC estimates a dedicated image-encoder pool plus an aggregated language worker:**
 
@@ -440,7 +460,9 @@ explores E+P+D. These paths require fixed synthetic images and concurrency. They
 capacity and latency without event-level encoder queueing or embedding transfer. See
 [EPD inputs and limits](../sweeper/epd.md#unified-cli).
 
-### Migrate heterogeneous P/D hardware with Sweeper
+<a id="migrate-heterogeneous-pd-hardware-with-sweeper"></a>
+
+### 4.8 Migrate heterogeneous P/D hardware with Sweeper
 
 **Before — AIC searches H200 prefill with GB200 decode:**
 
@@ -495,7 +517,9 @@ Both roles must share the model and backend/version. The unified CLI still uses 
 SKU; see the [SDK hardware/backend restrictions](../sweeper/configuration.md#backend-fields),
 including the Dynamo Router AIC load-model restriction.
 
-### AFD translation
+<a id="afd-translation"></a>
+
+### 4.9 AFD translation
 
 **Before — AIC runs a bounded search for decode-side AFD with a regular prefill companion:**
 
@@ -569,7 +593,9 @@ These gaps concern the unified `aisimulate predict` and `aisimulate recommend` c
 AISimulate package still includes the compatibility AIC CLI and SDKs, so a feature can be available
 in the package without a unified-CLI replacement.
 
-### Recommendation runtime
+<a id="recommendation-runtime"></a>
+
+### 5.1 Recommendation runtime
 
 **Bayesian recommendation can take much longer than AIC sizing.** Recorded September 11–12, 2026
 baseline measurements on an Apple M3 Pro used Python 3.12.11, native release builds, and shared
@@ -631,7 +657,9 @@ results and early stopping can reduce the number of unique replays. The AIC outp
 sizing result. This H200 example measures your local workload; it does not
 reproduce the dated B200 benchmark table or establish equivalent AIC/AISimulate answers.
 
-### Keep minimum-GPU sizing on the compatibility CLI
+<a id="keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
+
+### 5.2 Keep minimum-GPU sizing on the compatibility CLI
 
 Use `aiconfigurator cli recommend` with `--target-request-rate` or `--target-concurrency` for
 AIC's minimum-GPU and replica-sizing result. For four requests/s under explicit latency limits:
@@ -646,13 +674,15 @@ aiconfigurator cli recommend \
 
 **Result to inspect:** the sizing table reports required GPUs, parallel configurations, and replica
 counts under the requested load and SLA. For closed-loop sizing, replace `--target-request-rate 4`
-with `--target-concurrency 32`. The [request-rate example](#search-under-a-request-rate) explains
+with `--target-concurrency 32`. The [request-rate example](#33-search-under-a-request-rate) explains
 why AISimulate's alternative configuration ranking can choose a different GPU count.
 
 Legacy `default` also routes to sizing when a load target is supplied without `--total-gpus`.
 If both are supplied, it uses the GPU budget and warns that the load target is ignored.
 
-### Static estimates and diagnostics
+<a id="static-estimates-and-diagnostics"></a>
+
+### 5.3 Static estimates and diagnostics
 
 Keep `estimate` for a fixed batch or single pass, including per-operation reports. For example,
 inspect one decode pass and its memory, timing, energy, and data sources:
@@ -669,7 +699,9 @@ aiconfigurator cli estimate \
 breakdowns. See
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
 
-### Power and energy analysis
+<a id="power-and-energy-analysis"></a>
+
+### 5.4 Power and energy analysis
 
 AIC-style modeled power analysis remains available through the compatibility
 `aiconfigurator cli estimate` command and estimator SDK bundled with AISimulate. Unified
@@ -701,7 +733,9 @@ artifacts can also retain this metadata for each candidate. These fields do not 
 report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
 compatibility command or SDK when power is a required analysis result.
 
-### Deployment artifacts
+<a id="deployment-artifacts"></a>
+
+### 5.5 Deployment artifacts
 
 Keep `generate` when you need deployment files:
 
@@ -718,10 +752,12 @@ manifests. For programmatic generation from supported agg/disagg candidates, see
 [generator SDK](../../python/aisimulate/docs/generator_overview.md). Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
-### Experiment files and support queries
+<a id="experiment-files-and-support-queries"></a>
+
+### 5.6 Experiment files and support queries
 
 Existing named experiments still run with AIC. For a complete runnable input, save
-`legacy-search.yaml` from the [legacy search example](#legacy-search-domains-and-topology-coverage)
+`legacy-search.yaml` from the [legacy search example](#58-legacy-search-domains-and-topology-coverage)
 below, then run it and query model support:
 
 ```bash
@@ -734,7 +770,9 @@ AIC's [agg/disagg support matrix](https://ai-dynamo.org/aisimulate/support-matri
 Translate each experiment separately before moving it to the unified CLI. Estimator data coverage
 alone does not establish support for an entire CLI workflow.
 
-### Estimator controls and speculative decoding
+<a id="estimator-controls-and-speculative-decoding"></a>
+
+### 5.7 Estimator controls and speculative decoding
 
 Backend version and op-level/FPM selection have unified mappings. The following controls still
 require AIC or the estimator SDK.
@@ -812,7 +850,9 @@ EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK
 to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
 The unified CLI has no speculative configuration.
 
-### Legacy search domains and topology coverage
+<a id="legacy-search-domains-and-topology-coverage"></a>
+
+### 5.8 Legacy search domains and topology coverage
 
 **Pipeline parallelism (PP): keep PP-dependent workflows on the AIC compatibility CLI.**
 AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
@@ -865,7 +905,9 @@ schema accepting a parallelism value does not qualify its serving behavior on re
 
 ## 6. Reference
 
-### Common input mapping
+<a id="common-input-mapping"></a>
+
+### 6.1 Common input mapping
 
 Use these mappings when translating a workflow; choose traffic and search objectives explicitly.
 
@@ -884,7 +926,9 @@ See the [AISimulate input reference](user-guide.md#configuration-model) for full
 [result reference](user-guide.md#outputs) for files and metric units. Analytical EPD uses
 aggregate-only SLA semantics, described in its feature guide.
 
-### Repository and release transition
+<a id="repository-and-release-transition"></a>
+
+### 6.2 Repository and release transition
 
 AISimulate is the home for ongoing development, issues, and releases. The standalone
 AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.12.0
