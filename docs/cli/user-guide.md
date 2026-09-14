@@ -66,7 +66,8 @@ The built-in engine predicts behavior offline without launching a GPU serving de
 ## Predict one deployment
 
 Save this as `prediction.yaml`. It evaluates one Qwen3-32B-FP8 worker on an H200 with modeled
-vLLM serving behavior, four concurrent requests, and twelve requests in total:
+vLLM serving behavior, four concurrent requests, and twelve requests in total. The vLLM examples
+explicitly select H200 performance-data version `0.24.0`:
 
 ```yaml
 traffic:
@@ -79,6 +80,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   workers:
     aggregated:
       parallelism: {replicas: 1, tensor: 1}
@@ -222,6 +224,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   workers:
     aggregated:
       parallelism:
@@ -830,7 +833,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
-  backend_version: null
+  backend_version: "0.24.0"
   context_length: max
   workers:
     aggregated:
@@ -928,6 +931,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   context_length: max
   kv_transfer:
     bandwidth_gb_per_second: 400
@@ -1021,6 +1025,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   context_length: 4096
   workers:
     aggregated:
@@ -1284,7 +1289,7 @@ engine:
   model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
-  backend_version: null
+  backend_version: "0.24.0"
   context_length: max
   workers:
     aggregated:
