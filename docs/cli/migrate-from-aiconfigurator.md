@@ -40,6 +40,164 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
 
+## Runtime speed when migrating
+
+`recommend` has a substantial measured runtime gap. The September 11, 2026 benchmark below
+compares actual installed commands on an Apple M3 Pro (12 cores, 36 GiB), Python 3.12.11,
+optimized native builds, matching common dependencies, and shared profile data. These are host
+CPU execution times, not GPU inference latency or a silicon-accuracy result.
+
+### Recommendation: optimizer cost dominates this case
+
+AIC analytically sweeps configurations and sizes replicas for a target load. AISimulate constructs
+serving candidates, replays traffic for each unique candidate, and fits a Bayesian optimizer between
+batches. Its defaults are `algorithm: bayesian`, `max_trials: 320`, and `parallelism: 16`.
+A replay-only speedup does not remove optimizer work.
+
+The recommendation case uses Llama 3.1 8B, B200/vLLM 0.24.0, ISL 1,024, OSL 128, and concurrency
+10. AIC performs minimum-GPU sizing across aggregated/disaggregated deployments with TTFT 2,000 ms
+and TPOT 30 ms. AISimulate searches aggregated throughput per GPU under an eight-GPU limit with
+100 requests per candidate and no SLA constraint. This compares migration workflow costs with
+**different search spaces, objectives, SLA constraints, and answers**. The AISimulate test bounds
+the budget to 32 suggestions while retaining the default 16 workers; the default 320-suggestion
+search is not timed here.
+
+| Installed command / search | Median of 3 fresh processes | Observed range | Best AISimulate score (tok/s/GPU) |
+|---|---:|---:|---:|
+| Standalone `aiconfigurator cli recommend` | 8.34 s | 8.27–9.34 s | Different objective |
+| `aisimulate recommend`, Bayesian before padding | 48.81 s | 48.77–49.13 s | 2,314.48 |
+| `aisimulate recommend`, Bayesian with padding | 42.97 s | 42.96–43.28 s | 2,314.48 |
+| `aisimulate recommend`, existing random algorithm, 16 workers | 6.14 s | 6.12–6.36 s | 1,511.77 |
+| `aisimulate recommend`, existing random algorithm, 4 workers | 3.39 s | 3.32–3.40 s | 1,511.77 |
+
+Trial-axis power-of-two padding reduces Bayesian process time by **12% (1.14×)**. The measured
+gap versus AIC falls from **5.85× to 5.15×**. Both Bayesian variants already include the replay
+cache described below, so this isolates the Python optimizer change. All three before/after pairs
+produce the same 21 unique configurations and predicted metrics in this 32-suggestion case; the
+other 11 suggestions hit the candidate cache. Fresh processes use warm OS caches.
+
+A separate 64-suggestion diagnostic spent 149 of 158 seconds inside the Bayesian sampler's
+`suggest` calls. This includes JAX tracing/compilation, Gaussian-process fitting, and acquisition
+optimization. Padding lets nearby completed/pending trial counts reuse compiled tensor shapes.
+The Bayesian model, seed, dtype, and search/acquisition budgets remain unchanged, but floating-point
+optimization can take a different suggestion trajectory. That diagnostic decreased to 141 seconds,
+changed 30 unique candidates to 29, kept all 23 shared candidates' predicted metrics unchanged,
+and changed the best score by less than 0.03%. This does not establish universal search-quality
+or speed equivalence; substantial optimizer overhead remains.
+
+For a short exploratory run, explicitly select the existing random sampler and a small budget:
+
+```yaml
+optimizer:
+  algorithm: random
+  max_trials: 32
+  parallelism: 4
+```
+
+Random search avoids GP/JAX fitting and does not learn from earlier evaluations. **Its best score
+was 35% lower than Bayesian search in this case**, despite evaluating 25 unique candidates. It is
+a speed/coverage tradeoff, not an equivalent faster answer. Four workers reduced process overhead
+for these short replays and retained the same random candidate set; larger workloads may benefit
+from more workers. Trial budgets count suggestions, including duplicates and failed/unsupported
+suggestions, not guaranteed unique successful replays. Qualify the final recommendation with the
+actual workload, search domains, SLA requirements, and sufficient search budget.
+
+See the [recommendation samples and configuration evidence](benchmarks/recommend-runtime-2026-09-11.json)
+and [measurement boundaries and reproduction](runtime-benchmark.md). More work is possible on
+optimizer fitting/acquisition cost and process startup; choosing lighter optimizer budgets or a
+different algorithm requires separate search-quality validation.
+
+### Larger model, longer traffic, and more suggestions
+
+A September 12 follow-up uses Llama 3.1 **70B** on the same B200/vLLM 0.24.0 profile,
+**8,192 input / 512 output tokens**, concurrency **32**, **320 requests per candidate**,
+**32-GPU** AISimulate search bound, and **64 suggestions / 16 workers**. AIC receives
+TTFT 10,000 ms and TPOT 50 ms for its minimum-GPU sizing search; AISimulate retains the
+aggregated throughput-per-GPU objective without an SLA constraint. This changes multiple workload
+and search dimensions together; it is not an isolated model-size scaling experiment.
+
+| Command / search | Suggestions | Median of 3 processes | Observed range | Best AISimulate score (tok/s/GPU) |
+|---|---:|---:|---:|---:|
+| Standalone AIC `recommend` | AIC sizing search | 7.24 s | 7.18–8.08 s | Different objective |
+| AISimulate Bayesian, before padding | 64 | 148.32 s | 146.63–152.23 s | 301.72 |
+| AISimulate Bayesian, with padding | 64 | 145.89 s | 143.48–157.13 s | 301.72–302.73 |
+| AISimulate random, 16 workers | 64 | 7.74 s | 7.59–8.30 s | 251.46 |
+| AISimulate random, 16 workers | 320 | 9.48 s | 9.42–9.68 s | 251.46 |
+
+The nominal Bayesian reduction is **1.6%**, with a remaining **20.2×** workflow-cost gap versus
+AIC. The before/after distributions overlap; this case does not establish a dependable runtime
+improvement from padding. The large gap versus AIC remains. Some runs spend their suggestion budget
+on different numbers of unique candidates, so seed/budget equality does not imply identical search
+trajectories. An unrelated Rust build briefly overlapped the second round on this shared workstation;
+small timing differences should not be attributed entirely to the optimization.
+
+Unpadded Bayesian runs evaluate 23–32 unique configurations; padded runs evaluate 25–28. The other
+suggestions hit the existing candidate cache. Best scores change by 0–0.34% between paired runs.
+Random evaluates 52 unique configurations at 64 suggestions and 161 at 320 suggestions, but both
+budgets find the same best score, about **17% below** the best padded Bayesian score. All runs use
+seed 42; more random trials do not guarantee a better answer, and other seeds may differ.
+The default Bayesian budget of 320 suggestions was not measured.
+
+Both AISimulate variants use the same release native extension and source baseline including the
+integrated replay fixes. The control removes only the six-line trial-padding change; source and
+native hashes, full configuration, all timing samples, candidate counts, and scores are retained in
+[the larger-case evidence](benchmarks/recommend-runtime-70b-2026-09-12.json). This avoids mixing
+unrelated native changes into the before/after comparison. Predictions for common concrete
+configurations agree within the documented tolerance; candidate-set equality is not assumed.
+
+The result remains a comparison of different recommendation workflows. AIC analytically evaluates
+aggregated/disaggregated sizing configurations; AISimulate replays a fixed offered load and uses
+Bayesian or random suggestions within its candidate domain. Neither the 320-suggestion default
+nor all production workloads are qualified by these two bounded cases.
+
+### Compatibility estimates and serving replay
+
+The same `aiconfigurator cli estimate` command in the two distributions has little measured runtime
+cost difference. This is a compatibility-command comparison, not evidence that the unified
+`aisimulate recommend` command is equally fast. Both distributions already use the Rust estimator;
+AISimulate also simulates scheduling, request arrivals, KV-cache behavior, and request statistics.
+
+The following **host runtime** measurements were collected on September 11, 2026, with an Apple
+M3 Pro (12 cores, 36 GiB), Python 3.12.11, optimized native builds, matching Python dependencies,
+and one shared profile-data tree. The case is Llama 3.1 8B on B200/vLLM 0.24.0, TP4, 1,024 input
+and 128 output tokens, with batch/concurrency 16. Values are medians of five rounds; each warm
+runner round contains three runs. Fresh processes use warm OS caches. These are CPU execution
+timings, not predicted GPU latency or a silicon-accuracy result.
+
+| Measurement | Standalone AIC | AISimulate before this optimization | AISimulate with timing cache |
+|---|---:|---:|---:|
+| Same `aiconfigurator cli estimate --estimate-mode agg`, fresh process | 2.600 s | 2.536 s | 2.556 s |
+| Same warm SDK prefill / decode query | 8.38 / 9.25 µs | 8.54 / 9.54 µs | 8.71 / 9.04 µs |
+| Unified `predict`, 100 requests, fresh process | Different workflow | 2.120 s | 2.174 s |
+| Unified `predict`, 1,000 requests, fresh process | Different workflow | 2.145 s | 2.160 s |
+| Warm engine runner, 1,000 requests, including provider setup/reporting | Different workflow | 55.44 ms | 44.59 ms |
+| Native replay loop, 1,000 requests, excluding provider setup | Different workflow | 27.70 ms | 17.37 ms |
+
+The matched compatibility CLI is effectively unchanged: the 2.4% baseline difference is small
+relative to the observed run ranges. The replay cache reduces native-loop time by **37% (1.59×)**
+and warm-runner time by **20% (1.24×)** in the 1,000-request case. There is **no demonstrated fresh
+`predict` CLI speedup from the replay cache**: imports, model/data loading, and provider construction dominate this small workload.
+The 100-request warm runner changes only from 30.18 ms to 29.86 ms. See the
+[recorded timing evidence](benchmarks/migration-runtime-2026-09-11.json) and
+[measurement boundaries and reproduction](runtime-benchmark.md).
+
+The optimization retains at most 1,024 successful latency results per native AIC timing provider.
+Repeated identical prefill/decode coordinates reuse those results, including distinct exact-total
+FPM decode coordinates. Model, hardware, data, quantization, and topology are fixed by the provider;
+its cache is discarded at the end of the replay. Prediction reports match before and after the
+change within the benchmark's tight floating-point tolerance. This does not establish universal
+speedup: traces with few repeated coordinates, other models/hosts, FPM runtime, full searches,
+the Dynamo stack, and analytical AFD/EPD need separate measurements.
+
+For shorter exploratory runs, bound `traffic.stop`, narrow recommendation domains, and set an
+explicit `optimizer.max_trials`. Increase `optimizer.parallelism` only within available CPU and
+memory. These choices change sample size or search coverage and must be revalidated for the final
+workload. Use the virtual-time default; `--online` deliberately paces simulation against wall time.
+Keep a process alive for repeated SDK work when practical to amortize imports and initialization.
+Rust execution, lazy database loading, lookup indexes, and lower-level caches are already in place,
+but startup, unique timing queries, and search orchestration still have optimization opportunities.
+The advisory forward-performance gate covers the warm SDK boundary, not complete CLI/search cost.
+
 ## Known gaps in the unified path
 
 The following limits apply to `aisimulate predict`, `aisimulate recommend`, and the new

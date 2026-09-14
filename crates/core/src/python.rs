@@ -20,6 +20,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
+use quick_cache::sync::Cache;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -226,13 +227,44 @@ impl AicTimingConfig {
     }
 }
 
+// A provider owns one immutable compiled model/data identity. Repeated scheduler
+// coordinates therefore have the same latency for its lifetime. Keep the memo
+// bounded even for traces with continuously changing lengths, and drop it with
+// the provider at the end of a replay (never share it across candidates).
+const TIMING_CACHE_CAPACITY: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum TimingQuery {
+    Prefill(u32, u32, u32),
+    DecodeMean(u32, u32),
+    DecodeTotal(u32, u32),
+}
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
+    predictions: Cache<TimingQuery, f64>,
 }
 
 impl AicTimingModel {
+    fn predict_cached(
+        &self,
+        query: TimingQuery,
+        predict: impl FnOnce() -> Result<f64>,
+    ) -> Result<f64> {
+        if let Some(latency) = self.predictions.get(&query) {
+            return Ok(latency);
+        }
+        let latency = predict()?;
+        // Preserve retry/error behavior. Invalid timing still reaches the
+        // scheduler's validation, but must never become a successful cache hit.
+        if latency.is_finite() && latency >= 0.0 {
+            self.predictions.insert(query, latency);
+        }
+        Ok(latency)
+    }
+
     fn build(config: AicTimingConfig) -> Result<Self> {
         ensure!(
             !config.model.trim().is_empty(),
@@ -299,6 +331,7 @@ impl AicTimingModel {
             engine,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
+            predictions: Cache::new(TIMING_CACHE_CAPACITY),
         })
     }
 }
@@ -313,16 +346,21 @@ impl TimingModel for AicTimingModel {
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let mean_isl = checked_u32(mean_isl, "mean input length")?;
         let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_prefill_latency",
-                    (batch_size, mean_isl, mean_prefix),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+        self.predict_cached(
+            TimingQuery::Prefill(batch_size, mean_isl, mean_prefix),
+            || {
+                Python::with_gil(|py| {
+                    self.engine
+                        .bind(py)
+                        .call_method1(
+                            "predict_prefill_latency",
+                            (batch_size, mean_isl, mean_prefix),
+                        )?
+                        .extract::<f64>()
+                })
+                .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+            },
+        )
     }
 
     fn predict_decode_ms(
@@ -339,30 +377,40 @@ impl TimingModel for AicTimingModel {
                 .min(total_kv_tokens);
             let batch_size = checked_u32(batch_size, "decode batch size")?;
             let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
-            return Python::with_gil(|py| {
-                self.engine
-                    .bind(py)
-                    .call_method1(
-                        "predict_decode_latency_total",
-                        (batch_size, total_past_kv_tokens),
-                    )?
-                    .extract::<f64>()
-            })
-            .map_err(|error| anyhow!("AIC decode prediction failed: {error}"));
+            return self.predict_cached(
+                TimingQuery::DecodeTotal(batch_size, total_past_kv_tokens),
+                || {
+                    Python::with_gil(|py| {
+                        self.engine
+                            .bind(py)
+                            .call_method1(
+                                "predict_decode_latency_total",
+                                (batch_size, total_past_kv_tokens),
+                            )?
+                            .extract::<f64>()
+                    })
+                    .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+                },
+            );
         }
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+        self.predict_cached(
+            TimingQuery::DecodeMean(batch_size, mean_context_length),
+            || {
+                Python::with_gil(|py| {
+                    self.engine
+                        .bind(py)
+                        .call_method1(
+                            "predict_decode_latency",
+                            (batch_size, mean_context_length, 2),
+                        )?
+                        .extract::<f64>()
+                })
+                .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+            },
+        )
     }
 }
 
@@ -1139,6 +1187,8 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use crate::engine::{EngineConfig, TimingModelConfig};
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
@@ -1164,6 +1214,198 @@ mod tests {
         fn predict_decode_latency_total(&self, _batch_size: u32, total_past_kv_tokens: u32) -> u64 {
             u64::from(total_past_kv_tokens)
         }
+    }
+
+    fn timing_probe() -> AicTimingModel {
+        pyo3::prepare_freethreaded_python();
+        AicTimingModel {
+            engine: Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any()),
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+            predictions: Cache::new(TIMING_CACHE_CAPACITY),
+        }
+    }
+
+    #[test]
+    fn timing_cache_reuses_only_exact_coordinates_and_provider_identity() {
+        let timing = timing_probe();
+        let calls = AtomicUsize::new(0);
+        let queries = [
+            TimingQuery::Prefill(4, 1024, 0),
+            TimingQuery::Prefill(8, 1024, 0),
+            TimingQuery::Prefill(4, 2048, 0),
+            TimingQuery::Prefill(4, 1024, 512),
+            TimingQuery::DecodeMean(4, 1024),
+            TimingQuery::DecodeMean(8, 1024),
+            TimingQuery::DecodeMean(4, 2048),
+            TimingQuery::DecodeTotal(4, 1024),
+            TimingQuery::DecodeTotal(8, 1024),
+            TimingQuery::DecodeTotal(4, 2048),
+        ];
+        for (index, query) in queries.into_iter().enumerate() {
+            for _ in 0..2 {
+                let value = timing
+                    .predict_cached(query, || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(index as f64)
+                    })
+                    .unwrap();
+                assert_eq!(value, index as f64);
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), queries.len());
+        // A different model/backend/candidate must never inherit this memo.
+        assert_eq!(
+            timing_probe()
+                .predict_cached(queries[0], || Ok(123.0))
+                .unwrap(),
+            123.0
+        );
+    }
+
+    #[test]
+    fn timing_cache_retries_failures_and_invalid_latencies() {
+        let timing = timing_probe();
+        let key = TimingQuery::Prefill(1, 1024, 0);
+        assert!(
+            timing
+                .predict_cached(key, || Err(anyhow!("missing data")))
+                .is_err()
+        );
+        for invalid in [f64::NAN, f64::INFINITY, -1.0] {
+            let value = timing.predict_cached(key, || Ok(invalid)).unwrap();
+            assert!(value.is_nan() || value == invalid);
+            assert_eq!(timing.predictions.len(), 0);
+        }
+        assert_eq!(timing.predict_cached(key, || Ok(0.0)).unwrap(), 0.0);
+        assert_eq!(
+            timing
+                .predict_cached(key, || panic!("cached zero is valid"))
+                .unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn timing_cache_stays_bounded_for_changing_trace_lengths() {
+        let timing = timing_probe();
+        for length in 1..10_000 {
+            timing
+                .predict_cached(TimingQuery::DecodeMean(1, length), || Ok(f64::from(length)))
+                .unwrap();
+        }
+        assert!(timing.predictions.len() <= TIMING_CACHE_CAPACITY);
+    }
+
+    #[pyclass]
+    struct ReplayTimingProbe {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[pymethods]
+    impl ReplayTimingProbe {
+        fn predict_prefill_latency(&self, bs: u32, isl: u32, prefix: u32) -> f64 {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            f64::from(bs + isl - prefix)
+        }
+
+        fn predict_decode_latency(&self, bs: u32, isl: u32, _osl: u32) -> f64 {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            f64::from(bs + isl)
+        }
+    }
+
+    #[test]
+    fn timing_cache_preserves_cold_and_warm_replay_reports() {
+        pyo3::prepare_freethreaded_python();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = || {
+            Arc::new(AicTimingModel {
+                engine: Python::with_gil(|py| {
+                    Py::new(
+                        py,
+                        ReplayTimingProbe {
+                            calls: Arc::clone(&calls),
+                        },
+                    )
+                    .unwrap()
+                    .into_any()
+                }),
+                use_fpm_decode_totals: false,
+                fpm_decode_kv_ceiling: None,
+                predictions: Cache::new(TIMING_CACHE_CAPACITY),
+            })
+        };
+        let replay = |timing: Arc<AicTimingModel>| {
+            let spec = ReplaySpec {
+                version: 1,
+                topology: ReplayTopology::Aggregated {
+                    workers: WorkerPoolSpec::default(),
+                },
+                engine: serde_json::to_value(ReplayEngineConfig {
+                    rank: EngineConfig {
+                        num_gpu_blocks: 16,
+                        block_size: 4,
+                        max_num_seqs: 1,
+                        max_num_batched_tokens: 64,
+                        enable_prefix_caching: false,
+                        ..EngineConfig::default()
+                    },
+                    ..ReplayEngineConfig::default()
+                })
+                .unwrap(),
+                adapters: ReplayAdapters {
+                    placement: ProviderSpec::round_robin(),
+                    scaling: ProviderSpec::no_scaling(),
+                },
+                max_sim_time_ms: None,
+                max_in_flight: Some(1),
+                record_per_request: false,
+                sla: Default::default(),
+                requests: (0..4)
+                    .map(|index| ReplayRequest {
+                        id: format!("request-{index}"),
+                        arrival_time_ms: f64::from(index) * 1000.0,
+                        input_tokens: 4,
+                        output_tokens: 3,
+                        input_token_ids: None,
+                        output_token_ids: None,
+                        dp_rank: None,
+                        prefill_dp_rank: None,
+                        session_id: None,
+                        turn_index: None,
+                        metadata: serde_json::Value::Null,
+                    })
+                    .collect(),
+            };
+            let report = Replayer::new(spec, ReplayEngineFactory::with_timing_model(timing))
+                .unwrap()
+                .run()
+                .unwrap();
+            let mut value = serde_json::to_value(report).unwrap();
+            for field in [
+                "wall_time_ms",
+                "processed_tokens_per_s",
+                "processed_output_tokens_per_s",
+            ] {
+                value.as_object_mut().unwrap().remove(field);
+            }
+            value
+        };
+        let timing = provider();
+        let cold = replay(Arc::clone(&timing));
+        let cold_calls = calls.load(Ordering::SeqCst);
+        assert_eq!(cold["completed_requests"], 4);
+        assert_eq!(cold["total_output_tokens"], 12);
+        // Four identical request shapes share the same prefill/decode queries.
+        assert!(
+            cold_calls > 0 && cold_calls <= 4,
+            "unexpected miss count: {cold_calls}"
+        );
+        assert_eq!(replay(timing), cold);
+        assert_eq!(calls.load(Ordering::SeqCst), cold_calls);
+        assert_eq!(replay(provider()), cold);
+        assert_eq!(calls.load(Ordering::SeqCst), cold_calls * 2);
     }
 
     fn aic_config() -> AicTimingConfig {
@@ -1299,6 +1541,7 @@ mod tests {
             engine,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
+            predictions: Cache::new(TIMING_CACHE_CAPACITY),
         };
 
         let latency = timing
@@ -1316,6 +1559,7 @@ mod tests {
             engine,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
+            predictions: Cache::new(TIMING_CACHE_CAPACITY),
         };
 
         let latency = timing
@@ -1333,6 +1577,7 @@ mod tests {
             engine,
             use_fpm_decode_totals: false,
             fpm_decode_kv_ceiling: None,
+            predictions: Cache::new(TIMING_CACHE_CAPACITY),
         };
 
         let latency = timing
