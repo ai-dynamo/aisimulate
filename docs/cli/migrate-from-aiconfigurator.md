@@ -814,8 +814,14 @@ The unified CLI has no speculative configuration.
 
 ### Legacy search domains and topology coverage
 
-The default unified parallelism preset currently uses worker sizes of 1/2/4/8/16 GPUs and PP=1.
-Explicit parallelism configurations are a separate path, and CP has no unified configuration field.
+**Pipeline parallelism (PP): keep PP-dependent workflows on the AIC compatibility CLI.**
+AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
+`engine.workers.<role>.parallelism.pipeline` inputs can reach analytical timing, KV-capacity
+estimation, and GPU accounting, but do not provide validated pipeline-stage scheduling,
+microbatch overlap, or pipeline-bubble simulation.
+
+The default unified parallelism preset uses worker sizes of 1/2/4/8/16 GPUs.
+Context parallelism (CP) has no unified configuration field.
 The existing TP/DP/MoE/replica search does not reproduce every AIC PP/CP, batch/context, or exhaustive
 search domain. Retain the AIC sweep when those exact domains are required; see the
 [default search projection](../sweeper/architecture.md#parallelism-search-projection).
