@@ -110,6 +110,10 @@ fn qualify(case: PrefixCase) {
 
                 let cold = &artifacts.requests[0];
                 let warm = &artifacts.requests[1];
+                assert!(
+                    cold.observed_at_ms < warm.observed_at_ms,
+                    "{context} expected cold then warm request arrivals"
+                );
                 let cold_hashes = cold.replay_hashes.as_ref().unwrap();
                 let warm_hashes = warm.replay_hashes.as_ref().unwrap();
                 let expected_shared_blocks = case.shared_input_tokens / block_size;
