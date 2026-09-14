@@ -854,17 +854,13 @@ The unified CLI has no speculative configuration.
 
 ### 5.8 Legacy search domains and topology coverage
 
-**Pipeline parallelism (PP): keep PP-dependent workflows on the AIC compatibility CLI.**
+#### 5.8.1 Pipeline parallelism (PP)
+
+**Keep PP-dependent workflows on the AIC compatibility CLI.**
 AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
 `engine.workers.<role>.parallelism.pipeline` inputs can reach analytical timing, KV-capacity
 estimation, and GPU accounting, but do not provide validated pipeline-stage scheduling,
 microbatch overlap, or pipeline-bubble simulation.
-
-The default unified parallelism preset uses worker sizes of 1/2/4/8/16 GPUs.
-Context parallelism (CP) has no unified configuration field.
-The existing TP/DP/MoE/replica search does not reproduce every AIC PP/CP, batch/context, or exhaustive
-search domain. Retain the AIC sweep when those exact domains are required; see the
-[default search projection](../sweeper/architecture.md#parallelism-search-projection).
 
 For an explicit AIC TP/PP search, save this flat experiment YAML as `legacy-search.yaml`:
 
@@ -895,13 +891,57 @@ aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./legacy-search
 
 **Result to inspect:** the terminal and `legacy-search-results/` contain the `pp_sweep` results,
 including feasible TP/PP configurations and their latency/throughput. This example requests PP=1/2
-and pins CP=1. Nontrivial CP is family/backend-specific; do not assume this dense-model example
-supports CP>1. See [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
+and pins CP=1.
 
-Backend and model support also depend on topology and available performance data. Analytical
-EPD/AFD, heterogeneous P/D through the SDK, and native host offload each have the restrictions linked
-in the advanced examples. Those features do not establish support for every combination, and a
-schema accepting a parallelism value does not qualify its serving behavior on real hardware.
+#### 5.8.2 Context parallelism (CP)
+
+**The unified AISimulate CLI has no CP configuration field.** AIC exposes per-role
+`agg_cp_candidates`, `prefill_cp_candidates`, and `decode_cp_candidates`. CP>1 support depends on
+the model family and backend; the dense-model PP example above does not establish CP>1 support.
+Keep supported CP workflows on AIC. See
+[advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
+
+#### 5.8.3 GPUs per worker and parallelism search domains
+
+**AISimulate's default preset does not reproduce every AIC parallelism domain.** AIC's
+`*_num_gpu_candidates` lists explicit GPU counts per worker. AISimulate's default preset uses
+1/2/4/8/16 GPUs per worker; `max_candidate_gpus` caps the entire deployment, not one worker.
+Explicit supported parallelism configurations are a separate path. Keep AIC when you need its
+exact candidate domain; see the [default search projection](../sweeper/architecture.md#parallelism-search-projection).
+
+#### 5.8.4 Fixed batch sizes and capacity sweeps
+
+**AIC batch size has no direct mapping to regular AISimulate serving batches.** AIC can estimate
+a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
+form batches from the workload: `traffic.load.concurrency` controls in-flight requests, while
+`scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
+Keep AIC for fixed-batch estimates or its original capacity-sweep behavior.
+
+#### 5.8.5 Context and request-length sweeps
+
+**Context length and synthetic request lengths stay fixed within one unified-CLI search.**
+`engine.context_length`, `traffic.source.input_tokens`, and `traffic.source.output_tokens` do not
+accept recommendation domains. Use separate AISimulate configurations to compare lengths, or
+keep AIC `exp` for existing named experiments with different ISL, OSL, and context limits.
+
+#### 5.8.6 Exhaustive search and legacy ranking
+
+**AISimulate recommendation does not guarantee exhaustive coverage of a search domain.**
+Its Bayesian and random optimizers sample within `optimizer.max_trials`; increasing the budget
+does not guarantee every valid configuration is evaluated. Keep AIC when you need its enumerated
+capacity sweep and ranking semantics.
+
+#### 5.8.7 Model, backend, and topology combinations
+
+**Support for one model/backend does not imply support for every topology.** Check the specific
+feature's restrictions before migrating:
+
+| Feature | Current AISimulate boundary |
+|---|---|
+| [Analytical EPD](#predict-and-search-analytical-epd) | Fixed synthetic images and concurrency; no event-level encoder queueing or embedding transfer. |
+| [AFD](#afd-translation) | Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
+| [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Sweeper SDK only; both roles share one model, backend, and backend version. |
+| [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation also requires fixed parallelism. |
 
 ## 6. Reference
 
