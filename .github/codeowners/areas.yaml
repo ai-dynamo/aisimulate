@@ -90,8 +90,6 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
-  - glob: data/experimental/deepseek-v41/
-    owners: [forward-pass-engine, maintainers]
   # The full AIC product and estimator migration belongs to the Forward Pass
   # Engine area. Maintainers remain co-owners across the compatibility window.
   - glob: crates/core/src/perfmodel/
