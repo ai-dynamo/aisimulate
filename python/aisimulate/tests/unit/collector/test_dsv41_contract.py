@@ -147,6 +147,14 @@ def test_manifest_matches_native_graph_and_profiles():
     for entry in replay["phases"]["context"]:
         if entry["component"] == "attention":
             assert json.loads(entry["geometry"])["bounded_prefill"] == (entry["layer"] >= 21)
+    for manifest in (full, replay):
+        for entries in manifest["phases"].values():
+            for entry in entries:
+                if entry["component"] == "attention":
+                    geometry = json.loads(entry["geometry"])
+                    assert "kv_cache_layout" not in geometry
+                    assert geometry["index_n_heads"] == 32
+                    assert geometry["fmha_quant_mode"] == "fp8"
     assert operation_geometry({"name": "display", "n": 32, "k": 64}) == '{"k":64,"n":32}'
     assert len(get_dsv41_module_test_cases()) == 8
 
@@ -208,8 +216,18 @@ def test_rank_aggregation_requires_complete_distinct_invocations(tmp_path):
         aggregate_rank_records(paths, 2)
 
 
-@pytest.mark.parametrize("measured_index_heads", [32, 8])
-def test_writer_to_native_silicon_query_requires_exact_indexer_identity(tmp_path, measured_index_heads):
+@pytest.mark.parametrize(
+    ("measured_change", "error"),
+    [
+        ({}, None),
+        ({"index_n_heads": 8}, RuntimeError),
+        ({"head_dim": 256}, RuntimeError),
+        ({"fmha_quant_mode": "bfloat16"}, RuntimeError),
+        ({"kv_cache_layout": "logical_fp4"}, ValueError),
+        ({"unknown_dimension": 1}, ValueError),
+    ],
+)
+def test_writer_to_native_silicon_query_requires_exact_measured_identity(tmp_path, measured_change, error):
     import aiconfigurator_core._aiconfigurator_core as core
     from aiconfigurator_core.sdk.engine import _evaluate_single_op
     from aiconfigurator_core.sdk.perf_database import PerfDatabase
@@ -219,18 +237,22 @@ def test_writer_to_native_silicon_query_requires_exact_indexer_identity(tmp_path
     data = tmp_path / "data/gb300/sglang/0.0.0.dev0"
     data.mkdir(parents=True)
     point = row()
-    measured = point | {
-        "geometry": operation_geometry(json.loads(point["geometry"]) | {"index_n_heads": measured_index_heads})
-    }
+    measured = point | {"geometry": operation_geometry(json.loads(point["geometry"]) | measured_change)}
     write_parquet([measured], data / "dsv41_module_perf.parquet")
     operation = core.op_from_spec_json(
-        json.dumps({"Dsv41Attention": json.loads(point["geometry"]) | {"name": "generation_attention"}})
+        json.dumps(
+            {
+                "Dsv41Attention": json.loads(point["geometry"])
+                | {"name": "generation_attention", "kv_cache_layout": "sglang_fp8_bf16"}
+            }
+        )
     )
     database = PerfDatabase(
         "gb300", "sglang", "0.0.0.dev0", str(tmp_path), database_mode="SILICON", strict_provenance=False
     )
-    if measured_index_heads != 32:
-        with pytest.raises(RuntimeError, match="[Dd]sv41|[Dd]eep[Ss]eek|[Mm]issing"):
+    if error is not None:
+        message = "noncanonical" if error is ValueError else "[Dd]sv41|[Dd]eep[Ss]eek|[Mm]issing"
+        with pytest.raises(error, match=message):
             _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)
         return
     result = _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)

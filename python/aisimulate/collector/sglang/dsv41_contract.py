@@ -126,6 +126,10 @@ def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
                 for child in children:
                     kind, body = next(iter(child.items()))
                     if kind in COMPONENTS:
+                        if kind == "Dsv41Attention":
+                            # Match the measured-module key in the native reader:
+                            # SOL's payload layout is not a measurement dimension.
+                            body = {key: value for key, value in body.items() if key != "kv_cache_layout"}
                         rows.append(
                             {
                                 "layer": layer,

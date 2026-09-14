@@ -41,7 +41,8 @@ explicit. The graph's separate collective nodes remain active.
 ## Data contract
 
 `dsv41_module_perf.parquet` keys component, canonical native geometry excluding
-the display name, batch size and prefix exactly. Only `x` interpolates. For
+the display name and analytical KV-layout selector, batch size and prefix
+exactly. Precision and physical dimensions remain exact keys. Only `x` interpolates. For
 attention `x` is query length in prefill and absolute sequence length in decode;
 all other components use total processed tokens with batch 1 and prefix 0.
 Integer Parquet columns are INT64 constrained to uint32. Latency is float64 ms.
