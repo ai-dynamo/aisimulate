@@ -27,6 +27,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aisimulate.config.traffic import AgenticSnapshotOptions
+
 
 class OptimizationTarget(str, Enum):
     """What the search optimizes for.
@@ -253,6 +255,7 @@ class Workload(BaseModel):
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
+    agentic_snapshot: AgenticSnapshotOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -359,6 +362,8 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_snapshot is not None and self.agentic_lanes is None:
+            raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if self.agentic_lanes is not None:
             if (
                 self.trace_path is None

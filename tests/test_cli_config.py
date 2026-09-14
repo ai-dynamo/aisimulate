@@ -1155,3 +1155,80 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
     else:
         with pytest.raises(ValueError, match="does not match effective prefill_hardware_sku"):
             prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
+
+
+@pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
+def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 2, "agentic_snapshot": {"seed": seed}},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        assert schema.model_validate(traffic).load.agentic_snapshot.seed == seed
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    workload = prediction_to_replay_spec(prediction).workload
+    assert workload["agentic_snapshot"] == {"seed": seed}
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_snapshot"] == {"seed": seed}
+    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == {"seed": seed}
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [{}, {"seed": True}, {"seed": -1}, {"seed": 2**64}, {"seed": 1.0}, {"seed": "42"}, {"seed": 42, "fraction": 0.5}],
+)
+def test_agentic_snapshot_rejects_invalid_seed_options(snapshot: dict) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": snapshot},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError):
+            schema.model_validate(traffic)
+
+
+@pytest.mark.parametrize(
+    "load,source",
+    [
+        ({"type": "trace_timestamps"}, {"type": "trace", "format": "weka", "paths": ["corpus"]}),
+        (
+            {"type": "concurrency", "concurrency": 1, "agentic_lanes": 1},
+            {"type": "trace", "format": "dynamo", "paths": ["corpus"]},
+        ),
+        (
+            {"type": "trace_timestamps", "agentic_lanes": 1},
+            {"type": "trace", "format": "mooncake", "paths": ["corpus"]},
+        ),
+        ({"type": "poisson", "requests_per_second": 1.0, "agentic_lanes": 1}, {"type": "synthetic"}),
+    ],
+)
+def test_agentic_snapshot_requires_explicit_agentic_lanes_and_trace_timestamps(load: dict, source: dict) -> None:
+    from aisimulate.config import TrafficPredictionConfig
+
+    with pytest.raises(ValidationError):
+        TrafficPredictionConfig.model_validate({"source": source, "load": load | {"agentic_snapshot": {"seed": 1}}})
+
+
+def test_agentic_snapshot_is_opt_in() -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": _engine() | {"context_length": 1024},
+            "traffic": {
+                "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+        }
+    )
+    assert config.traffic.load.agentic_snapshot is None
+    assert "agentic_snapshot" not in prediction_to_replay_spec(config).workload

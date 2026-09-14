@@ -10,11 +10,12 @@ from .engine import (
     EnginePredictionConfig,
     EngineRecommendationConfig,
 )
-from .traffic import TrafficPredictionConfig, TrafficRecommendationConfig
+from .traffic import AgenticSnapshotOptions, TrafficPredictionConfig, TrafficRecommendationConfig
 
 __all__ = [
     "AFDSearchRecommendationConfig",
     "AFDTopologyPredictionConfig",
+    "AgenticSnapshotOptions",
     "CorePredictionConfig",
     "CoreRecommendationConfig",
     "EnginePredictionConfig",

@@ -367,3 +367,38 @@ def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) 
     # FPM-vs-silicon question and is not asserted anywhere in the test suite.
     assert fpm["completed_requests"] == 8
     assert op_level["completed_requests"] == 8
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentic_snapshot_cli_and_python_keep_identical_evidence(tmp_path: Path, backend: str) -> None:
+    config_path = _REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["engine"]["backend"] = backend
+    config["traffic"]["load"]["agentic_snapshot"] = {"seed": 42}
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        report = runner.run(
+            prediction_to_replay_spec(CorePredictionConfig.model_validate(config)),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        ).metadata["native_report"]
+    finally:
+        runner.close()
+    output = tmp_path / "snapshot"
+    _run_cli(
+        "predict",
+        "--config",
+        str(config_path),
+        "--set",
+        f"engine.backend={backend}",
+        "--set",
+        "traffic.load.agentic_snapshot.seed=42",
+        "--capture-per-request",
+        "--output-dir",
+        str(output),
+        "--format",
+        "json",
+    )
+    saved = json.loads((output / "prediction.json").read_text())
+    assert saved["agentic_snapshots"] == report["agentic_snapshots"]
+    records = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    assert records == report["per_request"]
