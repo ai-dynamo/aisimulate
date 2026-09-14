@@ -163,6 +163,76 @@ def test_fast_prerequisite_api_failure_never_becomes_success():
         _require_fast(api)
 
 
+def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
+    run = _fast_run(head_branch="codex/manual", event="workflow_dispatch")
+    jobs = _fast_jobs()
+    if failure == "wrong-job-sha":
+        jobs[0]["head_sha"] = "b" * 40
+    fixture = tmp_path / "api.json"
+    fixture.write_text(json.dumps({"run": run, "jobs": jobs}))
+    gh = tmp_path / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "assert sys.argv[1:4] == ['api', '--paginate', '--slurp']\n"
+        "if os.environ['TEST_API_FAILURE'] == 'true': sys.exit(1)\n"
+        "data = json.loads(pathlib.Path(os.environ['TEST_API_FIXTURE']).read_text())\n"
+        "with open(os.environ['TEST_API_CALLS'], 'a') as stream: stream.write(sys.argv[-1] + '\\n')\n"
+        "print(json.dumps([{'jobs': data['jobs']} if '/jobs?' in sys.argv[-1] "
+        "else {'workflow_runs': [data['run']]}]))\n"
+    )
+    gh.chmod(0o755)
+    summary = tmp_path / "summary.md"
+    summary.write_text("Existing evidence\n")
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "ai-dynamo/aisimulate",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_REF": "refs/heads/codex/manual",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "TEST_API_FIXTURE": str(fixture),
+        "TEST_API_CALLS": str(tmp_path / "calls"),
+        "TEST_API_FAILURE": str(failure == "api").lower(),
+    }
+    args = [sys.executable, str(REPOSITORY_ROOT / "scripts/require_fast_ci.py"), "--timeout", "0"]
+    if overrides:
+        for option, variable in (
+            ("--repository", "GITHUB_REPOSITORY"),
+            ("--sha", "GITHUB_SHA"),
+            ("--ref", "GITHUB_REF"),
+            ("--event", "GITHUB_EVENT_NAME"),
+        ):
+            args.extend([option, env[variable]])
+            env[variable] = "invalid-environment-default"
+    result = subprocess.run(args, env=env, capture_output=True, text=True, check=False, timeout=10)
+    return result, summary
+
+
+@pytest.mark.parametrize("overrides", [False, True], ids=["environment-defaults", "cli-overrides"])
+def test_fast_prerequisite_cli_verifies_manual_run_and_appends_summary(tmp_path, overrides):
+    result, summary = _run_fast_prerequisite_cli(tmp_path, overrides=overrides)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert summary.read_text().startswith("Existing evidence\n### Standalone Fast CI verified")
+    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisimulate/actions/runs/10", "attempt 1"):
+        assert evidence in result.stdout
+        assert evidence in summary.read_text()
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert calls[0] == calls[2]
+    assert calls[0].startswith("repos/ai-dynamo/aisimulate/actions/workflows/fast-ci.yml/runs?")
+    assert calls[1] == "repos/ai-dynamo/aisimulate/actions/runs/10/attempts/1/jobs?per_page=100"
+
+
+@pytest.mark.parametrize("failure", ["api", "wrong-job-sha"])
+def test_fast_prerequisite_cli_errors_leave_success_summary_unwritten(tmp_path, failure):
+    result, summary = _run_fast_prerequisite_cli(tmp_path, failure=failure)
+    assert result.returncode != 0
+    assert "::error::" in result.stderr
+    assert "Standalone Fast CI verified" not in result.stdout
+    assert summary.read_text() == "Existing evidence\n"
+
+
 @pytest.mark.parametrize(
     ("path", "markers", "expected"),
     [
@@ -795,10 +865,10 @@ def _run_pr_target(
     return result, output
 
 
-def test_full_ci_trusted_copy_exports_the_stacked_pr_base(tmp_path: Path) -> None:
+def test_full_ci_trusted_copy_validates_the_stacked_pr_base(tmp_path: Path) -> None:
     result, output = _run_pr_target(tmp_path, "a" * 40, "d" * 40)
     assert result.returncode == 0, result.stderr
-    assert output == {"base_sha": "d" * 40}
+    assert output == {}
 
 
 @pytest.mark.parametrize(
@@ -848,7 +918,11 @@ def _commit_file(repository: Path, name: str, contents: str) -> str:
 
 
 def _run_whitespace_step(
-    repository: Path, base: str, target: str, ref: str = "refs/heads/pull-request/121"
+    repository: Path,
+    base: str,
+    target: str,
+    ref: str = "refs/heads/pull-request/121",
+    event: str = "push",
 ) -> subprocess.CompletedProcess[str]:
     job = _workflow("fast-ci.yml")["jobs"]["python-static"]
     script = next(step["run"] for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
@@ -862,7 +936,7 @@ def _run_whitespace_step(
             **os.environ,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
-            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_EVENT_NAME": event,
             "GITHUB_REF": ref,
             "BEFORE_SHA": "f" * 40,
             "BASE_SHA": base,
@@ -876,6 +950,61 @@ def _run_whitespace_step(
         text=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize("case", ["matching", "missing-expected", "wrong-run-sha", "wrong-checkout"])
+def test_fast_ci_manual_exact_target_guard(tmp_path: Path, case: str) -> None:
+    _git(tmp_path, "init", "--quiet")
+    head = _commit_file(tmp_path, "root.txt", "root\n")
+    job = _workflow("fast-ci.yml")["jobs"]["policy"]
+    assert job["env"]["EXPECTED_SHA"] == "${{ inputs.expected_sha }}"
+    assert job["env"]["TARGET_SHA"] == "${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}"
+    step = next(step for step in job["steps"] if step.get("name") == "Verify exact target")
+    expected = "" if case == "missing-expected" else "b" * 40 if case == "wrong-checkout" else head
+    target = expected or head
+    run_sha = "b" * 40 if case in {"wrong-run-sha", "wrong-checkout"} else head
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "EXPECTED_SHA": expected,
+            "TARGET_SHA": target,
+            "GITHUB_SHA": run_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (case == "matching"), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("supplied_base", [False, True], ids=["default-last-commit", "explicit-whole-change"])
+def test_fast_ci_manual_base_selects_the_whitespace_range(tmp_path: Path, supplied_base: bool) -> None:
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "root.txt", "root\n")
+    _commit_file(tmp_path, "first.txt", "earlier whitespace error \n")
+    target = _commit_file(tmp_path, "last.txt", "clean final commit\n")
+    workflow = _workflow("fast-ci.yml")
+    base_input = workflow["on"]["workflow_dispatch"]["inputs"]["base_sha"]
+    assert base_input["required"] == "false"
+    assert base_input["type"] == "string"
+    assert base_input["default"] == ""
+    # A manual event has neither pull_request.base.sha nor before; the workflow
+    # expression selects this input or its empty default.
+    assert workflow["jobs"]["python-static"]["env"]["BASE_SHA"] == (
+        "${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}"
+    )
+    result = _run_whitespace_step(
+        tmp_path,
+        base if supplied_base else base_input["default"],
+        target,
+        ref="refs/heads/codex/manual",
+        event="workflow_dispatch",
+    )
+    assert (result.returncode != 0) is supplied_base, result.stdout + result.stderr
+    assert ("first.txt" in result.stdout) is supplied_base
 
 
 @pytest.mark.parametrize("earlier_whitespace", [False, True], ids=["clean-rebased-copy", "earlier-pr-commit"])

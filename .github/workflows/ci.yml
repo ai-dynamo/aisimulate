@@ -31,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
-      whitespace-base: ${{ steps.pr-target.outputs.base_sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -74,10 +73,6 @@ jobs:
             echo "::error::PR comparison base must resolve to a full commit SHA"
             exit 1
           fi
-          # A copied branch's push.before is its previous head, which may no
-          # longer be reachable after a rebase. Check the actual PR range,
-          # including the parent branch when this PR is stacked.
-          printf 'base_sha=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
