@@ -29,7 +29,9 @@ OLD_SHA = "b" * 40
 REPOSITORY = "ai-dynamo/aisimulate"
 
 
-def qualified_archive(sha=NEW_SHA, *, report_updates=None, row_updates=None, missing=None, index_files=None):
+def qualified_archive(
+    sha=NEW_SHA, *, report_updates=None, row_updates=None, missing=None, index_files=None, overrides=None
+):
     report = {
         "schema_version": 1,
         "qualification": FPE.QUALIFICATION,
@@ -61,6 +63,7 @@ def qualified_archive(sha=NEW_SHA, *, report_updates=None, row_updates=None, mis
         "python/aisimulate/docs/fpe-support-matrix/index.html": "untrusted artifact HTML",
         "../../escape.py": "untrusted artifact code",
     }
+    files.update(overrides or {})
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as bundle:
         for name, value in files.items():
@@ -230,6 +233,39 @@ class FpePagesTest(unittest.TestCase):
             qualified_archive(report_updates={"status_counts": {"PASS": 4, "BUILD_FAILED": 0}}), NEW_SHA
         )
         self.assertIn("b200_sxm.csv", files)
+
+    def test_duplicate_json_fields_are_rejected_at_every_depth(self):
+        with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
+            manifest = archive.read("fpe-qualification.json").decode()
+        ambiguous_manifests = (
+            manifest.replace('"schema_version": 1', '"schema_version": false, "schema_version": 1'),
+            manifest.replace('"status_counts":', '"status_counts": {}, "status_counts":'),
+            manifest.replace('"PASS": 4', '"PASS": 0, "PASS": 4'),
+        )
+        for manifest in ambiguous_manifests:
+            with self.subTest(manifest=manifest), self.assertRaisesRegex(ValueError, "duplicate JSON member"):
+                FPE.qualified_files(qualified_archive(overrides={"fpe-qualification.json": manifest}), NEW_SHA)
+        with self.assertRaisesRegex(ValueError, "duplicate JSON member"):
+            FPE.qualified_files(
+                qualified_archive(
+                    overrides={FPE.DATA_PREFIX + "index.json": '{"files": ["missing.csv"], "files": ["b200_sxm.csv"]}'}
+                ),
+                NEW_SHA,
+            )
+
+    def test_non_json_numeric_constants_are_rejected(self):
+        with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
+            manifest = archive.read("fpe-qualification.json").decode()
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            for name, data in (
+                ("fpe-qualification.json", manifest[:-1] + ', "extra": ' + constant + "}"),
+                (FPE.DATA_PREFIX + "index.json", '{"files": ["b200_sxm.csv"], "extra": ' + constant + "}"),
+            ):
+                with (
+                    self.subTest(name=name, constant=constant),
+                    self.assertRaisesRegex(ValueError, "invalid JSON constant"),
+                ):
+                    FPE.qualified_files(qualified_archive(overrides={name: data}), NEW_SHA)
 
     def test_missing_or_unsafe_indexed_csv_is_rejected(self):
         with self.assertRaises(KeyError):

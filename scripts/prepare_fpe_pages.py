@@ -25,6 +25,21 @@ def github(repository: str, endpoint: str) -> bytes:
     return subprocess.check_output(["gh", "api", f"repos/{repository}/{endpoint}"])
 
 
+def _strict_json(data: bytes):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON member: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+
+
 def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
     """Read only qualified CSVs; old artifacts without a qualification are ineligible."""
     with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
@@ -33,7 +48,7 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             raise ValueError("duplicate archive entries")
         if "fpe-qualification.json" not in names:
             return None
-        report = json.loads(bundle.read("fpe-qualification.json"))
+        report = _strict_json(bundle.read("fpe-qualification.json"))
         if (
             type(report.get("schema_version")) is not int
             or report["schema_version"] != 1
@@ -51,7 +66,7 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             raise ValueError("FPE qualification status counts must be nonnegative integers")
         if not statuses.get("PASS", 0) or statuses.get("BUILD_FAILED", 0) or statuses.get("QUERY_FAILED", 0):
             raise ValueError("FPE qualification has no passes or unexpected native failures")
-        index = json.loads(bundle.read(DATA_PREFIX + "index.json"))
+        index = _strict_json(bundle.read(DATA_PREFIX + "index.json"))
         files = index.get("files") if isinstance(index, dict) else None
         if not isinstance(files, list) or not files or len(set(files)) != len(files):
             raise ValueError("empty or duplicate FPE dataset index")
