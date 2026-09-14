@@ -113,9 +113,16 @@ def _deployment(
             performance_model=afd_performance_model or AICAFDPerformanceModel(),
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
-    if mode == "disagg" and engine.backend_version is None:
+    if mode == "disagg":
+        from aiconfigurator_core.sdk.perf_database import load_system_spec
+
         workers = (engine.workers.prefill, engine.workers.decode)
-        if any(worker is not None and worker.hardware is not None for worker in workers):
+        for role, worker in zip(("prefill", "decode"), workers, strict=True):
+            if worker is not None and worker.hardware is not None and not load_system_spec(worker.hardware):
+                raise ValueError(f"unknown workers.{role}.hardware {worker.hardware!r}: no system configuration found")
+        if engine.backend_version is None and any(
+            worker is not None and worker.hardware is not None for worker in workers
+        ):
             versions = {
                 worker.hardware or engine.hardware: resolve_backend_version(
                     worker.hardware or engine.hardware, engine.backend

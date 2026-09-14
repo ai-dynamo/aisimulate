@@ -1031,6 +1031,35 @@ def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_v
     assert set(calls) == {("h200_sxm", "vllm"), ("gb200", "vllm")}
 
 
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize("backend_version", [None, "0.24.0"])
+def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend_version):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    raw = _pd_hardware_config(**{role: "nonexistent_worker_sku"})
+    raw["engine"]["backend_version"] = backend_version
+    config = CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValueError, match=rf"unknown workers\.{role}\.hardware.*nonexistent_worker_sku"):
+        prediction_to_replay_spec(config)
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeypatch, tmp_path, role):
+    import yaml
+
+    from aiconfigurator_core.sdk import perf_database
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    system_paths = perf_database.get_systems_paths()
+    spec = perf_database.load_system_spec("gb200")
+    (tmp_path / "custom_worker_sku.yaml").write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(perf_database, "get_systems_paths", lambda: [str(tmp_path), *system_paths])
+    raw = _pd_hardware_config(**{role: "custom_worker_sku"})
+    config = CorePredictionConfig.model_validate(raw)
+    deployment = prediction_to_replay_spec(config).backend_deployment
+    assert getattr(deployment, f"{role}_engine_args")["aic_system"] == "custom_worker_sku"
+
+
 @pytest.mark.parametrize("override", [False, True])
 def test_pd_predict_keeps_legacy_version_defaults_without_hardware_override(monkeypatch, override):
     from aisimulate.compiler import prediction_to_replay_spec
