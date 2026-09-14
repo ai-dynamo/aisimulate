@@ -456,19 +456,23 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
         "set -euo pipefail\n"
         "exit_code=${FAKE_GH_EXIT:-0}\n"
         'if [[ ${exit_code} != 0 ]]; then exit "${exit_code}"; fi\n'
-        "printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
+        "printf '%s\\t%s\\n' \"${FAKE_PR_HEAD:-}\" \"${FAKE_PR_BASE:-}\"\n"
     )
     fake_gh.chmod(0o755)
-    target_sha = "0123456789abcdef"
+    target_sha = "a" * 40
+    base_sha = "b" * 40
     matching = {
         "GITHUB_REF": "refs/heads/pull-request/135",
         "REPOSITORY": "ai-dynamo/aisimulate",
         "RUN_SHA": target_sha,
         "FAKE_PR_HEAD": target_sha,
+        "FAKE_PR_BASE": base_sha,
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
 
     assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
+    assert (tmp_path / "output.txt").read_text() == f"base_sha={base_sha}\n"
 
     mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
     assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0
