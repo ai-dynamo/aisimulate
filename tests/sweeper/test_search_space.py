@@ -236,6 +236,7 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        systems_path=None,
     ):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
@@ -271,12 +272,15 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        systems_path=None,
     ):
         calls.append((hardware, deployment_mode, backend_version, role_runtime))
         return [_AGG_CFG if hardware == "h200_sxm" else _DP8_CFG]
 
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
-    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.resolve_backend_version", lambda *args, systems_path=None: "1.0"
+    )
     config = _config(
         deployment_mode=["disagg"],
         hardware_sku="gb200",
@@ -297,7 +301,7 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
 
 
 def test_heterogeneous_disagg_requires_one_common_implicit_backend_version(monkeypatch):
-    def role_version(hardware, backend):
+    def role_version(hardware, backend, *, systems_path=None):
         del backend
         return {"h200_sxm": "prefill-version", "gb200": "decode-version"}[hardware]
 
@@ -698,6 +702,7 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        systems_path=None,
     ):
         if deployment_mode == "disagg":
             raise NoViableParallelConfig("disagg does not fit")
@@ -745,6 +750,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        systems_path=None,
     ):
         if backend == "vllm":
             raise NoPerfDatabase("no vLLM perf database")

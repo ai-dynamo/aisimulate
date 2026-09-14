@@ -245,7 +245,7 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
+        lambda hardware, backend, systems_path=None: "0.11.0",
     )
 
 
@@ -373,7 +373,7 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
+        lambda hardware, backend, systems_path=None: "0.11.0",
     )
     prepared, result = search_module._materialize_one(
         {

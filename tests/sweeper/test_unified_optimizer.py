@@ -146,7 +146,7 @@ def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_path=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -191,7 +191,7 @@ def test_global_trial_budget_runs_branch_batches_round_robin(monkeypatch) -> Non
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_path=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -241,7 +241,7 @@ def test_legacy_rounds_remain_branch_major_without_max_trials(monkeypatch) -> No
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_path=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -286,7 +286,7 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: list(reversed(_branches())),
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_path=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -351,7 +351,7 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: [_branches()[0]],
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_path=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {

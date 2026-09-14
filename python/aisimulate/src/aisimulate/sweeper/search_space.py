@@ -246,7 +246,10 @@ def _heterogeneous_disagg_configs(
     role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
     backend_version = search_space.backend_version
     if backend_version is None:
-        role_versions = {role: resolve_backend_version(hardware, backend) for role, hardware in role_hardware.items()}
+        role_versions = {
+            role: resolve_backend_version(hardware, backend, systems_path=search_space.systems_path)
+            for role, hardware in role_hardware.items()
+        }
         if len(set(role_versions.values())) != 1:
             raise NoPerfDatabase(
                 "heterogeneous P/D hardware requires one common backend_version; "
@@ -268,6 +271,7 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
+                systems_path=search_space.systems_path,
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -591,6 +595,7 @@ def enumerate_branches(
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                        systems_path=ss.systems_path,
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

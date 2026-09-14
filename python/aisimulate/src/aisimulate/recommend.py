@@ -112,6 +112,7 @@ def recommendation_to_sweeper(
         "deployment_mode": modes,
         "backend": [str(value) for value in backend_values],
         "backend_version": engine.get("backend_version"),
+        "systems_path": engine.get("systems_path"),
         "model_name": model,
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
@@ -705,6 +706,8 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    if sample.get("systems_path") is not None:
+        engine["systems_path"] = sample["systems_path"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     if deployment.encoder is not None:
         from .config.epd import encoder_prediction_fields
