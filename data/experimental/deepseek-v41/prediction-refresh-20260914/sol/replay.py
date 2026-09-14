@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Replay published SOL geometries with an explicitly identified native build.
 
@@ -21,7 +22,7 @@ from pathlib import Path
 import statistics
 
 ROOT = Path(__file__).resolve().parent
-NATIVE_SHA256 = "c30d6f8864bb9f047c8fb283993e1d9a6924dfcf9ce1bb8b2fed5761302d1226"
+NATIVE_SHA256 = "eaa67bc03d410356b767f9fd285452613ae3a4c0e9f83734c751590d667b686b"
 
 
 def canonical(value):
