@@ -112,3 +112,8 @@ requires a V4.1 anchor. Measured support is a separate dependent change.
 The independent FPM consumer uses the same model descriptor, resident inventory,
 execution profile, and Rust `f64` SOL methods. Its checkpoint/profile/residency
 identity and full-model measurements are owned by that dependent implementation.
+
+The [historical SOL validation bundle](https://github.com/ai-dynamo/aisimulate/tree/71343738bace213caa7d6966b21c287af03ac37f/data/experimental/deepseek-v41/prediction-refresh-20260914/sol)
+preserves observed inputs, source identities, replay tools, and result coverage
+at that commit. Its results remain specific to the recorded source and runtime
+identities.
