@@ -156,7 +156,7 @@ redirecting it to a file does not hide progress or mix text into the report.
 
 The native integration tests additionally compare full lifecycle transcript
 bytes and normalized reports, cover overlapping children, blocking joins,
-parent resumption, one-lane settlement across two plays, and context rejection
+parent resumption, client lane reuse across two plays, and context rejection
 that skips the undispatched parent continuation. Python tests exercise the
 default public runner while rejecting any attempted Dynamo import.
 

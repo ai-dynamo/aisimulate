@@ -163,17 +163,20 @@ fn public_aggregated_weka_and_materialized_v2_have_identical_complete_lifecycles
         AgenticLifecycleEventKind::PlayQuiescent
     );
 
-    // A configured lane is a session-tree slot: the second play cannot enter
-    // before the first play has fully settled, even though both are authored at t=0.
+    // A configured lane is a client session-tree slot: all requests in the
+    // first play, including background children, must be terminal before reuse.
+    // Resource settlement is tracked separately and need not precede dispatch.
     if plays == 2 {
-        let first_quiescent = lifecycle
+        let first_terminals = lifecycle
             .events
             .iter()
-            .position(|event| {
+            .enumerate()
+            .filter(|(_, event)| {
                 event.play_id == outcomes[0].play_id
-                    && event.event == AgenticLifecycleEventKind::PlayQuiescent
+                    && event.event == AgenticLifecycleEventKind::CausalTerminal
             })
-            .unwrap();
+            .collect::<Vec<_>>();
+        assert!(!first_terminals.is_empty());
         let second_dispatch = lifecycle
             .events
             .iter()
@@ -182,9 +185,17 @@ fn public_aggregated_weka_and_materialized_v2_have_identical_complete_lifecycles
                     && event.event == AgenticLifecycleEventKind::Dispatch
             })
             .unwrap();
-        assert!(first_quiescent < second_dispatch);
+        assert!(
+            first_terminals
+                .iter()
+                .all(|(index, _)| *index < second_dispatch)
+        );
         assert_eq!(
-            lifecycle.events[first_quiescent].at_ms,
+            first_terminals
+                .iter()
+                .map(|(_, event)| event.at_ms)
+                .max_by(f64::total_cmp)
+                .unwrap(),
             lifecycle.events[second_dispatch].at_ms
         );
     }
