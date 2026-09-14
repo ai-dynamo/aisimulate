@@ -100,7 +100,17 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
             raise ValueError("loaded model must be DeepSeek V4.1")
         from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
 
-        self._real_identity = dict(zip(EXECUTION_COLUMNS, execution_identity(raw_config), strict=True))
+        self._real_identity = dict(
+            zip(
+                EXECUTION_COLUMNS,
+                execution_identity(
+                    raw_config,
+                    engram_cpu_offload=config.model_config.engram_config.cpu_offload,
+                    input_modality="text",  # This producer creates only text token-ID requests.
+                ),
+                strict=True,
+            )
+        )
         revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
         if revision != MODEL_SHA:
             raise ValueError("tokenizer revision must equal the pinned V4.1 checkpoint revision")

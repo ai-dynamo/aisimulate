@@ -41,13 +41,18 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
 
     def command(args, **kwargs):
         commands.append(args)
-        return SimpleNamespace(stdout="test-node\n", stderr="")
+        return SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node\n", stderr=""
+        )
 
     monkeypatch.setattr(runner, "_command", command)
     units = runner.wait_ready(1)
     source = runner.cell_dir / "fpm_exec.sh"
     source.write_text("exit 0\n")
-    runner.stage(units, [source])
+    startup = runner.cell_dir / "collector-runtime-env.sh"
+    startup.write_text("export FPM_READINESS_TIMEOUT_SECONDS=600\n")
+    runner.stage(units, [source, startup])
+    assert (runner.cell_dir / "slurm-runtime" / startup.name).read_bytes() == startup.read_bytes()
     runner._exec(units[0], ["bash", "/tmp/fpm-bench/fpm_exec.sh"], timeout=10)
     assert units == ["node0000"]
     assert (runner.cell_dir / "slurm-runtime" / source.name).read_text() == source.read_text()
@@ -86,7 +91,13 @@ def test_slurm_cleanup_reports_leaked_steps(runner, monkeypatch):
 
 
 def test_slurm_refuses_allocation_geometry_mismatch(runner, monkeypatch):
-    monkeypatch.setattr(runner, "_command", lambda *a, **k: SimpleNamespace(stdout="node-a node-b"))
+    monkeypatch.setattr(
+        runner,
+        "_command",
+        lambda args, **k: SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=node-a,node-b" if "job" in args else "node-a node-b"
+        ),
+    )
     with pytest.raises(ValueError, match="exactly 1 allocated nodes"):
         runner.wait_ready(1)
 
@@ -114,3 +125,52 @@ def test_preparation_preserves_slurm_failure_streams_across_retries(runner, monk
     }
     assert {path.joinpath("stdout.log").read_text() for path in records} == {"preparation started", "waiting"}
     assert all(json.loads(path.joinpath("failure.json").read_text())["executable"] == "srun" for path in records)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_wait_ready_rejects_unbounded_or_invalid_timeout(runner, timeout):
+    with pytest.raises(ValueError, match="finite and positive"):
+        runner.wait_ready(1, timeout_seconds=timeout)
+
+
+def test_wait_ready_waits_for_allocation_and_shares_one_deadline(runner, monkeypatch):
+    clock = [0.0]
+    commands = []
+    states = iter(["PENDING", "CONFIGURING", "RUNNING"])
+    monkeypatch.setattr("collector.fpm_forward.slurm.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "collector.fpm_forward.slurm.time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+
+    def command(args, *, timeout):
+        commands.append((args, timeout))
+        clock[0] += 0.25
+        text = f"JobId=1234 JobState={next(states)} NodeList=test-node" if "job" in args else "test-node"
+        return SimpleNamespace(stdout=text)
+
+    monkeypatch.setattr(runner, "_command", command)
+    assert runner.wait_ready(1, timeout_seconds=5) == ["node0000"]
+    assert [timeout for _, timeout in commands] == [5, 3.75, 2.5, 2.25]
+    assert commands[-1][0] == ["scontrol", "show", "hostnames", "test-node"]
+
+
+def test_wait_ready_pending_allocation_expires_without_adopting_nodes(runner, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("collector.fpm_forward.slurm.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "collector.fpm_forward.slurm.time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    monkeypatch.setattr(
+        runner, "_command", lambda *args, **kwargs: SimpleNamespace(stdout="JobId=1234 JobState=PENDING")
+    )
+    with pytest.raises(TimeoutError, match="not ready before deadline: PENDING"):
+        runner.wait_ready(1, timeout_seconds=0.5)
+    assert clock[0] == 0.5 and runner.hosts == []
+
+
+@pytest.mark.parametrize("snapshot", ["JobId=1234 JobState=FAILED", "JobId=4567 JobState=RUNNING NodeList=test-node"])
+def test_wait_ready_rejects_terminal_or_foreign_allocation(runner, monkeypatch, snapshot):
+    monkeypatch.setattr(runner, "_command", lambda *args, **kwargs: SimpleNamespace(stdout=snapshot))
+    with pytest.raises((ValueError, RuntimeError)):
+        runner.wait_ready(1)
+    assert runner.hosts == []

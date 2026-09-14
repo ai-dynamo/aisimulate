@@ -615,7 +615,13 @@ def build_collection_plan(
         ),
     )
     execution = execution_identity(
-        capability.model_config.payload, decoder_replay=options.decoder_replay, backend=backend
+        capability.model_config.payload,
+        decoder_replay=options.decoder_replay,
+        backend=backend,
+        # The rendered V4.1 collection contract requests text-only HBM Engram.
+        # The producer must independently attest these actual runtime facts.
+        engram_cpu_offload=False,
+        input_modality="text",
     )
     if execution[0] and not options.enforce_eager:
         raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")

@@ -51,6 +51,9 @@ from .types import KVWARM_STRATEGIES
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_SCHEMA = "aic-fpm-collector-checkpoint-v3"
+RUNTIME_ENV_FILENAME = "collector-runtime-env.sh"
+READINESS_TIMEOUT_ENV = "FPM_READINESS_TIMEOUT_SECONDS"
+DEFAULT_READINESS_TIMEOUT_SECONDS = 900
 # KV warm-up dominates a decode cell's wall clock (~80 min for a tep4 decode
 # sweep on MiniMax M2.7); one hour would kill the engine mid-warm-up. 10800
 # matches the r15 parity protocol's budget.
@@ -1088,10 +1091,6 @@ def _cell_generator_overrides(
         env.extend(
             [
                 {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
-                {
-                    "name": "PYTHONPATH",
-                    "value": "/tmp/fpm-bench:/opt/dsv41-dynamo/components/src",
-                },
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
             ]
@@ -1148,6 +1147,27 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
+    if architecture == "DeepseekV41ForCausalLM":
+        # Image layout belongs to this source-pinned adapter. An explicitly
+        # configured path uses the existing deployment environment interface;
+        # both preflight and generated run.sh receive the same resolved value.
+        configured = resolved_env.get("PYTHONPATH")
+        if configured is None:
+            adapter = Path(__file__).parent / "runtime" / "dsv41" / "runtime-paths.json"
+            python_path = json.loads(adapter.read_text())["python_path"]
+        else:
+            python_path = configured.get("value")
+        if not isinstance(python_path, str) or not python_path:
+            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
+        paths = python_path.split(":")
+        if any(not part or not PurePosixPath(part).is_absolute() or "\n" in part or "\r" in part for part in paths):
+            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
+        python_path = ":".join([REMOTE_WORKDIR, *(part for part in paths if part != REMOTE_WORKDIR)])
+        resolved_env["PYTHONPATH"] = {"name": "PYTHONPATH", "value": python_path}
+    readiness = resolved_env.get(READINESS_TIMEOUT_ENV, {}).get("value", DEFAULT_READINESS_TIMEOUT_SECONDS)
+    if isinstance(readiness, bool) or not re.fullmatch(r"[1-9][0-9]*", str(readiness)) or int(readiness) > 3600:
+        raise ValueError(f"{READINESS_TIMEOUT_ENV} must be an integer from 1 through 3600")
+    resolved_env[READINESS_TIMEOUT_ENV] = {"name": READINESS_TIMEOUT_ENV, "value": str(readiness)}
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
@@ -1225,6 +1245,27 @@ def _configured_sampling_metadata(
     }
 
 
+def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
+    # Generator owns run.sh and fpm_env.sh. Mirror only startup inputs through
+    # this Collector-owned file because Slurm does not start a Kubernetes Pod
+    # with extra_env, and run.sh's exports happen after the preflight process.
+    names = {
+        READINESS_TIMEOUT_ENV,
+        "PYTHONPATH",
+        "DYN_FPM_DSV41_REAL_KV",
+        "DYN_FPM_INPUT_TEXT",
+        "DYN_FPM_TOKENIZER_REVISION",
+    }
+    lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
+    for item in overrides["K8sConfig"]["extra_env"]:
+        if item["name"] in names:
+            value = item.get("value")
+            if not isinstance(value, str):
+                raise ValueError(f"Collector startup environment {item['name']} requires a literal string")
+            lines.append(f"export {item['name']}={shlex.quote(value)}")
+    (cell_dir / RUNTIME_ENV_FILENAME).write_text("\n".join(lines) + "\n")
+
+
 def _render_cell(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -1279,6 +1320,7 @@ def _render_cell(
         raise ValueError(f"invalid GeneratorRequest for {cell.cell_id}: {errors}")
     artifacts = generate_from_request(request, output_dir=str(cell_dir))
     _atomic_json(cell_dir / "generator-request.json", params)
+    _write_runtime_environment(cell_dir, overrides)
     return artifacts
 
 
@@ -1794,10 +1836,11 @@ def _run_collection_impl(
             manifest = cell_dir / FPM_MANIFEST_FILENAME
             run_script = cell_dir / FPM_RUN_SCRIPT_FILENAME
             env_script = cell_dir / FPM_ENV_FILENAME
-            if not manifest.exists() or not run_script.exists() or not env_script.exists():
+            runtime_env = cell_dir / RUNTIME_ENV_FILENAME
+            if not manifest.exists() or not run_script.exists() or not env_script.exists() or not runtime_env.exists():
                 raise RuntimeError(
                     f"Generator FPM target did not emit {FPM_MANIFEST_FILENAME}, "
-                    f"{FPM_ENV_FILENAME}, and {FPM_RUN_SCRIPT_FILENAME}"
+                    f"{FPM_ENV_FILENAME}, {FPM_RUN_SCRIPT_FILENAME}, and {RUNTIME_ENV_FILENAME}"
                 )
             resource = _cell_runner(plan, cell, manifest, cell_dir)
             # A prior invocation may have left the same-named workload alive
@@ -1820,6 +1863,7 @@ def _run_collection_impl(
                 [
                     run_script,
                     env_script,
+                    runtime_env,
                     runtime_exec,
                     runtime_preflight,
                     *_stage_points_file(plan, cell_dir),

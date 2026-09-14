@@ -47,10 +47,12 @@ if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
                 from dsv41_scheduler import DeepseekV41RealKVScheduler
 
                 module.InstrumentedScheduler = DeepseekV41RealKVScheduler
-            except BaseException as error:
-                sys.stderr.write(f"V4.1 real-KV producer preflight failed: {error}\n")
-                sys.stderr.flush()
-                os._exit(78)
+            except Exception as error:
+                # This loader runs on a later explicit scheduler import, not
+                # during sitecustomize initialization. Raising fails that import
+                # (including adapter-first spawn imports) and permits traceback,
+                # preflight audit and process cleanup instead of skipping them.
+                raise RuntimeError(f"V4.1 real-KV producer activation failed: {error}") from error
 
         def __getattr__(self, name):
             return getattr(self.original, name)

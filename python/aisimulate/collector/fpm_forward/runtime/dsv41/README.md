@@ -1,12 +1,18 @@
 # DeepSeek V4.1 native FPM canary producer
 
-Status: CPU lifecycle, lazy import, full worker/frontend import and native runtime
-initialization checks pass on the pinned ARM64 image with the composite Dynamo
-runtime below. Four GB200 workers loaded the model and selected
-`FLASHINFER_TRTLLM_MXFP4_MXFP8`; the subsequent graph compilation was terminated by
-the allocation time limit. No completed calibration points from that attempt are
-qualified. Numerical and latency qualification remain required. This is a bounded collection extension,
-not a replacement serving scheduler for general workloads.
+Status: the historical producer completed **126 GB200 calibration points**
+(100 prefill, 26 real decode) in eager TP4/DP1 mode. The retained
+[collection receipt](../../../../../../data/experimental/deepseek-v41/gb200-fpm/calibration-v1/collection-receipt.json)
+binds producer SHA256 `771d2591eb5893f636a4208d60eb10daf51192eb4062bfec22da2f981cbe8ec0`
+and runtime-source manifest `a201055338b2e185db52b44744b0033aca850452580279bde4d3a4d8f8dceaef`.
+The earlier allocation-timeout and eager warmup failures remain failed evidence;
+they are not the completed calibration run. Subsequent ordinary-serving
+[validation](../../../../../../data/experimental/deepseek-v41/gb200-fpm/ordinary-serving-retention128-v1/README.md)
+exposed a large latency mismatch, so completed collection does not establish
+serving prediction accuracy or general scheduler qualification. Current changes
+to activation, startup configuration and explicit identity attestation have CPU
+regression coverage; they have not been collected again on a GPU. This remains
+a bounded collection extension, not a general serving scheduler.
 
 `dsv41_scheduler.py` extends the native Dynamo `InstrumentedScheduler`. It keeps
 native `BenchmarkPoint`, FPM messages, schema-v2 rank artifacts, coverage checks,
@@ -52,8 +58,9 @@ Engram DP group in that case, and gather_engram_hashes returns its input unchang
 The exported parallel config confirms num_ubatches=0 for this canary. The actual
 ModelConfig preflight passed with outer/text model_type=deepseek_v41, architecture
 DeepseekV41ForCausalLM, and resolved Engram cpu_offload=false. Full producer import
-passes with the composite runtime below; GPU numerical/latency validation remains
-pending. Do not substitute the package version string for source verification.
+passes with the composite runtime below. Completed calibration and subsequent
+serving-accuracy limitations are recorded above. Do not substitute the package
+version string for source verification.
 Artifacts report vllm_revision=null, the actual package version, the inspected API
 revision, and the source-manifest digest rather than inventing a global git revision.
 
@@ -95,8 +102,12 @@ Use the native Dynamo scheduler class. The lightweight `sitecustomize` hook
 defers source verification and subclass activation until that exact scheduler
 module is imported. Compiler/helper interpreters do not import Dynamo or vLLM
 through this hook. Both native-first and adapter-first imports are tested. An
-activation failure exits 78 because Python normally continues after a
-sitecustomize exception.
+activation failure raises a chained `RuntimeError` at that later import. It is
+outside Python's startup `sitecustomize` exception handler, so ordinary imports
+fail with a traceback and allow `finally`/exit cleanup. The preflight catches
+activation and shared-SDK import failures, saves a failed audit, and re-raises;
+it also rejects a missing scheduler activation before model loading. It never
+falls back to the unmodified scheduler.
 
 Runtime gates require a local pinned V4.1 checkpoint, TP4, DP1, PP1, no EP, no
 speculation/DSpark, no ubatching/DBO or context parallelism, no KV or encoder connector, and explicit Engram cpu_offload=false.
@@ -130,6 +141,26 @@ batch<=2, decode past KV<=2048, prefill prefix-plus-new<=2048 per request, and
 total newly scheduled prefill tokens<=512. Unsupported points fail the run
 instead of being silently removed.
 A native decode point with context<2 fails instead of being relabeled.
+
+## Startup configuration
+
+The adapter's image-layout default lives in the staged `runtime-paths.json`.
+To use another verified composition, set `PYTHONPATH` through the existing
+`K8sConfig.extra_env` deployment input. The Collector prepends its staged adapter
+directory and writes the identical resolved path into `run.sh` and
+`collector-runtime-env.sh`; the latter also configures preflight in Slurm, where
+Kubernetes Pod environment injection is absent. Required source hashes still
+apply at the configured paths; changing a path does not bypass verification.
+
+`FPM_READINESS_TIMEOUT_SECONDS` uses the same `K8sConfig.extra_env` input, defaults
+to 900 seconds, and accepts integer budgets from 1 through 3600. This is the
+bounded etcd rendezvous wait after each node's preflight, covering staggered
+container startup. For example, `{name: FPM_READINESS_TIMEOUT_SECONDS, value: "600"}`
+sets a ten-minute budget. The outer execution timeout still bounds the entire
+step; this is not an additional native benchmark timing or per-point budget.
+Slurm `wait_ready` separately waits for the exact existing allocation to become
+RUNNING and validates its node count within the caller's single deadline; it does
+not claim the container or model has loaded.
 
 ## State and timing contract
 

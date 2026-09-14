@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -46,7 +47,7 @@ class SlurmCellRunner:
         self.owner_path = self.cell_dir.parent / ".slurm-owners" / f"{self.step_name}.json"
         self.hosts: list[str] = []
 
-    def _command(self, args: list[str], *, timeout: int = 60, check: bool = True):
+    def _command(self, args: list[str], *, timeout: float = 60, check: bool = True):
         from .runner import _run_command
 
         try:
@@ -86,18 +87,42 @@ class SlurmCellRunner:
         self.owner_path.parent.mkdir(parents=True, exist_ok=True)
         self.owner_path.write_text(json.dumps({"job_id": self.job_id, "step_name": self.step_name}) + "\n")
 
-    def wait_ready(self, expected_nodes: int, timeout_seconds: int = 900) -> list[str]:
-        del timeout_seconds
+    def wait_ready(self, expected_nodes: int, timeout_seconds: float = 900) -> list[str]:
         if expected_nodes != self.node_count:
-            raise ValueError("Slurm allocation and frozen FPM node counts disagree")
-        nodelist = os.environ.get("SLURM_JOB_NODELIST") or os.environ.get("SLURM_NODELIST")
-        if not nodelist:
-            raise ValueError("Slurm allocation has no node list")
-        self.hosts = self._command(["scontrol", "show", "hostnames", nodelist]).stdout.split()
-        if len(self.hosts) != self.node_count:
-            raise ValueError(f"FPM needs exactly {self.node_count} allocated nodes, got {len(self.hosts)}")
-        # Stable execution-unit names keep hostnames out of collected identities.
-        return self.pods()
+            raise ValueError("Slurm expected node count disagrees with the generated manifest")
+        if isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Slurm readiness timeout must be finite and positive")
+        deadline = time.monotonic() + timeout_seconds
+        last_state = "unobserved"
+
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError(f"Slurm allocation {self.job_id} not ready before deadline: {last_state}")
+            return budget
+
+        # This method qualifies the existing allocation, not a container or
+        # model. Pyxis starts later in _exec; its startup skew has a separate
+        # bounded rendezvous budget in the staged Collector runtime settings.
+        while True:
+            snapshot = self._command(["scontrol", "show", "job", self.job_id, "--oneliner"], timeout=remaining()).stdout
+            fields = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(\S+)", snapshot))
+            if fields.get("JobId") != self.job_id:
+                raise ValueError("Slurm readiness response does not identify the owned allocation")
+            last_state = fields.get("JobState", "missing")
+            if last_state == "RUNNING":
+                nodelist = fields.get("NodeList")
+                if not nodelist or nodelist in {"(null)", "None"}:
+                    raise ValueError("running Slurm allocation has no node list")
+                hosts = self._command(["scontrol", "show", "hostnames", nodelist], timeout=remaining()).stdout.split()
+                remaining()
+                if len(hosts) != self.node_count or len(set(hosts)) != self.node_count:
+                    raise ValueError(f"FPM Slurm cell requires exactly {self.node_count} allocated nodes, got {hosts}")
+                self.hosts = hosts
+                return self.pods()
+            if last_state not in {"PENDING", "CONFIGURING", "SUSPENDED"}:
+                raise RuntimeError(f"Slurm allocation {self.job_id} cannot become ready from {last_state}")
+            time.sleep(min(1.0, remaining()))
 
     def pods(self, *, include_terminating: bool = True) -> list[str]:
         del include_terminating

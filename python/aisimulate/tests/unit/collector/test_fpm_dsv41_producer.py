@@ -68,9 +68,11 @@ def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_pa
         [
             sys.executable,
             "-c",
-            ("import dsv41_scheduler; " if adapter_first else "")
-            + "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler; "
-            + "assert InstrumentedScheduler.__name__ == 'DeepseekV41RealKVScheduler'",
+            "try:\n"
+            + (" import dsv41_scheduler\n" if adapter_first else "")
+            + " from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler\n"
+            + " assert InstrumentedScheduler.__name__ == 'DeepseekV41RealKVScheduler'\n"
+            + "finally:\n print('normal process cleanup ran', flush=True)\n",
         ],
         env=environment,
         capture_output=True,
@@ -80,5 +82,62 @@ def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_pa
     if valid_source:
         assert result.returncode == 0, result.stderr
     else:
-        assert result.returncode == 78
+        assert result.returncode == 1
+        assert "Traceback (most recent call last)" in result.stderr
+        assert "normal process cleanup ran" in result.stdout
         assert "pinned source mismatch" in result.stderr
+
+
+@pytest.mark.parametrize("failure", ["source", "sdk", "activation"])
+def test_preflight_subprocess_retains_failure_audit_traceback_and_cleanup(tmp_path, failure):
+    runtime = Path(__file__).resolve().parents[3] / "collector/fpm_forward/runtime"
+    shutil.copy2(runtime / "preflight.py", tmp_path / "preflight.py")
+    if failure != "activation":
+        shutil.copy2(runtime / "dsv41/sitecustomize.py", tmp_path / "sitecustomize.py")
+    native = tmp_path / "dynamo/vllm/instrumented_scheduler.py"
+    native.parent.mkdir(parents=True)
+    native.write_text("class BenchmarkPoint: pass\nclass InstrumentedScheduler: pass\n")
+    (tmp_path / "dsv41_scheduler.py").write_text(
+        "import dynamo.vllm.instrumented_scheduler as native\n"
+        "class DeepseekV41RealKVScheduler(native.InstrumentedScheduler): pass\n"
+        "native.InstrumentedScheduler = DeepseekV41RealKVScheduler\n"
+    )
+    (tmp_path / "runtime-source-sha256.json").write_text(
+        json.dumps(
+            {
+                "dynamo/vllm/instrumented_scheduler.py": "0" * 64
+                if failure == "source"
+                else hashlib.sha256(native.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    # A regular private package shadows the installed SDK so this test proves
+    # the exact preflight error path without any model/backend import.
+    (tmp_path / "aiconfigurator_core").mkdir()
+    (tmp_path / "aiconfigurator_core/__init__.py").write_text("raise ImportError('SDK native extension unavailable')\n")
+    audit = tmp_path / "audit.json"
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import preflight\nfrom pathlib import Path\n"
+            f"preflight._AUDIT_PATH = Path({str(audit)!r})\n"
+            "try:\n preflight.main()\nfinally:\n print('preflight cleanup ran', flush=True)\n",
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, PYTHONPATH=str(tmp_path), DYN_FPM_DSV41_REAL_KV="1"),
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert child.returncode == 1
+    assert "Traceback (most recent call last)" in child.stderr
+    assert "preflight cleanup ran" in child.stdout
+    receipt = json.loads(audit.read_text())
+    assert receipt["status"] == "failed"
+    expected = {
+        "source": "pinned source mismatch",
+        "sdk": "SDK native extension unavailable",
+        "activation": "source-checked scheduler activation did not occur",
+    }[failure]
+    assert expected in receipt["import_error"] and expected in child.stderr
