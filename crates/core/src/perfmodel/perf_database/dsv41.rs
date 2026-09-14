@@ -53,13 +53,20 @@ fn invalid(message: impl Into<String>) -> AicError {
     AicError::InvalidPerfData(message.into())
 }
 
-/// Serialize the native leaf body with sorted keys, excluding its display name.
+/// Serialize the measured module geometry with sorted keys.
+/// Display names and the analytical KV-layout selector are not table dimensions.
+/// The latter changes SOL work/bytes, not the source-pinned measured module key.
 pub fn geometry<T: Serialize>(op: &T) -> Result<String, AicError> {
     let mut value = serde_json::to_value(op).map_err(|e| invalid(e.to_string()))?;
     let object = value
         .as_object_mut()
         .ok_or_else(|| invalid("V41 geometry must be an object"))?;
     object.remove("name");
+    // Keep the existing measurement schema independent of a newly appended
+    // analytical operator field. validate_body still compares this exact body
+    // to the stored descriptor, so an explicit layout field (or any unknown
+    // field) in a table remains noncanonical and is rejected.
+    object.remove("kv_cache_layout");
     let sorted: BTreeMap<_, _> = object.iter().collect();
     serde_json::to_string(&sorted).map_err(|e| invalid(e.to_string()))
 }
@@ -418,6 +425,7 @@ mod tests {
             bounded_prefill: false,
             gemm_quant_mode: GemmQuantMode::Fp8Block,
             fmha_quant_mode: FmhaQuantMode::Fp8,
+            kv_cache_layout: crate::operators::dsv41::Dsv41KvCacheLayout::LogicalFp4,
         }
     }
 
@@ -461,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_excludes_names_but_never_shapes_or_quantization() {
+    fn geometry_excludes_names_but_never_shapes_or_arithmetic_quantization() {
         assert_eq!(geometry(&linear()).unwrap(), LINEAR);
         let (_root, table) = table(&fixture());
         let mut op = linear();
@@ -499,6 +507,79 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn analytical_layout_preserves_the_existing_attention_measurement_key() {
+        use crate::operators::dsv41::Dsv41KvCacheLayout;
+        let mut op = attention();
+        let legacy = geometry(&op).unwrap();
+        assert!(!legacy.contains("kv_cache_layout"));
+        validate_geometry("attention", &legacy).unwrap();
+        op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+        assert_eq!(geometry(&op).unwrap(), legacy);
+        op.window_size += 1;
+        assert_ne!(geometry(&op).unwrap(), legacy);
+    }
+
+    #[test]
+    fn physical_layout_query_uses_legacy_table_without_erasing_measured_dimensions() {
+        use crate::operators::dsv41::Dsv41KvCacheLayout;
+        // The pre-layout measurement descriptor is deliberately literal: the
+        // test must not generate its old input using the new key serializer.
+        const LEGACY: &str = r#"{"bounded_prefill":false,"candidate_limit":16384,"compress_ratio":1,"fmha_quant_mode":"fp8","gemm_quant_mode":"fp8_block","head_dim":512,"hidden_size":5120,"index_head_dim":128,"index_n_heads":16,"index_topk":512,"is_candidate_source":false,"is_context":false,"num_heads":16,"o_groups":2,"o_lora_rank":1024,"q_lora_rank":1280,"role":"reuse","window_size":128}"#;
+        let mut op = attention();
+        let mut columns = attention_fixture(&op, 0, "real_kv");
+        columns[1] = Col::Str("geometry", vec![LEGACY; 2]);
+        let (_root, table) = table(&columns);
+        op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+        assert_eq!(geometry(&op).unwrap(), LEGACY);
+        let estimate = table
+            .query("attention", &op, 1, 0, 10, &|_| {
+                Err(AicError::ModelConfig(
+                    "unexpected analytical fallback".into(),
+                ))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(estimate.latency, 1.0);
+        op.fmha_quant_mode = FmhaQuantMode::Bfloat16;
+        assert!(
+            table
+                .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                .unwrap()
+                .is_none()
+        );
+        op.fmha_quant_mode = FmhaQuantMode::Fp8;
+        op.head_dim = 256;
+        assert!(
+            table
+                .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stored_analytical_layout_and_unknown_fields_remain_invalid() {
+        let body: Value = serde_json::from_str(&geometry(&attention()).unwrap()).unwrap();
+        for (key, value) in [
+            ("kv_cache_layout", serde_json::json!("logical_fp4")),
+            ("kv_cache_layout", serde_json::json!("sglang_fp8_bf16")),
+            (
+                "unrecognized_measurement_dimension",
+                serde_json::json!(true),
+            ),
+        ] {
+            let mut altered = body.clone();
+            altered[key] = value;
+            let encoded = serde_json::to_string(&altered).unwrap();
+            assert!(matches!(
+                validate_geometry("attention", &encoded),
+                Err(AicError::InvalidPerfData(message))
+                    if message.contains("unknown or noncanonical fields")
+            ));
+        }
     }
 
     #[test]
