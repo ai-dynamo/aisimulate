@@ -384,6 +384,7 @@ jobs:
         needs.select-full-ci.result == 'success' &&
         needs.select-full-ci.outputs.application_wheel == 'true'
       }}
+    environment: pr-wheel-staging
     strategy:
       fail-fast: false
       matrix:
@@ -403,10 +404,15 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: application-test-wheel-${{ matrix.arch }}
-          path: dist
+      - name: Fetch the application test wheel from Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download dist
       - name: Verify exact staged wheel
         run: python python/aisimulate/tools/verify_release_wheels.py dist
       - name: Smoke-test exact staged wheel
@@ -416,12 +422,6 @@ jobs:
           staged-wheel-smoke/bin/python -c \
             "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
             assert aisimulate_core._build_smoke() > 0"
-      - name: Preserve wheel for trusted staging
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: application-wheel-${{ matrix.arch }}
-          path: dist/*.whl
 
   stage-application-wheel:
     name: Stage Application Wheel (${{ matrix.arch }})
@@ -444,10 +444,21 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: application-wheel-${{ matrix.arch }}
-          path: dist
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
+          sparse-checkout-cone-mode: false
+      - name: Fetch the tested wheel from Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download dist
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -566,6 +577,10 @@ jobs:
     name: Application Test Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    # This environment carries only the narrow intermediate-wheel token. Its
+    # URL/repository must match `automated-release`; final post-merge staging
+    # remains isolated behind that environment's stronger token and review.
+    environment: pr-wheel-staging
     strategy:
       fail-fast: false
       matrix:
@@ -589,16 +604,20 @@ jobs:
       - name: Build the application test wheel once
         run: python -m maturin build --release --out ../../application-test-dist
         working-directory: python/aisimulate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: application-test-wheel-${{ matrix.arch }}
-          path: application-test-dist/*.whl
-          if-no-files-found: error
+      - name: Stage the application test wheel in Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload application-test-dist
 
   application-tests:
     name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard.suite }}, ${{ matrix.shard.group }})
     needs: [fast-ci, select-full-ci, application-test-wheel]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    environment: pr-wheel-staging
     strategy:
       fail-fast: false
       matrix:
@@ -631,10 +650,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: application-test-wheel-${{ matrix.arch }}
-          path: application-test-dist
+      - name: Fetch the application test wheel from Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download application-test-dist
       - name: Install the prebuilt application and test dependencies
         shell: bash
         run: |
