@@ -907,3 +907,162 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
 
     # Normalization materializes every schema default into the candidate; forward_model is no exception.
     assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "op_level"}
+
+
+def _pd_hardware_config(*, recommend=False, **overrides):
+    engine = {
+        **_engine(),
+        "mode": "disaggregated",
+        "backend": "vllm",
+        "backend_version": "0.24.0",
+        "context_length": 4096,
+        "workers": {role: {"hardware": value} for role, value in overrides.items()},
+    }
+    for role in ("prefill", "decode"):
+        engine["workers"].setdefault(role, {})
+    raw = {"engine": engine}
+    if recommend:
+        raw["optimization"] = {"constraints": {"max_candidate_gpus": 4}}
+    return raw
+
+
+@pytest.mark.parametrize("recommend", [False, True])
+@pytest.mark.parametrize("value", ["", " ", "auto", {"choices": ["h200_sxm", "gb200"]}])
+def test_worker_hardware_requires_concrete_sku(recommend, value):
+    schema = CoreRecommendationConfig if recommend else CorePredictionConfig
+    with pytest.raises(ValidationError, match="hardware"):
+        schema.model_validate(_pd_hardware_config(recommend=recommend, decode=value))
+
+
+@pytest.mark.parametrize("recommend", [False, True])
+@pytest.mark.parametrize("mode,role", [("aggregated", "aggregated"), ("afd", "decode")])
+def test_worker_hardware_rejects_non_pd_modes(recommend, mode, role):
+    schema = CoreRecommendationConfig if recommend else CorePredictionConfig
+    raw = _pd_hardware_config(recommend=recommend)
+    raw["engine"].update(mode=mode, workers={role: {"hardware": "gb200"}})
+    with pytest.raises(ValidationError, match="hardware overrides require prefill/decode"):
+        schema.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({}, ("h200_sxm", "h200_sxm")),
+        ({"decode": "gb200"}, ("h200_sxm", "gb200")),
+        ({"prefill": "gb200"}, ("gb200", "h200_sxm")),
+        ({"prefill": "gb200", "decode": "gb200"}, ("gb200", "gb200")),
+    ],
+)
+def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected):
+    import yaml
+
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig
+
+    source = CoreRecommendationConfig.model_validate(_pd_hardware_config(recommend=True, **overrides))
+    smart = recommendation_to_sweeper(source)
+    assert tuple(smart.search_space.hardware_sku_for(role) for role in ("prefill", "decode")) == expected
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "vllm",
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 1,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 256,
+        },
+        parallel_config=DisaggParallelConfig(prefill=parallel, decode=parallel),
+    )
+    sample["backend_version"] = "0.24.0"
+    deployment = build_backend_deployment(sample, backend_version="0.24.0")
+    mapping = _candidate_prediction(
+        source, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
+    )
+    concrete = CorePredictionConfig.model_validate(yaml.safe_load(yaml.safe_dump(mapping)))
+    compiled = prediction_to_replay_spec(concrete).backend_deployment
+    assert concrete.engine.hardware == "h200_sxm"
+    for role, hardware in zip(("prefill", "decode"), expected, strict=True):
+        assert ("hardware" in mapping["engine"]["workers"][role]) == (role in overrides)
+        assert getattr(compiled, f"{role}_engine_args")["aic_system"] == hardware
+        assert compiled.performance_model_metadata[role]["config"]["system"] == hardware
+        assert getattr(deployment, f"{role}_engine_args")["aic_system"] == hardware
+
+
+def test_pd_hardware_mixed_modes_and_auto_fallback():
+    raw = _pd_hardware_config(recommend=True, decode="gb200")
+    raw["engine"]["mode"] = {"choices": ["aggregated", "disaggregated"]}
+    raw["engine"]["workers"]["aggregated"] = {}
+    raw["engine"]["hardware"] = "auto"
+    raw["optimization"]["hardware"] = "h200_sxm"
+    space = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)).search_space
+    assert space.hardware_sku_for("agg") == "h200_sxm"
+    assert space.hardware_sku_for("prefill") == "h200_sxm"
+    assert space.hardware_sku_for("decode") == "gb200"
+
+
+@pytest.mark.parametrize("same_version", [False, True])
+def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_version):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    calls = []
+
+    def resolve(hardware, backend):
+        calls.append((hardware, backend))
+        return "0.24.0" if same_version or hardware == "h200_sxm" else "0.23.0"
+
+    monkeypatch.setattr("aisimulate.compiler.resolve_backend_version", resolve)
+    raw = _pd_hardware_config(decode="gb200")
+    del raw["engine"]["backend_version"]
+    config = CorePredictionConfig.model_validate(raw)
+    if same_version:
+        deployment = prediction_to_replay_spec(config).backend_deployment
+        assert deployment.backend_version == "0.24.0"
+        for role in ("prefill", "decode"):
+            assert getattr(deployment, f"{role}_engine_args")["aic_backend_version"] == "0.24.0"
+    else:
+        with pytest.raises(ValueError, match="Set engine.backend_version"):
+            prediction_to_replay_spec(config)
+    assert set(calls) == {("h200_sxm", "vllm"), ("gb200", "vllm")}
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_pd_predict_keeps_legacy_version_defaults_without_hardware_override(monkeypatch, override):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    def resolve(hardware, backend):
+        assert hardware == "gb200"
+        return "0.24.0"
+
+    monkeypatch.setattr("aisimulate.compiler.resolve_backend_version", resolve)
+    raw = _pd_hardware_config(**({"prefill": "gb200", "decode": "gb200"} if override else {}))
+    del raw["engine"]["backend_version"]
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    assert deployment.backend_version == ("0.24.0" if override else "")
+
+
+@pytest.mark.parametrize("router_hardware", ["h200_sxm", "gb200", None])
+def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hardware):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
+
+    config = CorePredictionConfig.model_validate(_pd_hardware_config(prefill="gb200", decode="gb200"))
+    spec = AdapterReplaySpec(
+        runtime_hooks=(
+            RuntimeHookSpec(
+                provider="dynamo.router",
+                kind="placement_policy",
+                api_version=1,
+                config={
+                    "router_config": {"router_prefill_load_model": "aic"},
+                    "aic_perf_config": {"aic_system": router_hardware},
+                },
+            ),
+        ),
+    )
+    if router_hardware == "gb200":
+        prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
+    else:
+        with pytest.raises(ValueError, match="does not match effective prefill_hardware_sku"):
+            prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
