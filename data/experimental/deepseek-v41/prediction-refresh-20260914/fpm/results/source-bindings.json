@@ -1,0 +1,668 @@
+{
+  "exporter_sha256": "4afb414ece06f08a3f3e4372c333965461b466865cdf2bafaf15385e46f49c2f",
+  "inputs": {
+    "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/reports/field/e2e.json.gz": {
+      "original_input_sha256": {
+        "audit": "3fd8990a91c91cbb38d200af818bdd9e70de949a67396a0de81d672c5764dea0",
+        "client_summary": "c6f3b749c8f6d5c3c31d3d1351f65dccbd82c31ae270355f914d95a1494d1594",
+        "measurement": "a097244eaa178642abba05a7f0258b57cf319efd76b59f0361686040d1d88166",
+        "plan": "bf2a06f69eb9bd87e4bc34750c947f41123a7aa7edbdc74da20c356769fbb2c3",
+        "prediction_config": "45b49204bc9854c2a479595c097ef34d68f771dec1fa46ad1602a63e7424ee23",
+        "scheduler_receipt": "a4bd54496a29664ee2df7c2a452c80537b1ebc5dea8b136942ebd79bae27878e"
+      },
+      "sha256": "eb20df00cd136e42e22b1ab2b0cf8915287d760d53826728a6e4edd4c5c414f2"
+    },
+    "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/reports/service/e2e.json.gz": {
+      "original_input_sha256": {
+        "audit": "da17ac6a201bc59c9e5eadf08f39f1e55129faca0f3faae8f7e973f41c3c49d5",
+        "client_summary": "348d57cc50b66e554796d5b42b7c454108237fbfbe4f5dcf52de8e501a95b430",
+        "measurement": "80a6e088508cef2fa9c7cec62d6763b0712962b83b586e0d11d9ce5ae557e203",
+        "plan": "f42843244f5b3e6cda37b9906b364254c9f1ffff06fc998d85b1754c982236aa",
+        "prediction_config": "45b49204bc9854c2a479595c097ef34d68f771dec1fa46ad1602a63e7424ee23",
+        "scheduler_receipt": "186c18a2c4637013846c92ccd2e17b204bce3402cd505c08d837d76aba635384"
+      },
+      "sha256": "0e45ba2cf3e5b1afb4f98d2e267f73416cf840353e17b90a279ad739bd8654be"
+    },
+    "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/reports/field/e2e.json.gz": {
+      "original_input_sha256": {
+        "audit": "e96196dd05891b834509dd550c1cff5f407b291a70d1fb8768f07d93ad8c776d",
+        "client_summary": "a3be5c8e06bd84a08fd2e21d69a6ad9e0f70ba0bf6bed98e5cf5098c30a90843",
+        "measurement": "ffe857b94d15b7a25347dc9240ada62a4ff23e61dcff8f12dffdb9b38bba3837",
+        "plan": "8acfedab55c6002046bab49ee48f0a4944854cf65ce349167af4e00181636b37",
+        "prediction_config": "0cbb7e25454e9a3a086be438f61f4b1c06d6f0f54c31e10b7b1e4d9de946fb66",
+        "scheduler_receipt": "d7c6035fff05a95e776cf72ed23d93557ec8164e9538501d4f72878a106abea3"
+      },
+      "sha256": "a5c7fb53d3eef4fb3c9fa0c23c81efb1748f87cdc70307845b3ad9d256a81883"
+    },
+    "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/reports/service/e2e.json.gz": {
+      "original_input_sha256": {
+        "audit": "60f55049b08e81eb7cb803fe480ebd10b823ae7a08b179bcb1ba676677bc71aa",
+        "client_summary": "bde76d090ba5cc86d99d4942a801fbd4f61f4cad2ebcaddce16bbd93baefbc78",
+        "measurement": "1f59f03c4872e3bfe8d15abc837dc6d1490c85ba8dfd314bfe4a25859e5ba49d",
+        "plan": "f75635695575bb09baa5046a6daa6c06b3174d4fac76a1af983a59aef4be3f21",
+        "prediction_config": "0cbb7e25454e9a3a086be438f61f4b1c06d6f0f54c31e10b7b1e4d9de946fb66",
+        "scheduler_receipt": "a3cd7876a12f3d67823816fcea82721255e0ae22f3af156f40b2ac5022657e6b"
+      },
+      "sha256": "841c3c413a983d62acc4b321f7f210b663ec9d6f16a034dff5e51961b203a646"
+    },
+    "dl-diagnostic-v2.json": {
+      "bytes": 68517,
+      "inputs_sha256": {
+        "completion": "bbcde88ca1de407fa2d4d9ba210b2d58bca48db67878f8842d76d27e2ad67a44",
+        "decode": "d27ccd341f3132fdb06e0194467afd5ec8b4d6b2c8d63487cedfc86f3945c086",
+        "independent_closure": "fd57fb71c84dacf83e58a3b7e29c59df10d26022a372244eecc547c7b3f10d78",
+        "paired_report": "10a1ec96087fd8c983310d232e6340048d9d1a28af3c58df7990d84e1bc14e3c",
+        "point_index": "865727cb66aae227c10c6c85014a7fd5b8b2f7a40ad174e43774d527f1a767dd",
+        "prefill": "e861fa4b45a933805a1c8a230045f36248a3ac3d8066a3325cfeecb9e30798c4"
+      },
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "vllm",
+        "backend_version": "0.1.dev20904+g179dd0fa9",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb200",
+        "systems_path": "data/experimental/deepseek-v41/gb200-fpm/calibration-v1/systems",
+        "tp_size": 4
+      },
+      "prediction_config_sha256": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "e09219c2202d2bb09b1f09c6cf6b9daaaefcf183ce49473a20c2ae01480b4f90",
+      "source_sha256": "6c24442bf8afeda7d78cfadc39f4676ef0079eb147a8110f963a73cb705be186",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+          "gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "2976691f89eee8b237f5ca914d7d79b875beb09d7cb188efac8c02c244dcec0d",
+        "system_spec_sha256": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+      }
+    },
+    "gb200-refresh-v1/independent-holdout.json": {
+      "bytes": 113440,
+      "input_files_sha256": {
+        "holdout_admission": "22cf1f25a9f5bd71b909cbd2ef35313dc7bee83fc27856cfd19d2f023f90098f",
+        "normalized_holdout": "98664d2d97c90cb01855a15c65cac1a272989404d03aaeaf83a28dcd546a1917",
+        "normalizer_source": "cecf6ef107e2aa3f9b8af95f29696c1ec357485905046843595fe80b26110409",
+        "prediction_config": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767"
+      },
+      "prediction_sources": {
+        "adapter": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
+        "comparison": "19808d0638f3662a2857207d5a2b0e931a33a16ac0737db1217a4adc3a4dafb2",
+        "engine": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "model": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "model_resolution": "c512c6647503cab6fe28ca0cb50cd7f7f9430f46e6748b7ab280806dc22d4214",
+        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "normalization": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9"
+      },
+      "resolved_model_identity": {
+        "analytical_precision": "checkpoint_native_without_activation_override",
+        "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+        "fpm_query_identity_override": {
+          "fpm_fmha_dtype": "fp8"
+        },
+        "precision_contract": "qualified_fpm_table_fmha_fp8_selector_not_analytical_operand_precision",
+        "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+      },
+      "sha256": "792d7a2376dda846b7b275a97fdba2e44c6922f15f6560024f3a3b91f785f430"
+    },
+    "gb200-refresh-v1/ordinary-e2e.json": {
+      "bytes": 1202063,
+      "input_sha256": {
+        "audit": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de",
+        "client_summary": "07ee41c79f675a7988e1e0c36219624f6160406fe350458b128a079432e0a3a8",
+        "measurement": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a",
+        "plan": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1",
+        "prediction_config": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
+        "scheduler_receipt": "0c2f04da6ac61d8cbda75750c2fcc8b150f2e90d380b80f516b88cfc2d0827f0"
+      },
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "vllm",
+        "backend_version": "0.1.dev20904+g179dd0fa9",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb200",
+        "systems_path": "data/experimental/deepseek-v41/gb200-fpm/calibration-v1/systems",
+        "tp_size": 4
+      },
+      "prediction_sources": {
+        "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+        "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
+        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
+        "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
+        "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+      },
+      "resolved_model_identity": {
+        "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+        "fpm_query_identity_override": {
+          "fpm_fmha_dtype": "fp8"
+        },
+        "fpm_selector_semantics": "Table identity only; checkpoint arithmetic and memory remain unchanged",
+        "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
+        "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+      },
+      "sha256": "fb75237924a724e8ed45fb000defdd6f8e7aee72ef82fc931cbbad10ebcf1228",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+          "gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "2976691f89eee8b237f5ca914d7d79b875beb09d7cb188efac8c02c244dcec0d",
+        "system_spec_sha256": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+      }
+    },
+    "gb200-refresh-v1/ordinary-trace.json": {
+      "bytes": 20683955,
+      "input_sha256": {
+        "audit": "16632440eff6ec5bf65d6729feb68bf08bef5b1b339f6f1a865e2383fa0801de",
+        "measurement": "01dbbec9c4b6998f26f27943c2927ae3648653336b303224c06082b0b9dbd30a",
+        "plan": "b7cefcc9e64677252c0e12e09fefdb2fef19f85184afcc5943a664beefea09b1",
+        "prediction_config": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767"
+      },
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "vllm",
+        "backend_version": "0.1.dev20904+g179dd0fa9",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb200",
+        "systems_path": "data/experimental/deepseek-v41/gb200-fpm/calibration-v1/systems",
+        "tp_size": 4
+      },
+      "prediction_sources_sha256": {
+        "adapter": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
+        "analysis": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
+        "engine": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "forward_comparison": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+        "model": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "normalization": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+        "statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+      },
+      "resolved_model_identity": {
+        "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+        "fpm_query_identity_override": {
+          "fpm_fmha_dtype": "fp8"
+        },
+        "fpm_selector_semantics": "Table identity only; checkpoint arithmetic and memory remain unchanged",
+        "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
+        "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+      },
+      "sha256": "6eed526d590d8c5c65db7249306f5e025f7325fbe978d845d502111cf02f864d",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+          "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+          "gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "2976691f89eee8b237f5ca914d7d79b875beb09d7cb188efac8c02c244dcec0d",
+        "system_spec_sha256": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+      }
+    },
+    "gb300-native-v2/gb300-off-core-native.json.gz": {
+      "bytes": 1062697,
+      "input_sha256": "a82402ae0a2f181171db55e44cba162f9de462c7b98790c9a76544572e88fbfe",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "352e0563b39834abf01e9af6d7c7680b7a6173d200999a66f86141e9cbcf6a29",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "53a5e59b5c4351425332a928a1a5d74dae404e9b3d86083f4d07f36348a0bff8",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-native-v2/gb300-off-field-native.json.gz": {
+      "bytes": 247217,
+      "input_sha256": "0ffe3962927490e9bc45191ab481f6eb53be67cd6ec9309161340b637d98d45f",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "30fe6f0c19c4220d7493bbe9db1e6bc790af48be3241822e5c68087cefe163e9",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "53a5e59b5c4351425332a928a1a5d74dae404e9b3d86083f4d07f36348a0bff8",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-native-v2/gb300-off-service-native.json.gz": {
+      "bytes": 247828,
+      "input_sha256": "b49e624ed5bf68cac22695c6267ef91aaaa1f4797173af16b7f3b4291d155502",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "5af00148baa74a08c61567b1650cd77623168efb4023ff422c35c317efa147ee",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "53a5e59b5c4351425332a928a1a5d74dae404e9b3d86083f4d07f36348a0bff8",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-native-v2/gb300-on-core-native.json.gz": {
+      "bytes": 2721075,
+      "input_sha256": "9c23e7cce528d04f5bf1aa75f026498edc03bb430a64792edc8dba5cf44e56be",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": true,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "ba6bd27f62690893be5b16b1d13c31229518ea2eb07f5c5be9887db11345b9a7",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "31392c9ade0c18fb07f604a6cef731147f0233741201a2b5309ad9d2b21c67c3",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-native-v2/gb300-on-field-native.json.gz": {
+      "bytes": 252949,
+      "input_sha256": "da728c5e66f251f6cc03721d39702d543418635feeec3bbe5f2cb7cc08717506",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": true,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "26fb6aaffc524ea8c15b188fcbbe86e70e2af7941a8f93c9eeb1d0600bd4d9be",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "31392c9ade0c18fb07f604a6cef731147f0233741201a2b5309ad9d2b21c67c3",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-native-v2/gb300-on-service-native.json.gz": {
+      "bytes": 253021,
+      "input_sha256": "a60bfeb41fe729dedb818f95f5db2d3901a7958f00180f352e912b4e2a149e5c",
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": true,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "sha256": "0089c7fc9851dd7ee2cac8ca5c2094c4e8d494ac3d8f290ea29c37b56e4c25c6",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "31392c9ade0c18fb07f604a6cef731147f0233741201a2b5309ad9d2b21c67c3",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-off-cold-v3.json.gz": {
+      "bytes": 217612,
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "packet_sha256": "ca98d203890a856a7a89e0b3070c2206b67729591dec4467799985437f4f7007",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "prediction_config_sha256": "e7b273a372d14767e8423639603e8c9d027d0415a0f69890f5c423d1e12bccb8",
+      "prediction_sources": {
+        "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+        "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
+        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
+        "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
+        "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "script_sha256": "1e0cac961bcaa40dd367f75363cc2e67c6b572d3bb7a194a6f8a1b9a546fb152",
+      "sha256": "8191a8862d7b8e2e3e9b8a452f5c92547a90364e415f24b2f008945ccf2d4cc9",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "53a5e59b5c4351425332a928a1a5d74dae404e9b3d86083f4d07f36348a0bff8",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-off-forward46-v1.json": {
+      "bytes": 64416,
+      "input_sha256": {
+        "heldout-plan": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def",
+        "observations": "d4bf262698790520abd704dae04bed269cad7cc8c10c2e5a7b90ac90a9ddc410"
+      },
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": false,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/off-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "prediction_config_sha256": "e7b273a372d14767e8423639603e8c9d027d0415a0f69890f5c423d1e12bccb8",
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "resolved_model_identity": {
+        "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+        "fpm_query_identity_override": {
+          "fpm_fmha_dtype": "fp8"
+        },
+        "fpm_selector_semantics": "Table identity only; checkpoint arithmetic and memory remain unchanged",
+        "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
+        "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+      },
+      "sha256": "600eed6d0b15b649ad6c0984889e47360a121f7d3bd513d55cc1fb7bee0433a8",
+      "source_sha256": "9871b0d758101e7fdefc56e31334d8952e92611aadb178fd54eb25c8884f887e",
+      "systems_identity": {
+        "data_dir": "data/gb300",
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "fcecd51b68033f2e7bb564fb70b0b3b304e049cb37880bb52f51ec0a839696f9",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete explicit systems overlay; includes unused files",
+        "inventory_sha256": "53a5e59b5c4351425332a928a1a5d74dae404e9b3d86083f4d07f36348a0bff8",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-on-cold-v3.json.gz": {
+      "bytes": 430483,
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "packet_sha256": "c5446a862e47e1f6dbdf31716e32a14bd00d69f5b7712f82529dc856115bb091",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": true,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "prediction_config_sha256": "788bf13431f4227117d8aa96ebf1e109ffda8a646882e94336f5598726597997",
+      "prediction_sources": {
+        "axis_bridge": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+        "e2e_comparison": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
+        "engine_compiler": "42ca9ed7eaf34eacbf0a2b19b08d70a73b31109d1cbf18bea759f397d4304547",
+        "forward_identity": "61af8ffdcb8bfbc250235a97b9ae10377f5654079232ea30b542c31a2d4d6d79",
+        "model_graph": "fc240c7f6e2e13895d0a95a5af2b177044e0908b9601a411a1caac113504cba1",
+        "native_extension": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+        "native_python_bridge": "629838ea6be3d023be37734fc46bcf91fc0ae3654ca3e0bdac2be6ff70ab54ba",
+        "trace_qualification": "927653ca73334c4e94e9d2e03a62a509920aae4fd701a065decc269125bfc4dd",
+        "trial_statistics": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+      },
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "script_sha256": "1e0cac961bcaa40dd367f75363cc2e67c6b572d3bb7a194a6f8a1b9a546fb152",
+      "sha256": "a8d7e95166e47d00152f4b4672e875b0ab23e207766b5809af4dfdfd790219dc",
+      "systems_identity": {
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete selected overlay including unused files",
+        "inventory_sha256": "31392c9ade0c18fb07f604a6cef731147f0233741201a2b5309ad9d2b21c67c3",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    },
+    "gb300-on-forward46-v1.json": {
+      "bytes": 67302,
+      "input_sha256": {
+        "heldout-plan": "20fb257c97b8e87d4d1468a8ea9382de51a1584925a2c7e1e0af6a40708b4def",
+        "observations": "a468a4e5364bebdfd28677a51fe489e4c17d5778ab11009b41dd69a7dc8a7568"
+      },
+      "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+      "prediction_config": {
+        "attention_dp_size": 1,
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "database_mode": "SILICON",
+        "decoder_replay": true,
+        "enable_shared_layer": false,
+        "forward_model": "fpm",
+        "fpm_fmha_dtype": "fp8",
+        "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pp_size": 1,
+        "schema_version": 1,
+        "strict_provenance": true,
+        "system_name": "gb300",
+        "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/systems",
+        "tp_size": 4
+      },
+      "prediction_config_sha256": "788bf13431f4227117d8aa96ebf1e109ffda8a646882e94336f5598726597997",
+      "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+      "resolved_model_identity": {
+        "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+        "fpm_query_identity_override": {
+          "fpm_fmha_dtype": "fp8"
+        },
+        "fpm_selector_semantics": "Table identity only; checkpoint arithmetic and memory remain unchanged",
+        "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
+        "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4"
+      },
+      "sha256": "83f6cde6593f013bfc9cef34f427de3f8b5137149b891b381cb1a5ffd5e35e4e",
+      "source_sha256": "9871b0d758101e7fdefc56e31334d8952e92611aadb178fd54eb25c8884f887e",
+      "systems_identity": {
+        "data_dir": "data/gb300",
+        "files_sha256": {
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json": "8905efc3b119701b315435623662017edde903d412049229e8097ac25061e559",
+          "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+          "gb300.yaml": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        "inventory_scope": "complete explicit systems overlay; includes unused files",
+        "inventory_sha256": "31392c9ade0c18fb07f604a6cef731147f0233741201a2b5309ad9d2b21c67c3",
+        "system_spec_sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+      }
+    }
+  },
+  "native_extension_sha256": "d90c169679f39f4d389e99c3ffa899ca1249af02fcdbed4203ef44b2abcd8b5d",
+  "no_new_observations": true,
+  "no_refit": true,
+  "predictor_commit": "bd51394fc13ef1a018eb92728add8dd24be1beac",
+  "projection": "Exact numeric pairs and denominators; private runtime identifiers omitted."
+}
