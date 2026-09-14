@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import builtins
+import itertools
 import json
 from pathlib import Path
 
@@ -547,3 +548,88 @@ def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path,
             remaining = (starts[record["request_id"]] - cut) / speedup
             assert record["arrival_time_ms"] == pytest.approx(remaining)
             assert record["dispatched_at_ms"] == pytest.approx(remaining)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_cold_suffix(
+    tmp_path, backend: str
+) -> None:
+    # Self-authored native request-trace events, selected as agentic by context.
+    path = tmp_path / "dynamo-agentic-snapshot.jsonl"
+    starts = {f"dynamo-request-{index}": index * 1000 for index in range(3)}
+    rows = [
+        {
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10_000 + start + 100,
+            "agent_context": {"session_id": "dynamo-conversation"},
+            "request": {
+                "request_id": request_id,
+                "model": "model",
+                "request_received_ms": 10_000 + start,
+                "total_time_ms": 100,
+                "output_tokens": 1,
+                "replay": {
+                    "trace_block_size": 64,
+                    "input_length": 128,
+                    "input_sequence_hashes": [10, 20],
+                },
+            },
+        }
+        for request_id, start in starts.items()
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    config = {
+        "engine": {**_engine(), "backend": backend},
+        "traffic": {
+            "source": {"type": "trace", "format": "dynamo", "paths": [str(path)], "block_size": 64},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
+        },
+    }
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    evidence = None
+    for speedup in [1.0, 2.0]:
+        config["traffic"]["load"] = {"type": "trace_timestamps", "agentic_lanes": 1, "speedup": speedup}
+        legacy = _run(config).metadata["native_report"]
+        assert "agentic_snapshots" not in legacy
+        assert legacy["completed_requests"] == len(starts)
+        legacy_records = sorted(legacy["per_request"], key=lambda record: record["arrival_time_ms"])
+        assert legacy_records[0]["arrival_time_ms"] == 0
+        for previous, current in itertools.pairwise(legacy_records):
+            # Legacy execution follows actual completion plus the recorded gap.
+            assert current["arrival_time_ms"] == pytest.approx(previous["last_token_ms"] + 900 / speedup)
+
+        config["traffic"]["load"]["agentic_snapshot"] = {"seed": 42}
+        report = _run(config).metadata["native_report"]
+        snapshot = report["agentic_snapshots"][0]
+        if evidence is None:
+            evidence = snapshot
+        assert snapshot == evidence
+        assert snapshot["schema"] == "aisimulate.agentic.snapshot.v1"
+        assert snapshot["seed"] == 42
+        assert snapshot["recorded_start_ms"] == 0
+        assert snapshot["recorded_last_start_ms"] == 2000
+        cut = snapshot["t_star_ms"]
+        assert 500 <= cut < 1500
+        assert {
+            request["source_request_id"]: (request["recorded_start_ms"], request["recorded_end_ms"])
+            for request in snapshot["requests"]
+        } == {request_id: (start, start + 100) for request_id, start in starts.items()}
+        retained = {
+            request["source_request_id"]: request["identity"]
+            for request in snapshot["requests"]
+            if not request["historical"]
+        }
+        assert set(retained) == {request_id for request_id, start in starts.items() if start >= cut}
+        assert 0 < len(retained) < len(starts)
+        assert report["completed_requests"] == len(retained)
+        assert len(snapshot["primers"]) == 1
+        assert snapshot["primers"][0]["input_length"] == 128
+        assert {record["request_id"] for record in report["per_request"]} == set(retained)
+        for record in report["per_request"]:
+            assert record["agentic"] == retained[record["request_id"]]
+            assert record["agentic"]["play_id"] == snapshot["play_id"]
+            assert record["agentic"]["cache_id"] == snapshot["cache_id"]
+        first = min(report["per_request"], key=lambda record: record["first_admit_ms"])
+        assert first["admission_history"][0]["reused_input_tokens"] == 0
+        assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)

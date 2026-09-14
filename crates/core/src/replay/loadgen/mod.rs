@@ -65,3 +65,6 @@ mod tests;
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod dynamo_snapshot_tests;

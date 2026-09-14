@@ -195,7 +195,10 @@ recommendation use the same field.
 This is a request-boundary snapshot. Requests whose recorded start is strictly
 before the cut are history, including requests whose recorded service interval
 crosses the cut. Requests at or after the cut remain in the continuation.
-Recorded service intervals provide dependency-timer provenance; the snapshot
+Recorded service intervals provide dependency-timer provenance. Dynamo request
+traces retain their existing first-request clock origin and preserve all source
+intervals separately from completion-relative execution gates; legacy graph
+serialization and digests are unchanged. The snapshot
 does not estimate partial decode progress or restore a physical engine checkpoint.
 For each continuing conversation with earlier history, its primer description
 references the latest prior request's complete original input. No prompt is

@@ -610,7 +610,7 @@ fn lower_agentic(
         })
         .collect::<Result<Vec<_>>>()?;
     assign_dependency_component_play_ids(&mut rows, "dynamo-play");
-    AgenticTrace::from_agentic_mooncake_rows(
+    let mut graph = AgenticTrace::from_agentic_mooncake_rows(
         AgenticMooncakeHeader {
             schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
             version: AGENTIC_MOONCAKE_VERSION,
@@ -622,7 +622,18 @@ fn lower_agentic(
             },
         },
         rows,
-    )
+    )?;
+    // Execution remains dependency-relative. Snapshot preparation also needs
+    // every recorded service interval, including dependent requests. Keep the
+    // importer's existing first-request clock origin and graph digest intact.
+    for node in &mut graph.nodes {
+        let entry = &entries[id_to_index[&node.request_id]];
+        node.recorded_interval_ms = Some((
+            (entry.start_ms - first_start) as f64,
+            (entry.end_ms - first_start) as f64,
+        ));
+    }
+    Ok(graph)
 }
 
 fn dependency_between(

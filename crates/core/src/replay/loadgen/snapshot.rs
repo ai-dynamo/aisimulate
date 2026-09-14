@@ -80,6 +80,7 @@ pub struct AgenticReplayContext {
     index_by_id: FxHashMap<String, usize>,
     node_to_play: Vec<usize>,
     topological_rank: Vec<usize>,
+    recorded_intervals: Vec<(f64, Option<f64>)>,
     pub(super) outputs: Vec<Vec<u32>>,
     token_stride: u64,
     request_stride: u128,
@@ -162,6 +163,28 @@ impl ValidatedAgenticGraph {
             }
             token_stride = token_stride.max(interner.len() as u64);
         }
+        let recorded_intervals = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let (start, end) = node
+                    .recorded_interval_ms
+                    .map(|(start, end)| (start, Some(end)))
+                    .unwrap_or_else(|| {
+                        (
+                            node.not_before_ms,
+                            node.recorded_api_time_ms.map(|d| node.not_before_ms + d),
+                        )
+                    });
+                if !start.is_finite()
+                    || start < 0.0
+                    || end.is_some_and(|end| !end.is_finite() || end < start)
+                {
+                    bail!("recorded API interval overflow or invalid interval");
+                }
+                Ok((start, end))
+            })
+            .collect::<Result<Vec<_>>>()?;
         // Preserve the complete corpus's existing output RNG consumption.
         let mut rng = StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
         let outputs = self
@@ -184,6 +207,7 @@ impl ValidatedAgenticGraph {
             index_by_id,
             node_to_play,
             topological_rank,
+            recorded_intervals,
             token_stride,
             request_stride: self.nodes.len() as u128 + 1,
         });
@@ -230,13 +254,13 @@ impl AgenticReplayContext {
         let first = play
             .nodes
             .iter()
-            .map(|&i| self.graph.nodes[i].not_before_ms)
+            .map(|&i| self.recorded_intervals[i].0)
             .min_by(f64::total_cmp)
             .context("source play has no requests")?;
         let last = play
             .nodes
             .iter()
-            .map(|&i| self.graph.nodes[i].not_before_ms)
+            .map(|&i| self.recorded_intervals[i].0)
             .max_by(f64::total_cmp)
             .expect("nonempty play");
         // Versioned, platform-independent uniform draw: the upper 53 bits of a
@@ -291,11 +315,11 @@ impl AgenticReplayContext {
         let mut predecessor = BTreeMap::<&str, usize>::new();
         for &index in &play.nodes {
             let node = &self.graph.nodes[index];
-            let historical = node.not_before_ms < t_star_ms;
+            let (recorded_start, recorded_end) = self.recorded_intervals[index];
+            let historical = recorded_start < t_star_ms;
             if historical
                 && node.dependencies.iter().any(|edge| {
-                    self.graph.nodes[index_by_id[edge.request_id.as_str()]].not_before_ms
-                        >= t_star_ms
+                    self.recorded_intervals[index_by_id[edge.request_id.as_str()]].0 >= t_star_ms
                 })
             {
                 bail!(
@@ -305,9 +329,8 @@ impl AgenticReplayContext {
             }
             if historical {
                 let current = predecessor.entry(&node.session_id).or_insert(index);
-                if node
-                    .not_before_ms
-                    .total_cmp(&self.graph.nodes[*current].not_before_ms)
+                if recorded_start
+                    .total_cmp(&self.recorded_intervals[*current].0)
                     .then_with(|| {
                         self.topological_rank[index].cmp(&self.topological_rank[*current])
                     })
@@ -318,19 +341,17 @@ impl AgenticReplayContext {
             } else {
                 live_conversations.insert(node.session_id.as_str());
             }
-            let mut delay = (node.not_before_ms - t_star_ms).max(0.0);
+            let mut delay = (recorded_start - t_star_ms).max(0.0);
             let mut pending = Vec::new();
             if !historical {
                 for edge in &node.dependencies {
-                    let source = &self.graph.nodes[index_by_id[edge.request_id.as_str()]];
-                    if source.not_before_ms < t_star_ms {
-                        let trigger = source.not_before_ms
-                            + match edge.trigger {
-                                AgenticDependencyTrigger::Dispatch => 0.0,
-                                AgenticDependencyTrigger::Completion => {
-                                    source.recorded_api_time_ms.unwrap_or(0.0)
-                                }
-                            };
+                    let (start, end) =
+                        self.recorded_intervals[index_by_id[edge.request_id.as_str()]];
+                    if start < t_star_ms {
+                        let trigger = match edge.trigger {
+                            AgenticDependencyTrigger::Dispatch => start,
+                            AgenticDependencyTrigger::Completion => end.unwrap_or(start),
+                        };
                         let due = trigger + edge.delay_ms;
                         if !due.is_finite() {
                             bail!(
@@ -344,15 +365,11 @@ impl AgenticReplayContext {
                     }
                 }
             }
-            let end = node.recorded_api_time_ms.map(|d| node.not_before_ms + d);
-            if end.is_some_and(|v| !v.is_finite()) {
-                bail!("recorded API interval overflow");
-            }
             snapshot.evidence.requests.push(AgenticSnapshotRequest {
                 source_request_id: node.request_id.clone(),
                 identity: snapshot.identity_at(index),
-                recorded_start_ms: node.not_before_ms,
-                recorded_end_ms: end,
+                recorded_start_ms: recorded_start,
+                recorded_end_ms: recorded_end,
                 historical,
                 remaining_delay_ms: if historical { 0.0 } else { delay },
                 pending_dependencies: pending,
