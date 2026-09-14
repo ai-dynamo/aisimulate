@@ -588,9 +588,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup-python-rust
-        with:
-          python-version: "3.12"
+      - uses: ./.github/actions/setup-manylinux-python-rust
       - run: python -m pip install 'maturin>=1.12,<2'
       - name: Build the application test wheel once
         run: python scripts/build_manylinux_wheel.py --output-dir application-test-dist
@@ -820,9 +818,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-python-rust
-        with:
-          python-version: "3.12"
+      - uses: ./.github/actions/setup-manylinux-python-rust
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist

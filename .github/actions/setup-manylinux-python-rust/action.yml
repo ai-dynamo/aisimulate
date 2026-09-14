@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Set up manylinux Python and Rust
+description: Select bundled CPython 3.12 and prepare Rust in the pinned manylinux images
+
+runs:
+  using: composite
+  steps:
+    - name: Select bundled Python and verify image tools
+      shell: bash
+      env:
+        MANYLINUX_PYTHON_ROOT: /opt/python/cp312-cp312
+      run: |
+        set -euo pipefail
+        "${MANYLINUX_PYTHON_ROOT}/bin/python" -c \
+          'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+        for tool in cc c++ make auditwheel patchelf; do
+          command -v "${tool}" >/dev/null || {
+            echo "::error::manylinux image is missing required tool: ${tool}"
+            exit 1
+          }
+        done
+        echo "${MANYLINUX_PYTHON_ROOT}/bin" >> "${GITHUB_PATH}"
+        {
+          echo "PYO3_PYTHON=${MANYLINUX_PYTHON_ROOT}/bin/python"
+          echo "LIBRARY_PATH=${MANYLINUX_PYTHON_ROOT}/lib"
+          # HOME is the checkout; keep toolchain manifests outside the source
+          # tree inspected by build_release_artifacts.py and cargo package.
+          echo "CARGO_HOME=${RUNNER_TEMP}/cargo"
+          echo "RUSTUP_HOME=${RUNNER_TEMP}/rustup"
+        } >> "${GITHUB_ENV}"
+    - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable

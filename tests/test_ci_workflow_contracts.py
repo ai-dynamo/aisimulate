@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -761,17 +762,83 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
         "rust",
         "rust-feature-modes",
         "public-api-rust",
-        "application-test-wheel",
         "python-compatibility",
         "engine-golden-regression",
-        "release-artifact-contract",
     ):
         assert any(step.get("uses") == action_path for step in full_ci[job_name]["steps"])
 
     assert any(step.get("uses") == action_path for step in _workflow("collector-check.yml")["jobs"]["check"]["steps"])
-    assert any(
-        step.get("uses") == action_path
-        for step in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
+
+
+def test_manylinux_jobs_select_bundled_python_without_setup_python() -> None:
+    action_path = "./.github/actions/setup-manylinux-python-rust"
+    for workflow_name, job_name in (
+        ("ci.yml", "application-test-wheel"),
+        ("ci.yml", "release-artifact-contract"),
+        ("fpe-support-matrix.yml", "prepare-wheel"),
+    ):
+        steps = _workflow(workflow_name)["jobs"][job_name]["steps"]
+        assert any(step.get("uses") == action_path for step in steps)
+        assert not any(
+            step.get("uses", "").startswith(("actions/setup-python@", "./.github/actions/setup-python-rust"))
+            for step in steps
+        )
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    assert action["runs"]["steps"][0]["env"]["MANYLINUX_PYTHON_ROOT"] == "/opt/python/cp312-cp312"
+    assert not any(step.get("uses", "").startswith("actions/setup-python@") for step in action["runs"]["steps"])
+
+
+@pytest.mark.parametrize("missing", [None, "python", "cc", "c++", "make", "auditwheel", "patchelf"])
+def test_manylinux_bootstrap_exports_working_python_or_fails_before_build(tmp_path: Path, missing: str | None) -> None:
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    bootstrap = action["runs"]["steps"][0]["run"]
+    python_root = tmp_path / "bundled-python"
+    binaries = python_root / "bin"
+    binaries.mkdir(parents=True)
+    if missing != "python":
+        (binaries / "python").symlink_to(sys.executable)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("cc", "c++", "make", "auditwheel", "patchelf"):
+        if name != missing:
+            (tools / name).symlink_to("/usr/bin/true")
+    env_file = tmp_path / "github-env"
+    path_file = tmp_path / "github-path"
+    env_file.touch()
+    path_file.touch()
+    runner_temp = tmp_path / "runner-temp"
+    result = subprocess.run(
+        ["/bin/bash", "-c", bootstrap],
+        env={
+            **os.environ,
+            "PATH": str(tools),
+            "MANYLINUX_PYTHON_ROOT": str(python_root),
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_ENV": str(env_file),
+            "GITHUB_PATH": str(path_file),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if missing:
+        assert result.returncode != 0
+        assert env_file.read_text() == path_file.read_text() == ""
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    exported = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    assert exported == {
+        "PYO3_PYTHON": str(binaries / "python"),
+        "LIBRARY_PATH": str(python_root / "lib"),
+        "CARGO_HOME": str(runner_temp / "cargo"),
+        "RUSTUP_HOME": str(runner_temp / "rustup"),
+    }
+    assert path_file.read_text().splitlines() == [str(binaries)]
+    subprocess.run(
+        ["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"],
+        env={**os.environ, **exported, "PATH": path_file.read_text().strip()},
+        check=True,
+        timeout=10,
     )
 
 

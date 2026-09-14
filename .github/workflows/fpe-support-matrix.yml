@@ -45,10 +45,8 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: test -n "${EXPECTED_SHA}" && test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
-      - uses: ./.github/actions/setup-python-rust
+      - uses: ./.github/actions/setup-manylinux-python-rust
         if: inputs.wheel_artifact == ''
-        with:
-          python-version: "3.12"
       - name: Build one wheel for standalone qualification
         if: inputs.wheel_artifact == ''
         run: |
