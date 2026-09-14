@@ -561,10 +561,6 @@ impl EngineConfig {
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
-            ensure!(
-                self.aic_nextn.is_none(),
-                "native_host_offload does not support aic_nextn in the initial implementation"
-            );
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
                     "native_host_offload requires kv_cache_bytes_per_token to derive the physical host block size"
@@ -852,10 +848,6 @@ mod tests {
             (
                 |config| config.enable_prefix_caching = false,
                 "enable_prefix_caching=true",
-            ),
-            (
-                |config| config.aic_nextn = Some(1),
-                "does not support aic_nextn",
             ),
         ];
         for &(mutate, expected) in cases {

@@ -340,6 +340,156 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
     assert_eq!(pass.accept_length_decode_forwards, 1);
 }
 
+mod host_offload_speculative {
+    use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+    use crate::engine::common::protocols::MockEngineArgsBuilder;
+    use crate::engine::scheduler::EnginePassResult;
+    use crate::engine::trace::TraceCollector;
+
+    fn builder(num_gpu_blocks: usize, mtp: bool) -> MockEngineArgsBuilder {
+        let mut builder = MockEngineArgs::builder()
+            .block_size(4)
+            .num_gpu_blocks(num_gpu_blocks)
+            .max_num_batched_tokens(Some(16))
+            .max_num_seqs(Some(2))
+            .enable_prefix_caching(true)
+            .speedup_ratio(0.0)
+            .kv_cache_bytes_per_token(Some(250_000));
+        if mtp {
+            builder = builder
+                .aic_nextn(Some(1))
+                .aic_nextn_accept_rates(Some("1".to_string()));
+        }
+        builder
+    }
+
+    fn request(id: u128, tokens: std::ops::Range<u32>, max_output_tokens: usize) -> DirectRequest {
+        DirectRequest {
+            tokens: tokens.collect(),
+            max_output_tokens,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        }
+    }
+
+    /// One rank step: internal transfer progress, pass, engine boundary.
+    fn step(core: &mut VllmCore, collector: &mut TraceCollector, now_ms: f64) -> EnginePassResult {
+        core.process_internal_work(now_ms);
+        let pass = core.execute_pass(collector, now_ms);
+        core.complete_engine_boundary(pass.end_ms);
+        pass
+    }
+
+    /// Drive steps until `done` matches a pass or the budget runs out.
+    fn drive(
+        core: &mut VllmCore,
+        collector: &mut TraceCollector,
+        start_ms: f64,
+        done: impl Fn(&EnginePassResult) -> bool,
+    ) -> EnginePassResult {
+        let mut now_ms = start_ms;
+        for _ in 0..200 {
+            let pass = step(core, collector, now_ms);
+            if done(&pass) {
+                return pass;
+            }
+            now_ms = pass.end_ms.max(now_ms) + 1.0;
+        }
+        panic!("pass condition not reached within budget");
+    }
+
+    /// The MTP last-block recompute applies to a host-restored prefix too:
+    /// one loaded block is recomputed and attributed as neither G1 nor host reuse.
+    #[rstest]
+    #[case(false, 8)]
+    #[case(true, 4)]
+    fn mtp_recomputes_last_block_of_host_restored_prefix(
+        #[case] mtp: bool,
+        #[case] expected_host_reuse: usize,
+    ) {
+        let args = builder(5, mtp)
+            .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut collector = TraceCollector::default();
+
+        core.receive(request(1, 0..8, 1));
+        let pass = step(&mut core, &mut collector, 0.0);
+        assert_eq!(pass.completed_requests, 1);
+
+        // Disjoint request fills G1 and evicts the shared prefix; the host keeps it.
+        core.receive(request(2, 100..120, 0));
+        let pass = drive(&mut core, &mut collector, pass.end_ms + 1.0, |pass| {
+            pass.completed_requests == 1
+        });
+        assert!(core.is_empty());
+
+        core.receive(request(3, 0..12, 1));
+        let pass = drive(&mut core, &mut collector, pass.end_ms + 1.0, |pass| {
+            pass.admissions.iter().any(|a| a.uuid == Uuid::from_u128(3))
+        });
+        let admission = pass
+            .admissions
+            .iter()
+            .find(|a| a.uuid == Uuid::from_u128(3))
+            .unwrap();
+        assert_eq!(admission.reused_input_tokens, expected_host_reuse);
+        let attribution = admission
+            .cache_tier_attribution
+            .expect("host-restored admission");
+        assert_eq!(attribution.g1_reused_input_tokens, 0);
+        assert_eq!(attribution.host_reused_input_tokens, expected_host_reuse);
+    }
+
+    /// A speculative burst that grows into device blocks still pending D2H
+    /// stalls the decode until the store completes instead of panicking.
+    #[test]
+    fn speculative_burst_waits_for_pending_d2h_sources() {
+        fn burst_pass_end_ms(d2h_gbps: f64) -> (f64, f64) {
+            let args = builder(3, true)
+                .native_host_offload(Some(
+                    NativeHostOffloadConfig::new(8).with_bandwidths(d2h_gbps, 32.0),
+                ))
+                .build()
+                .unwrap();
+            let mut core = VllmCore::new(args);
+            let mut collector = TraceCollector::default();
+
+            core.receive(request(1, 0..8, 0));
+            let pass = step(&mut core, &mut collector, 0.0);
+            assert_eq!(pass.completed_requests, 1);
+            let store_submitted_ms = pass.end_ms;
+
+            // 1 prompt block + a 2-token burst needs a third block: the only
+            // candidates are request 1's cached blocks, whose D2H is in flight.
+            core.receive(request(2, 100..104, 4));
+            let pass = step(&mut core, &mut collector, store_submitted_ms + 1.0);
+            assert!(
+                pass.output_signals
+                    .iter()
+                    .filter(|s| s.uuid == Uuid::from_u128(2) && s.token_id.is_some())
+                    .count()
+                    >= 2
+            );
+            (store_submitted_ms, pass.end_ms)
+        }
+
+        // Two 1 MB blocks at 0.001 GB/s: the D2H completes 2000 ms after submission.
+        let (submitted_ms, end_ms) = burst_pass_end_ms(0.001);
+        assert!(
+            end_ms >= submitted_ms + 2000.0,
+            "decode must wait for the pending D2H deadline, got end_ms={end_ms}"
+        );
+        let (submitted_ms, end_ms) = burst_pass_end_ms(32.0);
+        assert!(
+            end_ms < submitted_ms + 1000.0,
+            "fast D2H must not stall, got end_ms={end_ms}"
+        );
+    }
+}
+
 mod source_holds {
     use super::*;
 
