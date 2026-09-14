@@ -527,9 +527,13 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-An explicit `agentic_lanes: N` assigns plays round-robin to N lanes and starts the next play in a lane
-only after the current play becomes quiescent. Omitting the field preserves authored timestamp
-behavior; corpus wrapping and fixed-duration lane orchestration are outside the version 1 contract.
+An explicit `agentic_lanes: N` assigns plays round-robin to N client lanes. The next play starts when
+the current play's client work ends: all authored requests complete on success, or all dispatched
+requests become terminal after a failure skips undispatched work. Background requests remain part
+of their play even without a parent join. P/D source holds and other server cleanup may outlive this
+boundary; they still constrain engine admission and final drain, but do not delay client submission.
+Omitting the field preserves authored timestamp behavior; corpus wrapping and fixed-duration lane
+orchestration are outside the version 1 contract.
 
 ### Mooncake and Mooncake Delta JSONL
 
