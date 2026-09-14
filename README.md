@@ -142,7 +142,7 @@ aisimulate predict \
 ```
 
 Both commands support `--set PATH=YAML_VALUE`, `--output-dir`, `--overwrite`,
-and `--format table|json`. See the [CLI reference](docs/cli/design.md) for the
+and `--format table|json`. See the [AISimulate CLI User Guide](docs/cli/user-guide.md) for the
 complete schema, traffic models, search domains, presets, outputs, and error
 contract.
 
@@ -177,8 +177,9 @@ The compatibility CLI preserves six workflows:
 | `generate` | Generate deployment artifacts without a parameter sweep |
 | `support` | Check model and system coverage |
 
-Read the [AIC CLI and Python API guide](python/aisimulate/README.md) for the
-complete compatibility surface. The
+Read the [Legacy AIC CLI User Guide](docs/cli/legacy-aic-user-guide.md) for
+command examples and the [AIC CLI and Python API overview](python/aisimulate/README.md)
+for the complete compatibility surface. The
 [AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.

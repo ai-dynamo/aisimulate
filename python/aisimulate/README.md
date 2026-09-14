@@ -123,7 +123,7 @@ Dynamo, without creating another CLI:
 aisimulate predict --stack dynamo --config prediction.yaml
 ```
 
-See [the unified CLI design](../../docs/cli/design.md) for the complete field, domain, preset, and
+See [the AISimulate CLI User Guide](../../docs/cli/user-guide.md) for the complete field, domain, preset, and
 traffic contract. The `aiconfigurator` command below remains available for its existing AIC
 estimation and deployment-generation workflows.
 
@@ -162,9 +162,9 @@ Quantization defaults are inferred from the Hugging Face model config (`config.j
 For low-precision models, use a quantized HF ID (for example, `Qwen/Qwen3-32B-FP8`) or a local model directory containing those files.
 Any quantization set via `profiles` or YAML `config` overrides the HF defaults.
 
-For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see the [CLI User Guide -- End-to-End Workflow](docs/cli_user_guide.md#end-to-end-workflow).
+For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see the [Legacy AIC CLI User Guide -- End-to-End Workflow](../../docs/cli/legacy-aic-user-guide.md#end-to-end-workflow).
 
-Refer to [CLI User Guide](docs/cli_user_guide.md)
+Refer to [Legacy AIC CLI User Guide](../../docs/cli/legacy-aic-user-guide.md)
 
 KV-cache estimation and AISimulate engine replay accept an optional
 `cuda_graph_reserved_bytes` rank-local reservation. For SGLang, the value is
@@ -344,7 +344,7 @@ aiconfigurator cli exp --yaml-path customized_config.yaml
 ```
 We can use `exp` mode to compare multiple results, including disagg vs. agg, homogeneous vs. heterogeneous, and more than 2 experiments.
 We've crafted several examples in `src/aiconfigurator/cli/exps/*.yaml`
-For the full guide, refer to [CLI User Guide](docs/cli_user_guide.md).
+For the full guide, refer to [Legacy AIC CLI User Guide](../../docs/cli/legacy-aic-user-guide.md).
 
 ### Deploying to llm-d Platform
 

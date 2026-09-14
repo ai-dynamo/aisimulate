@@ -22,7 +22,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 
 - [Quickstart](quickstart.md) runs a small backend-neutral sweep.
 - [Tutorial](tutorial.md) explains a complete sweep configuration.
-- [Architecture](architecture.md) shows the provider, replay, and worker boundaries.
+- [Architecture](architecture.md) explains CLI integration, parallelism search, and the provider, replay, and worker boundaries.
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
