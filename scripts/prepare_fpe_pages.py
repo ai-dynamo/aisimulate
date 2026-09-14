@@ -19,6 +19,18 @@ ARTIFACT_NAME = "fpe-support-matrix-web"
 DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"
+# Producer contract: tools/support_matrix/qualify_fpe_support_matrix.py::STATUSES.
+PROBE_STATUSES = {
+    "PASS",
+    "SDK_UNREPRESENTABLE",
+    "PERF_DATA_MISSING",
+    "MODEL_UNSUPPORTED",
+    "HW_INCOMPATIBLE",
+    "FRAMEWORK_INCOMPATIBLE",
+    "BUILD_FAILED",
+    "QUERY_FAILED",
+}
+CAPABILITY_FIELDS = ("HuggingFaceID", "Architecture", "System", "Backend", "Version")
 
 
 def github(repository: str, endpoint: str) -> bytes:
@@ -62,7 +74,9 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
         ):
             raise ValueError("invalid FPE qualification or mismatched source commit")
         statuses = report.get("status_counts", {})
-        if not isinstance(statuses, dict) or any(type(count) is not int or count < 0 for count in statuses.values()):
+        if not isinstance(statuses, dict) or not statuses.keys() <= PROBE_STATUSES:
+            raise ValueError("FPE qualification has unknown status-count keys")
+        if any(type(count) is not int or count < 0 for count in statuses.values()):
             raise ValueError("FPE qualification status counts must be nonnegative integers")
         if not statuses.get("PASS", 0) or statuses.get("BUILD_FAILED", 0) or statuses.get("QUERY_FAILED", 0):
             raise ValueError("FPE qualification has no passes or unexpected native failures")
@@ -72,20 +86,31 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             raise ValueError("empty or duplicate FPE dataset index")
         selected = {"index.json": json.dumps(index).encode()}
         shards = set()
+        capabilities = set()
         for filename in files:
             if not isinstance(filename, str) or not re.fullmatch(r"[a-z0-9_]+\.csv", filename):
                 raise ValueError("unsafe FPE dataset filename")
             data = bundle.read(DATA_PREFIX + filename)
-            rows = list(csv.DictReader(io.StringIO(data.decode("utf-8"))))
+            reader = csv.DictReader(io.StringIO(data.decode("utf-8")), strict=True)
+            headers = reader.fieldnames or []
+            if not headers or len(headers) != len(set(headers)) or any(not field.strip() for field in headers):
+                raise ValueError(f"empty or duplicate CSV headers: {filename}")
+            rows = list(reader)
             if not rows:
                 raise ValueError(f"empty FPE dataset: {filename}")
             for row in rows:
+                if None in row or any(value is None for value in row.values()):
+                    raise ValueError(f"inconsistent CSV record width: {filename}")
                 if row.get("SourceSHA") != source_sha or row.get("System") != filename[:-4]:
                     raise ValueError(f"mixed source or system in FPE dataset: {filename}")
                 if row.get("Status") not in {"PASS", "FAIL", "HW_INCOMPATIBLE", "FRAMEWORK_INCOMPATIBLE"}:
                     raise ValueError(f"invalid FPE status: {filename}")
-                if not all(row.get(key) for key in ("HuggingFaceID", "Architecture", "Backend", "Version")):
+                if not all(row.get(key) for key in CAPABILITY_FIELDS):
                     raise ValueError(f"incomplete FPE identity: {filename}")
+                identity = tuple(row[key] for key in CAPABILITY_FIELDS)
+                if identity in capabilities:
+                    raise ValueError(f"duplicate FPE capability: {identity}")
+                capabilities.add(identity)
                 shards.add((row["System"], row["Backend"]))
             selected[filename] = data
         if len(shards) != report["shard_count"]:

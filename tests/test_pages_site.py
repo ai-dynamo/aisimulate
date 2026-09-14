@@ -234,6 +234,41 @@ class FpePagesTest(unittest.TestCase):
         )
         self.assertIn("b200_sxm.csv", files)
 
+    def test_unknown_probe_status_keys_are_rejected(self):
+        for status in ("BUILD_FAILED ", "QUERY_FAILED ", "UNKNOWN", "pass"):
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, "unknown status-count keys"):
+                FPE.qualified_files(
+                    qualified_archive(report_updates={"status_counts": {"PASS": 4, status: 1}}), NEW_SHA
+                )
+
+    def test_probe_status_contract_matches_the_qualifier(self):
+        path = ROOT / "python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py"
+        spec = importlib.util.spec_from_file_location("qualify_fpe", path)
+        qualifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qualifier)
+        self.assertEqual(FPE.PROBE_STATUSES, qualifier.STATUSES)
+        counts = dict.fromkeys(qualifier.STATUSES, 0)
+        counts["PASS"] = 4
+        self.assertIn(
+            "b200_sxm.csv", FPE.qualified_files(qualified_archive(report_updates={"status_counts": counts}), NEW_SHA)
+        )
+
+    def test_ambiguous_or_malformed_csv_records_are_rejected(self):
+        name = FPE.DATA_PREFIX + "b200_sxm.csv"
+        with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
+            data = archive.read(name).decode()
+        header, row = data.splitlines()
+        invalid_csvs = (
+            header.replace("Status,", "Status,Status,") + "\n" + row.replace(",PASS,", ",FAIL,PASS,") + "\n",
+            data + row + "\n",
+            header + "\n" + row + ",extra\n",
+            header + ",Extra\n" + row + "\n",
+            header + ",ErrMsg\n" + row + ',"unterminated',
+        )
+        for data in invalid_csvs:
+            with self.subTest(data=data), self.assertRaises((ValueError, csv.Error)):
+                FPE.qualified_files(qualified_archive(overrides={name: data}), NEW_SHA)
+
     def test_duplicate_json_fields_are_rejected_at_every_depth(self):
         with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
             manifest = archive.read("fpe-qualification.json").decode()
