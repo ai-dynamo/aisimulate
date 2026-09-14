@@ -185,8 +185,21 @@ algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandi
 `SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
 AI Simulate variable takes precedence.
 
-## Removed KVBM Fields
+<a id="removed-kvbm-fields"></a>
+
+## Host Offload and Removed KVBM Fields
 
 Sweeper rejects the old KVBM block-count, transfer-bandwidth, offload-batch-size, and cache-hit
-fields. The AI Simulate engine and replay path do not support them, and they have no adapter
-migration.
+search fields. Those legacy fields have no adapter migration.
+
+The public `predict` and `recommend` commands support a separate native host-offload descriptor
+at `engine.workers.aggregated.kv_cache.host_offload`. It sets `num_host_blocks`,
+`d2h_bandwidth_gbps`, and `h2d_bandwidth_gbps` as fixed values, not search dimensions. It requires
+aggregated vLLM, prefix caching enabled, and `attention_data: 1`; native speculative decoding is
+not supported. For `recommend`, mode and backend must be concrete, the parallelism preset must be
+disabled (`preset: false`), and `attention_data` must be fixed to `1`. Other parallelism knobs,
+such as `tensor` and `replicas`, may still be searched. This does not add disk offload or restore
+the removed KVBM search fields.
+
+See [Native vLLM host-offload prediction](../cli/design.md#native-vllm-host-offload-prediction)
+for a complete YAML example and CLI command.

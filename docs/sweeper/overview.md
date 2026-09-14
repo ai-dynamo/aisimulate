@@ -56,5 +56,7 @@ runner through `--stack`. The `Sweeper` Python API remains available for callers
 - The runner advertises supported `ReplaySpec` versions, backend/topology pairs, and runtime hooks
   before a study starts.
 - Every `Sweeper.run` call owns fresh optimizer studies, result caches, runners, and worker pools.
-- KVBM search fields are rejected. The AI Simulate engine and replay path do not support those
-  fields and provide no adapter migration for the old host or disk offload settings.
+- Legacy KVBM search fields are rejected and have no adapter migration. Native vLLM host offload
+  uses a separate, fixed configuration supported by `predict` and `recommend`; it does not restore
+  the old host or disk offload search fields. See [Host Offload and Removed KVBM
+  Fields](configuration.md#host-offload-and-removed-kvbm-fields) for the supported scope.
