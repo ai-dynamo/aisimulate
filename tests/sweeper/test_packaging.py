@@ -170,8 +170,8 @@ def test_aisimulate_source_versions_are_synchronized():
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
 
-    expected_python = "0.12.0.dev1"
-    expected_cargo = "0.12.0-dev.1"
+    expected_python = "0.12.0.dev2"
+    expected_cargo = "0.12.0-dev.2"
     assert project["project"]["version"] == expected_python
     assert core["package"]["version"] == expected_cargo
     assert workspace["workspace"]["members"] == ["crates/core"]
