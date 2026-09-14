@@ -1,0 +1,108 @@
+{
+  "identity": {
+    "native_extension_sha256": "23bb3240683c1e2a18ce188200267c1fcb26294752cca50c022eca24e421a6d0",
+    "predictor_commit": "f21ed55168074f8d32153a04d3cdfc524484722b"
+  },
+  "summary": [
+    {
+      "mape_percent": 7.367855037109046,
+      "missing": 0,
+      "observed": 46,
+      "predicted": 46,
+      "profile": "full",
+      "scope": "gb300-holdout",
+      "unit": "logical configurations",
+      "wape_percent": 7.2320743391736455
+    },
+    {
+      "mape_percent": 6.853810210200905,
+      "missing": 16,
+      "observed": 46,
+      "predicted": 30,
+      "profile": "decoder_bounded",
+      "scope": "gb300-holdout",
+      "unit": "logical configurations",
+      "wape_percent": 6.872253623205314
+    },
+    {
+      "cohorts": 600,
+      "fully_predicted_cohorts": 560,
+      "mape_percent": 13.014721721293546,
+      "missing": 1280,
+      "observed": 15756,
+      "predicted": 14476,
+      "profile": "full",
+      "scope": "gb300-native-off",
+      "unit": "native intervals",
+      "wape_percent": 13.556519708558362
+    },
+    {
+      "cohorts": 1500,
+      "fully_predicted_cohorts": 1104,
+      "mape_percent": 4.810743571245836,
+      "missing": 3596,
+      "observed": 39393,
+      "predicted": 35797,
+      "profile": "decoder_bounded",
+      "scope": "gb300-native-on",
+      "unit": "native intervals",
+      "wape_percent": 5.108277736243467
+    },
+    {
+      "cohorts": 120,
+      "fully_predicted_cohorts": 120,
+      "mape_percent": 11.585453130247025,
+      "missing": 0,
+      "observed": 3503,
+      "predicted": 3503,
+      "profile": "full",
+      "scope": "gb300-native-field-off",
+      "unit": "native intervals",
+      "wape_percent": 11.911905504295078
+    },
+    {
+      "cohorts": 120,
+      "fully_predicted_cohorts": 83,
+      "mape_percent": 3.7354897675231986,
+      "missing": 37,
+      "observed": 3503,
+      "predicted": 3466,
+      "profile": "decoder_bounded",
+      "scope": "gb300-native-field-on",
+      "unit": "native intervals",
+      "wape_percent": 4.138074629268043
+    },
+    {
+      "cohorts": 120,
+      "fully_predicted_cohorts": 120,
+      "mape_percent": 11.411987177174431,
+      "missing": 0,
+      "observed": 3509,
+      "predicted": 3509,
+      "profile": "full",
+      "scope": "gb300-native-service-off",
+      "unit": "native intervals",
+      "wape_percent": 11.732084803594553
+    },
+    {
+      "cohorts": 120,
+      "fully_predicted_cohorts": 84,
+      "mape_percent": 3.2848327436282783,
+      "missing": 36,
+      "observed": 3504,
+      "predicted": 3468,
+      "profile": "decoder_bounded",
+      "scope": "gb300-native-service-on",
+      "unit": "native intervals",
+      "wape_percent": 3.5117020335180236
+    },
+    {
+      "missing": 38,
+      "observed": 38,
+      "predicted": 0,
+      "profile": "full",
+      "scope": "gb200-strict-op-coverage-probe",
+      "unit": "geometry queries"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+scope,profile,unit,observed,predicted,missing,mape_percent,wape_percent,cohorts,fully_predicted_cohorts
+gb300-holdout,full,logical configurations,46,46,0,7.367855037109046,7.2320743391736455,,
+gb300-holdout,decoder_bounded,logical configurations,46,30,16,6.853810210200905,6.872253623205314,,
+gb300-native-off,full,native intervals,15756,14476,1280,13.014721721293546,13.556519708558362,600,560
+gb300-native-on,decoder_bounded,native intervals,39393,35797,3596,4.810743571245836,5.108277736243467,1500,1104
+gb300-native-field-off,full,native intervals,3503,3503,0,11.585453130247025,11.911905504295078,120,120
+gb300-native-field-on,decoder_bounded,native intervals,3503,3466,37,3.7354897675231986,4.138074629268043,120,83
+gb300-native-service-off,full,native intervals,3509,3509,0,11.411987177174431,11.732084803594553,120,120
+gb300-native-service-on,decoder_bounded,native intervals,3504,3468,36,3.2848327436282783,3.5117020335180236,120,84
+gb200-strict-op-coverage-probe,full,geometry queries,38,0,38,,,,

@@ -1,0 +1,316 @@
+{
+  "summary": [
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 25.52106145237003,
+      "metric": "ttft_ms",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 25.38896862459046
+    },
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 12.918562317128066,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 12.958618985300085
+    },
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 16.993494373363067,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 15.819411176188499
+    },
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 12.918562317128067,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 12.958618985300085
+    },
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 14.352525770387949,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 13.601755087462648
+    },
+    {
+      "exact_specs_recovered": 560,
+      "mape_percent": 14.34191582714947,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 80,
+      "observed_cohorts": 600,
+      "predicted_cohorts": 520,
+      "scope": "gb300-http-off",
+      "wape_percent": 13.59169904983869
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 37.27991336404686,
+      "metric": "ttft_ms",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 37.243483967354535
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 6.221231372491416,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 6.275669311591438
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 10.850529217646839,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 9.881399884744262
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 6.221231372491416,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 6.275669311591437
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 9.64942044174541,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 8.86681146621846
+    },
+    {
+      "exact_specs_recovered": 1300,
+      "mape_percent": 9.638404932054156,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 200,
+      "observed_cohorts": 1500,
+      "predicted_cohorts": 1300,
+      "scope": "gb300-http-on",
+      "wape_percent": 8.856432328950925
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "ttft_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "ttft_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-field-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "ttft_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-off"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "ttft_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "average_tpot_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "output_tokens_per_second",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "exact_itl_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "request_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    },
+    {
+      "exact_specs_recovered": 0,
+      "metric": "last_token_latency_ms",
+      "missing_cohorts": 120,
+      "observed_cohorts": 120,
+      "predicted_cohorts": 0,
+      "scope": "gb300-http-service-on"
+    }
+  ]
+}

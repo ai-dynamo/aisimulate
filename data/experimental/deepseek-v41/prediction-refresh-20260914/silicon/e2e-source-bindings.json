@@ -1,0 +1,56 @@
+{
+  "correction_fitting": false,
+  "current_prediction_identity": {
+    "metric_source_sha256": "7a2b069783e84cca3d1107e157c43232ce117ddd2a4033e3a199742231ff3802",
+    "native_extension_sha256": "23bb3240683c1e2a18ce188200267c1fcb26294752cca50c022eca24e421a6d0",
+    "predictor_commit": "f21ed55168074f8d32153a04d3cdfc524484722b",
+    "runner_sha256": "fbb8027036d3462a3c3576ff3cb0f2cfa74de509427cc0ef28fa0a3084c80876"
+  },
+  "exporter_sha256": "e2891e86de66dad87863a78e1bf0de2af2f4b49b6300751b1e3e2ee691b1c646",
+  "fresh_raw_admission": false,
+  "input_reports": {
+    "field-off": {
+      "fresh_predictions": false,
+      "source_sha256": "83a58706cd1ad49f91c16aed2b50554db2fb44cdbbdf9cfdd2b9b5275f55b53e"
+    },
+    "field-on": {
+      "fresh_predictions": false,
+      "source_sha256": "42c7c4b1eafbd1b07c194d9281378a3a2e468067487ff918fc9211994d6d50dd"
+    },
+    "off": {
+      "fresh_predictions": true,
+      "source_sha256": "ad99594726479bc536c99d6cd3245dfa570ae8417fe0f3502129f70809780d75"
+    },
+    "on": {
+      "fresh_predictions": true,
+      "source_sha256": "e4539f9c28871f2f45f87cba87c59eacfdf6b7abe0394f64d076f20d95ae21ba"
+    },
+    "service-off": {
+      "fresh_predictions": false,
+      "source_sha256": "ccb0f177ae524b208d4e4b47c44ee16fe14bc60ebced09d207ff15d1e34489e1"
+    },
+    "service-on": {
+      "fresh_predictions": false,
+      "source_sha256": "2b34ac577fd0dd14680ed0e3156225c7da8011ca00054fb20e488bcd10b776b1"
+    }
+  },
+  "predictor_commit": "f21ed55168074f8d32153a04d3cdfc524484722b",
+  "workload_proof": {
+    "complete": true,
+    "program_sha256": "b87e737d99aac0aa67989eeba2632fc617b1c49a5a11e57430ff40be5edde771",
+    "scopes": [
+      {
+        "exact_specs": 560,
+        "planned_cohorts": 600,
+        "scope": "off",
+        "sha256": "ca98d203890a856a7a89e0b3070c2206b67729591dec4467799985437f4f7007"
+      },
+      {
+        "exact_specs": 1300,
+        "planned_cohorts": 1500,
+        "scope": "on",
+        "sha256": "c5446a862e47e1f6dbdf31716e32a14bd00d69f5b7712f82529dc856115bb091"
+      }
+    ]
+  }
+}

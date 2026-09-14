@@ -1,0 +1,24 @@
+{
+  "correction_fitting": false,
+  "exporter_sha256": "67414c631a98a8db60def3ab50ba6784602662e580ec88dcf3beabc9d203f032",
+  "fresh_raw_serving_admission": false,
+  "identity": {
+    "native_extension_sha256": "23bb3240683c1e2a18ce188200267c1fcb26294752cca50c022eca24e421a6d0",
+    "predictor_commit": "f21ed55168074f8d32153a04d3cdfc524484722b"
+  },
+  "input_reports_sha256": {
+    "silicon-gb200-strict-probe-v1/result.json": "66dcc0d90fd78ffb781d11083689493d53460c24d703ca615f4c0d6fa9d4cc49",
+    "silicon-holdouts-v1/holdout-decoder_bounded/comparison.json": "d73562fc7cc9c17e7e5292ae5c0442bc36e44a7bf28dfff8b5eb450c25310548",
+    "silicon-holdouts-v1/holdout-full/comparison.json": "809e836ff55b1c191e31921bd283b2338e86fd9f8d96a0e2f0cda0b248722299",
+    "silicon-retained-native-v1/field-off.json.gz": "0b0f83744a6e40946df8fe7472b3a5c49cef0c4f3a913c3ad5a0f03599ac1b0b",
+    "silicon-retained-native-v1/field-on.json.gz": "09087f6c3bd41f24d0f78123745d65bd4dfdac230675985d57a6e72c7ab29411",
+    "silicon-retained-native-v1/off.json.gz": "37929bc6d179d0064cfd79a67df0ca572b999987334d8695460c1f7353bc0431",
+    "silicon-retained-native-v1/on.json.gz": "1d1ff3d9e62b8de39103e08886b1cdc02747353d99d1d08457db02c88d42f130",
+    "silicon-retained-native-v1/service-off.json.gz": "97d1a3855b3f0cbddcdbc6593f5d97cfafddbc6e0a90669de7870f9ec763aacd",
+    "silicon-retained-native-v1/service-on.json.gz": "2d22ea8713ae2fba0bbaff392f0f29b9bc04f7c9eb522c993e2de0a7cb74c3cf"
+  },
+  "new_measurements": false,
+  "observations": "Holdouts use original qualified observations. Serving uses immutable report-retained observed geometry and timing.",
+  "prediction_sources": "Current merged source and freshly built native binary; fixed profile-specific op-level SILICON overlays.",
+  "private_identifiers": "Run, cohort, request, worker, node and dispatch identifiers omitted; ordinals preserve input ordering."
+}
