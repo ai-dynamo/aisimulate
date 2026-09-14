@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -165,64 +167,141 @@ def test_table_selector_requires_fpm_before_model_resolution(forward_model):
         )
 
 
-def test_real_v41_fpm_selector_roundtrip_and_frozen_interpolation_are_unchanged():
-    """126 exact cells and 38 geometry-only queries; no heldout timing is read."""
+def _synthetic_v41_fpm(tmp_path, *, replay=False):
+    """Exercise the native loader with four invented timings, without campaign files."""
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from aiconfigurator_core.sdk.deepseek_v41 import MODEL_PATH
+
+    backend = "sglang" if replay else "vllm"
+    version = "test-v41-fpm"
+    systems = tmp_path / "systems"
+    data = systems / "data" / "gb200" / backend / version
+    data.mkdir(parents=True)
+    packaged_systems = Path(_get_model_config_path()).parent / "systems"
+    shutil.copyfile(packaged_systems / "gb200.yaml", systems / "gb200.yaml")
+    fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
+    identity = execution_identity(
+        config(), decoder_replay=replay, backend=backend, engram_cpu_offload=False, input_modality="text"
+    )
+    rows = []
+    for phase, new, kv, latency in (
+        ("prefill", 32, 128, 10.0),
+        ("prefill", 64, 128, 12.0),
+        ("decode", 0, 128, 6.0),
+        ("decode", 0, 256, 8.0),
+    ):
+        rows.append(
+            dict(
+                cell_id=f"synthetic-{phase}",
+                model_path=MODEL_PATH,
+                system="gb200",
+                backend=backend,
+                backend_version=version,
+                weight_quantization="fp8_block",
+                gemm_quant_mode="fp8_block",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm" if backend == "sglang" else "w4a8_mxfp4_mxfp8",
+                fmha_quant_mode="fp8",
+                comm_quant_mode="half",
+                kv_cache_dtype="fp8",
+                tp=4,
+                pp=1,
+                dp=1,
+                moe_tp=4,
+                moe_ep=1,
+                cp=1,
+                moe_backend="auto",
+                attention_backend="auto",
+                enable_wideep=False,
+                enable_eplb=False,
+                workload_kind=phase,
+                batch_size=1,
+                total_prefill_tokens=new,
+                total_kv_read_tokens=kv,
+                partition_policy="balanced_v1",
+                kv_seed_regime="real_kv",
+                latency_ms=latency,
+            )
+            | dict(zip(fields, identity, strict=True))
+        )
+    parquet = data / "fpm_forward_perf.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), parquet)
+    metadata = dict(
+        schema_name="aic_fpm_forward_perf",
+        schema_version=7,
+        coordinate_system="iteration_totals_balanced_v1",
+        measurement_policy="dynamo_native_single_sample_v1",
+        row_count=len(rows),
+        parquet_sha256=hashlib.sha256(parquet.read_bytes()).hexdigest(),
+        system="gb200",
+        backend=backend,
+        backend_version=version,
+    )
+    parquet.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    native = dict(
+        schema_version=1,
+        model_name=MODEL_PATH,
+        system_name="gb200",
+        backend=backend,
+        backend_version=version,
+        systems_path=str(systems),
+        enable_shared_layer=False,
+        strict_provenance=True,
+        tp_size=4,
+        pp_size=1,
+        moe_tp_size=4,
+        moe_ep_size=1,
+        attention_dp_size=1,
+        database_mode="SILICON",
+        decoder_replay=replay,
+        forward_model="fpm",
+        fpm_fmha_dtype="fp8",
+    )
+    return native, rows
+
+
+def test_v41_fpm_selector_roundtrip_and_interpolation(tmp_path):
     from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    root = Path(__file__).resolve().parents[5]
-    data = root / "data/experimental/deepseek-v41"
-    calibration = data / "gb200-fpm/calibration-v1"
-    legacy = json.loads((calibration / "prediction-config.json").read_text())
-    legacy["systems_path"] = str(calibration / "systems")
-    selected = dict(legacy)
-    selected["fpm_fmha_dtype"] = selected.pop("activation_dtype")
+    selected, rows = _synthetic_v41_fpm(tmp_path)
+    legacy = dict(selected)
+    legacy["activation_dtype"] = legacy.pop("fpm_fmha_dtype")
     old = RustForwardPassPerfModel.from_native(legacy)
     new = RustForwardPassPerfModel.from_native(selected)
-    native_rows = pq.read_table(next((calibration / "systems").rglob("fpm_forward_perf.parquet"))).to_pylist()
-    observed = {
-        (r["workload_kind"], r["batch_size"], r["total_prefill_tokens"], r["total_kv_read_tokens"]): r["latency_ms"]
-        for r in native_rows
-    }
-    assert len(observed) == 126
-    count = 0
-    for role in ("calibration", "heldout"):
-        manifest = json.loads((data / f"verification-plan/{role}.json").read_text())
-        for phase in ("prefill", "decode"):
-            for point in manifest[phase]:
-                b, q, k = point["batch_size"], point.get("total_prefill_tokens", 0), point["total_kv_read_tokens"]
-                scheduled = dict(
-                    num_prefill_requests=b if phase == "prefill" else 0,
-                    num_decode_requests=b if phase == "decode" else 0,
-                    sum_prefill_tokens=q,
-                    sum_prefill_kv_tokens=k if phase == "prefill" else 0,
-                    sum_decode_kv_tokens=k if phase == "decode" else 0,
-                    var_prefill_length=0.0,
-                    var_decode_kv_tokens=0.0,
-                )
-                fpm = dict(version=1, wall_time=1.0, scheduled_requests=scheduled)
-                prediction = new.estimate_forward_pass_time_ms(fpm)
-                assert prediction == old.estimate_forward_pass_time_ms(fpm)
-                if role == "calibration":
-                    assert prediction == observed[(phase, b, q, k)]
-                count += 1
-    assert count == 164
+    # Two exact endpoints and one interpolation point per phase. The fixture
+    # values are arbitrary test data, not calibration or validation measurements.
+    for phase in ("prefill", "decode"):
+        exact_rows = [row for row in rows if row["workload_kind"] == phase]
+        points = [(row["total_prefill_tokens"], row["total_kv_read_tokens"], row["latency_ms"]) for row in exact_rows]
+        points.append((48, 128, None) if phase == "prefill" else (0, 192, None))
+        for q, k, expected in points:
+            scheduled = dict(
+                num_prefill_requests=1 if phase == "prefill" else 0,
+                num_decode_requests=1 if phase == "decode" else 0,
+                sum_prefill_tokens=q,
+                sum_prefill_kv_tokens=k if phase == "prefill" else 0,
+                sum_decode_kv_tokens=k if phase == "decode" else 0,
+                var_prefill_length=0.0,
+                var_decode_kv_tokens=0.0,
+            )
+            fpm = dict(version=1, wall_time=1.0, scheduled_requests=scheduled)
+            prediction = new.estimate_forward_pass_time_ms(fpm)
+            assert prediction == old.estimate_forward_pass_time_ms(fpm)
+            if expected is not None:
+                assert prediction == expected
+            else:
+                assert exact_rows[0]["latency_ms"] < prediction < exact_rows[1]["latency_ms"]
     with pytest.raises(ValueError, match="requires forward_model='fpm'"):
         RustForwardPassPerfModel.from_native(selected | {"forward_model": "op_level"})
 
 
-def test_real_v41_fpm_rejects_ambiguous_aggregates_but_keeps_identifiable_inputs():
+def test_v41_fpm_rejects_ambiguous_aggregates_but_keeps_identifiable_inputs(tmp_path):
     """The public whole-forward path must reject before a balanced lookup."""
-    import pyarrow.parquet as pq
-
     from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    root = Path(__file__).resolve().parents[5]
-    packet = root / "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2"
-    config = json.loads((packet / "prediction-config.json").read_text())
-    config["systems_path"] = str(packet / "systems")
-    predictor = RustForwardPassPerfModel.from_native(config)
+    native, rows = _synthetic_v41_fpm(tmp_path, replay=True)
+    predictor = RustForwardPassPerfModel.from_native(native)
 
     # Equal complete prompts can have unequal current extends: (1, 1023)
     # and (1023, 1) in (new, prefix) coordinates. Prompt variance is zero.
@@ -245,7 +324,6 @@ def test_real_v41_fpm_rejects_ambiguous_aggregates_but_keeps_identifiable_inputs
         with pytest.raises(ValueError, match="multiple prefill requests"):
             predictor.estimate_forward_pass_time_ms(metrics)
 
-    rows = pq.read_table(next((packet / "systems").rglob("fpm_forward_perf.parquet"))).to_pylist()
     for phase in ("prefill", "decode"):
         row = next(row for row in rows if row["workload_kind"] == phase and row["batch_size"] == 1)
         batch, new, kv = row["batch_size"], row["total_prefill_tokens"], row["total_kv_read_tokens"]

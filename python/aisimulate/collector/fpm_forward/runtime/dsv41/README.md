@@ -2,12 +2,12 @@
 
 Status: the historical producer completed **126 GB200 calibration points**
 (100 prefill, 26 real decode) in eager TP4/DP1 mode. The retained
-[collection receipt](../../../../../../data/experimental/deepseek-v41/gb200-fpm/calibration-v1/collection-receipt.json)
+[collection receipt](https://github.com/ai-dynamo/aisimulate/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/calibration-v1/collection-receipt.json)
 binds producer SHA256 `771d2591eb5893f636a4208d60eb10daf51192eb4062bfec22da2f981cbe8ec0`
 and runtime-source manifest `a201055338b2e185db52b44744b0033aca850452580279bde4d3a4d8f8dceaef`.
 The earlier allocation-timeout and eager warmup failures remain failed evidence;
 they are not the completed calibration run. Subsequent ordinary-serving
-[validation](../../../../../../data/experimental/deepseek-v41/gb200-fpm/ordinary-serving-retention128-v1/README.md)
+[validation](https://github.com/ai-dynamo/aisimulate/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/ordinary-serving-retention128-v1/README.md)
 exposed a large latency mismatch, so completed collection does not establish
 serving prediction accuracy or general scheduler qualification. Current changes
 to activation, startup configuration and explicit identity attestation have CPU

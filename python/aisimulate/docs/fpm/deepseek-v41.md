@@ -5,15 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM collection
 
-Published experimental measurements cover the text backbone on one GB200 node
-with pure TP4, native checkpoint precision, GPU-resident Engram, eager execution,
-and DSpark disabled. The [GB200 calibration](../../../../data/experimental/deepseek-v41/gb200-fpm/calibration-v1/README.md)
-contains 126 points; [38 independent forward holdouts](../../../../data/experimental/deepseek-v41/gb200-fpm/holdout-sol-review-v2/README.md)
-provide descriptive accuracy evidence. GB200 ordinary HTTP serving verification
-remains in progress. Separate [GB300 SGLang OFF/ON packets](../../../../data/experimental/deepseek-v41/gb300-fpm/README.md)
-contain whole-forward calibration and serving comparisons, including their
-remaining coverage and precision limits. These data use explicit experimental
-systems overlays; the curated defaults are unchanged.
+The collection path supports the text backbone with pure TP4, native checkpoint
+precision, GPU-resident Engram, eager execution, and DSpark disabled.
+Historical [GB200 and GB300 experimental evidence](https://github.com/ai-dynamo/aisimulate/tree/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41)
+is preserved separately from the product code. The GB200 calibration is not
+admitted for serving prediction: ordinary-serving validation exposed a large
+latency mismatch. Experimental systems overlays do not change curated defaults.
 
 ## Execution identity
 
@@ -37,7 +34,7 @@ This option requires `forward_model="fpm"` and changes only the exact FPM cell
 selector. The checkpoint's analytical attention graph, interpolation SOL
 anchors, and memory inventory remain unchanged. `activation_dtype` retains its
 existing arithmetic-override meaning; it is not a substitute for this selector.
-The qualified GB200 comparison uses the table selector with no activation
+The historical GB200 comparison uses the table selector with no activation
 override, and its optional op-level SOL comparison uses checkpoint precision.
 
 `--fpm-decoder-replay` describes true bounded decoder execution. The current

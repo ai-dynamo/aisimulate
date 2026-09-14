@@ -10,7 +10,6 @@ import hashlib
 import json
 import subprocess
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -209,17 +208,6 @@ def test_runtime_hash_and_attempt_receipt_are_checked_in_both_transports(tmp_pat
     (unit / POINTS_RECEIPT_FILENAME).unlink()
     with pytest.raises(FileNotFoundError):
         _validate_points_receipts(plan, cell, raw, "attempt")
-
-
-def test_checked_in_study_manifests_freeze_exact_phase_counts():
-    root = Path(__file__).resolve().parents[5]
-    for name, counts in (("calibration", (100, 26)), ("heldout", (28, 10))):
-        source = root / "data/experimental/deepseek-v41/verification-plan" / f"{name}.json"
-        options = FPMCollectionOptions.from_args(
-            argparse.Namespace(fpm_max_gpus=4, fpm_benchmark_points_file=str(source))
-        )
-        payload = json.loads(options.benchmark_points_json)
-        assert (len(payload["prefill"]), len(payload["decode"])) == counts
 
 
 @pytest.mark.parametrize("phase", ["prefill", "decode"])
