@@ -401,8 +401,10 @@ def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(ba
     assert "native_report" not in report.metadata
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_time(tmp_path, backend: str) -> None:
+@pytest.mark.parametrize("backend,expected_warm_reuse", [("vllm", 64), ("sglang", 127)])
+def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_time(
+    tmp_path, backend: str, expected_warm_reuse: int
+) -> None:
     # Self-authored trace: every request shares one conversation and prefix.
     path = tmp_path / "snapshot.json"
     path.write_text(
@@ -431,7 +433,7 @@ def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_
         "engine": {**_engine(), "backend": backend},
         "traffic": {
             "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
-            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 0}},
         },
     }
     config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
@@ -446,11 +448,11 @@ def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_
     ):
         assert first[key] == repeated[key], key
     evidence = first["agentic_snapshots"][0]
-    assert evidence["seed"] == 42
+    assert evidence["seed"] == 0
     assert 500.0 <= evidence["t_star_ms"] < 1500.0
     retained = [request for request in evidence["requests"] if not request["historical"]]
     historical = [request for request in evidence["requests"] if request["historical"]]
-    assert retained and historical
+    assert len(retained) == 2 and historical
     assert all(request["recorded_start_ms"] < evidence["t_star_ms"] for request in historical)
     assert all(request["recorded_start_ms"] >= evidence["t_star_ms"] for request in retained)
     assert first["completed_requests"] == len(retained)
@@ -460,8 +462,11 @@ def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_
     assert {record["agentic"]["request_id"] for record in first["per_request"]} == {
         request["identity"]["request_id"] for request in retained
     }
-    earliest = min(first["per_request"], key=lambda record: record["first_admit_ms"])
+    earliest, subsequent = sorted(first["per_request"], key=lambda record: record["first_admit_ms"])
     assert earliest["admission_history"][0]["reused_input_tokens"] == 0
+    # Both schedulers recompute the final prompt token. With the default block
+    # sizes (vLLM 64, SGLang 1), the shared 128-token prompt reuses 64 or 127.
+    assert subsequent["admission_history"][0]["reused_input_tokens"] == expected_warm_reuse
     assert all(record["agentic"]["cache_id"] == evidence["cache_id"] for record in first["per_request"])
 
     config["traffic"]["load"]["speedup"] = 2.0
