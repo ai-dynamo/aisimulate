@@ -201,5 +201,5 @@ disabled (`preset: false`), and `attention_data` must be fixed to `1`. Other par
 such as `tensor` and `replicas`, may still be searched. This does not add disk offload or restore
 the removed KVBM search fields.
 
-See [Native vLLM host-offload prediction](../cli/design.md#native-vllm-host-offload-prediction)
+See [Native vLLM host-offload prediction](../cli/user-guide.md#native-vllm-host-offload-prediction)
 for a complete YAML example and CLI command.
