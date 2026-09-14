@@ -22,7 +22,10 @@ engine:
       hardware: gb200
       parallelism: {preset: [{replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}]}
       scheduler: {max_batched_tokens: 8192, max_sequences: 8}
+evaluation:
+  sla: {ttft_ms: 800, itl_ms: 30}
 optimization:
   target: throughput
+  strict_sla: true
   constraints: {max_candidate_gpus: 2}
 optimizer: {algorithm: random, max_trials: 1, parallelism: 1, seed: 14}

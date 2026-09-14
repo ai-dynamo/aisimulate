@@ -618,4 +618,9 @@ of the GPU system and kernel optimization.
 **Solution**: Use `/tmp/` for output files, then copy results after collection.
 
 # Support Matrix
-refer to the [**support matrix CSV**](src/aiconfigurator/systems/support_matrix.csv)
+
+Browse the [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+for CLI compatibility coverage, or inspect the
+[per-system CSV files](../src/aiconfigurator_core/systems/support_matrix/).
+For strict-native estimator coverage, use the
+[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/).
