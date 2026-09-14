@@ -201,12 +201,25 @@ jobs:
           python scripts/select_full_ci.py "${args[@]}"
 
   fast-ci:
-    name: Fast CI
+    name: Require Fast CI
     needs: verify-target
-    uses: ./.github/workflows/fast-ci.yml
-    with:
-      expected_sha: ${{ github.sha }}
-      base_sha: ${{ needs.verify-target.outputs.whitespace-base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify the standalone workflow and every Fast CI job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/require_fast_ci.py
 
   platform-wheels:
     name: Platform Wheels

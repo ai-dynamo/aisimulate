@@ -3,15 +3,20 @@ name: Fast CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
-  workflow_call:
+  push:
+    branches:
+      - main
+      - "pull-request/*"
+      - "release/*"
+  workflow_dispatch:
     inputs:
       expected_sha:
-        description: Exact commit that the caller expects Fast CI to validate
-        required: false
+        description: Exact commit required for this standalone Fast CI run
+        required: true
         type: string
         default: ""
       base_sha:
-        description: Immutable comparison base resolved by the caller
+        description: Optional immutable whitespace comparison base for a manual branch run
         required: false
         type: string
         default: ""
@@ -37,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
       TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -48,7 +54,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+        run: |
+          test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            test -n "${EXPECTED_SHA}"
+            test "${TARGET_SHA}" = "${GITHUB_SHA}"
+          fi
       - run: python -m pip install pyyaml==6.0.3 pytest==8.4.2
       - name: Check source and packaged legal files
         run: |
@@ -91,6 +102,9 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'review-ready'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
       BASE_SHA: ${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}
@@ -132,7 +146,23 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
+          # Copy branches can be rebased or stacked. Their previous push head
+          # is not the PR base; resolve the originating PR before diffing.
+          if [[ "${GITHUB_REF}" == refs/heads/pull-request/* ]]; then
+            pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+            if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+              echo "::error::invalid trusted PR copy ref"
+              exit 1
+            fi
+            pr_metadata="$(gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.head.sha, .base.sha] | @tsv')"
+            IFS=$'\t' read -r pr_head BASE_SHA <<< "${pr_metadata}"
+            if [[ "${pr_head}" != "${TARGET_SHA}" || ! "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::trusted copy or PR comparison base changed"
+              exit 1
+            fi
+          fi
           if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
             if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
               # Checkout removes its credentials; authenticate this fetch only,
@@ -168,9 +198,8 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - run: cargo fmt --all -- --check
 
-  # Direct PR runs publish `Fast CI Success`. When Full CI calls this workflow,
-  # GitHub displays `Fast CI / Fast CI Success`; `Full CI Success` aggregates
-  # that composed result for branch-rule enforcement.
+  # Full CI verifies this standalone run and each substantive job at the same
+  # branch/SHA. No reusable Fast CI invocation is nested inside Full CI.
   readiness:
     name: Fast CI Success
     if: ${{ always() }}
