@@ -66,6 +66,7 @@ TOPOLOGY_FIELDS = (
     "fmha_quant_mode",
     "comm_quant_mode",
     "nextn",
+    "attention_backend",
 )
 
 

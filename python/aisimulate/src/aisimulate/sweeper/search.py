@@ -379,6 +379,31 @@ def _validate_provider_replay_spec(name: str, spec: Any) -> None:
         raise TypeError(f"adapter {name!r} returned an invalid/non-JSON replay spec: {exc}") from exc
 
 
+def _validate_router_prefill_hardware(spec: AdapterReplaySpec, sample: dict[str, Any]) -> None:
+    """Reject legacy Router AIC hooks that ignore the resolved prefill SKU.
+
+    Inspect the materialized hook so corrected providers and non-AIC policies
+    remain usable without importing Dynamo or interpreting its search schema.
+    """
+    if sample["deployment_mode"] != "disagg":
+        return
+    expected = sample["prefill_hardware_sku"]
+    for hook in spec.runtime_hooks:
+        if hook.provider != "dynamo.router" or hook.kind != "placement_policy":
+            continue
+        router_config = hook.config.get("router_config")
+        if not isinstance(router_config, dict) or router_config.get("router_prefill_load_model") != "aic":
+            continue
+        perf_config = hook.config.get("aic_perf_config")
+        actual = perf_config.get("aic_system") if isinstance(perf_config, dict) else None
+        if actual != expected:
+            raise InfeasibleCandidate(
+                f"Router AIC prefill system {actual!r} does not match effective prefill_hardware_sku={expected!r}; "
+                "use a Dynamo Router provider that consumes the effective prefill SKU, "
+                "or select a non-AIC prefill load model"
+            )
+
+
 def _merge_adapter_spaces(
     branches: list[BranchSpace],
     plans: Mapping[str, AdapterSearchPlan],
@@ -600,9 +625,26 @@ def _materialize_one(
                     runner_metadata={},
                     config_snapshot=epd_snapshot,
                 )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        backend_version = config.search_space.backend_version
+        if backend_version is None:
+            if sample["deployment_mode"] == "disagg":
+                role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
+                if len(set(role_hardware.values())) == 1:
+                    backend_version = resolve_backend_version(role_hardware["prefill"], selection["backend"])
+                else:
+                    role_versions = {
+                        role: resolve_backend_version(hardware, selection["backend"])
+                        for role, hardware in role_hardware.items()
+                    }
+                    if len(set(role_versions.values())) != 1:
+                        raise ValueError(
+                            "heterogeneous P/D hardware requires one common backend_version; "
+                            f"latest versions for backend={selection['backend']!r} are {role_versions}. "
+                            "Set search_space.backend_version to a version supported by both SKUs."
+                        )
+                    backend_version = role_versions["prefill"]
+            else:
+                backend_version = resolve_backend_version(config.search_space.hardware_sku, selection["backend"])
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
@@ -669,6 +711,7 @@ def _materialize_one(
                 candidate_context,
             )
             _validate_provider_replay_spec(name, adapter_spec)
+            _validate_router_prefill_hardware(adapter_spec, sample)
             # Frozen dataclasses do not freeze nested JSON containers. Snapshot
             # the return value so an adapter can safely reuse an output buffer
             # without mutating candidates already prepared in this round.
