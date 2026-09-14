@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -1383,10 +1384,28 @@ def load_and_validate(
     return document
 
 
+def verify_automated_execution(
+    document: dict[str, Any], expected_revision: str | None
+) -> None:
+    if expected_revision is None:
+        raise QualificationError("execution verification requires expected_revision")
+    spec = importlib.util.spec_from_file_location(
+        "power_qualification_data", ROOT / "scripts/power_qualification_data.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.verify_automated_evidence(ROOT, document, expected_revision)
+    except (ValueError, OSError) as error:
+        raise QualificationError(str(error)) from error
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ledger", nargs="?", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--require-release-ready", action="store_true")
+    parser.add_argument("--verify-execution", action="store_true")
     parser.add_argument(
         "--expected-revision",
         help="exact candidate commit required by --require-release-ready",
@@ -1398,6 +1417,12 @@ def main(argv: list[str] | None = None) -> int:
             require_release_ready=args.require_release_ready,
             expected_revision=args.expected_revision,
         )
+        if (
+            args.verify_execution
+            or args.require_release_ready
+            or document["release_state"] == "qualified"
+        ):
+            verify_automated_execution(document, args.expected_revision)
     except (OSError, json.JSONDecodeError, QualificationError) as error:
         print(f"power qualification failed: {error}", file=sys.stderr)
         return 1

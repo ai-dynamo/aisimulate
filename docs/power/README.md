@@ -52,12 +52,36 @@ command.
 
 ## Validate the ledger
 
-Run the deterministic structural check in normal CI:
+Run the structural check locally:
 
 ```bash
 python scripts/validate_power_qualification.py
 python -m pytest -q tests/test_power_qualification.py
 ```
+
+Fast CI also executes the available data gate and uploads its generated ledger
+and report, bound to the exact checkout commit. Reproduce that path from a clean
+checkout with the project environment active:
+
+```bash
+python scripts/power_qualification_data.py --expected-revision "$(git rev-parse HEAD)"
+python scripts/validate_power_qualification.py artifacts/power-qualification/qualification-matrix.json \
+  --verify-execution --expected-revision "$(git rev-parse HEAD)"
+```
+
+The producer scans every parquet under the repository's data tree, records a
+digest of the complete tree, and counts invalid values and paired `0.0/0.0`
+unavailable sentinels. It does not locate data through an installed package.
+The verifier rescans that same checkout and compares the complete report.
+Changing a report's source revision or recomputing its JSON hash cannot replace
+execution. Dirty source trees and stale revisions fail. The historical report
+is retained for audit history; its gate stays pending in the committed ledger.
+Only the generated CI ledger records a result for the current candidate.
+
+Release mode always verifies automated execution. Future automated gates need
+a reviewed execution verifier before they can qualify a release; a matching
+JSON report alone is insufficient. Ledger commands are descriptive and are
+never executed as arbitrary shell commands by the validator.
 
 Run the fail-closed release decision only after every implementation and
 evidence-producing job has completed:

@@ -19,17 +19,15 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-import aiconfigurator_core
-
 pytestmark = pytest.mark.unit
 
-_DATA_ROOT = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
+_DATA_ROOT = Path(__file__).resolve().parents[4] / "src" / "aiconfigurator_core" / "systems" / "data"
 _POWER_COLUMNS = ("power", "power_limit")
 
 
 def _power_carrying_files() -> list[Path]:
     files = []
-    for path in sorted(_DATA_ROOT.rglob("*_perf.parquet")):
+    for path in sorted(_DATA_ROOT.rglob("*.parquet")):
         schema = pq.read_schema(path)
         if any(col in schema.names for col in _POWER_COLUMNS):
             files.append(path)

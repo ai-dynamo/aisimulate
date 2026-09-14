@@ -109,68 +109,133 @@ def qualified_document(
 def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
     document = QUALIFICATION.load_and_validate(LEDGER)
     invariant = _gate(document, "power-data-invariants")
-    evidence = invariant["execution"]["evidence"][0]
-    artifact = ROOT / evidence["artifact"]
-
     assert document["release_state"] == "not_qualified"
-    assert invariant["execution"]["status"] == "passed"
-    assert evidence["result"] == "pass"
-    assert artifact.is_file()
-    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == evidence["sha256"]
+    assert invariant["execution"]["status"] == "pending"
+    assert "historical report" in invariant["notes"]
     assert QUALIFICATION.main([]) == 0
 
 
-def test_power_data_invariant_evidence_is_complete_and_machine_readable() -> None:
-    document = _document()
-    evidence = _gate(document, "power-data-invariants")["execution"]["evidence"][0]
-    with (ROOT / evidence["artifact"]).open(encoding="utf-8") as artifact_file:
-        result = json.load(artifact_file)
+def _data_runner():
+    spec = importlib.util.spec_from_file_location("power_data_runner", ROOT / "scripts/power_qualification_data.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    assert result["schema_version"] == "1.0"
-    assert result["gate_id"] == "power-data-invariants"
-    assert result["source_revision"] == evidence["source_revision"]
-    assert result["anomalies"] == []
-    details = result["details"]
-    assert details["discovery_root"] == "python/aisimulate/src/aiconfigurator_core/systems/data"
-    assert details["total_discovered_parquet_count"] == 762
+
+def test_power_data_evidence_is_recomputed_from_the_checkout() -> None:
+    runner = _data_runner()
+    details = runner.scan_details(ROOT)
+    paths = list((ROOT / runner.DATA_ROOT).rglob("*.parquet"))
+    assert details["total_discovered_parquet_count"] == len(paths)
+    assert details["files_scanned"] > 0
     assert details["skipped_file_anomalies"] == []
-    assert details["files_scanned"] == len(details["files"]) == 3
-    assert details["files_without_power_columns"] == 759
-    assert details["rows_scanned"] == sum(file_result["rows_scanned"] for file_result in details["files"])
-    assert details["rows_scanned"] == 122362
-    assert details["checks"]["power_and_limit_columns_paired"] == {
-        "result": "pass",
-        "files_missing_pair": [],
-    }
-    assert details["checks"]["finite_nonnegative_values"] == {
-        "result": "pass",
-        "power": {
-            "unit": "W",
-            "nan_count": 0,
-            "positive_infinity_count": 0,
-            "negative_infinity_count": 0,
-            "negative_count": 0,
-        },
-        "power_limit": {
-            "unit": "W",
-            "nan_count": 0,
-            "positive_infinity_count": 0,
-            "negative_infinity_count": 0,
-            "non_positive_count": 0,
-        },
-    }
-    assert all(
-        file_result["power_columns_present"] == ["power", "power_limit"]
-        and file_result["pairing_result"] == "pass"
-        and file_result["key_columns"]
-        and file_result["power"]["unit"] == "W"
-        and file_result["power_limit"]["unit"] == "W"
-        and file_result["power"]["positive_infinity_count"] == 0
-        and file_result["power"]["negative_infinity_count"] == 0
-        and file_result["power_limit"]["positive_infinity_count"] == 0
-        and file_result["power_limit"]["negative_infinity_count"] == 0
-        for file_result in details["files"]
+    assert details["rows_scanned"] == sum(item["rows_scanned"] for item in details["files"])
+    for item in details["files"]:
+        path = ROOT / runner.DATA_ROOT / item["path"]
+        assert item["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_power_table(root: Path, powers: list, limits: list) -> Path:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    runner = _data_runner()
+    path = root / runner.DATA_ROOT / "example.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"batch_size": list(range(len(powers))), "power": powers, "power_limit": limits}), path)
+    return path
+
+
+@pytest.mark.parametrize(
+    "power,limit",
+    [(float("nan"), 700.0), (float("inf"), 700.0), (-1.0, 700.0), (1.0, float("-inf")), (0.0, 700.0), (1.0, 0.0)],
+)
+def test_power_scan_rejects_corrupt_data(tmp_path: Path, power: float, limit: float) -> None:
+    _write_power_table(tmp_path, [power], [limit])
+    assert _data_runner().scan_details(tmp_path)["skipped_file_anomalies"]
+
+
+def test_power_scan_preserves_paired_unavailable_sentinels(tmp_path: Path) -> None:
+    _write_power_table(tmp_path, [0.0, 400.0], [0.0, 700.0])
+    details = _data_runner().scan_details(tmp_path)
+    assert details["skipped_file_anomalies"] == []
+    assert details["files"][0]["unavailable_sentinel_rows"] == 1
+
+
+def test_execution_verification_rejects_forged_report_and_dirty_source(tmp_path: Path) -> None:
+    import subprocess
+
+    runner = _data_runner()
+    path = _write_power_table(tmp_path, [400.0], [700.0])
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init")
+    git("add", ".")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "data fixture",
     )
+    revision = git("rev-parse", "HEAD")
+    document = _document()
+    gate = _gate(document, "power-data-invariants")
+    report = runner.build_report(tmp_path, gate, revision)
+    artifact = tmp_path / "evidence.json"
+    artifact.write_text(json.dumps(report))
+    gate["execution"].update(
+        status="passed",
+        command=runner.COMMAND,
+        evidence=[
+            {
+                "source_revision": revision,
+                "artifact": "evidence.json",
+            }
+        ],
+    )
+    runner.verify_automated_evidence(tmp_path, document, revision)
+    report["details"]["rows_scanned"] += 1
+    artifact.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="does not reproduce"):
+        runner.verify_automated_evidence(tmp_path, document, revision)
+    artifact.write_text(json.dumps(runner.build_report(tmp_path, gate, revision)))
+    _write_power_table(tmp_path, [500.0], [700.0])
+    with pytest.raises(ValueError, match="clean source checkout"):
+        runner.verify_automated_evidence(tmp_path, document, revision)
+    git("add", str(path))
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "change data",
+    )
+    with pytest.raises(ValueError, match="checked-out HEAD"):
+        runner.verify_automated_evidence(tmp_path, document, revision)
+    new_revision = git("rev-parse", "HEAD")
+    # Relabeling an old artifact to a new commit cannot reproduce the data hash.
+    report = json.loads(artifact.read_text())
+    report["source_revision"] = new_revision
+    artifact.write_text(json.dumps(report))
+    gate["execution"]["evidence"][0]["source_revision"] = new_revision
+    with pytest.raises(ValueError, match="does not reproduce"):
+        runner.verify_automated_evidence(tmp_path, document, new_revision)
+    # No future gate can pass on arbitrary self-reported JSON.
+    _gate(document, "modeled-power-matrix")["execution"]["status"] = "passed"
+    with pytest.raises(ValueError, match="no execution verifier"):
+        runner.verify_automated_evidence(tmp_path, document, new_revision)
 
 
 def test_schema_is_versioned_and_machine_readable() -> None:
@@ -392,8 +457,8 @@ def test_cli_release_gate_fails_closed_and_checks_expected_revision(
     ledger = tmp_path / "qualification-matrix.json"
     ledger.write_text(json.dumps(qualified_document(revision)), encoding="utf-8")
 
-    assert QUALIFICATION.main([str(ledger), "--require-release-ready", "--expected-revision", revision]) == 0
-    assert "state=qualified" in capsys.readouterr().out
+    assert QUALIFICATION.main([str(ledger), "--require-release-ready", "--expected-revision", revision]) == 1
+    assert "power qualification failed" in capsys.readouterr().err
 
     assert (
         QUALIFICATION.main(
@@ -473,7 +538,7 @@ def test_unsupported_timing_backends_must_remain_unavailable() -> None:
 def test_passed_gate_requires_immutable_passing_evidence() -> None:
     document = _document()
     gate = _gate(document, "power-data-invariants")
-    passing_evidence = copy.deepcopy(gate["execution"]["evidence"])
+    passing_evidence = [_passing_evidence("bb31ab48cbe1e519683ce27bf7bc82f0e090ed67")]
     gate["execution"]["status"] = "passed"
     gate["execution"]["evidence"] = []
 

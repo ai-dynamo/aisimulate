@@ -140,21 +140,13 @@
       ],
       "execution": {
         "kind": "automated",
-        "status": "passed",
-        "command": "uv run --project python/aisimulate --extra dev python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py",
+        "status": "pending",
+        "command": "python scripts/power_qualification_data.py --expected-revision <candidate-sha>",
         "command_status": "available",
-        "evidence": [
-          {
-            "result": "pass",
-            "artifact": "docs/power/evidence/power-data-invariants-bb31ab4.json",
-            "sha256": "df358a397474eea06b8768055710e8cc54e4ae0e98433f4fcdd0d7a3ccf2212f",
-            "source_revision": "bb31ab48cbe1e519683ce27bf7bc82f0e090ed67",
-            "recorded_at": "2026-09-11T17:25:37Z"
-          }
-        ],
+        "evidence": [],
         "blocked_by": []
       },
-      "notes": "The repository-bound invariant test passes and is preserved as immutable evidence. This data-plane result does not establish end-to-end modeled-power coverage or accuracy."
+      "notes": "The historical report is retained for audit history but does not establish execution against the candidate checkout. CI regenerates this gate and its report for the exact head; only the generated ledger records the current result. Data integrity does not establish end-to-end coverage or accuracy."
     },
     {
       "id": "aic-power-parity",
