@@ -1,21 +1,31 @@
 # Strict SILICON prediction refresh — 2026-09-14
 
 These are actual CPU predictions from merged predictor commit
-`f21ed55168074f8d32153a04d3cdfc524484722b`, with a freshly built native extension
-SHA-256 `23bb3240683c1e2a18ce188200267c1fcb26294752cca50c022eca24e421a6d0`.
+`643a3d603843f3123fe413f691efa0c881a44d0e`, with a freshly built native extension
+SHA-256 `de540de5c63d8b5a02fdfad5297440e33af958110eea37b30bcd17ebb25cea9c`.
 The mode is **SILICON with `forward_model=op_level`**, fixed profile-specific
 GB300 operation tables, TP4 and the checkpoint's original mixed precision.
 There is no new GPU measurement, calibration change or correction fitting.
+
+This refresh inherits the reviewed SOL storage and indexing changes. The
+analytical `kv_cache_layout` selector stays outside the existing measured-module
+key; canonical validation still rejects that field when explicitly stored in a
+table, along with arbitrary unknown fields. Measured shape, arithmetic precision,
+source, runtime and profile checks remain exact. An initial integration attempt
+rejected the legacy descriptors; its results and test failure are retained
+privately. The narrow compatibility fix and fresh native rebuild precede every
+result below. Relative to the previous refresh, 633 native prediction values
+changed while all 69,298 row inputs and coverage statuses stayed unchanged.
 
 | GB300 comparison | Predicted / observed | MAPE | WAPE | Fully predicted cohorts |
 |---|---:|---:|---:|---:|
 | OFF 46-point holdout | 46 / 46 | 7.3679% | 7.2321% | — |
 | ON 46-point holdout | 30 / 46 | 6.8538% | 6.8723% | — |
-| OFF primary native intervals | 14,476 / 15,756 | 13.0147% | 13.5565% | 560 / 600 |
-| ON primary native intervals | 35,797 / 39,393 | 4.8107% | 5.1083% | 1,104 / 1,500 |
-| OFF field native intervals | 3,503 / 3,503 | 11.5855% | 11.9119% | 120 / 120 |
+| OFF primary native intervals | 14,476 / 15,756 | 13.1297% | 13.6938% | 560 / 600 |
+| ON primary native intervals | 35,797 / 39,393 | 4.8331% | 5.1341% | 1,104 / 1,500 |
+| OFF field native intervals | 3,503 / 3,503 | 11.6264% | 11.9609% | 120 / 120 |
 | ON field native intervals | 3,466 / 3,503 | 3.7355% | 4.1381% | 83 / 120 |
-| OFF service native intervals | 3,509 / 3,509 | 11.4120% | 11.7321% | 120 / 120 |
+| OFF service native intervals | 3,509 / 3,509 | 11.4461% | 11.7731% | 120 / 120 |
 | ON service native intervals | 3,468 / 3,504 | 3.2848% | 3.5117% | 84 / 120 |
 
 MAPE is the equal-weight mean of `100 × abs(predicted_ms / observed_ms − 1)`
@@ -50,9 +60,9 @@ These exact workloads were actually replayed through the current native engine:
 
 | Core HTTP metric | OFF MAPE / WAPE | ON MAPE / WAPE |
 |---|---:|---:|
-| TTFT | 25.5211% / 25.3890% | 37.2799% / 37.2435% |
-| Average TPOT | 12.9186% / 12.9586% | 6.2212% / 6.2757% |
-| Output tokens/s | 16.9935% / 15.8194% | 10.8505% / 9.8814% |
+| TTFT | 25.3626% / 25.2805% | 36.9493% / 36.9118% |
+| Average TPOT | 12.9106% / 12.9505% | 6.2178% / 6.2722% |
+| Output tokens/s | 16.8987% / 15.7252% | 10.8123% / 9.8435% |
 
 OFF supports **520 / 600** original cohorts: 560 exact inputs were attempted,
 40 returned model errors, and 40 prefix-reuse inputs lack the seed-A submit
@@ -91,11 +101,13 @@ request, worker, node and dispatch identifiers are omitted.
 [original-input-bindings.json](original-input-bindings.json) binds original
 public reports, unchanged prediction configurations and complete table
 inventories. [source-bindings.json](source-bindings.json) binds the actual fresh
-private comparison reports and exporter. No old report is overwritten.
+private comparison reports and exporter. Historical source reports remain unchanged. The previous refresh is retained in
+Git history and private evidence; this bundle records the current refresh in place.
 
-The current source passed 147 targeted Python model/database/Collector contract
-tests, 35 Rust DSv41 tests and 40 existing report/statistics tests. Packaged legal
-files and generated ownership files match their source definitions.
+The current source passed 108 targeted Python model/database tests and 43 Rust
+DSv41 tests. Independent projection checks recomputed all 45 summary rows and
+preserved every observation, input geometry, availability status and cache flag.
+Packaged legal files and generated ownership files match their source definitions.
 
 Actual prediction reproduction is available directly from this public bundle.
 `predict_native_rows.py` queries the native predictor for every published

@@ -1,7 +1,7 @@
 {
   "identity": {
-    "native_extension_sha256": "23bb3240683c1e2a18ce188200267c1fcb26294752cca50c022eca24e421a6d0",
-    "predictor_commit": "f21ed55168074f8d32153a04d3cdfc524484722b"
+    "native_extension_sha256": "de540de5c63d8b5a02fdfad5297440e33af958110eea37b30bcd17ebb25cea9c",
+    "predictor_commit": "643a3d603843f3123fe413f691efa0c881a44d0e"
   },
   "summary": [
     {
@@ -27,38 +27,38 @@
     {
       "cohorts": 600,
       "fully_predicted_cohorts": 560,
-      "mape_percent": 13.014721721293546,
+      "mape_percent": 13.129726833338207,
       "missing": 1280,
       "observed": 15756,
       "predicted": 14476,
       "profile": "full",
       "scope": "gb300-native-off",
       "unit": "native intervals",
-      "wape_percent": 13.556519708558362
+      "wape_percent": 13.693792444883274
     },
     {
       "cohorts": 1500,
       "fully_predicted_cohorts": 1104,
-      "mape_percent": 4.810743571245836,
+      "mape_percent": 4.833051622718894,
       "missing": 3596,
       "observed": 39393,
       "predicted": 35797,
       "profile": "decoder_bounded",
       "scope": "gb300-native-on",
       "unit": "native intervals",
-      "wape_percent": 5.108277736243467
+      "wape_percent": 5.134118147720419
     },
     {
       "cohorts": 120,
       "fully_predicted_cohorts": 120,
-      "mape_percent": 11.585453130247025,
+      "mape_percent": 11.62641258311855,
       "missing": 0,
       "observed": 3503,
       "predicted": 3503,
       "profile": "full",
       "scope": "gb300-native-field-off",
       "unit": "native intervals",
-      "wape_percent": 11.911905504295078
+      "wape_percent": 11.960934707618273
     },
     {
       "cohorts": 120,
@@ -75,14 +75,14 @@
     {
       "cohorts": 120,
       "fully_predicted_cohorts": 120,
-      "mape_percent": 11.411987177174431,
+      "mape_percent": 11.44612518618349,
       "missing": 0,
       "observed": 3509,
       "predicted": 3509,
       "profile": "full",
       "scope": "gb300-native-service-off",
       "unit": "native intervals",
-      "wape_percent": 11.732084803594553
+      "wape_percent": 11.773122457377038
     },
     {
       "cohorts": 120,

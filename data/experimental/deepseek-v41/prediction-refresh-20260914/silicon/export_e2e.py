@@ -17,6 +17,7 @@ def main():
     args = parser.parse_args()
     base = Path(__file__).resolve().parents[2] / "gb300-silicon/report/sol-review-v2"
     pins, rows, summaries = {}, [], []
+    identity = read(args.input_root / "silicon-cold-e2e-v1/started.json")
     for scope in ("off", "on", "field-off", "field-on", "service-off", "service-on"):
         fresh = scope in ("off", "on")
         path = (
@@ -25,6 +26,8 @@ def main():
             else (base / scope / "e2e-silicon-results.json.gz")
         )
         source = read(path)
+        if fresh and any(source[key] != value for key, value in identity.items()):
+            raise ValueError("mixed current cold prediction identity")
         pins[scope] = {"source_sha256": sha(path), "fresh_predictions": fresh}
         group = []
         for ordinal, case in enumerate(source["cohorts"]):
@@ -122,15 +125,11 @@ def main():
         {
             "input_reports": pins,
             "exporter_sha256": sha(Path(__file__)),
-            "predictor_commit": source.get(
-                "predictor_commit", "f21ed55168074f8d32153a04d3cdfc524484722b"
-            ),
+            "predictor_commit": identity["predictor_commit"],
             "workload_proof": read(
                 args.input_root / "shared-cold-workloads-v1/completion.json"
             ),
-            "current_prediction_identity": read(
-                args.input_root / "silicon-cold-e2e-v1/started.json"
-            ),
+            "current_prediction_identity": identity,
             "fresh_raw_admission": False,
             "correction_fitting": False,
         },

@@ -2,13 +2,14 @@
   "portable_original_source": {
     "recover_cold_workloads.py": {
       "private_executed_source_sha256": "b87e737d99aac0aa67989eeba2632fc617b1c49a5a11e57430ff40be5edde771",
-      "changes": "CLI paths, SPDX header, formatting only; exact reconstruction/hash/metadata policy preserved"
+      "changes": "Portable reconstruction code unchanged; CLI relocation reproduces every original ReplaySpec hash and all cohort inputs."
     },
     "replay_cold_workloads.py": {
-      "private_executed_source_sha256": "fbb8027036d3462a3c3576ff3cb0f2cfa74de509427cc0ef28fa0a3084c80876",
-      "changes": "CLI paths/analysis-tool import, SPDX header, source-equivalence guard permits report-only descendants, formatting; actual replay and metrics unchanged; explicit frozen-table inventory guard before replay"
+      "private_executed_source_sha256": "91dd8ba4ae4bdbb50ac9053098b3febc439ac5ac80cf65a28f0e60bbdf9e0c40",
+      "changes": "CLI/path binding, exact source-equivalence and table inventory guards; current source643a3d6038, every retained metric/request/cache field rechecked by actual replay."
     }
   },
-  "validation_sha256": "5a43b0a891bdbc0dadd008002508559a3332b0f2ef095f08f3d1d0577c9b87b4",
-  "predict_native_rows.py": "Original portable driver; API and geometry construction match the executed original holdout/native/GB200 probes; every actual result rechecked against publication."
+  "validation_sha256": "298a6e636395ce671626a9ec81834dca4548661395beda0bd435c4d6607e5874",
+  "predict_native_rows.py": "Original portable geometry driver updated to the current predictor source. All 69,298 actual status, value and typed-error records re-queried and matched.",
+  "export_e2e.py": "Current predictor identity is read from the actual cold-run receipt and checked against both fresh scopes; no stale hardcoded fallback from historical field/service reports."
 }

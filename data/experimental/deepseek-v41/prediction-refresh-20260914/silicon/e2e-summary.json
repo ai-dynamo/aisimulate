@@ -2,123 +2,123 @@
   "summary": [
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 25.52106145237003,
+      "mape_percent": 25.362596085715566,
       "metric": "ttft_ms",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 25.38896862459046
+      "wape_percent": 25.280487410489084
     },
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 12.918562317128066,
+      "mape_percent": 12.910604326340454,
       "metric": "average_tpot_ms",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 12.958618985300085
+      "wape_percent": 12.950499883854281
     },
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 16.993494373363067,
+      "mape_percent": 16.898679768725955,
       "metric": "output_tokens_per_second",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 15.819411176188499
+      "wape_percent": 15.725184935867661
     },
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 12.918562317128067,
+      "mape_percent": 12.910604326340454,
       "metric": "exact_itl_ms",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 12.958618985300085
+      "wape_percent": 12.950499883854281
     },
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 14.352525770387949,
+      "mape_percent": 14.277988205087597,
       "metric": "request_latency_ms",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 13.601755087462648
+      "wape_percent": 13.52616484977356
     },
     {
       "exact_specs_recovered": 560,
-      "mape_percent": 14.34191582714947,
+      "mape_percent": 14.267368914937146,
       "metric": "last_token_latency_ms",
       "missing_cohorts": 80,
       "observed_cohorts": 600,
       "predicted_cohorts": 520,
       "scope": "gb300-http-off",
-      "wape_percent": 13.59169904983869
+      "wape_percent": 13.516100014074187
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 37.27991336404686,
+      "mape_percent": 36.94925987161081,
       "metric": "ttft_ms",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 37.243483967354535
+      "wape_percent": 36.91177381354505
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 6.221231372491416,
+      "mape_percent": 6.217813940994547,
       "metric": "average_tpot_ms",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 6.275669311591438
+      "wape_percent": 6.272176300711491
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 10.850529217646839,
+      "mape_percent": 10.812329537639561,
       "metric": "output_tokens_per_second",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 9.881399884744262
+      "wape_percent": 9.843522116127893
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 6.221231372491416,
+      "mape_percent": 6.217813940994547,
       "metric": "exact_itl_ms",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 6.275669311591437
+      "wape_percent": 6.27217630071149
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 9.64942044174541,
+      "mape_percent": 9.617163503818462,
       "metric": "request_latency_ms",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 8.86681146621846
+      "wape_percent": 8.834041964115139
     },
     {
       "exact_specs_recovered": 1300,
-      "mape_percent": 9.638404932054156,
+      "mape_percent": 9.606144004673155,
       "metric": "last_token_latency_ms",
       "missing_cohorts": 200,
       "observed_cohorts": 1500,
       "predicted_cohorts": 1300,
       "scope": "gb300-http-on",
-      "wape_percent": 8.856432328950925
+      "wape_percent": 8.82365909473677
     },
     {
       "exact_specs_recovered": 0,

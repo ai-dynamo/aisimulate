@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     repo = args.repo.resolve(strict=True)
-    source_commit = "f21ed55168074f8d32153a04d3cdfc524484722b"
+    source_commit = "643a3d603843f3123fe413f691efa0c881a44d0e"
     if subprocess.check_output(
         ["git", "diff", source_commit, "--", "crates/core", "python/aisimulate/src"],
         cwd=repo,

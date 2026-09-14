@@ -49,7 +49,7 @@ def main():
     head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
     ).strip()
-    expected = "f21ed55168074f8d32153a04d3cdfc524484722b"
+    expected = "643a3d603843f3123fe413f691efa0c881a44d0e"
     changed = subprocess.check_output(
         ["git", "diff", expected, "--", "crates/core", "python/aisimulate/src"],
         cwd=REPO,
