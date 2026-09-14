@@ -920,8 +920,8 @@ engine:
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
-identifier. Language-worker roles in aggregated or disaggregated mode use the same hardware;
-an optional analytical encoder pool can specify its own hardware.
+identifier. Language workers inherit that fallback unless a P/D role overrides it;
+an optional analytical encoder pool can also specify its own hardware.
 
 For heterogeneous P/D, set `engine.workers.prefill.hardware` and/or
 `engine.workers.decode.hardware`. An omitted role inherits `engine.hardware`. Both roles
