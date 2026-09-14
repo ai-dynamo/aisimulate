@@ -749,12 +749,32 @@ def test_prediction_timing_forward_model_defaults_to_op_level() -> None:
 
 def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> None:
     engine = _engine()
-    engine["workers"]["aggregated"] = {"timing": {"type": "default", "forward_model": "fpm"}}
+    engine["workers"]["aggregated"] = {
+        "timing": {
+            "type": "default",
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+        }
+    }
 
     config = CorePredictionConfig.model_validate({"engine": engine})
 
     assert config.engine.workers.aggregated is not None
     assert config.engine.workers.aggregated.timing.forward_model == "fpm"
+    assert (
+        config.engine.workers.aggregated.timing.fpm_parquet_path
+        == "/artifacts/reviewed-fpm.parquet"
+    )
+
+
+def test_prediction_timing_rejects_fpm_path_for_op_level() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {
+        "timing": {"fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"}
+    }
+
+    with pytest.raises(ValidationError, match="fpm_parquet_path requires"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 @pytest.mark.parametrize(

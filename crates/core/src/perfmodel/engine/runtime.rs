@@ -468,7 +468,7 @@ impl Engine {
         // engines would lazily re-parse the same parquet files on its first
         // query (~0.5s per engine on data-rich systems). Mode/policy, memo
         // caches, and the provenance accumulator stay per-engine.
-        let db = PerfDatabase::load_resolved_shared(
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
             systems_root,
             &spec.engine.system_name,
             spec.engine.backend.as_str(),
@@ -492,7 +492,12 @@ impl Engine {
             matches!(
                 spec.engine.database_mode,
                 DatabaseMode::Empirical | DatabaseMode::Sol
-            ) || spec.engine.tolerate_dirless_version,
+            ) || spec.engine.tolerate_dirless_version
+                // An external whole-forward FPM artifact is self-contained
+                // for covered cells. Keep op tables lazy so no in-repository
+                // backend/version directory is required just to load it.
+                || spec.engine.fpm_parquet_path.is_some(),
+            spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
@@ -1915,6 +1920,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,

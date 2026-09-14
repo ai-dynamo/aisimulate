@@ -115,6 +115,12 @@ pub struct EngineConfig {
     #[serde(default)]
     pub forward_model: Option<String>,
 
+    /// Optional external FPM parquet used when `forward_model == "fpm"`.
+    /// The required metadata sidecar is resolved by replacing the parquet
+    /// extension with `.metadata.json`.
+    #[serde(default)]
+    pub fpm_parquet_path: Option<PathBuf>,
+
     // KV
     pub kv_block_size: Option<u32>,
 

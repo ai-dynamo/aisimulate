@@ -8,6 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 AISimulate predicts LLM serving behavior and searches for strong deployment
 configurations offline, without bringing up a GPU serving cluster.
 
+Whole-forward FPM data is supplied at runtime rather than shipped in this
+repository. Set `forward_model="fpm"` and pass `fpm_parquet_path` through the
+prediction YAML, Python API, or Rust API; see the
+[core API guide](docs/core-api.md#choosing-a-forward-pass-api).
+
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one

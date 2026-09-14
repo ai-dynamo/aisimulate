@@ -88,6 +88,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
