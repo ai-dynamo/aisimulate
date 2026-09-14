@@ -21,6 +21,10 @@ runs:
             exit 1
           }
         done
+        # Versions are pinned by the container digest. Exercise and record
+        # the tools before exporting an environment for the wheel build.
+        auditwheel --version
+        patchelf --version
         echo "${MANYLINUX_PYTHON_ROOT}/bin" >> "${GITHUB_PATH}"
         {
           echo "PYO3_PYTHON=${MANYLINUX_PYTHON_ROOT}/bin/python"
@@ -31,3 +35,6 @@ runs:
           echo "RUSTUP_HOME=${RUNNER_TEMP}/rustup"
         } >> "${GITHUB_ENV}"
     - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      with:
+        # Match the existing nightly release builder.
+        toolchain: "1.98.0"
