@@ -130,10 +130,16 @@ jobs:
           tests
       - name: Check changed-line whitespace
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
             if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-              git fetch --no-tags origin "${BASE_SHA}"
+              # Checkout removes its credentials; authenticate this fetch only,
+              # as in collector-check.yml, without persisting the token.
+              basic_token="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch \
+                --no-tags origin "${BASE_SHA}"
             fi
             git diff --check "${BASE_SHA}...${TARGET_SHA}"
           else

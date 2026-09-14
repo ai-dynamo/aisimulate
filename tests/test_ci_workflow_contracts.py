@@ -465,9 +465,7 @@ def _run_comparison_base(
 
 def test_fast_ci_whitespace_receives_the_verified_pr_base() -> None:
     jobs = _workflow("ci.yml")["jobs"]
-    assert jobs["verify-target"]["outputs"]["whitespace-base"] == (
-        "${{ steps.pr-target.outputs.base_sha || steps.comparison-base.outputs.sha }}"
-    )
+    assert jobs["verify-target"]["outputs"]["whitespace-base"] == "${{ steps.pr-target.outputs.base_sha }}"
     assert jobs["fast-ci"]["with"]["base_sha"] == "${{ needs.verify-target.outputs.whitespace-base }}"
     fast_ci = _workflow("fast-ci.yml")
     base_input = fast_ci["on"]["workflow_call"]["inputs"]["base_sha"]
@@ -476,6 +474,22 @@ def test_fast_ci_whitespace_receives_the_verified_pr_base() -> None:
     assert fast_ci["jobs"]["python-static"]["env"]["BASE_SHA"] == (
         "${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}"
     )
+
+
+def test_fast_ci_missing_base_fetch_uses_temporary_checkout_authentication() -> None:
+    workflow = _workflow("fast-ci.yml")
+    job = workflow["jobs"]["python-static"]
+    checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    whitespace = next(step for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
+
+    assert workflow["permissions"]["contents"] == "read"
+    assert checkout["with"]["persist-credentials"] == "false"
+    assert whitespace["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "printf 'x-access-token:%s' \"${GH_TOKEN}\"" in whitespace["run"]
+    assert (
+        'git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch' in whitespace["run"]
+    )
+    assert '--no-tags origin "${BASE_SHA}"' in whitespace["run"]
 
 
 def _run_pr_target(
@@ -569,7 +583,7 @@ def _run_whitespace_step(repository: Path, base: str, target: str) -> subprocess
     job = _workflow("fast-ci.yml")["jobs"]["python-static"]
     script = next(step["run"] for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
     return subprocess.run(
-        ["bash", "-c", script],
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         cwd=repository,
         env={
             **os.environ,
@@ -580,6 +594,7 @@ def _run_whitespace_step(repository: Path, base: str, target: str) -> subprocess
             "BEFORE_SHA": "f" * 40,
             "BASE_SHA": base,
             "TARGET_SHA": target,
+            "GH_TOKEN": "ci-contract-dummy-token",
         },
         capture_output=True,
         text=True,
@@ -608,6 +623,18 @@ def test_fast_ci_whitespace_checks_the_whole_pr_above_its_stacked_base(
         assert "trailing whitespace" in result.stdout
 
 
+@pytest.mark.parametrize("base", ["", "0" * 40], ids=["manual-run", "new-release-branch"])
+def test_fast_ci_without_a_base_preserves_the_last_commit_range(tmp_path: Path, base: str) -> None:
+    _git(tmp_path, "init", "--quiet")
+    _commit_file(tmp_path, "earlier.txt", "outside the last commit \n")
+    target = _commit_file(tmp_path, "last.txt", "last change\n")
+
+    result = _run_whitespace_step(tmp_path, base, target)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "earlier.txt" not in result.stdout
+
+
 @pytest.mark.parametrize("available", [True, False], ids=["fetch-base-history", "missing-base-fails-closed"])
 def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tmp_path: Path, available: bool) -> None:
     origin = tmp_path / "origin"
@@ -634,8 +661,11 @@ def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tm
         assert _git(checkout, "merge-base", base, target).stdout.strip() == common
         assert _git(checkout, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
         assert not _git(checkout, "tag", "--list").stdout.strip()
+        assert _git(checkout, "config", "--local", "--get-regexp", "extraheader", check=False).returncode == 1
     else:
         assert result.returncode != 0
+        assert "upload-pack: not our ref" in result.stderr
+        assert "Invalid symmetric difference expression" not in result.stderr
 
 
 def test_collector_comparison_fetch_preserves_full_history() -> None:
@@ -752,7 +782,7 @@ def _run_workflow_script(
     env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", "-c", script],
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         cwd=REPOSITORY_ROOT,
         env={**os.environ, **env},
         capture_output=True,

@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
-      whitespace-base: ${{ steps.pr-target.outputs.base_sha || steps.comparison-base.outputs.sha }}
+      whitespace-base: ${{ steps.pr-target.outputs.base_sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
