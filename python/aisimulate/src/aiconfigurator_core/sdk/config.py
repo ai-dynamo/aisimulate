@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/config.py
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TypeVar, Union
 
 from aiconfigurator_core.sdk import common
+from aiconfigurator_core.sdk.speculation.base import SpeculationConfig
 
 KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
 
@@ -87,7 +90,10 @@ class ModelConfig:
     # quantization options
     # MTP speculative decoding: draft length (compute/verification cost only).
     # Accepted-token progress belongs to the upper prediction/simulation layer.
+    # Legacy sugar for speculation=SpeculationConfig("mtp", {"depth": nextn}).
     nextn: int = 0
+    # Resolved by config_builders.resolve_speculation before model construction.
+    speculation: SpeculationConfig | None = field(default=None, kw_only=True)
     overwrite_num_layers: int = 0
     # model builder falvors
     sms: int = 20

@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/tests/unit/sdk/test_fpm_forward.py
 
 """Unit tests for forward_model="fpm": FPMForwardOp construction, the
 centralized model rewrite, and static/mixed-step routing through the compiled
@@ -18,6 +20,7 @@ import hashlib
 import json
 import os
 import shutil
+from typing import ClassVar
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -245,6 +248,86 @@ class TestForwardModelRewrite:
         with pytest.raises(NotImplementedError, match="MTP"):
             models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
 
+    # -- Hybrid speculative shape (verify-on-FPM) --
+
+    _EAGLE3_CONFIG: ClassVar[dict] = {
+        "architectures": ["LlamaForCausalLMEagle3"],
+        "model_type": "llama",
+        "num_hidden_layers": 1,
+        "hidden_size": 1024,
+        "intermediate_size": 3072,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "vocab_size": 151936,
+        "draft_vocab_size": 32000,
+        "sliding_window": None,
+        "use_sliding_window": False,
+    }
+
+    def test_fpm_hybrid_ngram_sets_verify_width_without_draft_ops(self):
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+        cfg = _model_config(
+            forward_model="fpm",
+            speculation=SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3}),
+        )
+        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        # ngram drafts on the host: no draft ops, pure verify-width change.
+        assert [op._name for op in model.generation_ops] == ["fpm_forward_decode"]
+        assert model.generation_ops[0]._verify_width == 4
+        assert model.context_ops[0]._verify_width == 1  # prefill untouched
+        assert model._nextn == 3  # engine widening channel stays consistent
+
+    def test_fpm_standalone_draft_keeps_native_ops(self):
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+        cfg = _model_config(
+            forward_model="fpm",
+            speculation=SpeculationConfig(
+                kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path="Qwen/Qwen3-0.6B"
+            ),
+        )
+        model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert model.generation_ops[0]._verify_width == 4
+        assert model.generation_ops[1:]
+        assert all(not isinstance(op, FPMForwardOp) for op in model.generation_ops[1:])
+        assert all(not isinstance(op, FPMForwardOp) for op in model.context_ops[1:])
+        draft = model.spec_scheme._draft_model
+        assert draft.config.forward_model == "op_level"
+        assert draft._nextn == 0
+
+    def test_fpm_hybrid_eagle3_keeps_draft_ops_op_level(self):
+        from aiconfigurator_core.sdk.engine import _fpm_spec_dict
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+        cfg = _model_config(
+            forward_model="fpm",
+            speculation=SpeculationConfig(
+                kind="eagle3",
+                params={"num_speculative_tokens": 3},
+                draft_config=self._EAGLE3_CONFIG,
+            ),
+        )
+        baseline = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
+        target_weights = float(sum(op.get_weights() for op in baseline.context_ops))
+        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+
+        # Phase lists LEAD with the whole-model op; draft ops follow op-level.
+        assert isinstance(model.generation_ops[0], FPMForwardOp)
+        gen_tail = model.generation_ops[1:]
+        assert gen_tail and all(op._name.startswith("draft_") for op in gen_tail)
+        assert model.generation_ops[0]._verify_width == model.verify_width == 4
+
+        # The whole-model fold covers the TARGET only: sol_ops and the weight
+        # inventory exclude draft ops (draft memory rides the scheme hooks).
+        assert not any(op._name.startswith("draft_") for op in model.generation_ops[0]._sol_ops)
+        assert model.context_ops[0].get_weights() == pytest.approx(target_weights)
+
+        # Wire: verify_width rides the FpmForward opspec.
+        spec = _fpm_spec_dict(model.generation_ops[0])
+        assert spec["FpmForward"]["verify_width"] == 4
+
 
 # ---------------------------------------------------------------------------
 # Static + mixed-step integration through a real PerfDatabase/backend
@@ -277,6 +360,9 @@ def fpm_session(tmp_path):
         _row("prefill", 1, isl + 2, 0, 23.0, model_path=model.model_path, identity=identity),
         _row("prefill", 1, 258, 0, 11.0, model_path=model.model_path, identity=identity),
         _row("prefill", 1, 258, 256, 13.0, model_path=model.model_path, identity=identity),
+        # Prefill-only chunk averages used by the hybrid attribution probe.
+        _row("prefill", 1, 256, 0, 10.0, model_path=model.model_path, identity=identity),
+        _row("prefill", 1, 256, 256, 12.0, model_path=model.model_path, identity=identity),
         # CUDA-graph cliff pair at capture=2048 plus the eager plateau: the
         # regime is encoded in the data, the formula only addresses it.
         _row("prefill", 1, 2048, 0, 47.0, model_path=model.model_path, identity=identity),
@@ -296,6 +382,92 @@ def fpm_session(tmp_path):
 
 
 class TestFPMStaticAndMixed:
+    @pytest.mark.parametrize("ctx_tokens", [256, 512])
+    @pytest.mark.parametrize("gen_requests", [0, 2])
+    def test_public_mixed_hybrid_keeps_native_component_sources(self, fpm_session, ctx_tokens, gen_requests):
+        from aiconfigurator.sdk.config import RuntimeConfig
+        from aiconfigurator.sdk.inference_session import InferenceSession
+        from aiconfigurator_core.sdk.operations.elementwise import ElementWise
+        from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+        from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+
+        baseline, database, backend, isl, osl = fpm_session
+        model = models.get_model(
+            baseline.model_path,
+            _model_config(
+                forward_model="fpm",
+                speculation=SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3}),
+            ),
+            BACKEND,
+        )
+        # A synthetic materialized draft graph runs real native empirical ops
+        # alongside the fixture's silicon-tagged FPM table components.
+        model.context_ops.append(ElementWise("draft_context", 1.0, 4096, 4096, 0.8))
+        generation = ElementWise("draft_generation", 1.0, 4096, 4096, 0.8)
+        _fold_width(generation, 1, 4)
+        model.generation_ops.append(generation)
+        handle = _cached_engine_handle(model, database)
+        native = handle._mixed_step_breakdown_per_op_with_metadata(ctx_tokens, gen_requests, isl, osl, 0)
+        estimate = InferenceSession(model, database, backend).run_mixed(
+            RuntimeConfig(isl=isl, osl=osl), MixedStepInput(ctx_tokens, gen_requests)
+        )
+        shared, context, decode = native
+        assert {row[0] for row in shared} == {"fpm_forward_prefill", "draft_context"}
+        assert {row[0] for row in decode} == ({"fpm_forward_decode", "draft_generation"} if gen_requests else set())
+        rows = {row[0]: row for group in native for row in group}
+        # Independent phase queries establish draft values, energy and source;
+        # the reporting path must not absorb these into target FPM rows.
+        expected_context = handle.evaluate_context_ops([1], batch_size=1, s=ctx_tokens)[0]
+        assert rows["draft_context"][1:3] == pytest.approx(expected_context[1:3])
+        assert rows["draft_context"][3] == expected_context[3] == "empirical"
+        if gen_requests:
+            expected_generation = handle.evaluate_generation_ops(
+                [1], batch_size=gen_requests * 4, s=isl + osl // 2 + 1
+            )[0]
+            assert rows["draft_generation"][1:3] == pytest.approx(expected_generation[1:3])
+            assert rows["draft_generation"][3] == expected_generation[3] == "empirical"
+        assert rows["fpm_forward_prefill"][3] == "silicon"
+        public_rows = {
+            "generation_attention" if name == "fpm_forward_decode" else name: row for name, row in rows.items()
+        }
+        expected_latency = {name: pytest.approx(row[1]) for name, row in public_rows.items()}
+        expected_latency.setdefault("generation_attention", 0.0)
+        expected_latency["context_attention (scaled)"] = 0.0
+        assert estimate.per_op_latency_ms == expected_latency
+        expected_source = {name: row[3] for name, row in public_rows.items()}
+        expected_source.setdefault("generation_attention", "silicon")
+        expected_source["context_attention (scaled)"] = "silicon"
+        assert estimate.per_op_source == expected_source
+        for name, group in zip(("shared_non_attention", "context_attention", "decode_attention"), native, strict=True):
+            assert estimate.component_latency_ms[name] == pytest.approx(sum(row[1] for row in group))
+            assert estimate.component_energy_wms[name] == pytest.approx(sum(row[2] for row in group))
+        assert estimate.latency_ms == pytest.approx(handle.mixed_step_latency(ctx_tokens, gen_requests, isl, osl, 0))
+        assert estimate.latency_ms == pytest.approx(sum(row[1] for row in rows.values()))
+        assert estimate.energy_wms == pytest.approx(sum(row[2] for row in rows.values()))
+
+    def test_ngram_verify_width_reaches_native_fpm_query(self, fpm_session):
+        from aiconfigurator.sdk.config import RuntimeConfig
+        from aiconfigurator.sdk.inference_session import InferenceSession
+        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+        baseline, database, backend, isl, osl = fpm_session
+        model = models.get_model(
+            baseline.model_path,
+            _model_config(
+                forward_model="fpm",
+                speculation=SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3}),
+            ),
+            BACKEND,
+        )
+        summary = InferenceSession(model, database, backend).run_static(
+            RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl), mode="static_gen"
+        )
+        # Two requests verify four queries each; shared KV remains 2 * 513.
+        # The synthetic fixture has an exact (batch=8, KV=1026) row at 6.5 ms.
+        assert summary.get_generation_latency_dict() == {"fpm_forward_decode": pytest.approx(6.5)}
+
     def test_static_ctx_uses_fpm_row(self, fpm_session):
         from aiconfigurator.sdk.config import RuntimeConfig
         from aiconfigurator.sdk.inference_session import InferenceSession

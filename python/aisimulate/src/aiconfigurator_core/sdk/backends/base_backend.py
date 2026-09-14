@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/backends/base_backend.py
 # Kimi resize/pad is a modified adaptation, copyright 2026 the HuggingFace
 # Inc. team and HuggingFace Team (Apache-2.0):
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
@@ -2148,9 +2150,31 @@ class BaseBackend:
                 ``max_num_tokens`` budget that already caps total per-forward tokens
                 (draft tokens included), so re-multiplying would double-count.
         """
-        weights = model.get_resident_weights_bytes()
+        from aiconfigurator_core.sdk.speculation import NullScheme, SpecSchemeBase
+        from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
+
+        scheme = getattr(model, "spec_scheme", None)
+        # Exact-type Null check: a scheme SUBCLASSING NullScheme that overrides
+        # the draft hooks is a draft scheme (the test-fake idiom); MTP stays on
+        # the legacy nextn accounting baked into the model families.
+        has_draft_scheme = (
+            isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
+        )
+
+        if has_draft_scheme:
+            # The scheme owns the complete draft inventory, including weights
+            # omitted from the materialized context-op subset.
+            weights = sum(op.get_weights() for op in model.context_ops if not op._name.startswith("draft_"))
+        else:
+            # Phase-dependent models retain weights even when a forward skips
+            # their execution, and may include scales outside the op inventory.
+            weights = model.get_resident_weights_bytes()
         # count weights on a single GPU
         weights /= model.config.pp_size
+        if has_draft_scheme:
+            # Draft weights are resident on every pp stage's GPU that runs
+            # the draft (mirrors the legacy runtime-injection accounting).
+            weights += scheme.draft_weights_bytes(model)
 
         h = model._num_heads * model._head_size
         if num_tokens == 0:
@@ -2186,7 +2210,8 @@ class BaseBackend:
         # engine's max_num_tokens budget that already caps total per-forward tokens
         # (draft tokens included) -- re-multiplying there double-counts and can drive the
         # prefill worker's KV budget negative.
-        if mtp_activation_scaling and model.config.nextn > 0:
+        effective_nextn = int(getattr(model, "_nextn", 0) or model.config.nextn or 0)
+        if mtp_activation_scaling and effective_nextn > 0:
             if mtp_scaled_tokens is not None and num_tokens > 0:
                 # Mixed context+decode step (agg): only the decode-token share
                 # verifies nextn+1 tokens; context tokens are processed once.
@@ -2195,12 +2220,12 @@ class BaseBackend:
                 # inflates activations ~(nextn+1)x and over-prunes concurrency.
                 decode_share = min(max(mtp_scaled_tokens, 0), num_tokens)
                 activations = (
-                    activations * (num_tokens - decode_share + decode_share * (model.config.nextn + 1)) / num_tokens
+                    activations * (num_tokens - decode_share + decode_share * (effective_nextn + 1)) / num_tokens
                 )
             else:
                 # Decode-only steps (disagg decode worker): every token in the
                 # step is part of verification, so the full multiplier applies.
-                activations = activations * (model.config.nextn + 1)
+                activations = activations * (effective_nextn + 1)
 
         # Backend-level activation overhead (SGLang only by default).
         if self.ACTIVATION_OVERHEAD_FRAC > 0:
@@ -2210,6 +2235,8 @@ class BaseBackend:
         # CP shards persistent KV across cp ranks (full/cp per rank); the
         # all-gather is a transient compute buffer, not steady-state footprint.
         kvcache = batch_size * model.get_kvcache_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        if has_draft_scheme:
+            kvcache += batch_size * scheme.draft_kv_bytes_per_sequence(model, seq_tokens)
         # should not be divided by pp_size as you need to hold all kvcache for stages.
 
         # starting from 2.22
