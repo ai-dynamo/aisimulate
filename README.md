@@ -24,6 +24,10 @@ LLM Serving](https://arxiv.org/abs/2601.06288).
 
 ## Install
 
+See the [installation guide](docs/installation.md) for published versions,
+platform requirements, current-source setup, and internal nightlies. Documentation
+on `main` can describe features newer than the latest published wheel.
+
 ### Engine-only
 
 Install AISimulate by itself to use the built-in simulation engine without a
@@ -227,6 +231,9 @@ APIs:
 - [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
 
 ## Support and accuracy
+
+[Understand your prediction](docs/cli/understand-your-prediction.md) explains
+report fields, latency populations, incomplete requests, and SLA interpretation.
 
 Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
