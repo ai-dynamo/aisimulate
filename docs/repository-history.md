@@ -76,6 +76,10 @@ git -C ../aiconfigurator fetch origin
 diff -u <(git -C ../aiconfigurator show c8aee02f0887547a334c3d6cd192c42757e4b40e:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
 ```
 
+### Selective speculative-decoding migration
+
+[AIConfigurator PR #1563](https://github.com/ai-dynamo/aiconfigurator/pull/1563) is selectively adapted at source head `6290c161a354da5250c391bd43372b2e9c6f4a51` for pluggable speculation schemes and verify-on-FPM. This feature transfer does not advance the contiguous synchronization boundary above. The [migration ledger](aic-pr1563-migration.md) records the source paths, adaptations, and modeling limits.
+
 ### Bulk synchronization ledger
 
 [AIC-1788](https://linear.app/nvidia/issue/AIC-1788/repo-bulk-sync-post-ff2be1f-aiconfigurator-changes-into-aisimulate-through-095f58a) tracks the single AISimulate bulk synchronization from `ff2be1f` through `095f58a`. The review units below preserve the source range's first-parent order.
