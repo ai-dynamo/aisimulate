@@ -324,6 +324,23 @@ gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
 
+Standalone Fast CI accepts these manual inputs:
+
+| Input | Behavior |
+| --- | --- |
+| `expected_sha` | Required full commit SHA; it must match the selected branch's commit when the run starts |
+| `base_sha` | Optional immutable comparison commit for changed-line whitespace; a supplied base uses `git diff --check BASE...HEAD` |
+
+On an ordinary manually dispatched branch, omitting `base_sha` checks only
+the last commit's whitespace (`HEAD^` to `HEAD`). To check the whole change,
+resolve the intended comparison base to a full SHA and add
+`-f base_sha="${ci_base}"` to the Fast CI command, with `ci_base` set to that SHA.
+This input affects only Fast CI whitespace checks, not Full CI component
+selection. Trusted `pull-request/*` copies always use the originating PR's
+current base, overriding any supplied `base_sha`; direct PR runs also use the
+PR base. Other automatic pushes compare against their previous head, falling
+back to the last commit when no previous head exists.
+
 To qualify FPE independently at the current `main`, without waiting for a
 nightly run:
 
