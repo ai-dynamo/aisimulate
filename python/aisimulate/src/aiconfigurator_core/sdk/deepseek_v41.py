@@ -23,6 +23,27 @@ class DeepSeekV41ExecutionProfile(StrEnum):
     DECODER_BOUNDED = "decoder_bounded"
 
 
+class DeepSeekV41KVCacheLayout(StrEnum):
+    """Storage contracts, separate from the precision of the logical values.
+
+    The packed layout is a theoretical inventory, not a qualified runtime
+    layout for vLLM or TRT-LLM. The SGLang layout is pinned in the source
+    references and THIRD_PARTY_NOTICES.md.
+    """
+
+    LOGICAL_FP4 = "logical_fp4"
+    SGLANG_FP8_BF16 = "sglang_fp8_bf16"
+
+
+def resolve_kv_cache_layout(backend_name: str) -> DeepSeekV41KVCacheLayout:
+    """Only the pinned SGLang backend has a physical storage contract here."""
+    if backend_name == "sglang":
+        return DeepSeekV41KVCacheLayout.SGLANG_FP8_BF16
+    if backend_name in ("vllm", "trtllm"):
+        return DeepSeekV41KVCacheLayout.LOGICAL_FP4
+    raise ValueError(f"unknown DeepSeek-V4.1 KV backend: {backend_name}")
+
+
 def resolve_execution_profile(decoder_replay: bool, backend_name: str) -> DeepSeekV41ExecutionProfile:
     """Only SGLang has a verified bounded-decoder execution contract."""
     if not isinstance(decoder_replay, bool):
@@ -119,23 +140,45 @@ class DeepSeekV41Config:
 
     @property
     def compressed_entry_bytes(self) -> float:
+        """Theoretical packed-FP4 value and scale bytes, not SGLang storage."""
         return self.head_dim / 2 + (self.head_dim + 15) // 16
 
     @property
     def index_entry_bytes(self) -> float:
         return self.index_head_dim / 2 + (self.index_head_dim + 31) // 32
 
-    def kvcache_bytes(self, sequence_length: int) -> float:
-        """Unique global pools plus each layer's FP8 window and FP32 pooling state."""
+    def kv_entry_bytes(self, layout: DeepSeekV41KVCacheLayout) -> tuple[float, float, float]:
+        """Window, compressed-main and index payload bytes, excluding page padding.
+
+        SGLang 1aa0e962, deepseek_v4_memory_pool.py:123-145 and
+        deepseek_v4_backend.py:3012-3016: FP4-rounded main values are stored
+        as 448 FP8 bytes + 64 BF16 RoPE values + 7 scales + 1 scale pad.
+        Low-ratio (1/2) index keys stay packed FP4: 64 payload + 4 scales.
+        """
+        if layout == DeepSeekV41KVCacheLayout.SGLANG_FP8_BF16:
+            if (self.head_dim, self.qk_rope_head_dim, self.index_head_dim) != (512, 64, 128):
+                raise ValueError("pinned SGLang V4.1 KV storage requires head_dim=512, RoPE=64, index=128")
+            return 584.0, 584.0, 68.0
+        if layout == DeepSeekV41KVCacheLayout.LOGICAL_FP4:
+            return float(self.head_dim), self.compressed_entry_bytes, self.index_entry_bytes
+        raise ValueError(f"unknown DeepSeek-V4.1 KV storage layout: {layout}")
+
+    def kvcache_bytes(
+        self,
+        sequence_length: int,
+        layout: DeepSeekV41KVCacheLayout = DeepSeekV41KVCacheLayout.LOGICAL_FP4,
+    ) -> float:
+        """Unique pools and FP32 state; default is the theoretical packed inventory."""
+        window_entry, main_entry, index_entry = self.kv_entry_bytes(layout)
         length = max(0, sequence_length)
         if not length:
             return 0.0
-        window = self.num_hidden_layers * min(length, self.sliding_window) * self.head_dim
+        window = self.num_hidden_layers * min(length, self.sliding_window) * window_entry
         global_cache = 0.0
         state = 0.0
         for owner in self.kv_source_layer_ids:
             ratio = self.compress_ratios[owner]
-            global_cache += (length // ratio) * (self.compressed_entry_bytes + self.index_entry_bytes)
+            global_cache += (length // ratio) * (main_entry + index_entry)
             if ratio > 1:
                 state += 2 * ratio * self.head_dim * 4
         return window + global_cache + state

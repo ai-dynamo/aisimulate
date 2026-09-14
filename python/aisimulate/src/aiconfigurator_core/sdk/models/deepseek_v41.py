@@ -15,7 +15,11 @@ import json
 import aiconfigurator_core._aiconfigurator_core as core
 import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.deepseek_v41 import DeepSeekV41Config, resolve_execution_profile
+from aiconfigurator_core.sdk.deepseek_v41 import (
+    DeepSeekV41Config,
+    resolve_execution_profile,
+    resolve_kv_cache_layout,
+)
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
 
 
@@ -83,6 +87,9 @@ class DeepSeekV41Model(BaseModel):
         self.raw_config = info["raw_config"]
         self.text_config = self.raw_config["text_config"]
         self.execution_profile = resolve_execution_profile(model_config.decoder_replay, backend_name).value
+        self.kv_cache_layout = resolve_kv_cache_layout(backend_name)
+        # Validate physical dimensions before constructing any native operators.
+        d.kv_entry_bytes(self.kv_cache_layout)
         self.engram_residency = "hbm_tp_sharded"
         h = self._hidden_size
         distribution = (
@@ -119,6 +126,7 @@ class DeepSeekV41Model(BaseModel):
                 bounded_prefill=context and model_config.decoder_replay and layer >= d.decoder_start_layer,
                 gemm_quant_mode=model_config.gemm_quant_mode.name,
                 fmha_quant_mode=model_config.fmha_quant_mode.name,
+                kv_cache_layout=self.kv_cache_layout.value,
             )
 
         def stage(layer: int, context: bool):
@@ -277,20 +285,19 @@ class DeepSeekV41Model(BaseModel):
         return self._resident_weight_bytes
 
     def get_kvcache_bytes_per_sequence(self, seq_len: int) -> float:
-        return self.extra_params.kvcache_bytes(seq_len)
+        return self.extra_params.kvcache_bytes(seq_len, self.kv_cache_layout)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
         d = self.extra_params
-        fixed = d.num_hidden_layers * d.sliding_window * d.head_dim
+        window_entry, main_entry, index_entry = d.kv_entry_bytes(self.kv_cache_layout)
+        fixed = d.num_hidden_layers * d.sliding_window * window_entry
         fixed += sum(
             2 * d.compress_ratios[i] * d.head_dim * 4 for i in d.kv_source_layer_ids if d.compress_ratios[i] > 1
         )
-        slope = sum(
-            (d.compressed_entry_bytes + d.index_entry_bytes) / d.compress_ratios[i] for i in d.kv_source_layer_ids
-        )
+        slope = sum((main_entry + index_entry) / d.compress_ratios[i] for i in d.kv_source_layer_ids)
         # Reserve complete ring/state buffers for every scheduler slot. Charging
         # the asymptotic global slope also covers odd ratio-two publication tails.
         return max(0, int((kv_budget_bytes - max_batch_size * fixed) // slope))
