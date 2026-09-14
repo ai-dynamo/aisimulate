@@ -406,16 +406,6 @@ The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
 and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
 modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
 
-The measured derivatives under
-`data/experimental/deepseek-v41/gb300-silicon/` include native operation
-geometry derived from the pinned DeepSeek config and serving contracts,
-installed-source fingerprints, and CUDA kernel names observed from this
-SGLang runtime. They are modified/generated measurement artifacts; no model
-weights or upstream source files are redistributed there. The immutable
-runtime image and producer commits are identified in adjacent README and
-collection metadata. The same Apache-2.0 and DeepSeek MIT notices apply to
-these structural derivatives as to their referenced model/config inputs.
-
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
 reproduced in the repository `LICENSE`. These are analytical adaptations,

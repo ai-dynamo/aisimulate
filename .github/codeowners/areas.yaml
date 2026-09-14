@@ -30,7 +30,6 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisimulate/
-      - data/experimental/deepseek-v41/
       - python/aisimulate/src/aisimulate/aic.py
       - tests/test_aic.py
   - label: sweeper
@@ -101,8 +100,6 @@ shared:
   - glob: crates/tests/public-api/
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/
-    owners: [forward-pass-engine, maintainers]
-  - glob: data/experimental/deepseek-v41/
     owners: [forward-pass-engine, maintainers]
   - glob: docs/artifact-contract.md
     owners: [forward-pass-engine, maintainers]

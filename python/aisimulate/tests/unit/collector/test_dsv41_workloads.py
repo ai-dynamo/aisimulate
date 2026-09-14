@@ -3,11 +3,10 @@
 
 import copy
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from collector.sglang.dsv41_contract import build_manifest, operation_geometry
+from collector.sglang.dsv41_contract import build_manifest
 from collector.sglang.dsv41_native_runner import run_workload
 from collector.sglang.dsv41_workloads import baseline_tokens, coordinates, coverage_report, freeze_workloads
 
@@ -136,30 +135,39 @@ def test_bounded_coordinate_preserves_long_prefix_and_short_actual_extension():
     assert coordinates("mhc", {}, "context", 2, 192, 128) == (1, 0, 384)
 
 
-def test_checked_in_calibration_keeps_all_points_and_exposes_bounded_holes():
-    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon/study-plan"
-    calibration = json.loads((root / "calibration-plan.json").read_text())
-    assert calibration == freeze_workloads(calibration["source_payload"])
-    assert len(calibration["cases"]) == 126
-    projection = json.loads((root / "coverage-projection.json").read_text())
-    assert projection["native_forward_calls_per_profile"] == 908
-    assert projection["baseline_points"] == 80
-    for replay, expected_points, expected_missing in [(False, 836, 0), (True, 830, 10)]:
-        # The frozen sampling projection retains its original eight-head
-        # labels. Compare the corrected identity in memory, while preserving
-        # every historical workload, coverage result, and file byte.
-        profile = copy.deepcopy(projection["profiles"][int(replay)])
-        for case in profile["heldout"]:
-            for missing in case["missing_curves"]:
-                if missing[0] == "attention":
-                    geometry = json.loads(missing[1])
-                    assert geometry["index_n_heads"] == 8
-                    missing[1] = operation_geometry(geometry | {"index_n_heads": 32})
-        heldout = json.loads((root / "heldout-plan.json").read_text())
-        computed = coverage_report(build_manifest(4, replay), calibration, heldout)
-        assert computed == profile
-        assert profile["projected_calibration_module_points"] == expected_points
-        assert profile["heldout_with_missing_curves"] == expected_missing
+@pytest.mark.parametrize("decoder_replay", [False, True])
+def test_coverage_report_exposes_bounded_prefix_holes(decoder_replay):
+    def workload_payload(queries):
+        return {
+            "schema_version": 3,
+            "prefill": [
+                {
+                    "batch_size": 2,
+                    "total_prefill_tokens": 2 * query,
+                    "total_kv_read_tokens": 512,
+                    "rows": [[query, 256], [query, 256]],
+                }
+                for query in queries
+            ],
+            "decode": [],
+        }
+
+    calibration = freeze_workloads(workload_payload([128, 256]))
+    heldout = freeze_workloads(workload_payload([192]))
+    report = coverage_report(build_manifest(4, decoder_replay), calibration, heldout)
+    assert report["calibration_configuration_count"] == 2
+    assert report["heldout_configuration_count"] == 1
+    if decoder_replay:
+        # The 128-token tail starts at prefix 320 for the held-out workload;
+        # neither calibration point measures that prefix (256 or 384).
+        assert report["heldout_with_missing_curves"] == 1
+        assert report["heldout_with_complete_interpolation_domain"] == 0
+        missing = report["heldout"][0]["missing_curves"]
+        assert missing
+        assert all(key[0] == "attention" and key[-2:] == [320, 128] for key in missing)
+    else:
+        assert report["heldout_with_missing_curves"] == 0
+        assert report["heldout_with_complete_interpolation_domain"] == 1
 
 
 def test_native_benchmark_wall_boundary_synchronizes_before_and_after(monkeypatch):

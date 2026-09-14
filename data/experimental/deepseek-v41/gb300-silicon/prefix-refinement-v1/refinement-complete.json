@@ -1,9 +1,0 @@
-{
-  "admission_files_sha256": {
-    "decoder_bounded": "1b333af252063f00ba30776a2ce4a12aaa4ababbecec89ccfdc8bb8c6cac9fc2",
-    "full": "866c05dd09ae964470ce2f059eb1adca078ec88efef1442c0b648c0be7fb8b85"
-  },
-  "plan_receipt_sha256": "66bcdb6854a4eea8a6ef2d8ad2ae04142bb727c82a43a69802c6b34e6024718f",
-  "schema": "dsv41.prefix.refinement.complete.v1",
-  "status": "accepted"
-}

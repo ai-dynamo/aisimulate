@@ -1,7 +1,9 @@
 # DeepSeek-V4.1 native component collection
 
-This collector is experimental until the checked-in validation report qualifies
-the exact runtime and hardware. It loads the actual 40-layer text checkpoint
+This collector is experimental until validation qualifies the exact runtime
+and hardware. Historical measurements and reports are preserved in the
+[validation archive](https://github.com/ai-dynamo/aisimulate/tree/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon).
+It loads the actual 40-layer text checkpoint
 through SGLang's model builder, then uses the framework's own request and KV
 allocation helpers. Prefix extension retains the same request and its cache;
 decode follows actual prefill. Inputs are tokenized text with recorded hashes.

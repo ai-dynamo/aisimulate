@@ -2,15 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import runpy
 import shutil
-import struct
 from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
-
 from collector.sglang.collect_dsv41_module import aggregate_rank_records, get_dsv41_module_test_cases
 from collector.sglang.dsv41_contract import (
     build_manifest,
@@ -211,7 +208,8 @@ def test_rank_aggregation_requires_complete_distinct_invocations(tmp_path):
         aggregate_rank_records(paths, 2)
 
 
-def test_writer_to_native_silicon_query_roundtrip(tmp_path):
+@pytest.mark.parametrize("measured_index_heads", [32, 8])
+def test_writer_to_native_silicon_query_requires_exact_indexer_identity(tmp_path, measured_index_heads):
     import aiconfigurator_core._aiconfigurator_core as core
     from aiconfigurator_core.sdk.engine import _evaluate_single_op
     from aiconfigurator_core.sdk.perf_database import PerfDatabase
@@ -221,13 +219,20 @@ def test_writer_to_native_silicon_query_roundtrip(tmp_path):
     data = tmp_path / "data/gb300/sglang/0.0.0.dev0"
     data.mkdir(parents=True)
     point = row()
-    write_parquet([point], data / "dsv41_module_perf.parquet")
+    measured = point | {
+        "geometry": operation_geometry(json.loads(point["geometry"]) | {"index_n_heads": measured_index_heads})
+    }
+    write_parquet([measured], data / "dsv41_module_perf.parquet")
     operation = core.op_from_spec_json(
         json.dumps({"Dsv41Attention": json.loads(point["geometry"]) | {"name": "generation_attention"}})
     )
     database = PerfDatabase(
         "gb300", "sglang", "0.0.0.dev0", str(tmp_path), database_mode="SILICON", strict_provenance=False
     )
+    if measured_index_heads != 32:
+        with pytest.raises(RuntimeError, match="[Dd]sv41|[Dd]eep[Ss]eek|[Mm]issing"):
+            _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)
+        return
     result = _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)
     assert float(result) == pytest.approx(0.125)
     assert result.source == "silicon"
@@ -264,151 +269,6 @@ def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
     paths[0].write_text(paths[0].read_text() * 2)
     with pytest.raises(ValueError, match="duplicate baseline rank/sample"):
         aggregate_baseline_records(paths, 2)
-
-
-def test_checked_in_gb300_tables_support_complete_strict_tp_forward():
-    from aiconfigurator_core.sdk.engine import EngineHandle
-
-    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon"
-    assert root.is_dir()
-    for profile in ("full", "decoder_bounded"):
-        systems = root / "indexer-identity-v2" / "initial" / profile / "systems"
-        assert not list(systems.rglob("custom_allreduce_perf.parquet"))
-        handle = EngineHandle.compile(
-            "deepseek-ai/DeepSeek-V4.1-Flash",
-            "gb300",
-            "sglang",
-            backend_version="0.0.0.dev0",
-            tp_size=4,
-            moe_tp_size=4,
-            moe_ep_size=1,
-            decoder_replay=profile == "decoder_bounded",
-            systems_path=str(systems),
-            database_mode="SILICON",
-            shared_layer=False,
-            strict_provenance=True,
-        )
-        context, generation = handle.run_static_per_op(batch_size=2, isl=385, prefix=256, osl=2)
-        assert sum(item[1] for item in context) > 0
-        assert sum(item[1] for item in generation) > 0
-        assert any(item[3] == "mixed" for item in context)
-
-
-def test_historical_eight_head_labels_do_not_satisfy_corrected_silicon_queries():
-    from aiconfigurator_core.sdk.engine import EngineHandle
-
-    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon"
-    handle = EngineHandle.compile(
-        "deepseek-ai/DeepSeek-V4.1-Flash",
-        "gb300",
-        "sglang",
-        backend_version="0.0.0.dev0",
-        tp_size=4,
-        moe_tp_size=4,
-        moe_ep_size=1,
-        systems_path=str(root / "full/systems"),
-        database_mode="SILICON",
-        shared_layer=False,
-        strict_provenance=True,
-    )
-    with pytest.raises(RuntimeError, match="[Dd]sv41|[Dd]eep[Ss]eek|[Mm]issing"):
-        handle.run_static_per_op(batch_size=2, isl=385, prefix=256, osl=2)
-
-
-@pytest.mark.parametrize("cohort", ["initial", "study", "prefix-refinement"])
-@pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
-def test_every_derived_observation_roundtrips_through_strict_native_silicon(cohort, profile):
-    import aiconfigurator_core._aiconfigurator_core as native
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
-
-    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2"
-    systems = root / cohort / profile / "systems"
-    database = PerfDatabase(
-        "gb300",
-        "sglang",
-        "0.0.0.dev0",
-        str(systems),
-        database_mode="SILICON",
-        shared_layer=False,
-        strict_provenance=True,
-    )
-    rows = pq.read_table(systems / "data/gb300/dsv41/sglang/0.0.0.dev0/dsv41_module_perf.parquet").to_pylist()
-    variants = {"attention": "Dsv41Attention", "mhc": "Dsv41Mhc", "engram": "Dsv41Engram", "linear": "Dsv41Linear"}
-    for point in rows:
-        geometry = json.loads(point["geometry"])
-        op = native.op_from_spec_json(json.dumps({variants[point["component"]]: geometry | {"name": "identity_check"}}))
-        result = _evaluate_single_op(
-            database,
-            op,
-            is_context=geometry.get("is_context", True),
-            batch_size=point["batch_size"],
-            s=point["x"],
-            prefix=point["prefix"],
-            x=point["x"],
-        )
-        assert result.source == "silicon"
-        assert float(result) == pytest.approx(point["latency"], rel=0, abs=1e-12)
-
-
-def test_versioned_indexer_derivation_preserves_every_observed_value_and_original():
-    import yaml
-
-    original_root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon"
-    root = original_root / "indexer-identity-v2"
-    helpers = runpy.run_path(str(root / "derive.py"))
-    file_sha, digest = helpers["file_sha"], helpers["digest"]
-    receipt = json.loads((root / "derivation.json").read_text())
-    assert receipt["derivation_source_sha256"] == file_sha(root / "derive.py")
-    assert receipt["source_proof_sha256"] == file_sha(root / "source-proof.json")
-    assert len(receipt["datasets"]) == 6
-    assert sum(item["rows"] for item in receipt["datasets"]) == 4080
-    assert sum(item["changed_attention_rows"] for item in receipt["datasets"]) == 3670
-    for item in receipt["datasets"]:
-        old_path, new_path = original_root / item["original_path"], root / item["derived_path"]
-        assert file_sha(old_path) == item["original_sha256"]
-        assert file_sha(new_path) == item["derived_sha256"]
-        old, new = pq.read_table(old_path), pq.read_table(new_path)
-        assert old.schema == new.schema
-        for column in old.column_names:
-            if column != "geometry":
-                assert old[column].equals(new[column])
-        assert len(old) == len(new) == len(item["rows_mapping"]) == item["rows"]
-        for before, after, mapping in zip(old.to_pylist(), new.to_pylist(), item["rows_mapping"], strict=True):
-            assert digest(before) == mapping["original_sha256"]
-            assert digest(after) == mapping["derived_sha256"]
-            assert struct.pack("!d", before["latency"]).hex() == mapping["latency_f64_bits"]
-            assert struct.pack("!d", after["latency"]).hex() == mapping["latency_f64_bits"]
-            if before["component"] == "attention":
-                before_geometry, after_geometry = json.loads(before["geometry"]), json.loads(after["geometry"])
-                assert before_geometry["index_n_heads"] == 8
-                assert after_geometry == before_geometry | {"index_n_heads": 32}
-            else:
-                assert before == after
-        old_meta = yaml.safe_load(old_path.with_name("collection_meta.yaml").read_text())
-        new_meta = yaml.safe_load(new_path.with_name("collection_meta.yaml").read_text())
-        old_meta["tables"]["dsv41_module_perf"]["data_sha256"] = item["derived_sha256"]
-        assert old_meta == new_meta
-        for artifact in item["unchanged_artifacts"]:
-            original = original_root / artifact["path"]
-            relative = original.relative_to(old_path.parents[5])
-            copied = new_path.parents[5] / relative
-            assert file_sha(original) == file_sha(copied) == artifact["sha256"]
-    for item in receipt["manifests"]:
-        assert file_sha(original_root / item["original_path"]) == item["original_sha256"]
-        assert file_sha(root / item["derived_path"]) == item["derived_sha256"]
-        manifest = json.loads((root / item["derived_path"]).read_text())
-        assert manifest == build_manifest(4, manifest["execution_profile"] == "decoder_bounded")
-
-
-@pytest.mark.parametrize("heads", [32, 8.0, True])
-def test_indexer_derivation_rejects_unexpected_source_identity(heads):
-    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2"
-    correct = runpy.run_path(str(root / "derive.py"))["corrected_row"]
-    point = row()
-    point["geometry"] = operation_geometry(json.loads(point["geometry"]) | {"index_n_heads": heads})
-    with pytest.raises(ValueError, match="unexpected original index heads"):
-        correct(point)
 
 
 def test_output_profile_binding_rejects_mixed_campaigns(tmp_path):
