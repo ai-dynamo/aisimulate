@@ -76,15 +76,20 @@ redundant pre-MLP dispatch under the required DP=CP=1 topology. Shared
 the folded TP reduce-scatter plus DP all-gather, and its unqualified TRT-LLM
 path retains the previously documented collective behavior.
 
-Main compressed KV uses 288 bytes per entry (FP4 plus one scale per 16
-channels); index KV uses 68 bytes (MXFP4 plus one scale per 32). Three half-rate
-owners and one full-rate owner produce a global slope of 890 bytes per token.
-Each layer also has an FP8 128-token window, and the ratio-two owners keep FP32
-pooling state. Per-sequence memory follows exact publication boundaries.
-Batch capacity reserves complete window/state buffers for every scheduler slot
-before applying the global slope; this conservatively covers short and odd
-sequence lengths. Allocator block padding and runtime-specific cache layouts
-remain outside this logical inventory.
+SGLang's pinned CUDA FlashMLA layout stores 584 bytes per main/SWA entry
+(FP8 NoPE, BF16 RoPE, scales/padding), and its low-ratio index stores 68 bytes.
+Three half-rate owners and one full-rate owner give a 1,630-byte global slope.
+All 40 layers retain their 128-token window; ratio-two owners retain FP32
+pooling state. Reindex/reuse layers share the compressed pools. Per-sequence
+capacity follows exact publication boundaries, and batch capacity reserves
+complete window/state buffers before applying the slope. The serialized
+`sglang_fp8_bf16` layout separates physical storage from attention precision.
+
+The `logical_fp4` layout (288-byte compressed main, 68-byte index, FP8 window,
+890-byte global slope) remains the explicit theoretical estimate for vLLM and
+TRT-LLM; their runtime storage is unqualified. Both inventories exclude allocator
+page padding and spare pages. See [source proof and limits](deepseek-v41-storage.md)
+for full-context scoring, cache read/write accounting, and schema 19 compatibility.
 
 Engram's two GPU-resident hash tables include FP8 block scales and TP row
 sharding. Their full resident size is independent of tokens accessed. Lookup
