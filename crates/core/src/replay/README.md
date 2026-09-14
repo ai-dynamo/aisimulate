@@ -99,11 +99,16 @@ Background children add no implicit join. Zero-output requests remain valid
 prefill-only/KV-warmup work.
 
 Every play reports exactly one `completed`, `failed`, or `incomplete` outcome.
+The outcome remains `incomplete` until server cleanup finishes, even if the
+client lane has advanced to another play. `settled_at_ms` records that cleanup
+time; outcomes remain in authored play order when plays settle out of order.
 Rejected, canceled, and failed request terminals all fail the play, skip work
 that has not dispatched, and let already-dispatched siblings settle. The
 canonical failure is the minimum `(causal_terminal_ms, graph_node_ordinal)`;
 status severity is deliberately not a tie-breaker. This rule keeps the failure
 reason independent of engine callback order.
+For a failed play, `causal_terminal_ms` records this primary failure, which may
+precede client lane release while already-dispatched siblings finish.
 
 ## File Map
 
