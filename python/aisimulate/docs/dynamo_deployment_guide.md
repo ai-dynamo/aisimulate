@@ -69,10 +69,14 @@ another study, or apply the CLI's explicit `--overwrite` policy.
 
 Save the following as `deployment-study/render.py`, and run it from the
 repository root with `python deployment-study/render.py`. It reads the first
-scalar selection and its matching workload from the durable ledger. A Pareto
-run needs an explicit chosen candidate ID instead of assuming a winner.
+scalar selection and its matching workload from the durable ledger. For a
+Pareto run, choose an ID from `views.pareto_front` in `recommendation.json`
+and pass it explicitly, for example
+`python deployment-study/render.py --candidate-id candidate-000001` (replace
+the illustrative ID with your choice). Unknown and infeasible IDs are rejected.
 
 ```python
+import argparse
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -80,15 +84,22 @@ from pathlib import Path
 from aiconfigurator.generator.api import generate_from_request
 from aiconfigurator.generator.request import from_sweeper_candidate
 
+parser = argparse.ArgumentParser(description="Render a selected recommendation")
+parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")
+args = parser.parse_args()
 study = Path("deployment-study")
 result = json.loads((study / "recommendation/recommendation.json").read_text())
-selected = result["views"]["top_n"]
-if not selected:
-    raise ValueError("Select a feasible scalar candidate, or explicitly choose a Pareto candidate ID")
-candidate_id = selected[0]
-candidate = next(row for row in result["candidates"] if row["candidate_id"] == candidate_id)
+candidate_id = args.candidate_id
+if candidate_id is None:
+    selected = result["views"]["top_n"]
+    if not selected:
+        parser.error("No scalar selection: choose a Pareto candidate with --candidate-id")
+    candidate_id = selected[0]
+candidate = next((row for row in result["candidates"] if row["candidate_id"] == candidate_id), None)
+if candidate is None:
+    parser.error(f"Unknown candidate ID: {candidate_id}")
 if candidate["status"] != "feasible":
-    raise ValueError("The selected candidate must be feasible")
+    parser.error("The selected candidate must be feasible")
 request = from_sweeper_candidate(
     candidate,
     workload=candidate["provenance"]["workload"],

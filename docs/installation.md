@@ -127,9 +127,20 @@ The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
-same environment. Record both package versions and consult the downstream
-release's integration documentation; successful dependency installation alone
-does not establish adapter compatibility.
+same environment. The verified **source** pairing on September 14, 2026 is:
+
+| Dynamo source | Declared AISimulate dependency | Integration registration |
+|---|---|---|
+| [`cf944aebb23aafd758ffa2c3fa0ecfdd8804926b`](https://github.com/ai-dynamo/dynamo/blob/cf944aebb23aafd758ffa2c3fa0ecfdd8804926b/pyproject.toml), manifest version `1.5.0` | `aisimulate==0.12.0.dev1` on Python 3.11–3.13 | `aisimulate.runner_factories`, `aisimulate.config_adapters`, and `aisimulate.sweep_config_providers` |
+
+This source manifest does not establish a published or runtime-qualified
+package pair. At that date, PyPI's latest `ai-dynamo` release is `1.4.2`, and
+`1.5.0` is not published there. For source integration, follow the build and
+integration instructions at the matching Dynamo revision; for published
+packages, check the selected wheel's dependency and entry-point metadata.
+Do not assume an unpinned `pip install ai-dynamo` contains the source pairing
+above. Record both package versions and source/build identities; successful
+dependency installation alone does not establish adapter compatibility.
 
 The [Dynamo deployment guide](../python/aisimulate/docs/dynamo_deployment_guide.md)
 separately explains generated serving artifacts and runtime version pins.
