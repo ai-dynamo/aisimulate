@@ -1489,5 +1489,15 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     # reconstructed into a second Python report model.
     for name, value in payload.items():
         add(name, value)
-    metadata = {"native_report": payload} if include_native_report else {}
+    metadata: dict[str, JSONValue] = {}
+    if include_native_report:
+        metadata["native_report"] = payload
+    if "power_coverage" in metrics:
+        metadata["power"] = {
+            "source": "modeled",
+            "scope": "active_forward_pass_per_gpu",
+            "power_w_unit": "W",
+            "coverage_gate": 0.9,
+            "publication_status": "available" if "power_w" in metrics else "withheld",
+        }
     return ReplayReport(metrics=metrics, metadata=metadata)

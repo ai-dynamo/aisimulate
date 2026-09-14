@@ -361,6 +361,9 @@ class SweepResult(BaseModel):
             "reason",
             "used_gpus",
             "score",
+            "power_w",
+            "power_coverage",
+            "power_source",
             "config_json",
             "prediction_config_json",
             "metrics_json",
@@ -385,6 +388,9 @@ class SweepResult(BaseModel):
                     "reason": candidate.reason or "",
                     "used_gpus": "" if candidate.used_gpus is None else candidate.used_gpus,
                     "score": "" if candidate.score is None else candidate.score,
+                    "power_w": candidate.metrics.get("power_w", ""),
+                    "power_coverage": candidate.metrics.get("power_coverage", ""),
+                    "power_source": candidate.provenance.power.get("source", ""),
                     "config_json": canonical_json(candidate.config),
                     "prediction_config_json": canonical_json(candidate.prediction_config),
                     "metrics_json": canonical_json(candidate.metrics),
@@ -530,6 +536,14 @@ def make_candidate_provenance(
                     )
                 )
     power = {key: value for key, value in (metrics or {}).items() if "power" in key or "energy" in key}
+    if power:
+        power.update(
+            {
+                "source": "runner_reported",
+                "scope": "unspecified",
+                "publication_status": "reported",
+            }
+        )
     raw_power = runner_metadata.get("power")
     if isinstance(raw_power, dict):
         power.update(raw_power)
