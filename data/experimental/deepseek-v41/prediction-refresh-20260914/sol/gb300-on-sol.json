@@ -1,0 +1,18 @@
+{
+  "attention_dp_size": 1,
+  "backend": "sglang",
+  "backend_version": "0.0.0.dev0",
+  "database_mode": "SOL",
+  "decoder_replay": true,
+  "enable_shared_layer": false,
+  "forward_model": "op_level",
+  "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "moe_ep_size": 1,
+  "moe_tp_size": 4,
+  "pp_size": 1,
+  "schema_version": 1,
+  "strict_provenance": true,
+  "system_name": "gb300",
+  "systems_path": "systems/gb300-on-sol",
+  "tp_size": 4
+}
