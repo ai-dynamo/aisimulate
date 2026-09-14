@@ -15,10 +15,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import collector.fpm_forward.runner as fpm_runner
-from aiconfigurator.fpm_contract import FPM_CELL_LABEL
+import pytest
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile
 from collector.fpm_forward.model_capability import ResolvedModelConfig, load_model_config
 from collector.fpm_forward.planner import BackendPolicy, FPMCell, build_collection_plan
@@ -36,6 +34,8 @@ from collector.fpm_forward.runner import (
     run_collection,
 )
 from collector.fpm_forward.types import ParallelTopology
+
+from aiconfigurator.fpm_contract import FPM_CELL_LABEL
 
 pytestmark = pytest.mark.unit
 
@@ -1256,6 +1256,7 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1314,9 +1315,9 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
     # fresh checkpoint proves nothing about the cluster) and one after.
     assert events.count("cleanup") == 2
     assert events.index("cleanup") < events.index("apply")
-    # Contract: the staged set is exactly the two rendered runtime artifacts
+    # Contract: the staged set includes the rendered runtime artifacts
     # plus the collector's own in-pod runtime and preflight.
-    assert set(staged_names) == {"run.sh", "fpm_env.sh", "fpm_exec.sh", "preflight.py"}
+    assert set(staged_names) == {"run.sh", "fpm_env.sh", "collector-runtime-env.sh", "fpm_exec.sh", "preflight.py"}
     assert "cases.json" not in staged_names
     assert "fpm_scheduler.py" not in staged_names
     assert "run_with_etcd.sh" not in staged_names
@@ -1341,6 +1342,7 @@ def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypa
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1548,6 +1550,7 @@ def test_cleanup_failure_marks_passed_cell_retryable(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1621,6 +1624,7 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     base = {
         "K8sConfig": {
             "k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test",
+            "extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"}],
             "k8s_pvc_mount_path": "/model-cache",
             "k8s_model_path_in_pvc": "models--nvidia--GLM-5.2-NVFP4",
         }
@@ -1632,7 +1636,12 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     for artifact in ("k8s_deploy.yaml", "fpm_env.sh", "run.sh"):
         assert (tmp_path / artifact).exists(), artifact
 
+    startup = (tmp_path / "collector-runtime-env.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in startup
+    # The keepalive Pod intentionally has no engine environment. Staging
+    # supplies the startup file before either transport launches preflight.
     script = (tmp_path / "run.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in script
     assert "--benchmark-mode prefill" in script
     assert "--benchmark-warmup-iterations 3" in script
     assert "--scheduler-cls fpm_scheduler" not in script
@@ -1774,9 +1783,10 @@ def test_render_uses_frozen_model_config_without_resolving_model_path(tmp_path, 
     resolution entry point, and require the three artifacts plus a
     generator-request whose ModelConfig agrees with the frozen capability."""
 
+    from collector.fpm_forward import planner as planner_module
+
     import aiconfigurator.sdk.utils as sdk_utils
     from aiconfigurator.generator import naive as generator_naive
-    from collector.fpm_forward import planner as planner_module
 
     monkeypatch.setattr(planner_module, "_git_revision", lambda: "test-revision")
 
@@ -2024,6 +2034,7 @@ def _running_cell_fixture(tmp_path, plan, cell):
     (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
     (cell_dir / "run.sh").write_text("#!/bin/sh\n")
     (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+    (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
@@ -2225,6 +2236,7 @@ def test_pre_apply_cleanup_failure_blocks_apply(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     applied = []
 
@@ -2602,6 +2614,7 @@ def test_run_manifest_records_collector_phases_and_engine_interface(monkeypatch,
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2682,6 +2695,7 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2719,3 +2733,83 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
     assert attempt["collector_phase_seconds"].keys() == {"render_s"}
     checkpoint = json.loads((checkpoint_dir / "fpm_forward_smoke.json").read_text())
     assert checkpoint["cells"][cell.cell_id]["collector_phase_seconds"].keys() == {"render_s"}
+
+
+@pytest.mark.parametrize("seconds", ["0", "-1", "1.5", "3601", "nan", True])
+def test_runtime_readiness_configuration_rejects_invalid_budget(seconds):
+    cell = _cell()
+    with pytest.raises(ValueError, match="FPM_READINESS_TIMEOUT_SECONDS"):
+        _cell_generator_overrides(
+            _plan(cell),
+            cell,
+            {"K8sConfig": {"extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": seconds}]}},
+        )
+
+
+def test_runtime_environment_uses_configured_path_and_budget_before_engine(tmp_path):
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    settings = {
+        "K8sConfig": {
+            "extra_env": [
+                {"name": "PYTHONPATH", "value": "/custom/runtime components/src"},
+                {"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"},
+            ]
+        }
+    }
+    overrides = _cell_generator_overrides(plan, cell, settings)
+    fpm_runner._write_runtime_environment(tmp_path, overrides)
+    actual = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; printf "%s\\n%s\\n" "$PYTHONPATH" "$FPM_READINESS_TIMEOUT_SECONDS"',
+            "bash",
+            str(tmp_path / fpm_runner.RUNTIME_ENV_FILENAME),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert actual.stdout.splitlines() == ["/tmp/fpm-bench:/custom/runtime components/src", "600"]
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert env["PYTHONPATH"] == actual.stdout.splitlines()[0]
+    assert env["DYN_FPM_DSV41_REAL_KV"] == "1"
+
+
+def test_runtime_default_path_is_adapter_owned():
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    overrides = _cell_generator_overrides(plan, cell, {})
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    adapter = Path(fpm_runner.__file__).parent / "runtime/dsv41/runtime-paths.json"
+    assert env["PYTHONPATH"] == "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"]
+    assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
+
+
+def test_kubernetes_stages_exact_startup_configuration(tmp_path):
+    runner = _runner(tmp_path)
+    source = tmp_path / "collector-runtime-env.sh"
+    source.write_text("export FPM_READINESS_TIMEOUT_SECONDS=600\n")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+
+    def kubectl(*args, **kwargs):
+        assert args[0] == "cp"
+        shutil.copy2(args[1], remote / Path(args[1]).name)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    def execute(pod, command, *, timeout):
+        if command[0] == "mkdir":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        rewritten = [arg.replace(REMOTE_WORKDIR, str(remote)) for arg in command]
+        return subprocess.run(rewritten, check=True, capture_output=True, text=True, timeout=timeout)
+
+    runner._kubectl = kubectl
+    runner._exec_checked = execute
+    runner.stage(["pod-0"], [source])
+    assert (remote / source.name).read_bytes() == source.read_bytes()

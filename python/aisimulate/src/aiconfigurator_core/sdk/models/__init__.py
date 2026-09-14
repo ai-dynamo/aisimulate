@@ -62,7 +62,7 @@ del _SKIP
 _FORWARD_MODELS = ("op_level", "fpm")
 
 
-def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
+def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> BaseModel:
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
@@ -102,7 +102,10 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     generation_ops = [op for op in model.generation_ops if not op._name.startswith("draft_")]
     draft_context_ops = [op for op in model.context_ops if op._name.startswith("draft_")]
     draft_generation_ops = [op for op in model.generation_ops if op._name.startswith("draft_")]
-    weight_bytes = float(sum(op.get_weights() for op in context_ops))
+    # Preserve model-specific resident inventory (including V4.1 weights not
+    # represented by executed ops), while keeping draft weights outside the
+    # target-only FPM lead op.
+    weight_bytes = float(model.get_resident_weights_bytes() - sum(op.get_weights() for op in draft_context_ops))
     prefill_op = FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
     decode_op = FPMForwardOp(
         "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes
@@ -111,6 +114,19 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
         decode_op._verify_width = int(model.verify_width)
     model.context_ops = [prefill_op, *draft_context_ops]
     model.generation_ops = [decode_op, *draft_generation_ops]
+    from aiconfigurator_core.sdk.fpm_identity import execution_identity
+
+    identity = execution_identity(
+        getattr(model, "raw_config", {}),
+        decoder_replay=getattr(model.config, "decoder_replay", False),
+        backend=backend_name,
+        # The SDK supports this prediction contract; the producer separately
+        # verifies actual runtime residency and token-only requests.
+        engram_cpu_offload=False,
+        input_modality="text",
+    )
+    for op in (prefill_op, decode_op):
+        op._match_identity = (*op._match_identity[:15], *identity)
     model.forward_model = "fpm"
     return model
 
@@ -135,6 +151,8 @@ def get_model(
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
     if forward_model not in _FORWARD_MODELS:
         raise ValueError(f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}")
+    if getattr(model_config, "fpm_fmha_quant_mode", None) is not None and forward_model != "fpm":
+        raise ValueError("fpm_fmha_quant_mode requires forward_model='fpm'")
 
     # Shallow-copy so mutations below don't poison the @cache'd original.
     model_info = dict(_get_model_info(model_path))
@@ -207,7 +225,7 @@ def get_model(
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
     if forward_model == "fpm":
-        model = _apply_forward_model_fpm(model)
+        model = _apply_forward_model_fpm(model, backend_name)
     return model
 
 

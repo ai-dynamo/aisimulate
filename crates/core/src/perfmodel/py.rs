@@ -1024,6 +1024,7 @@ struct EngineBuildRequest {
     moe_quant_mode: Option<String>,
     kvcache_quant_mode: Option<String>,
     fmha_quant_mode: Option<String>,
+    fpm_fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
     nextn: u32,
@@ -1069,6 +1070,7 @@ impl AicEngineBuilder {
                 moe_quant_mode: None,
                 kvcache_quant_mode: None,
                 fmha_quant_mode: None,
+                fpm_fmha_quant_mode: None,
                 comm_quant_mode: None,
                 attention_backend: None,
                 nextn: 0,
@@ -1167,6 +1169,12 @@ impl AicEngineBuilder {
     /// Override the KV-cache quantization mode.
     pub fn kvcache_quant_mode(mut self, value: impl Into<String>) -> Self {
         self.request.kvcache_quant_mode = Some(value.into());
+        self
+    }
+
+    /// Select a whole-forward FPM cell without changing the SOL arithmetic.
+    pub fn fpm_fmha_dtype(mut self, value: impl Into<String>) -> Self {
+        self.request.fpm_fmha_quant_mode = Some(value.into());
         self
     }
 
@@ -1289,6 +1297,8 @@ mod builder_tests {
             "weight_dtype": null,
             "moe_dtype": null,
             "activation_dtype": null,
+            "fpm_fmha_dtype": "fp8",
+            "forward_model": "fpm",
             "kv_cache_dtype": null,
             "database_mode": "EMPIRICAL",
             "enable_shared_layer": true,
@@ -1301,6 +1311,8 @@ mod builder_tests {
         let request = engine_build_request(&config, None);
 
         assert_eq!(request.database_mode.as_deref(), Some("EMPIRICAL"));
+        assert_eq!(request.fpm_fmha_quant_mode.as_deref(), Some("fp8"));
+        assert_eq!(request.fmha_quant_mode, None);
         assert_eq!(request.shared_layer, Some(true));
         assert_eq!(
             request.transfer_policy.as_deref(),
@@ -1321,6 +1333,15 @@ mod builder_tests {
                 if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
         ));
     }
+
+    #[test]
+    fn builder_rejects_fpm_selector_without_fpm_before_loading_python() {
+        let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+            .fpm_fmha_dtype("fp8")
+            .build();
+        assert!(matches!(result, Err(AicError::InvalidEngineConfig(message))
+            if message.contains("requires forward_model='fpm'")));
+    }
 }
 
 /// Construct the public handle from the one canonical build request.
@@ -1336,6 +1357,12 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    if request.fpm_fmha_quant_mode.is_some() && request.forward_model.as_deref() != Some("fpm") {
+        return Err(AicError::InvalidEngineConfig(
+            "fpm_fmha_dtype requires forward_model='fpm'".into(),
+        ));
+    }
+
     if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
         return Err(AicError::InvalidEngineConfig(
             "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
@@ -1363,6 +1390,10 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("moe_quant_mode", request.moe_quant_mode.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
+        kwargs.set_item(
+            "fpm_fmha_quant_mode",
+            request.fpm_fmha_quant_mode.as_deref(),
+        )?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
@@ -1411,6 +1442,13 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
+    if config.quantization.fpm_fmha_dtype.is_some()
+        && fmha_quant_name(config.quantization.fpm_fmha_dtype.as_ref()).is_none()
+    {
+        return Err(AicError::InvalidEngineConfig(
+            "fpm_fmha_dtype must be bfloat16, fp8, or fp8_block".into(),
+        ));
+    }
     compile_engine_from_request(engine_build_request(config, systems_path))
 }
 
@@ -1436,6 +1474,8 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kvcache_quant_mode: kvcache_quant_name(config.quantization.kv_cache_dtype.as_ref())
             .map(str::to_owned),
         fmha_quant_mode: fmha_quant_name(config.quantization.activation_dtype.as_ref())
+            .map(str::to_owned),
+        fpm_fmha_quant_mode: fmha_quant_name(config.quantization.fpm_fmha_dtype.as_ref())
             .map(str::to_owned),
         // Comm quant is not carried on EngineConfig; let Python default it.
         comm_quant_mode: None,
@@ -1825,6 +1865,7 @@ mod tests {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: None,

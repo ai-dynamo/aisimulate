@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from aiconfigurator.fpm_contract import (
     FPM_BENCHMARK_RESULT_GLOB,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
+from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS
 
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
@@ -80,6 +83,120 @@ class NativeCollection:
     # Engine-reported KV warm-up envelope (warm_eligible/skip_reason/...);
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
+    input_provenance: dict[str, Any] | None = None
+
+
+def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
+    """Config-bound curves require engine evidence for execution and real input."""
+    if not cell.execution_identity[0]:
+        return None
+    expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
+    if payload.get("execution_identity") != expected:
+        raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
+    if payload.get("execution_mode") != "eager":
+        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
+    evidence = payload.get("input_provenance")
+    if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
+        raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
+    for field in ("text_sha256", "token_ids_sha256"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"V4.1 native result has invalid {field}: {path}")
+    if cell.input_text_sha256 and evidence["text_sha256"] != cell.input_text_sha256:
+        raise ValueError(f"V4.1 native input text differs from the frozen corpus: {path}")
+    if not isinstance(evidence.get("tokenizer_revision"), str) or not evidence["tokenizer_revision"]:
+        raise ValueError(f"V4.1 native result has no tokenizer revision: {path}")
+    counts = [evidence.get(field) for field in ("token_count", "unique_token_count")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 2 for value in counts):
+        raise ValueError(f"V4.1 native input corpus must contain multiple tokenizer-generated tokens: {path}")
+    if counts[1] > counts[0]:
+        raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
+    return evidence
+
+
+def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
+    """Verify archived real request histories and completed-forward witnesses."""
+    manifest = payload["input_provenance"].get("token_stream_manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"V4.1 native result lacks token-stream manifest: {path}")
+    name = manifest.get("file")
+    if not isinstance(name, str) or Path(name).name != name or not name.endswith(".token-streams.jsonl"):
+        raise ValueError(f"V4.1 token-stream path must be an adjacent JSONL file: {path}")
+    raw = path.with_name(name).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != manifest.get("sha256"):
+        raise ValueError(f"V4.1 token-stream manifest SHA mismatch: {path}")
+    lines = raw.splitlines()
+    schema = manifest.get("schema_version", 1)
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError(f"V4.1 token-stream schema is unsupported: {path}")
+    warmups = payload.get("warmup_results", [])
+    if not isinstance(warmups, list) or (schema == 1 and warmups):
+        raise ValueError(f"V4.1 warmup histories require token-stream schema 2: {path}")
+    measured = payload["results"]
+    warmup_ids = set()
+    for row in warmups:
+        point = row.get("point", {})
+        benchmark_id = point.get("benchmark_id")
+        if (
+            type(benchmark_id) is not int
+            or benchmark_id <= len(measured)
+            or benchmark_id in warmup_ids
+            or "eager_warmup" not in point.get("sample_reasons", [])
+        ):
+            raise ValueError(f"V4.1 warmup point is not a distinct native eager replica: {path}")
+        warmup_ids.add(benchmark_id)
+    if schema == 2 and manifest.get("warmup_benchmark_ids") != sorted(warmup_ids):
+        raise ValueError(f"V4.1 native eager warmup coverage mismatch: {path}")
+    if any("eager_warmup" in row["point"].get("sample_reasons", []) for row in measured):
+        raise ValueError(f"V4.1 warmup timing cannot enter measured results: {path}")
+    all_results = measured + warmups
+    if manifest.get("records") != len(lines) or len(lines) != len(all_results):
+        raise ValueError(f"V4.1 token-stream coverage mismatch: {path}")
+    streams = {}
+    for line in lines:
+        stream = json.loads(line)
+        benchmark_id = stream.get("benchmark_id")
+        if type(benchmark_id) is not int or benchmark_id in streams:
+            raise ValueError(f"V4.1 token-stream benchmark ID is invalid or duplicated: {path}")
+        expected_role = "warmup" if benchmark_id in warmup_ids else "measurement"
+        if schema == 2 and stream.get("sampling_role") != expected_role:
+            raise ValueError(f"V4.1 token-stream sampling role mismatch: {path}")
+        streams[benchmark_id] = (stream, hashlib.sha256(line).hexdigest())
+    if set(streams) != {row["point"]["benchmark_id"] for row in all_results}:
+        raise ValueError(f"V4.1 token-stream point identity coverage mismatch: {path}")
+    for row in all_results:
+        point = row["point"]
+        witness = row.get("real_kv_witness")
+        stream, digest = streams.get(point["benchmark_id"], ({}, None))
+        batch = _require_int(point, "batch_size")
+        decode = point["point_type"] == "decode"
+        expected_seed = _require_int(point, "total_kv_read_tokens") - (batch if decode else 0)
+        if (
+            not isinstance(witness, dict)
+            or witness.get("same_request") is not True
+            or witness.get("allocated_fake_tokens") != 0
+            or witness.get("completed_seed_tokens") != expected_seed
+            or witness.get("token_stream_sha256") != digest
+        ):
+            raise ValueError(f"V4.1 native result has invalid completed real-KV witness: {path}")
+        requests = stream.get("requests")
+        if not isinstance(requests, list) or len(requests) != batch:
+            raise ValueError(f"V4.1 token-stream request count mismatch: {path}")
+        prompt_total = 0
+        for index, request in enumerate(requests):
+            if not isinstance(request, dict) or request.get("request_index") != index:
+                raise ValueError(f"V4.1 token-stream request order mismatch: {path}")
+            for field in ("prompt_token_ids", "output_token_ids"):
+                ids = request.get(field)
+                if not isinstance(ids, list) or not ids or any(type(token) is not int or token < 0 for token in ids):
+                    raise ValueError(f"V4.1 token-stream has invalid real token IDs: {path}")
+            prompt_length = len(request["prompt_token_ids"])
+            prompt_total += prompt_length
+            if request.get("computed_tokens") != prompt_length + (2 if decode else 0):
+                raise ValueError(f"V4.1 token-stream computed-token witness mismatch: {path}")
+        expected_prompt = expected_seed + (0 if decode else _require_int(point, "total_prefill_tokens"))
+        if prompt_total != expected_prompt:
+            raise ValueError(f"V4.1 token-stream prompt history differs from the measured point: {path}")
 
 
 def _validate_collector_provenance(
@@ -251,10 +368,22 @@ def validate_native_collection(
     run_identity: tuple[str, str] | None = None
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
+    input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
+        evidence = _validate_execution_provenance(cell, payload, path)
+        if evidence is not None:
+            _validate_token_streams(payload, path)
+        if input_provenance is None:
+            input_provenance = evidence
+        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
+            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
+        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
+            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
+        }:
+            raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         if (
             payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
             or payload.get("artifact_type") != "rank"
@@ -439,4 +568,5 @@ def validate_native_collection(
         runtime_run_id=run_identity[0],
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
+        input_provenance=input_provenance,
     )

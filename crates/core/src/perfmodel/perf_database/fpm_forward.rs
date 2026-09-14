@@ -19,7 +19,7 @@
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements
 //! replaced in memory by in-station extrapolation; see
 //! [`FPM_KV_SEED_FAKE_FALLBACK`]), and grouped into cells keyed by
-//! `(model_path, 15 identity columns)`. Each
+//! `(model_path, 19 identity columns)`. Each
 //! cell holds one nested table per phase — prefill
 //! `[batch][total_prefill][total_kv]`, decode `[batch][total_kv]` — plus the
 //! per-phase axis-aligned domain bounding box and a prebuilt
@@ -39,9 +39,9 @@
 //! online-tuning model over Dynamo ForwardPassMetrics telemetry — an
 //! unrelated concept that also abbreviates to "FPM".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -51,7 +51,7 @@ use crate::common::error::AicError;
 
 pub const FPM_FORWARD_BASENAME: &str = "fpm_forward_perf.parquet";
 pub const FPM_FORWARD_SCHEMA_NAME: &str = "aic_fpm_forward_perf";
-pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 6;
+pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 7;
 pub const FPM_FORWARD_COORDINATE_SYSTEM: &str = "iteration_totals_balanced_v1";
 pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// The only measurement policy the collector publishes; pinned in the
@@ -88,7 +88,7 @@ pub const FPM_FAKE_FALLBACK_RAW_ENV: &str = "AIC_FPM_FAKE_FALLBACK_RAW";
 /// The last four are the schema-v6 explicit backend identity: "auto" = the
 /// engine decided; the `enable_*` columns are real parquet booleans,
 /// normalized to "True"/"False" (Python `str(bool)`) for comparison.
-pub const FPM_CELL_MATCH_COLUMNS: [&str; 15] = [
+pub const FPM_CELL_MATCH_COLUMNS: [&str; 19] = [
     "gemm_quant_mode",
     "moe_quant_mode",
     "fmha_quant_mode",
@@ -104,15 +104,20 @@ pub const FPM_CELL_MATCH_COLUMNS: [&str; 15] = [
     "attention_backend",
     "enable_wideep",
     "enable_eplb",
+    "model_config_sha256",
+    "execution_profile",
+    "engram_residency",
+    "input_modality",
 ];
+
+const LEGACY_EXECUTION_IDENTITY: [&str; 4] = ["", "full", "none", "text"];
 
 pub const FPM_PREFILL_AXES: [&str; 3] =
     ["batch_size", "total_prefill_tokens", "total_kv_read_tokens"];
 pub const FPM_DECODE_AXES: [&str; 2] = ["batch_size", "total_kv_read_tokens"];
 
 /// One collected cell: the tables and domains for a single
-/// `(model_path, identity)` tuple (the 15-column identity carries the
-/// backend knobs since schema v6).
+/// `(model_path, identity)` tuple (schema v6 added backend knobs; schema v7 adds execution identity).
 #[derive(Debug)]
 pub struct FpmForwardCell {
     pub model_path: String,
@@ -143,6 +148,24 @@ pub struct FpmForwardCell {
     pub decode_batches: Vec<u32>,
     pub decode_rungs: Vec<u32>,
     pub decode_curve_bounds: BTreeMap<u32, (u32, u32)>,
+    /// Diagnostic state only; no change to table identity, values, or schema.
+    warned_fmha_model_modes: Mutex<BTreeSet<String>>,
+}
+
+impl FpmForwardCell {
+    pub(crate) fn fmha_selector_warning(&self, original: &str) -> Option<String> {
+        let mut warned = self
+            .warned_fmha_model_modes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !warned.insert(original.to_owned()) {
+            return None;
+        }
+        Some(format!(
+            "FPM table FMHA selector: original_model_mode={original:?}, selector={:?}, matched_cell_ids={:?}, model_path={:?}. Exact recorded-label matching does not independently verify runtime attention precision; arithmetic and memory modes are unchanged.",
+            self.match_identity[2], self.cell_ids, self.model_path
+        ))
+    }
 }
 
 /// One loaded parquet/sidecar pair: the grouped cells plus the
@@ -272,7 +295,15 @@ impl FpmForwardTable {
         // collected model_path could silently answer for a different model).
         let matches: Vec<&FpmForwardCell> = cells
             .iter()
-            .filter(|cell| cell.match_identity == match_identity && cell.model_path == model_path)
+            .filter(|cell| {
+                let legacy = match_identity.len() == 15
+                    && cell.match_identity[..15] == *match_identity
+                    && cell.match_identity[15..]
+                        .iter()
+                        .map(String::as_str)
+                        .eq(LEGACY_EXECUTION_IDENTITY);
+                (cell.match_identity == match_identity || legacy) && cell.model_path == model_path
+            })
             .collect();
         if matches.is_empty() {
             let mut available: Vec<String> = cells
@@ -334,7 +365,7 @@ fn validate_sidecar(
     system: &str,
     backend: &str,
     version: &str,
-) -> Result<Option<u64>, AicError> {
+) -> Result<(Option<u64>, u64), AicError> {
     if !metadata_path.exists() {
         return Err(structural(format!(
             "FPM database is missing its metadata sidecar: {}. \
@@ -365,7 +396,8 @@ fn validate_sidecar(
             metadata_path.display()
         )));
     }
-    if json_uint(metadata.get("schema_version")) != Some(FPM_FORWARD_SCHEMA_VERSION) {
+    let schema_version = json_uint(metadata.get("schema_version"));
+    if !matches!(schema_version, Some(6 | FPM_FORWARD_SCHEMA_VERSION)) {
         return Err(structural(format!(
             "unsupported FPM schema_version={:?} (expected {FPM_FORWARD_SCHEMA_VERSION}): {}",
             metadata.get("schema_version"),
@@ -415,7 +447,10 @@ fn validate_sidecar(
             parquet_path.parent().unwrap_or(parquet_path).display()
         )));
     }
-    Ok(json_uint(metadata.get("row_count")))
+    Ok((
+        json_uint(metadata.get("row_count")),
+        schema_version.unwrap(),
+    ))
 }
 
 /// Python `metadata.get(k) != n` compares by VALUE: a JSON `5.0` equals the
@@ -473,7 +508,7 @@ fn load_pair(
         return Ok(None);
     }
     let metadata_path = parquet_path.with_extension("metadata.json");
-    let sidecar_row_count =
+    let (sidecar_row_count, schema_version) =
         validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
 
     let reader = PerfReader::open(parquet_path)?;
@@ -498,6 +533,11 @@ fn load_pair(
     let mut str_idx = BTreeMap::new();
     for name in str_cols {
         str_idx.insert(name, reader.col(name)?);
+    }
+    if schema_version >= 7 {
+        for name in &FPM_CELL_MATCH_COLUMNS[15..] {
+            str_idx.insert(*name, reader.col(name)?);
+        }
     }
     let int_cols = [
         "tp",
@@ -655,6 +695,11 @@ fn load_pair(
                     get_str(name)
                 } else if bool_idx.contains_key(name) {
                     get_bool_identity(name)
+                } else if let Some(offset) = FPM_CELL_MATCH_COLUMNS[15..]
+                    .iter()
+                    .position(|field| field == name)
+                {
+                    Ok(LEGACY_EXECUTION_IDENTITY[offset].to_string())
                 } else {
                     get_int_identity(name)
                 }
@@ -692,6 +737,10 @@ fn load_pair(
             match_identity[12].clone(),
             match_identity[13].clone(),
             match_identity[14].clone(),
+            match_identity[15].clone(),
+            match_identity[16].clone(),
+            match_identity[17].clone(),
+            match_identity[18].clone(),
             workload_kind.clone(),
             batch_size.to_string(),
             total_prefill_tokens.to_string(),
@@ -704,6 +753,14 @@ fn load_pair(
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
+        if !match_identity[15].is_empty()
+            && (workload_kind == "decode" || total_kv_read_tokens > 0)
+            && kv_seed_regime != FPM_KV_SEED_REAL_KV
+        {
+            return Err(structural(format!(
+                "FPM row {index}: config-bound cached prefill/decode requires real_kv provenance"
+            )));
+        }
         let fake_fallback = kv_seed_regime == FPM_KV_SEED_FAKE_FALLBACK;
         let real_kv_anchor = kv_seed_regime == FPM_KV_SEED_REAL_KV;
 
@@ -852,6 +909,7 @@ fn load_pair(
                 decode_batches: Vec::new(),
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
+                warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
         if !building.cell.cell_ids.contains(&row.cell_id) {
@@ -1104,6 +1162,7 @@ pub(crate) mod tests {
         /// fixture sets it, omits the column entirely — the pre-column
         /// legacy layout).
         pub kv_seed_regime: Option<&'static str>,
+        pub execution: Option<[&'static str; 4]>,
     }
 
     impl Default for RowSpec {
@@ -1126,6 +1185,7 @@ pub(crate) mod tests {
                 system: "b200_sxm",
                 backend: "vllm",
                 kv_seed_regime: None,
+                execution: None,
             }
         }
     }
@@ -1144,7 +1204,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// The 11-string identity every default row carries, in
+    /// The normalized identity every default row carries, in
     /// `FPM_CELL_MATCH_COLUMNS` order.
     pub(crate) fn default_identity(tp: u32) -> Vec<String> {
         vec![
@@ -1163,10 +1223,14 @@ pub(crate) mod tests {
             "auto".to_string(),     // attention_backend
             "False".to_string(),    // enable_wideep (str(bool))
             "False".to_string(),    // enable_eplb
+            "".to_string(),
+            "full".to_string(),
+            "none".to_string(),
+            "text".to_string(),
         ]
     }
 
-    /// Write the v5-schema parquet + sha256'd sidecar pair into `dir`.
+    /// Write the legacy-v6 or execution-bound-v7 parquet + sha256'd sidecar pair into `dir`.
     pub(crate) fn write_pair(dir: &Path, rows: &[RowSpec]) -> PathBuf {
         write_pair_with(dir, rows, |_| {})
     }
@@ -1186,6 +1250,7 @@ pub(crate) mod tests {
         // The provenance column is written only when a fixture row sets it,
         // so default fixtures exercise the pre-column legacy layout.
         let has_kv_seed = rows.iter().any(|r| r.kv_seed_regime.is_some());
+        let has_execution = rows.iter().any(|r| r.execution.is_some());
         let schema = "message schema {
             REQUIRED BINARY cell_id (UTF8);
             REQUIRED BINARY model_path (UTF8);
@@ -1222,6 +1287,18 @@ pub(crate) mod tests {
             )
         } else {
             schema.to_string()
+        };
+        let schema = if has_execution {
+            schema.replace(
+                "REQUIRED BINARY workload_kind (UTF8);",
+                "REQUIRED BINARY model_config_sha256 (UTF8);
+                 REQUIRED BINARY execution_profile (UTF8);
+                 REQUIRED BINARY engram_residency (UTF8);
+                 REQUIRED BINARY input_modality (UTF8);
+                 REQUIRED BINARY workload_kind (UTF8);",
+            )
+        } else {
+            schema
         };
         let schema = Arc::new(parse_message_type(&schema).expect("schema must parse"));
         let file = std::fs::File::create(&parquet_path).expect("create parquet");
@@ -1302,6 +1379,18 @@ pub(crate) mod tests {
                 .expect("write");
             col.close().expect("close");
         }
+        if has_execution {
+            for index in 0..4 {
+                let values = str_col(&|r| {
+                    r.execution.unwrap_or(LEGACY_EXECUTION_IDENTITY)[index].to_string()
+                });
+                let mut col = rg.next_column().expect("next col").expect("str col");
+                col.typed::<ByteArrayType>()
+                    .write_batch(&values, None, None)
+                    .expect("write");
+                col.close().expect("close");
+            }
+        }
         {
             let values = str_col(&|r| r.workload_kind.to_string());
             let mut col = rg.next_column().expect("next col").expect("str col");
@@ -1365,7 +1454,11 @@ pub(crate) mod tests {
         sidecar.insert("schema_name".into(), FPM_FORWARD_SCHEMA_NAME.into());
         sidecar.insert(
             "schema_version".into(),
-            serde_json::Value::from(FPM_FORWARD_SCHEMA_VERSION),
+            serde_json::Value::from(if has_execution {
+                FPM_FORWARD_SCHEMA_VERSION
+            } else {
+                6
+            }),
         );
         sidecar.insert(
             "coordinate_system".into(),
@@ -1409,6 +1502,72 @@ pub(crate) mod tests {
             "0.25.1",
             false,
         )
+    }
+
+    #[test]
+    fn schema_seven_execution_identity_is_exact_and_requires_real_decode_kv() {
+        let tmp = tempfile::tempdir().unwrap();
+        let execution = ["abc", "full", "hbm_tp_sharded", "text"];
+        let mut rows = default_rows();
+        for row in &mut rows {
+            row.execution = Some(execution);
+            row.kv_seed_regime = Some("real_kv");
+        }
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let mut identity = default_identity(4);
+        identity[15..].clone_from_slice(&execution.map(str::to_string));
+        assert!(table.select_cell(&identity, "org/model-a").is_ok());
+        assert!(
+            table
+                .select_cell(&default_identity(4), "org/model-a")
+                .is_err()
+        );
+        identity[16] = "decoder_bounded".to_string();
+        assert!(table.select_cell(&identity, "org/model-a").is_err());
+        let prefill_rows: Vec<RowSpec> = default_rows()
+            .into_iter()
+            .filter(|r| r.workload_kind == "prefill")
+            .map(|mut r| {
+                r.execution = Some(execution);
+                r.kv_seed_regime = Some("fake_fallback");
+                r
+            })
+            .collect();
+        write_pair(tmp.path(), &prefill_rows);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("requires real_kv")
+        );
+        for row in &mut rows {
+            row.kv_seed_regime = Some("fake_fallback");
+        }
+        write_pair(tmp.path(), &rows);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("requires real_kv")
+        );
+    }
+
+    #[test]
+    fn legacy_identity_is_upgraded_but_schema_seven_cannot_omit_execution_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        assert!(
+            loaded_table(tmp.path())
+                .select_cell(&default_identity(4)[..15], "org/model-a")
+                .is_ok()
+        );
+        write_pair_with(tmp.path(), &default_rows(), |m| {
+            m.insert("schema_version".into(), 7.into());
+        });
+        assert!(loaded_table(tmp.path()).cells().is_err());
     }
 
     #[test]
