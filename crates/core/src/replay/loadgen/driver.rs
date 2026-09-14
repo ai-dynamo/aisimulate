@@ -3040,17 +3040,48 @@ mod tests {
                     .on_causal_terminal(first.request_uuid, 10.0, status)
                     .unwrap();
 
+                let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+                assert_eq!(outcome.status, AgenticPlayStatus::Incomplete);
+                assert_eq!(outcome.causal_terminal_ms, Some(10.0));
+                assert_eq!(outcome.settled_at_ms, None);
                 assert_eq!(driver.next_ready_time_ms(), Some(10.0));
                 let second = driver.pop_ready(10.0, 1).pop().unwrap();
                 assert_eq!(second.authored_request_id.as_deref(), Some("b"));
                 assert_eq!(second.dispatched_at_ms, 10.0);
                 driver.on_complete(second.request_uuid, 12.0).unwrap();
                 assert!(!driver.is_drained(), "play-a still owns server cleanup");
+                let failed = status != ReplayTerminalStatus::Completed;
+                let mut expected_outcomes = vec![
+                    AgenticPlayOutcome {
+                        play_id: "play-a".into(),
+                        status: AgenticPlayStatus::Incomplete,
+                        causal_terminal_ms: Some(10.0),
+                        settled_at_ms: None,
+                        failure_request_id: failed.then(|| "a".into()),
+                        failure_status: failed.then_some(status),
+                    },
+                    AgenticPlayOutcome {
+                        play_id: "play-b".into(),
+                        status: AgenticPlayStatus::Completed,
+                        causal_terminal_ms: Some(12.0),
+                        settled_at_ms: Some(12.0),
+                        failure_request_id: None,
+                        failure_status: None,
+                    },
+                ];
+                assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
 
                 driver
                     .on_quiescent(first.request_uuid, cleanup_at_ms)
                     .unwrap();
                 assert!(driver.is_drained());
+                expected_outcomes[0].status = if failed {
+                    AgenticPlayStatus::Failed
+                } else {
+                    AgenticPlayStatus::Completed
+                };
+                expected_outcomes[0].settled_at_ms = Some(cleanup_at_ms);
+                assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
                 let transcript = driver.agentic_lifecycle_transcript().unwrap();
                 let settlements = transcript
                     .events
@@ -3123,16 +3154,50 @@ mod tests {
                 .on_terminal(ready[0].request_uuid, 10.0, status)
                 .unwrap();
             assert!(driver.pop_ready(10.0, usize::MAX).is_empty());
+            let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+            assert_eq!(outcome.status, AgenticPlayStatus::Incomplete);
+            assert_eq!(outcome.causal_terminal_ms, Some(10.0));
+            assert_eq!(outcome.settled_at_ms, None);
 
             driver
                 .on_causal_terminal(ready[1].request_uuid, 15.0, ReplayTerminalStatus::Completed)
                 .unwrap();
             let next = driver.pop_ready(15.0, 1).pop().unwrap();
             assert_eq!(next.authored_request_id.as_deref(), Some("next"));
+            assert_eq!(next.dispatched_at_ms, 15.0);
             driver.on_complete(next.request_uuid, 16.0).unwrap();
             assert!(!driver.is_drained());
+            let failed = status != ReplayTerminalStatus::Completed;
+            // A failed play retains its primary failure at 10 ms, even though
+            // its background request holds the client lane until 15 ms.
+            let mut expected_outcomes = vec![
+                AgenticPlayOutcome {
+                    play_id: "play-a".into(),
+                    status: AgenticPlayStatus::Incomplete,
+                    causal_terminal_ms: Some(if failed { 10.0 } else { 15.0 }),
+                    settled_at_ms: None,
+                    failure_request_id: failed.then(|| "root".into()),
+                    failure_status: failed.then_some(status),
+                },
+                AgenticPlayOutcome {
+                    play_id: "play-b".into(),
+                    status: AgenticPlayStatus::Completed,
+                    causal_terminal_ms: Some(16.0),
+                    settled_at_ms: Some(16.0),
+                    failure_request_id: None,
+                    failure_status: None,
+                },
+            ];
+            assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
             driver.on_quiescent(ready[1].request_uuid, 20.0).unwrap();
             assert!(driver.is_drained());
+            expected_outcomes[0].status = if failed {
+                AgenticPlayStatus::Failed
+            } else {
+                AgenticPlayStatus::Completed
+            };
+            expected_outcomes[0].settled_at_ms = Some(20.0);
+            assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
         }
     }
 
