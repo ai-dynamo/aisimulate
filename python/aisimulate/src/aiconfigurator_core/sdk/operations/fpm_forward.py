@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/operations/fpm_forward.py
 
 """Whole-model forward-pass op backed by collected ``fpm_forward_perf`` data.
 
@@ -147,6 +149,11 @@ class FPMForwardOp(PythonOperation):
         )
         self._match_identity += LEGACY_EXECUTION_IDENTITY
         self._sol_ops = list(sol_ops)
+        # Speculative verify width for the equivalent-AR decode mapping
+        # (1 = plain AR). Set post-construction by the fpm model rewrite for
+        # draft-scheme models; Python only CARRIES it onto the wire (the
+        # single-oracle rule — pricing lives in the Rust operator).
+        self._verify_width = 1
 
     def get_weights(self, **kwargs) -> float:
         """Per-rank weight bytes of the whole model (captured from the original

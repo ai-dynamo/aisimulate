@@ -482,6 +482,8 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    prefill_hardware_sku: str | None = Field(default=None, min_length=1)
+    decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
     min_gpu_budget: int | None = None
     context_length: int | None = None
@@ -581,6 +583,25 @@ class SearchSpace(BaseModel):
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
         return self
+
+    @model_validator(mode="after")
+    def _validate_role_hardware(self) -> SearchSpace:
+        """Role-specific hardware is an override for ordinary P/D only."""
+        if (self.prefill_hardware_sku is not None or self.decode_hardware_sku is not None) and (
+            "disagg" not in self.deployment_mode
+        ):
+            raise ValueError("prefill_hardware_sku and decode_hardware_sku require deployment_mode to include 'disagg'")
+        return self
+
+    def hardware_sku_for(self, role: str) -> str:
+        """Return the effective hardware SKU for an ordinary engine role."""
+        if role == "agg":
+            return self.hardware_sku
+        if role == "prefill":
+            return self.prefill_hardware_sku or self.hardware_sku
+        if role == "decode":
+            return self.decode_hardware_sku or self.hardware_sku
+        raise ValueError(f"unknown engine role {role!r}")
 
     @field_validator(
         "afd_tp_a_candidates",

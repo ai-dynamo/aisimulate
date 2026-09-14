@@ -44,6 +44,20 @@ Full CI contains the expensive multi-architecture dependency, Rust, Python,
 public-API, feature-mode, engine-golden, platform-wheel, collector-data,
 prediction-regression, build, and release-artifact tests. The FPE support
 matrix remains a scheduled/manual product-support audit rather than a PR gate.
+`Full CI Success` is required for every admitted PR, but trusted
+`pull-request/*` copies select only the components affected by the pull
+request's complete changed-file set. Renames classify both the old and new
+paths. Documentation and review-policy-only changes may mark every expensive
+component explicitly N/A; unknown paths and changes to CI execution contracts
+run the complete matrix. Manual, `main`, and `release/*` runs also execute the
+complete matrix. The aggregate gate accepts a skipped component only when the
+selector explicitly marked that component N/A; missing selection outputs,
+unexpected skips, failures, and cancellations fail closed.
+The independently maintained mapping oracle in
+`.github/full-ci-selection-cases.yml` records the job-consumer rationale and
+representative expected plans; Fast CI verifies the implementation against
+that complete component inventory.
+
 Dispatch Full CI only after the required reviews have completed on the current
 commit with no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER
 review may proceed while Full CI runs, but all required conversations,
@@ -57,11 +71,17 @@ label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
 `unlabeled` pull-request activity types so those state changes cannot retain a
 stale green result. Direct pull-request runs publish `Fast CI Success`; Full CI
 displays its reusable invocation as `Fast CI / Fast CI Success` and aggregates
-that result into `Full CI Success`. Release staging is explicitly not
-applicable to manual and trusted-copy PR validation, while it remains required
-for `main` and `release/*` lifecycle pushes. Require the direct `Fast CI
-Success` and aggregate `Full CI Success` results in branch rules rather than
+that result into `Full CI Success`. Release staging depends on successful
+validation and remains a separate protected step on `main` and `release/*`
+lifecycle pushes. Waiting for staging approval does not hold `Full CI Success`
+open; a green validation result does not certify staging or publication.
+Require the direct `Fast CI Success` and aggregate `Full CI Success` results in
+branch rules rather than
 individual conditional or reusable-workflow jobs.
+
+The additive ruleset payload and runner-image rollout procedure are in
+[`docs/ci-qualification.md`](docs/ci-qualification.md). A committed ruleset
+payload is not evidence that repository enforcement has been activated.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the
@@ -74,6 +94,19 @@ sequence. Do not remove the copy-branch backstop until the ruleset enforces the
 Fast and Full CI checks and requires branches to be current. Do not claim
 conditional Codex or post-review Full CI automation until an approved service
 credential and exact-head dispatcher are installed.
+
+For an admitted PR, no second Full CI launch is needed after Fast CI. The
+trusted `pull-request/*` push starts Full CI automatically, and every expensive
+component waits for the exact-SHA Fast CI and scope selector to pass before it
+can acquire a protected runner. Application tests additionally build one wheel
+per architecture and then fan out contracts, unit, integration, CLI-build,
+support-matrix, and tool-build shards. Admission itself remains the maintainer security gate;
+do not replace it with PR-authored credentials or a `pull_request_target`
+workflow.
+
+The [application test inventory](docs/ci-test-inventory.md) maps collected cases
+to their Full CI shard and records explicit manual and optional-dependency
+exceptions. The contracts shard fails when a collected test has no assignment.
 
 ## Product invariants
 

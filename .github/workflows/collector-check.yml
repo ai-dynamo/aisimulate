@@ -142,7 +142,7 @@ jobs:
       - name: Run cross-backend consistency checks
         working-directory: python/aisimulate
         run: |
-          python tools/perf_database/check_cross_backend.py \
+          python tools/perf_database/check_cross_backend.py --workers 4 \
             --out-md cross-backend-consistency.md \
             --out-json cross-backend-consistency.json
       - name: Add triage summary

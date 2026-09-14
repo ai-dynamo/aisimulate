@@ -16,6 +16,13 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
+def _role_hardware_sku(sample: dict[str, Any], role: str) -> str:
+    """Resolve a P/D override while preserving the shared-SKU fallback."""
+    if role in {"prefill", "decode"}:
+        return str(sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])
+    return str(sample["hardware_sku"])
+
+
 def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
     """Keep optional perf-model identity separate from runtime timing args."""
     prefix = _role_prefix(role)
@@ -24,7 +31,7 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
     config: dict[str, Any] = {
         "backend": sample["backend"],
         "backend_version": backend_version,
-        "system": sample["hardware_sku"],
+        "system": _role_hardware_sku(sample, role),
         "model_path": sample["model_name"],
         "tp_size": int(sample[f"{prefix}tp"]),
         "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
@@ -64,7 +71,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         "engine_type": backend,
         "aic_backend": backend,
         "aic_backend_version": backend_version,
-        "aic_system": sample["hardware_sku"],
+        "aic_system": _role_hardware_sku(sample, role),
         "aic_model_path": sample["model_name"],
         "aic_tp_size": tp,
         "aic_attention_dp_size": attention_dp,
@@ -215,6 +222,7 @@ def build_backend_deployment(
                 "moe_ep",
                 "strategy",
                 "replicas",
+                "prefill_hardware_sku",
                 "prefill_tp",
                 "prefill_pp",
                 "prefill_attention_dp",
@@ -222,6 +230,7 @@ def build_backend_deployment(
                 "prefill_moe_ep",
                 "prefill_strategy",
                 "prefill_replicas",
+                "decode_hardware_sku",
                 "decode_tp",
                 "decode_pp",
                 "decode_attention_dp",

@@ -78,7 +78,7 @@ def _role_capacity_tokens(
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(sample["model_name"]),
-            hardware_sku=str(sample["hardware_sku"]),
+            hardware_sku=str(sample.get(f"{role}_hardware_sku") or sample["hardware_sku"]),
             backend=str(sample["backend"]),
             backend_version=backend_version,
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),

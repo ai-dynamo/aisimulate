@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/config_builders.py
 
 """Shared ModelConfig construction helpers.
 
@@ -38,6 +40,7 @@ def build_model_config(
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
     fpm_fmha_quant_mode: str | None = None,
+    speculation=None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     return ModelConfig(
@@ -55,6 +58,7 @@ def build_model_config(
         forward_model=forward_model or "op_level",
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
+        speculation=speculation,
     )
 
 
@@ -133,3 +137,47 @@ def apply_nextn(
 ) -> None:
     """Apply the MTP compute-side draft depth onto a ModelConfig."""
     model_config.nextn = normalize_nextn(nextn)
+
+
+def resolve_speculation(model_config: ModelConfig):
+    """Normalize (nextn, speculation) into a single resolved SpeculationConfig.
+
+    Exactly one speculative source is allowed:
+
+    * ``nextn > 0`` with no explicit scheme desugars to ``mtp`` at that depth
+      (legacy sugar, keeps every existing entry point valid).
+    * an explicit ``mtp`` scheme writes its depth back onto ``nextn`` so model
+      families keep building their draft scaling from ``_nextn``.
+    * a non-MTP scheme requires ``nextn == 0`` — mixing sources is an error,
+      never a silent precedence.
+
+    Return the resolved config without persisting synthesized legacy MTP.
+    Explicit MTP still updates ``nextn`` before model construction.
+    """
+    from aiconfigurator_core.sdk.speculation.base import SpeculationConfig
+
+    spec = model_config.speculation
+    nextn = normalize_nextn(model_config.nextn)
+
+    if spec is None:
+        spec = SpeculationConfig(kind="mtp", params={"depth": nextn}) if nextn > 0 else (spec or SpeculationConfig())
+    elif spec.kind == "mtp":
+        # Same contract as legacy nextn: integer draft length (1.9 must be
+        # rejected here exactly as normalize_nextn rejects it).
+        depth = validate_nextn(spec.params.get("depth", 0))
+        if depth < 1:
+            raise ValueError(f"speculation kind 'mtp' requires params['depth'] >= 1, got {depth}.")
+        if nextn and nextn != depth:
+            raise ValueError(
+                f"Conflicting speculative inputs: nextn={nextn} but speculation mtp depth={depth}. "
+                "Set only one (nextn is legacy sugar for the mtp scheme)."
+            )
+        model_config.nextn = depth
+    else:
+        if nextn > 0:
+            raise ValueError(
+                f"Conflicting speculative inputs: nextn={nextn} cannot be combined with "
+                f"speculation kind {spec.kind!r}. nextn is MTP-only sugar; set it to 0."
+            )
+
+    return spec
