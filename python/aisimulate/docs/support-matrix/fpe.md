@@ -215,3 +215,18 @@ and unavailable branches. Main retains the existing data path, and release
 data lives under `data/fpe-support-matrix/branches/release/<version>/`.
 Repository previews package main's committed snapshot only and require no
 GitHub credentials or artifact downloads.
+
+## Legacy AIC snapshot provenance
+
+The Legacy AIC Support Matrix displays a **Historical snapshot** and
+**Qualification not recorded**. Its **Latest data change** timestamp is the
+commit time of the most recent change to its index or an indexed CSV, with a
+link to that data commit. It is not the website build time or evidence of a
+complete matrix rerun. No full-matrix generation time or qualification report
+was recorded for the retained legacy data.
+
+The Pages builder adds this provenance to the packaged
+`data/support-matrix/index.json`. Website-only changes do not refresh the data
+date. A build with modified/untracked data, a shallow Git history, or no Git
+history leaves the date unavailable. Direct source-tree previews also show the
+missing-date state because the committed legacy index contains no provenance.
