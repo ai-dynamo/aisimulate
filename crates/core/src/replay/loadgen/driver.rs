@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 use anyhow::{Context, Result, anyhow, bail};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -1513,7 +1513,7 @@ impl WorkloadDriver {
     /// makes that order unobservable by sorting requests by immutable graph
     /// ordinal, then applying output progress, causal terminals, and finally
     /// resource quiescence. Batch timestamps must be nondecreasing; a rejected
-    /// batch does not advance the last successfully applied timestamp.
+    /// batch leaves request state, dependencies, lifecycle, and clock unchanged.
     pub fn apply_agentic_runtime_feedback(
         &mut self,
         mut feedback: AgenticRuntimeFeedback,
@@ -1584,6 +1584,39 @@ impl WorkloadDriver {
                     pair[0],
                     feedback.at_ms
                 );
+            }
+        }
+
+        // Agentic graphs use full prompts, for which output feedback is a
+        // no-op. Validate every fallible lifecycle transition before applying
+        // any terminal: a later invalid transition must not commit earlier
+        // completions, release dependencies, or consume pending cleanup.
+        debug_assert_eq!(self.prompt_mode, PromptMode::Full);
+        let mut becoming_terminal = FxHashSet::default();
+        for terminal in &feedback.causal_terminals {
+            let outcome = match terminal.status {
+                ReplayTerminalStatus::Completed => TurnOutcome::Completed,
+                ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
+                ReplayTerminalStatus::Canceled => TurnOutcome::Cancelled,
+                ReplayTerminalStatus::Failed => TurnOutcome::Failed,
+            };
+            if self.agentic_settling.contains_key(&terminal.request_uuid)
+                || self
+                    .validate_turn_resolution(terminal.request_uuid, outcome)?
+                    .is_none()
+            {
+                bail!(
+                    "agentic request {} received duplicate causal terminal",
+                    terminal.request_uuid
+                );
+            }
+            becoming_terminal.insert(terminal.request_uuid);
+        }
+        for request_uuid in &feedback.quiescent_requests {
+            if !self.agentic_settling.contains_key(request_uuid)
+                && !becoming_terminal.contains(request_uuid)
+            {
+                bail!("agentic request {request_uuid} became quiescent before its causal terminal");
             }
         }
 
@@ -1670,12 +1703,11 @@ impl WorkloadDriver {
         state.on_node_quiescent(node_index, now_ms)
     }
 
-    fn resolve_turn(
-        &mut self,
+    fn validate_turn_resolution(
+        &self,
         request_uuid: Uuid,
-        now_ms: f64,
         outcome: TurnOutcome,
-    ) -> Result<Option<TurnResolution>> {
+    ) -> Result<Option<InFlightTurn>> {
         let Some(in_flight) = self.in_flight.get(&request_uuid).copied() else {
             return match outcome {
                 TurnOutcome::Completed | TurnOutcome::Rejected | TurnOutcome::Failed => Err(
@@ -1688,7 +1720,7 @@ impl WorkloadDriver {
             .sessions
             .get(in_flight.session_index)
             .ok_or_else(|| anyhow!("unknown workload session {}", in_flight.session_index))?;
-        let turn = session.turns.get(in_flight.turn_index).ok_or_else(|| {
+        session.turns.get(in_flight.turn_index).ok_or_else(|| {
             anyhow!(
                 "unknown workload turn {} for session {}",
                 in_flight.turn_index,
@@ -1718,6 +1750,26 @@ impl WorkloadDriver {
                 in_flight.emitted_output_tokens
             );
         }
+        if matches!(outcome, TurnOutcome::Completed | TurnOutcome::Rejected) {
+            in_flight
+                .turn_index
+                .checked_add(1)
+                .context("workload turn index overflow")?;
+        }
+        Ok(Some(in_flight))
+    }
+
+    fn resolve_turn(
+        &mut self,
+        request_uuid: Uuid,
+        now_ms: f64,
+        outcome: TurnOutcome,
+    ) -> Result<Option<TurnResolution>> {
+        let Some(in_flight) = self.validate_turn_resolution(request_uuid, outcome)? else {
+            return Ok(None);
+        };
+        let session = &self.sessions[in_flight.session_index];
+        let turn = &session.turns[in_flight.turn_index];
         let completed_output_tokens = (outcome == TurnOutcome::Completed
             && self.prompt_mode == PromptMode::DeltaCumulative)
             .then(|| {
@@ -2885,6 +2937,91 @@ mod tests {
             .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
                 at_ms: 15.0,
                 quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.is_drained());
+        assert!(
+            driver
+                .agentic_lifecycle_transcript()
+                .unwrap()
+                .events
+                .windows(2)
+                .all(|events| events[0].at_ms <= events[1].at_ms)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::premature_quiescence(false)]
+    #[case::duplicate_terminal(true)]
+    fn agentic_rejected_mixed_feedback_preserves_state(#[case] duplicate_terminal: bool) {
+        let trace = agentic_trace(vec![
+            agentic_node("a-parent", "play", 0.0, Vec::new()),
+            agentic_node("b-stale", "play", 0.0, Vec::new()),
+            agentic_node("c-peer", "play", 0.0, Vec::new()),
+            agentic_node(
+                "d-child",
+                "play",
+                0.0,
+                vec![dependency(
+                    "a-parent",
+                    AgenticDependencyTrigger::Completion,
+                    2.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+        let ready = driver.pop_ready(0.0, usize::MAX);
+        let parent = ready[0].request_uuid;
+        let stale = ready[1].request_uuid;
+        let peer = ready[2].request_uuid;
+        let completed = |request_uuid| AgenticTerminalFeedback {
+            request_uuid,
+            status: ReplayTerminalStatus::Completed,
+        };
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(stale)],
+                ..Default::default()
+            })
+            .unwrap();
+        let state_before = format!("{driver:?}");
+        let mut invalid = AgenticRuntimeFeedback {
+            at_ms: 20.0,
+            causal_terminals: vec![completed(parent)],
+            quiescent_requests: vec![parent, stale],
+            ..Default::default()
+        };
+        if duplicate_terminal {
+            invalid.causal_terminals.push(completed(stale));
+        } else {
+            invalid.quiescent_requests.push(peer);
+        }
+
+        assert!(driver.apply_agentic_runtime_feedback(invalid).is_err());
+        // Include request/session state, dependency counters, lanes, cleanup,
+        // output progress, lifecycle records, and the successful batch clock.
+        assert_eq!(format!("{driver:?}"), state_before);
+        assert_eq!(driver.next_ready_time_ms(), None);
+
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(parent), completed(peer)],
+                quiescent_requests: vec![parent, stale, peer],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(driver.next_ready_time_ms(), Some(12.0));
+        let child = driver.pop_ready(12.0, 1).pop().unwrap();
+        assert_eq!(child.authored_request_id.as_deref(), Some("d-child"));
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 12.0,
+                causal_terminals: vec![completed(child.request_uuid)],
+                quiescent_requests: vec![child.request_uuid],
                 ..Default::default()
             })
             .unwrap();
