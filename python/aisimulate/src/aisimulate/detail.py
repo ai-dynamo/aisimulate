@@ -9,6 +9,13 @@ from copy import deepcopy
 from typing import Any
 
 DETAIL_SECTIONS = ("summary", "memory", "time")
+# ReplayReport's serving latency distributions and its trajectory median alias.
+# Durations of the replay or simulator are not request/trajectory latency.
+SERVING_LATENCY_METRICS = frozenset(
+    f"{stat}_{metric}_ms"
+    for metric in ("ttft", "ttst", "tpot", "itl", "e2e_latency", "trajectory_e2e_latency")
+    for stat in ("mean", "min", "max", "median", "p75", "p90", "p95", "p99", "std")
+) | {"p50_trajectory_e2e_latency_ms"}
 
 
 def parse_detail_sections(value: str) -> tuple[str, ...]:
@@ -52,7 +59,7 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
                 "roles": deepcopy(memory),
             }
         elif name == "time":
-            metrics = {key: value for key, value in summary.items() if key.endswith("_ms") and key != "wall_time_ms"}
+            metrics = {key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS}
             if not metrics:
                 skipped[name] = "selected runner did not export serving timing metrics in milliseconds"
                 continue

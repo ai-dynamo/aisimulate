@@ -708,7 +708,15 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
         def run(self, *args, **kwargs):
             report = super().run(*args, **kwargs)
             report.metadata["native_report"]["summary"].update(
-                {"mean_ttft_ms": 2.0, "p99_ttft_ms": 3.0, "wall_time_ms": 40.0}
+                {
+                    "mean_ttft_ms": 2.0,
+                    "p99_ttft_ms": 3.0,
+                    "mean_trajectory_e2e_latency_ms": 9.0,
+                    "p50_trajectory_e2e_latency_ms": 8.0,
+                    "wall_time_ms": 40.0,
+                    "duration_ms": 100.0,
+                    "custom_timer_ms": 7.0,
+                }
             )
             return report
 
@@ -734,6 +742,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     stdout = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "prediction.json").read_text())
     assert stdout["details"] == saved["details"]
+    assert stdout["summary"]["duration_ms"] == 100.0
     details = stdout["details"]
     validate(details, _detail_schema())
     expected = {"all": {"summary", "time"}, "time,time": {"time"}, "memory": set()}[selector]
@@ -741,11 +750,42 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     assert ("memory" in details["skipped"]) == (selector != "time,time")
     assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
     if "time" in expected:
-        assert details["sections"]["time"]["serving_metrics"] == {"mean_ttft_ms": 2.0, "p99_ttft_ms": 3.0}
+        assert details["sections"]["time"]["serving_metrics"] == {
+            "mean_ttft_ms": 2.0,
+            "p99_ttft_ms": 3.0,
+            "mean_trajectory_e2e_latency_ms": 9.0,
+            "p50_trajectory_e2e_latency_ms": 8.0,
+        }
+
+
+@pytest.mark.parametrize("name", ["duration_ms", "wall_time_ms", "custom_timer_ms"])
+def test_detail_schema_rejects_non_latency_timers(name):
+    from jsonschema import ValidationError, validate
+
+    details = {
+        "schema_version": "1.0",
+        "sections": {
+            "time": {
+                "status": "available",
+                "scope": "serving_workload",
+                "latency_unit": "ms",
+                "serving_metrics": {name: 1.0},
+            }
+        },
+        "skipped": {},
+    }
+    with pytest.raises(ValidationError):
+        validate(details, _detail_schema())
 
 
 def test_detail_table_skips_missing_evidence(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(_Runner()))
+    class DurationOnlyRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["summary"]["duration_ms"] = 10.0
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(DurationOnlyRunner()))
     assert (
         cli.main(
             ["predict", "-c", str(_detail_config(tmp_path)), "--detail", "all", "--output-dir", str(tmp_path / "out")]
@@ -770,7 +810,7 @@ def test_detail_table_skips_missing_evidence(tmp_path, monkeypatch, capsys):
                 "status": "available",
                 "scope": "serving_workload",
                 "latency_unit": "ms",
-                "serving_metrics": {"energy_wms": 1},
+                "serving_metrics": {"duration_ms": 1},
             }
         },
         {"energy": {"status": "unavailable"}},

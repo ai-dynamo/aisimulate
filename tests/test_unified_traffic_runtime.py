@@ -427,6 +427,8 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert memory["total_gpu_capacity_bytes"] > memory["total_kv_size_bytes"] > 0
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] == stdout["summary"]["mean_ttft_ms"]
     assert "wall_time_ms" not in sections["time"]["serving_metrics"]
+    assert "duration_ms" not in sections["time"]["serving_metrics"]
+    assert stdout["summary"]["duration_ms"] > 0
     assert "phases" not in sections["time"]
     # Repeating the same prediction without diagnostics keeps modeled metrics identical.
     plain_out = tmp_path / "plain"
