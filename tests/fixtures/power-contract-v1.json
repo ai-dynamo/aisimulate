@@ -19,6 +19,18 @@
   },
   "cases": [
     {
+      "name": "finite_evidence_overflows_derived_power",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 1e-300, "energy_wms": 1e300}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 1.0}
+    },
+    {
       "name": "decimal_exact_gate",
       "roles": [
         {
