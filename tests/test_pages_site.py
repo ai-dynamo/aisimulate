@@ -7,6 +7,7 @@ import csv
 import importlib.util
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -308,6 +309,124 @@ class FpePagesTest(unittest.TestCase):
         for files in [["../../secret.csv"], ["b200_sxm.csv", "b200_sxm.csv"]]:
             with self.subTest(files=files), self.assertRaises(ValueError):
                 FPE.qualified_files(qualified_archive(index_files=files), NEW_SHA)
+
+
+class FpeBranchesTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repository = self.root / "repo"
+        self.repository.mkdir()
+        self.git("init", "-b", "main")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "root")
+        self.common = self.git("rev-parse", "HEAD").strip()
+        self.git("switch", "-c", "release/0.12.0")
+        self.git(
+            "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "release"
+        )
+        self.release_sha = self.git("rev-parse", "HEAD").strip()
+        self.git("update-ref", "refs/remotes/origin/release/0.12.0", self.release_sha)
+        self.git("switch", "main")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "main")
+        self.main_sha = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.repository, text=True, stderr=subprocess.DEVNULL)
+
+    def prepare(self, release_sha=None, *, expired=False, malformed=False):
+        artifacts = [artifact(1, self.main_sha)]
+        runs = {1: run(self.main_sha)}
+        archives = {1: qualified_archive(self.main_sha)}
+        if release_sha:
+            artifacts.append(
+                artifact(
+                    2,
+                    release_sha,
+                    expired=expired,
+                    workflow_run={"id": 2, "head_branch": "release/0.12.0", "head_sha": release_sha},
+                )
+            )
+            runs[2] = run(release_sha, head_branch="release/0.12.0")
+            archives[2] = qualified_archive(release_sha, report_updates={"shard_count": 0} if malformed else {})
+        calls = []
+
+        def api(repository, endpoint):
+            self.assertEqual(repository, REPOSITORY)
+            calls.append(endpoint)
+            if endpoint.startswith("actions/artifacts?"):
+                return json.dumps({"artifacts": artifacts}).encode()
+            if endpoint.startswith("actions/runs/"):
+                return json.dumps(runs[int(endpoint.split("/")[-1])]).encode()
+            return archives[int(endpoint.split("/")[-2])]
+
+        data = self.root / "data"
+        catalog = FPE.prepare_branches(REPOSITORY, self.repository, data, api=api)
+        self.assertEqual(sum(endpoint.startswith("actions/artifacts?") for endpoint in calls), 1)
+        site = self.root / "site"
+        PAGES.build_site(ROOT, site, fpe_data_dir=data)
+        return catalog, site / "data/fpe-support-matrix"
+
+    def test_main_and_release_use_separate_histories_and_packaged_data(self):
+        catalog, data = self.prepare(self.release_sha)
+        self.assertEqual([entry["name"] for entry in catalog["branches"]], ["main", "release/0.12.0"])
+        for branch, sha, directory in [
+            ("main", self.main_sha, data),
+            ("release/0.12.0", self.release_sha, data / "branches/release/0.12.0"),
+        ]:
+            index = json.loads((directory / "index.json").read_text())
+            self.assertEqual(index["snapshot"]["source_sha"], sha)
+            self.assertEqual(index["snapshot"]["branch"], branch)
+            self.assertIn(sha, (directory / "b200_sxm.csv").read_text())
+        self.assertEqual(json.loads((data / "branches.json").read_text()), catalog)
+        self.assertFalse(list(data.rglob("*.html")))
+
+    def test_release_can_use_its_own_run_on_shared_ancestor(self):
+        catalog, data = self.prepare(self.common)
+        self.assertEqual(catalog["branches"][1]["status"], "available")
+        self.assertIn(self.common, (data / "branches/release/0.12.0/b200_sxm.csv").read_text())
+
+    def test_no_release_run_never_borrows_main_data(self):
+        catalog, data = self.prepare()
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertNotIn("path", catalog["branches"][1])
+        self.assertFalse((data / "branches").exists())
+
+    def test_main_only_commit_cannot_be_published_as_release(self):
+        catalog, _ = self.prepare(self.main_sha)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_expired_release_is_explicitly_unavailable(self):
+        catalog, _ = self.prepare(self.release_sha, expired=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertIn("expired", catalog["branches"][1]["reason"])
+
+    def test_malformed_release_fails_the_build(self):
+        with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
+            self.prepare(self.release_sha, malformed=True)
+
+    def test_unsafe_and_feature_branch_names_are_rejected(self):
+        for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                FPE.branch_path(name)
+
+    def test_builder_rejects_unsafe_or_duplicate_catalog_entries(self):
+        source = self.root / "source"
+        output = self.root / "output"
+        source.mkdir()
+        output.mkdir()
+        main = {"name": "main", "path": ".", "status": "available"}
+        for entry in [
+            main,
+            {"name": "release/0.12.0", "path": "../../private", "status": "available"},
+            {"name": "release/../private", "path": "branches/release/../private", "status": "available"},
+            {"name": "feature/test", "status": "unavailable"},
+        ]:
+            (source / "branches.json").write_text(
+                json.dumps({"schema_version": 1, "default": "main", "branches": [main, entry]})
+            )
+            with self.subTest(entry=entry), self.assertRaises(PAGES.PagesBuildError):
+                PAGES._copy_fpe_branches(source, output)
 
 
 class PagesSiteTest(unittest.TestCase):

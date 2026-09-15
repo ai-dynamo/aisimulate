@@ -164,3 +164,36 @@ The final platform-wheel check invokes the package verifier with
 repository generator and Git checkout; its subprocess runs from an unrelated
 temporary directory against the installed wheel. The reduced Docker build
 context runs the package/runtime verifier without the repository-only FPE flag.
+
+
+## Main and release branches
+
+The published matrix's **Branch** selector defaults to `main` and lists the
+repository's `release/*` branches. Share a selection using
+`?branch=release%2F0.12.0`; the model search (`q`) is preserved when switching.
+Each selection loads a separate packaged dataset with its own tested source
+SHA, timestamp, and CI link. Release results never fall back to main's data.
+
+Pages discovers release branches from the fetched `origin` refs. For each
+branch, it selects the newest retained qualified artifact produced by a
+successful FPE or Nightly run **on that branch**, with a source SHA in that
+branch's history. An old-commit rerun cannot displace a newer tested commit.
+A release without retained qualification is labeled **unavailable**; an
+expired release artifact also removes its data from the next deployment.
+Malformed qualification fails the deployment. Main still requires a retained
+qualified snapshot before the site can deploy.
+
+To publish release coverage, the release branch must contain the exact-wheel
+FPE workflow, generator, qualifier, and required-probe manifest. Older releases
+with the pre-qualification workflow need those changes backported first. Run
+**FPE Support Matrix** using that release as the workflow ref and its full
+commit SHA as `expected_sha`. A successful release run triggers the main Pages
+publisher, which rebuilds the whole catalog from trusted main code. This PR
+does not schedule release refreshes or backport the qualification pipeline.
+Manual Pages dispatch on main also discovers newly created release branches.
+
+The deployed `data/fpe-support-matrix/branches.json` catalog lists available
+and unavailable branches. Main retains the existing data path, and release
+data lives under `data/fpe-support-matrix/branches/release/<version>/`.
+Repository previews package main's committed snapshot only and require no
+GitHub credentials or artifact downloads.

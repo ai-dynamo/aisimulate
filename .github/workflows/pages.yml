@@ -5,7 +5,7 @@ on:
   workflow_run:
     workflows: ["FPE Support Matrix", "Nightly CI"]
     types: [completed]
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Prepare newest qualified main FPE snapshot
+      - name: Prepare qualified main and release FPE snapshots
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}

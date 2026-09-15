@@ -1381,3 +1381,18 @@ def test_parallel_native_preparation_propagates_either_build_failure(tmp_path, f
     )
     assert (result.returncode == 0) == (failed == "neither")
     assert set((tmp_path / "completed").read_text().splitlines()) == {"package", "rust"}
+
+
+def test_pages_release_completion_still_executes_main_checkout():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/pages.yml").read_text())
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["workflow_run"]["branches"] == ["main", "release/**"]
+    checkout = workflow["jobs"]["build"]["steps"][0]
+    assert "|| 'main'" in checkout["with"]["ref"]
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["persist-credentials"] is False

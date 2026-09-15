@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -74,6 +75,51 @@ def _copy_dataset(source: Path, destination: Path) -> None:
         _copy_file(csv_path, destination / filename)
 
 
+def _copy_fpe_branches(source: Path, destination: Path) -> None:
+    """Copy only cataloged branch datasets, retaining the legacy main data path."""
+    catalog_path = source / "branches.json"
+    catalog = (
+        json.loads(catalog_path.read_text())
+        if catalog_path.is_file()
+        else {
+            "schema_version": 1,
+            "default": "main",
+            "branches": [{"name": "main", "path": ".", "status": "available"}],
+        }
+    )
+    if catalog.get("schema_version") != 1 or catalog.get("default") != "main":
+        raise PagesBuildError("invalid FPE branch catalog")
+    branches = catalog.get("branches")
+    if not isinstance(branches, list) or not branches:
+        raise PagesBuildError("empty FPE branch catalog")
+    names = set()
+    for branch in branches:
+        name = branch.get("name", "")
+        if (
+            not isinstance(name, str)
+            or name in names
+            or not (
+                name == "main"
+                or (
+                    name.startswith("release/")
+                    and all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", p) for p in name.split("/"))
+                )
+            )
+        ):
+            raise PagesBuildError("invalid or duplicate FPE branch name")
+        names.add(name)
+        if branch.get("status") == "unavailable" and name != "main" and "path" not in branch:
+            continue
+        path = "." if name == "main" else f"branches/{name}"
+        if branch.get("status") != "available" or branch.get("path") != path:
+            raise PagesBuildError("invalid FPE branch dataset path or status")
+        if name != "main":
+            _copy_dataset(source / path, destination / path)
+    if "main" not in names:
+        raise PagesBuildError("FPE branch catalog must include main")
+    (destination / "branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
+
+
 def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None = None) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
@@ -107,6 +153,11 @@ def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None =
                 else repo_root / SYSTEMS_ROOT / dataset_name,
                 output_dir / "data" / public_name,
             )
+            if public_name == "fpe-support-matrix":
+                _copy_fpe_branches(
+                    fpe_data_dir if fpe_data_dir is not None else repo_root / SYSTEMS_ROOT / dataset_name,
+                    output_dir / "data" / public_name,
+                )
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
