@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
+from aisimulate import EngineReplayRunnerFactory, ReplayOutputRequirements
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.sweeper import SweepResult
@@ -174,6 +175,71 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
         assert "heuristically resolved one nested timestamp basis" in result.stderr
         assert "complete Weka corpus" in result.stderr
         assert "requested='auto', resolved='absolute'" in result.stderr
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("trace", ["weka-two-plays.jsonl", "weka-relative.json"])
+def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path: Path) -> None:
+    config = yaml.safe_load(
+        (_REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml").read_text()
+    )
+    config["engine"]["backend"] = backend
+    config["traffic"]["source"]["paths"] = [str(_REPO_ROOT / _CONFIG_ROOT / "fixtures/traces" / trace)]
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "result"
+    result = _run_cli(
+        "predict",
+        "--config",
+        str(config_path),
+        "--output-dir",
+        str(output),
+        "--capture-per-request",
+        "--format",
+        "json",
+    )
+    cli_report = json.loads(result.stdout)
+    assert cli_report == json.loads((output / "prediction.json").read_text())
+    assert cli_report["agentic_qualification"] == "functional_only"
+    assert cli_report["agentic_lanes"] == 1
+    assert cli_report["completed_requests"] == cli_report["agentic_graph"]["node_count"]
+    assert all(row["status"] == "completed" for row in cli_report["agentic_play_outcomes"])
+    assert [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()] == cli_report[
+        "per_request"
+    ]
+
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+        python_report = runner.run(
+            spec,
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        ).metadata["native_report"]
+    finally:
+        runner.close()
+    for key in ("agentic_graph", "agentic_lifecycle_digest", "agentic_play_outcomes", "per_request"):
+        assert cli_report[key] == python_report[key], key
+
+
+def test_agentx_m1_cli_table_and_help_identify_qualification(tmp_path: Path) -> None:
+    result = _run_cli(
+        "predict",
+        "--config",
+        str(_CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml"),
+        "--output-dir",
+        str(tmp_path / "result"),
+    )
+    assert "AgentX functional replay only; not an AgentX benchmark result." in result.stdout
+    help_text = " ".join(_run_cli("predict", "--help").stdout.split())
+    for expected in (
+        "weka",
+        "agentic_mooncake",
+        "HBM-only",
+        "vLLM/SGLang",
+        "speculative decoding disabled",
+        "functional_only",
+    ):
+        assert expected in help_text
 
 
 @pytest.mark.parametrize(

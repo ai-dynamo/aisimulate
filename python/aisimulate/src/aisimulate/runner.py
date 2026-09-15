@@ -279,6 +279,9 @@ class EngineReplayRunnerFactory:
             ),
             supports_agentic_lanes=True,
             supported_agentic_topologies=("agg",),
+            supported_agentic_backends=("vllm", "sglang"),
+            supports_agentic_host_offload=False,
+            supports_agentic_speculative_decoding=False,
             agentic_qualification="functional_only",
         )
 
@@ -1489,5 +1492,17 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     # reconstructed into a second Python report model.
     for name, value in payload.items():
         add(name, value)
-    metadata = {"native_report": payload} if include_native_report else {}
+    metadata = {
+        key: payload[key]
+        for key in (
+            "agentic_qualification",
+            "agentic_input_format",
+            "agentic_lanes",
+            "agentic_model_projection",
+            "weka_nested_timestamp_basis",
+        )
+        if key in payload
+    }
+    if include_native_report:
+        metadata["native_report"] = payload
     return ReplayReport(metrics=metrics, metadata=metadata)
