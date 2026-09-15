@@ -712,6 +712,13 @@ impl SglangCore {
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
 
+        self.config.perf_model.validate_prefill_batch(
+            &prefill_fpm
+                .iter()
+                .map(|item| (item.tokens_computed, item.prefix_tokens))
+                .collect::<Vec<_>>(),
+        )?;
+
         let batch_size = admit.can_run.len();
         let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
         let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);

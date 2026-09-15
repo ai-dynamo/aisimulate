@@ -111,6 +111,7 @@ class BaseBackend:
         "DEEPSEEK",
         "DEEPSEEKV32",
         "DEEPSEEKV4",
+        "DEEPSEEKV41",
         "KIMIK25",
     )
 
@@ -2160,15 +2161,14 @@ class BaseBackend:
             isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
         )
 
-        weights = 0.0
-        for op in model.context_ops:
-            # Materialized draft ops are excluded here: the scheme's own
-            # byte-exact accounting below is the single source of truth
-            # (the op-list subset under-counts aliased/owned embed and
-            # sampling heads unevenly across schemes).
-            if has_draft_scheme and op._name.startswith("draft_"):
-                continue
-            weights += op.get_weights()
+        if has_draft_scheme:
+            # The scheme owns the complete draft inventory, including weights
+            # omitted from the materialized context-op subset.
+            weights = sum(op.get_weights() for op in model.context_ops if not op._name.startswith("draft_"))
+        else:
+            # Phase-dependent models retain weights even when a forward skips
+            # their execution, and may include scales outside the op inventory.
+            weights = model.get_resident_weights_bytes()
         # count weights on a single GPU
         weights /= model.config.pp_size
         if has_draft_scheme:
@@ -2201,6 +2201,7 @@ class BaseBackend:
                 * 4
             )
 
+        activations += model.get_additional_activation_bytes(num_tokens)
         activations = max(activations, self.MIN_ACTIVATION_BYTES)
 
         # MTP correction: speculative decoding verifies nextn+1 tokens per decode step,

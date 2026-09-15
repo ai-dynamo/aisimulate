@@ -158,6 +158,14 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    decoder_replay: bool,
+    #[serde(default)]
+    database_mode: Option<String>,
+    #[serde(default, alias = "shared_layer")]
+    enable_shared_layer: Option<bool>,
+    #[serde(default)]
+    strict_provenance: Option<bool>,
 }
 
 const fn one() -> u32 {
@@ -228,6 +236,7 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    decoder_replay: bool,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
 }
@@ -273,6 +282,10 @@ impl AicTimingModel {
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
             kwargs.set_item("forward_model", config.forward_model.as_deref())?;
+            kwargs.set_item("decoder_replay", config.decoder_replay)?;
+            kwargs.set_item("database_mode", config.database_mode.as_deref())?;
+            kwargs.set_item("shared_layer", config.enable_shared_layer)?;
+            kwargs.set_item("strict_provenance", config.strict_provenance)?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -297,6 +310,7 @@ impl AicTimingModel {
         })?;
         Ok(Self {
             engine,
+            decoder_replay: config.decoder_replay,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
         })
@@ -304,6 +318,17 @@ impl AicTimingModel {
 }
 
 impl TimingModel for AicTimingModel {
+    fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if self.decoder_replay {
+            ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "decoder replay requires identical per-request new-token and cached-prefix lengths; \
+                 heterogeneous prefill cannot be represented by the mean-based replay timing API"
+            );
+        }
+        Ok(())
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -352,14 +377,17 @@ impl TimingModel for AicTimingModel {
         }
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
-        let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
+        // Both scheduler implementations include the current input token in
+        // their sequence length before sampling the next token. The op API's
+        // isl is past KV; osl=2 adds the current token exactly once.
+        let mean_past_kv = mean_context_length
+            .checked_sub(1)
+            .context("mean decode context must include the current input token")?;
+        let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
         Python::with_gil(|py| {
             self.engine
                 .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
+                .call_method1("predict_decode_latency", (batch_size, mean_past_kv, 2))?
                 .extract::<f64>()
         })
         .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
@@ -1190,6 +1218,10 @@ mod tests {
             cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
+            decoder_replay: false,
+            database_mode: None,
+            enable_shared_layer: None,
+            strict_provenance: None,
         }
     }
 
@@ -1292,11 +1324,92 @@ mod tests {
     }
 
     #[test]
+    fn timing_policy_reaches_actual_compile_call() {
+        pyo3::prepare_freethreaded_python();
+        for replay in [false, true] {
+            let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+                "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
+                "decoder_replay": replay, "database_mode": "SILICON",
+                "enable_shared_layer": false, "strict_provenance": true
+            }))
+            .unwrap();
+            Python::with_gil(|py| {
+                let scope = PyDict::new(py);
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+import sys, types
+names = ('aiconfigurator_core.sdk.engine', 'aiconfigurator_core')
+saved = {name: sys.modules.get(name) for name in names}
+captured = {}
+engine_module = types.ModuleType(names[0])
+def compile_engine(*args, **kwargs):
+    captured.update(kwargs)
+    return b'unused-spec'
+engine_module.compile_engine = compile_engine
+core_module = types.ModuleType(names[1])
+core_module.AicEngine = type('AicEngine', (), {'from_spec': staticmethod(lambda *args: object())})
+sys.modules[names[0]] = engine_module
+sys.modules[names[1]] = core_module
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+                let built = AicTimingModel::build(config);
+                // Restore Python imports before asserting, including on a build failure.
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+for name, module in saved.items():
+    if module is None:
+        sys.modules.pop(name, None)
+    else:
+        sys.modules[name] = module
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+                built.unwrap();
+                scope.set_item("expected_replay", replay).unwrap();
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+assert captured['decoder_replay'] is expected_replay
+assert captured['database_mode'] == 'SILICON'
+assert captured['shared_layer'] is False
+assert captured['strict_provenance'] is True
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+            });
+        }
+        let defaults = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1
+        }))
+        .unwrap();
+        assert!(!defaults.decoder_replay);
+        assert!(defaults.database_mode.is_none());
+        assert!(defaults.enable_shared_layer.is_none());
+        assert!(defaults.strict_provenance.is_none());
+    }
+
+    #[test]
     fn fpm_decode_timing_queries_exact_past_kv_total() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
         };
@@ -1314,6 +1427,7 @@ mod tests {
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
         };
@@ -1326,11 +1440,12 @@ mod tests {
     }
 
     #[test]
-    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+    fn op_level_decode_timing_converts_inclusive_mean_to_past_kv() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: false,
             fpm_decode_kv_ceiling: None,
         };
@@ -1339,7 +1454,38 @@ mod tests {
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
             .unwrap();
 
-        assert_eq!(latency, 546_105.0);
+        assert_eq!(latency, 546_070.0);
+        for inclusive_length in [1, 128, 129, 2049] {
+            assert_eq!(
+                timing
+                    .predict_decode_ms(2, 2 * inclusive_length, inclusive_length, 8192)
+                    .unwrap(),
+                (2 * inclusive_length) as f64,
+            );
+        }
+        assert!(timing.predict_decode_ms(1, 0, 0, 8192).is_err());
+    }
+
+    #[test]
+    fn bounded_replay_rejects_heterogeneous_actual_prefill_geometry() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let mut timing = AicTimingModel {
+            engine,
+            decoder_replay: true,
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+        };
+        for geometry in [vec![], vec![(3, 1536)], vec![(129, 128), (129, 128)]] {
+            timing.validate_prefill_batch(&geometry).unwrap();
+        }
+        for geometry in [vec![(127, 128), (129, 128)], vec![(3, 128), (3, 1536)]] {
+            let error = timing.validate_prefill_batch(&geometry).unwrap_err();
+            assert!(error.to_string().contains("heterogeneous prefill"));
+            timing.decoder_replay = false;
+            timing.validate_prefill_batch(&geometry).unwrap();
+            timing.decoder_replay = true;
+        }
     }
 
     #[test]

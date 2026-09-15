@@ -42,6 +42,15 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
+    pub fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if let PerfModel::External { timing } = self {
+            timing
+                .validate_prefill_batch(requests)
+                .context("external prefill batch cannot be represented")?;
+        }
+        Ok(())
+    }
+
     /// Predict prefill time in milliseconds.
     ///
     /// Callers always pass all parameters; each variant uses what it needs:
@@ -101,17 +110,17 @@ impl PerfModel {
                 )
                 .context("external decode prediction failed")?,
         };
-        // Validate before the floor: f64::max would hide NaN or -infinity.
+        // Reject non-finite provider output before it reaches the scheduler.
         ensure!(
             time.is_finite(),
             "decode timing provider returned non-finite duration {time}ms"
         );
-        // Token-emitting decode steps should not collapse onto the same timestamp.
-        let result = time.max(1.0);
         tracing::trace!(
-            "Decode time prediction: batch_size={batch_size}, active_kv_tokens={active_kv_tokens}, context_length={context_length}, time={result:.2}ms"
+            "Decode time prediction: batch_size={batch_size}, active_kv_tokens={active_kv_tokens}, context_length={context_length}, time={time:.2}ms"
         );
-        Ok(result)
+        // The polynomial applies its own historical floor. External measurements
+        // can legitimately be below one millisecond and must retain that value.
+        Ok(time)
     }
 }
 
@@ -204,6 +213,46 @@ mod tests {
         };
         assert_eq!(model.predict_prefill_time(7, 128, 0).unwrap(), 7.0);
         assert_eq!(model.predict_decode_time(9, 0, 128, 0).unwrap(), 9.0);
+    }
+
+    #[test]
+    fn external_decode_preserves_finite_values_and_rejects_non_finite() {
+        struct FixedDecode(f64);
+        impl TimingModel for FixedDecode {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(0.0)
+            }
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(self.0)
+            }
+        }
+        // Finite values retain the provider's submillisecond resolution;
+        // modeled_duration_ms still rejects negative durations downstream.
+        for value in [0.6, 0.0, -1.0] {
+            let model = PerfModel::External {
+                timing: Arc::new(FixedDecode(value)),
+            };
+            assert_eq!(model.predict_decode_time(1, 128, 128, 1024).unwrap(), value);
+        }
+        // Main's finite-time boundary must reject NaN and both infinities before
+        // any duration normalization or scheduling can hide invalid output.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let model = PerfModel::External {
+                timing: Arc::new(FixedDecode(value)),
+            };
+            let error = model.predict_decode_time(1, 128, 128, 1024).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("decode timing provider returned non-finite duration")
+            );
+        }
     }
 
     #[test]

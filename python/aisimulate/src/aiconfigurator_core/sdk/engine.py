@@ -46,6 +46,7 @@ from typing import Any
 import aiconfigurator_core
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config
 from aiconfigurator_core.sdk.models import get_model
+from aiconfigurator_core.sdk.models.helpers import resolve_dsv4_moe_arch
 from aiconfigurator_core.sdk.operations import FPMForwardOp
 from aiconfigurator_core.sdk.operations.base import Operation
 
@@ -316,6 +317,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "kv_block_size": kv_block_size,
+        "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
         "pp_size": int(cfg.pp_size or 1),
@@ -418,6 +420,7 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    decoder_replay: bool = False,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
@@ -452,6 +455,8 @@ def compile_engine(
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
     apply_nextn(model_config, nextn)
+    model_config.decoder_replay = decoder_replay
+    resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
     model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a

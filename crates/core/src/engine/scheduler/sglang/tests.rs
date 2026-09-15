@@ -2472,3 +2472,51 @@ mod forward_pass_metrics {
         }
     }
 }
+
+#[test]
+fn prefill_provider_validation_receives_actual_chunk_geometry() {
+    use std::sync::{Arc, Mutex};
+    struct GeometryTiming(Arc<Mutex<Vec<Vec<(usize, usize)>>>>);
+    impl crate::engine::TimingModel for GeometryTiming {
+        fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(requests.to_vec());
+            anyhow::ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "heterogeneous geometry"
+            );
+            Ok(())
+        }
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(0.6)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(0.6)
+        }
+    }
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut args = test_args(128, 4, 8);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: Arc::new(GeometryTiming(Arc::clone(&observed))),
+    }
+    .into();
+    let mut core = SglangCore::new(args);
+    core.receive(direct_request((0..16).collect(), 1));
+    core.try_execute_pass_internal(None, 0.0).unwrap();
+    core.try_execute_pass_internal(None, 1.0).unwrap();
+    assert_eq!(*observed.lock().unwrap(), vec![vec![(8, 0)], vec![(8, 8)]]);
+
+    let mut args = test_args(128, 4, 32);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: Arc::new(GeometryTiming(Arc::clone(&observed))),
+    }
+    .into();
+    let mut core = SglangCore::new(args);
+    core.receive(direct_request((0..4).collect(), 1));
+    core.receive(direct_request((100..112).collect(), 1));
+    let error = core.try_execute_pass_internal(None, 0.0).unwrap_err();
+    assert_eq!(error.root_cause().to_string(), "heterogeneous geometry");
+    assert_eq!(
+        observed.lock().unwrap().last().unwrap(),
+        &vec![(4, 0), (12, 0)]
+    );
+}

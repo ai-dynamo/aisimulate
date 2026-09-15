@@ -1191,6 +1191,8 @@ def _parse_hf_config_json(config: dict) -> dict:
             "index_n_heads": config["index_n_heads"],
             "index_topk": config["index_topk"],
         }
+    elif architecture == "DeepseekV41ForCausalLM":
+        extra_params = common.DeepSeekV41Config.from_text_config(config)
     elif architecture == "DeepseekV4ForCausalLM":
         compress_ratios = tuple(config["compress_ratios"])
         if len(compress_ratios) < layers:

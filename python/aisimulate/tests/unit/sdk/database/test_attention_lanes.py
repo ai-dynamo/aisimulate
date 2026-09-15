@@ -247,7 +247,7 @@ def test_engine_spec_schema_version_is_eighteen():
     """Verification width fields extend the positional operation payload."""
     from aiconfigurator.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 18
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 19
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

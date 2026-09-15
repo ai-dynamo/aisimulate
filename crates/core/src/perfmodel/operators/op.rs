@@ -21,10 +21,11 @@ use serde::{Deserialize, Serialize};
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
-    ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp,
-    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
-    MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
-    PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
+    EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
+    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
+    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
+    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
@@ -177,6 +178,11 @@ pub enum Op {
     /// ratio changes query dimensions before lookup, never the result.
     /// Appended as part of the speculative-decoding schema-18 migration.
     TokenScale(TokenScaleOp),
+    Dsv41Attention(Dsv41AttentionOp),
+    Dsv41Mhc(Dsv41MhcOp),
+    Dsv41Engram(Dsv41EngramOp),
+    Dsv41Stage(Dsv41StageOp),
+    Dsv41Linear(Dsv41LinearOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -266,6 +272,11 @@ impl Op {
     /// family multiplies its own scale_factor inside its `weight_bytes`.
     pub fn weight_bytes(&self) -> f64 {
         match self {
+            Op::Dsv41Attention(o) => o.weight_bytes(),
+            Op::Dsv41Mhc(o) => o.weight_bytes(),
+            Op::Dsv41Engram(o) => o.weight_bytes(),
+            Op::Dsv41Stage(o) => o.weight_bytes(),
+            Op::Dsv41Linear(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -321,6 +332,11 @@ impl Op {
     /// debugging.
     pub fn name(&self) -> &str {
         match self {
+            Op::Dsv41Attention(o) => &o.name,
+            Op::Dsv41Mhc(o) => &o.name,
+            Op::Dsv41Engram(o) => &o.name,
+            Op::Dsv41Stage(o) => &o.name,
+            Op::Dsv41Linear(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -365,6 +381,11 @@ impl Op {
     /// returns them). Every variant carries `name`.
     pub fn set_name(&mut self, name: String) {
         match self {
+            Op::Dsv41Attention(o) => o.name = name,
+            Op::Dsv41Mhc(o) => o.name = name,
+            Op::Dsv41Engram(o) => o.name = name,
+            Op::Dsv41Stage(o) => o.name = name,
+            Op::Dsv41Linear(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -439,6 +460,13 @@ impl Op {
             Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
             Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
             Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
+            // V4.1 operators encode individual stages, without a repetition field.
+            // The Python setter rejects these families before reaching this mutator.
+            Op::Dsv41Attention(_)
+            | Op::Dsv41Mhc(_)
+            | Op::Dsv41Engram(_)
+            | Op::Dsv41Stage(_)
+            | Op::Dsv41Linear(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -500,6 +528,11 @@ impl Op {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         match self {
+            Op::Dsv41Attention(op) => op.query(db, ctx),
+            Op::Dsv41Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Stage(op) => op.query(db, ctx),
+            Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,
