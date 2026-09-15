@@ -10,6 +10,8 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +127,46 @@ def _copy_fpe_branches(source: Path, destination: Path, *, require_catalog: bool
     (destination / "branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
 
 
+def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
+    """Describe the copied legacy data without treating a commit date as a test run."""
+    index_path = destination / "index.json"
+    index = json.loads(index_path.read_text())
+    snapshot = {"kind": "historical", "qualification": "not_recorded"}
+    dataset = SYSTEMS_ROOT / "support_matrix"
+    paths = [str(dataset / name) for name in ["index.json", *index["files"]]]
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", *args], cwd=repo_root, text=True, stderr=subprocess.DEVNULL, timeout=10
+        ).strip()
+
+    try:
+        # Archives, shallow clones, and locally changed data cannot establish
+        # the last committed update of the exact dataset being displayed.
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != repo_root.resolve():
+            raise ValueError("dataset is outside the repository root")
+        if git("rev-parse", "--is-shallow-repository") != "false":
+            raise ValueError("dataset history is incomplete")
+        git("ls-files", "--error-unmatch", "--", *paths)
+        git("diff", "--quiet", "HEAD", "--", *paths)
+        commit, updated_at = git("log", "-1", "--format=%H%n%cI", "HEAD", "--", *paths).splitlines()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("invalid data commit")
+        updated = datetime.fromisoformat(updated_at)
+        if updated.tzinfo is None:
+            raise ValueError("data commit timestamp requires a time zone")
+        snapshot.update(
+            data_commit=commit,
+            data_updated_at=updated.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # Keep the historical matrix useful without inventing a date or
+        # inheriting unverified metadata from its source index.
+        pass
+    index["snapshot"] = snapshot
+    index_path.write_text(json.dumps(index, indent=2) + "\n")
+
+
 def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None = None) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
@@ -164,6 +206,8 @@ def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None =
                     output_dir / "data" / public_name,
                     require_catalog=fpe_data_dir is not None,
                 )
+            elif public_name == "support-matrix":
+                _record_legacy_snapshot(repo_root, output_dir / "data" / public_name)
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 

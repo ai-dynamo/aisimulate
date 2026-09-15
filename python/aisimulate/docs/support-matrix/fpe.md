@@ -182,6 +182,9 @@ the selected branch, or the main-hosted release workflow described below with
 explicit release and tooling provenance. An old-commit rerun cannot displace a newer tested commit.
 A release without retained qualification is labeled **unavailable**; an
 expired release artifact also removes its data from the next deployment.
+The page shows a **Results not available yet** notice with a **Check again**
+button and a link to that branch's coverage runs. It does not promise an
+availability date because release refreshes are not automatically scheduled.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
@@ -230,3 +233,18 @@ and unavailable branches. Main retains the existing data path, and release
 data lives under `data/fpe-support-matrix/branches/release/<version>/`.
 Repository previews package main's committed snapshot only and require no
 GitHub credentials or artifact downloads.
+
+## Legacy AIC snapshot provenance
+
+The Legacy AIC Support Matrix displays a **Historical snapshot** and
+**Qualification not recorded**. Its **Latest data change** timestamp is the
+commit time of the most recent change to its index or an indexed CSV, with a
+link to that data commit. It is not the website build time or evidence of a
+complete matrix rerun. No full-matrix generation time or qualification report
+was recorded for the retained legacy data.
+
+The Pages builder adds this provenance to the packaged
+`data/support-matrix/index.json`. Website-only changes do not refresh the data
+date. A build with modified/untracked data, a shallow Git history, or no Git
+history leaves the date unavailable. Direct source-tree previews also show the
+missing-date state because the committed legacy index contains no provenance.

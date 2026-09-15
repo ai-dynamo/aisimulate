@@ -1465,6 +1465,30 @@ function ErrorBanner({ message, onRetry }) {
   );
 }
 
+function UnavailableNotice({ branch, onRetry }) {
+  const runsUrl = branch === 'release/0.12.0'
+    ? `https://github.com/${REPO}/actions/workflows/fpe-release-nightly.yml`
+    : `https://github.com/${REPO}/actions/workflows/fpe-support-matrix.yml?query=${encodeURIComponent(`branch:${branch}`)}`;
+  return (
+    <section role="status" className="max-w-2xl mx-auto my-16 p-8 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+      <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Results not available yet</h2>
+      <p className="mt-3 text-slate-600 dark:text-slate-300">
+        Support matrix results for <code>{branch}</code> are not currently available.
+        Results will appear here after a successful coverage refresh is published. Please check back later.
+      </p>
+      <div className="mt-6 flex flex-wrap items-center gap-4 text-sm">
+        <button onClick={onRetry}
+                className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold cursor-pointer hover:bg-indigo-700 transition-colors">
+          Check again
+        </button>
+        <a href={runsUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline">
+          View coverage runs
+        </a>
+      </div>
+    </section>
+  );
+}
+
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
@@ -1478,6 +1502,7 @@ function Footer() {
 function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [unavailableBranch, setUnavailableBranch] = useState(null);
   const [csvRows, setCsvRows] = useState([]);
   const [snapshot, setSnapshot] = useState(null);
   const [branches, setBranches] = useState([]);
@@ -1496,6 +1521,7 @@ function App() {
     const generation = ++loadGeneration.current;
     setLoading(true);
     setError(null);
+    setUnavailableBranch(null);
     setCsvRows([]);
     setSnapshot(null);
     setModal(null);
@@ -1503,7 +1529,12 @@ function App() {
       .then(catalog => {
         if (generation !== loadGeneration.current) return null;
         setBranches(catalog);
-        return fetchCsv(catalog.find(item => item.name === branch));
+        const selected = catalog.find(item => item.name === branch);
+        if (selected?.status === 'unavailable') {
+          setUnavailableBranch(selected.name);
+          return null;
+        }
+        return fetchCsv(selected);
       })
       .then(result => {
         if (!result || generation !== loadGeneration.current) return;
@@ -1532,6 +1563,8 @@ function App() {
   const handleBranchChange = useCallback(value => {
     ++loadGeneration.current;
     setLoading(true);
+    setError(null);
+    setUnavailableBranch(null);
     setSnapshot(null);
     setCsvRows([]);
     setModal(null);
@@ -1590,7 +1623,9 @@ function App() {
 
       {error && <ErrorBanner message={error} onRetry={loadCsv} />}
 
-      {loading ? <LoadingSpinner /> : !error && (
+      {loading ? <LoadingSpinner /> : unavailableBranch ? (
+        <UnavailableNotice branch={unavailableBranch} onRetry={loadCsv} />
+      ) : !error && (
         <>
           <Controls
             searchQuery={searchQuery} onSetSearch={handleSetSearchQuery}

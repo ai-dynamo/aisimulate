@@ -715,7 +715,7 @@ async function fetchCsv() {
   const chunks = await Promise.all(
     files.map(file => fetchOneCsv(`${SUPPORT_MATRIX_PATH}/${file}`))
   );
-  return chunks.flat();
+  return { rows: chunks.flat(), snapshot: index.snapshot || null };
 }
 
 // ── React Components ────────────────────────────────────────────────
@@ -822,6 +822,31 @@ function LegacyNotice() {
         <a href="../fpe-support-matrix/" className="font-semibold underline hover:no-underline">FPE Support Matrix</a>.
         FPE coverage is estimator evidence, not deployment certification.
       </div>
+    </div>
+  );
+}
+
+function LegacySnapshot({ snapshot }) {
+  const hasDate = snapshot?.kind === 'historical'
+    && /^[0-9a-f]{40}$/.test(snapshot.data_commit || '')
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(snapshot.data_updated_at || '')
+    && Number.isFinite(Date.parse(snapshot.data_updated_at));
+  return (
+    <div className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+      <p>
+        <span className="font-semibold">Historical snapshot</span>{' · '}
+        {hasDate ? <>
+          Latest data change:{' '}
+          <a href={`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.data_commit}`}
+             target="_blank" rel="noopener noreferrer" className="underline">
+            <time dateTime={snapshot.data_updated_at} title={snapshot.data_updated_at}>
+              {new Date(snapshot.data_updated_at).toLocaleString(undefined, { timeZoneName: 'short' })}
+            </time>
+          </a>{' · '}Data commit <code>{snapshot.data_commit.slice(0, 12)}</code>
+        </> : 'Latest data change: not recorded'}
+        {' · '}Qualification not recorded
+      </p>
+      <p className="mt-1">The date records the latest committed data change. A full-matrix generation time and qualification report were not recorded.</p>
     </div>
   );
 }
@@ -1530,6 +1555,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [csvRows, setCsvRows] = useState([]);
+  const [snapshot, setSnapshot] = useState(null);
 
   const [activeSystem, setActiveSystem] = useState(null);
   const [activeMode, setActiveMode] = useState('all');
@@ -1543,9 +1569,11 @@ function App() {
   const loadCsv = useCallback(() => {
     setLoading(true);
     setError(null);
+    setSnapshot(null);
     fetchCsv()
-      .then(rows => {
+      .then(({ rows, snapshot }) => {
         setCsvRows(rows);
+        setSnapshot(snapshot);
         const systems = sortSystems([...new Set(rows.map(r => r.System))]);
         if (systems.includes(PREFERRED_DEFAULT_SYSTEM)) {
           setActiveSystem(PREFERRED_DEFAULT_SYSTEM);
@@ -1624,6 +1652,7 @@ function App() {
           />
           <SystemTabs systems={systems} activeSystem={activeSystem} onSelectSystem={handleSelectSystem} />
           <div className="max-w-[1600px] mx-auto p-6">
+            <LegacySnapshot snapshot={snapshot} />
             <Legend />
             <MatrixTable
               matrixRows={matrixRows} columns={columns}
