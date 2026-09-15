@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..power import POWER_FIELDS
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
@@ -122,6 +123,13 @@ class ReplayReport:
 
     metrics: dict[str, float | None]
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name, value in self.metrics.items():
+            if value is None and name in POWER_FIELDS:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
 
 
 @dataclass(frozen=True)

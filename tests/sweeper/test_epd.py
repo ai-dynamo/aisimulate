@@ -707,3 +707,16 @@ def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present)
     )
     with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
         build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("invalid", [None, True, "1"])
+def test_replay_report_rejects_nonnumeric_general_metrics(invalid):
+    with pytest.raises(ValueError, match="completed_requests must be numeric"):
+        ReplayReport({"completed_requests": invalid, "power_w": None, "power_coverage": None})
+
+
+def test_replay_report_allows_nullable_power_with_numeric_general_metrics():
+    report = ReplayReport({"completed_requests": 1.0, "power_w": None, "power_coverage": None})
+    assert report.metrics["completed_requests"] == 1.0
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None

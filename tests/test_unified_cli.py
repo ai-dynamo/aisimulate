@@ -798,6 +798,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_rows[0]["power_w"] is None
     assert unsupported_rows[0]["power_coverage"] is None
     unsupported_candidate = json.loads((withheld_output / "recommendation.json").read_text())["candidates"][0]
+    assert unsupported_candidate["provenance"]["power"]["publication_status"] == "unavailable"
     for key in ("power_w", "power_coverage"):
         assert key in unsupported_candidate["metrics"] and unsupported_candidate["metrics"][key] is None
         assert (
