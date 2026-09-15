@@ -37,6 +37,10 @@ not measurements from running these commands.
 
 ## Install
 
+Check the [installation guide](../installation.md) for the selected wheel's
+platform requirements and publication status. Use its source-install workflow
+for features documented on `main` that are not yet in a published wheel.
+
 Use **Python 3.11–3.13**. The commands below use Bash or Zsh. Check that `python3` selects a
 supported version; substitute a versioned command such as `python3.13` if needed.
 
@@ -1543,6 +1547,9 @@ The durable result keeps the complete candidate ledger; its selected candidate-I
 after adapter canonicalization and deduplication so it maps one-to-one to the numbered YAML files.
 
 ## Outputs
+
+Read [Understand your prediction](understand-your-prediction.md) for an annotated
+report, ITL/TPOT definitions, incomplete-request handling, and SLA interpretation.
 
 Output controls are CLI-only. They never appear in an input or recommended YAML file.
 

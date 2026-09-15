@@ -25,6 +25,10 @@ their compatibility tests; for that work, install Git LFS and run
 
 ### 2. Install Development Dependencies
 
+Install Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler plus platform
+linker first. Maturin builds the native extension during sync; see the
+[platform and source-build requirements](docs/installation.md#use-current-source).
+
 ```bash
 uv sync --project python/aisimulate --extra dev
 ```
@@ -104,6 +108,22 @@ pre-commit run --all-files --config python/aisimulate/.pre-commit-config.yaml
 ### Running Tests
 
 This project uses [pytest](https://docs.pytest.org/en/stable/) for testing.
+
+For documentation changes, also run the local-destination check used by Fast
+CI from the development environment above (`markdown-it-py` is already included):
+
+```bash
+python -m unittest discover -s scripts/tests -p test_documentation_links.py
+python scripts/check_documentation_links.py
+```
+
+It checks inline/image links and reference definitions in the root README,
+development/contribution guides, `docs/`, the application README, and
+`python/aisimulate/docs/`. It uses Markdown parsing to ignore code examples and HTML
+comments. Diagnostics point to the containing Markdown block. Remote URLs,
+heading anchors, and HTML links require separate review. Run the actual
+documented commands when their behavior changes; link checks do not validate
+examples or establish GPU benchmark accuracy.
 
 ```bash
 # Run repository-level tests
