@@ -148,32 +148,64 @@ def prepare(repository: str, repo_root: Path, destination: Path, *, api=github) 
         ):
             continue
         candidates.append(artifact)
-    candidates.sort(key=lambda a: (ranks[a["workflow_run"]["head_sha"]], -a["id"]))
+    candidates.sort(key=lambda a: -a["id"])
+    selected_key = None
+    selected_files = None
+    selected_successful = False
+    snapshot = None
     for artifact in candidates:
+        # A dispatch can test a different SHA. Only current HEAD bounds every
+        # remaining source; descending artifact IDs also settle ties at HEAD.
+        if selected_key is not None and selected_key[0] == 0:
+            break
         run_id = artifact["workflow_run"]["id"]
         run = json.loads(api(repository, f"actions/runs/{run_id}"))
-        source_sha = artifact["workflow_run"]["head_sha"]
+        workflow_sha = artifact["workflow_run"]["head_sha"]
         if (
             run.get("path") not in WORKFLOWS
             or run.get("head_repository", {}).get("full_name") != repository
             or run.get("head_branch") != "main"
-            or run.get("head_sha") != source_sha
+            or run.get("head_sha") != workflow_sha
             or run.get("event") not in {"schedule", "workflow_dispatch"}
-            or run.get("status") != "completed"
-            or run.get("conclusion") != "success"
         ):
             continue
-        if artifact.get("expired"):
-            raise ValueError("newest successful main FPE artifact has expired; refresh FPE before publishing")
-        files = qualified_files(api(repository, f"actions/artifacts/{artifact['id']}/zip"), source_sha)
-        if files is None:
+        successful = run.get("status") == "completed" and run.get("conclusion") == "success"
+        if not successful and run.get("run_attempt", 1) <= 1:
             continue
+        if artifact.get("expired"):
+            raise ValueError(
+                "eligible main FPE artifact has expired and its tested source is unknown; refresh FPE before publishing"
+            )
+        archive = api(repository, f"actions/artifacts/{artifact['id']}/zip")
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            names = bundle.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError("duplicate archive entries")
+            if "fpe-qualification.json" not in names:
+                continue
+            qualification = _strict_json(bundle.read("fpe-qualification.json"))
+        source_sha = qualification.get("source_sha") if isinstance(qualification, dict) else None
+        if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            raise ValueError("invalid FPE qualification source commit")
+        files = qualified_files(archive, source_sha)
+        if source_sha not in ranks:
+            continue
+        key = (ranks[source_sha], -artifact["id"])
+        if selected_key is not None and key >= selected_key:
+            continue
+        selected_key = key
+        selected_files = files
+        selected_successful = successful
         snapshot = {
             "source_sha": source_sha,
             "generated_at": artifact["created_at"],
             "run_url": f"https://github.com/{repository}/actions/runs/{run_id}",
             "artifact_id": artifact["id"],
         }
+    if snapshot is not None:
+        if not selected_successful:
+            raise ValueError("newest qualified main FPE run was retried without success; preserve the current site")
+        files = selected_files
         index = json.loads(files["index.json"])
         index["snapshot"] = snapshot
         files["index.json"] = (json.dumps(index, indent=2) + "\n").encode()

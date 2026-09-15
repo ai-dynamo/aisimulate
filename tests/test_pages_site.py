@@ -93,16 +93,17 @@ def run(sha=NEW_SHA, **updates):
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
+        "run_attempt": 1,
     }
     value.update(updates)
     return value
 
 
 class FpePagesTest(unittest.TestCase):
-    def prepare(self, artifacts, runs, archives):
+    def prepare(self, artifacts, runs, archives, *, output=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        output = Path(temporary.name) / "data"
+        output = output or Path(temporary.name) / "data"
 
         def api(repository, endpoint):
             self.assertEqual(repository, REPOSITORY)
@@ -142,15 +143,36 @@ class FpePagesTest(unittest.TestCase):
         )
         self.assertEqual(snapshot["artifact_id"], 10)
 
+    def test_main_dispatch_publishes_the_qualified_target_commit(self):
+        snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(OLD_SHA)})
+        self.assertEqual(snapshot["source_sha"], OLD_SHA)
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            index = json.loads((site / "data/fpe-support-matrix/index.json").read_text())
+            self.assertEqual(index["snapshot"], snapshot)
+            with (site / "data/fpe-support-matrix/b200_sxm.csv").open() as handle:
+                self.assertEqual({row["SourceSHA"] for row in csv.DictReader(handle)}, {OLD_SHA})
+
+    def test_later_historical_dispatch_cannot_displace_newer_tested_source(self):
+        snapshot, _ = self.prepare(
+            [artifact(20), artifact(10)],
+            {10: run(), 20: run()},
+            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+        )
+        self.assertEqual(snapshot["artifact_id"], 10)
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
     def test_latest_run_of_same_source_wins(self):
         snapshot, _ = self.prepare([artifact(1), artifact(2)], {2: run()}, {2: qualified_archive()})
         self.assertEqual(snapshot["artifact_id"], 2)
 
     def test_newest_source_can_be_on_a_later_artifact_page(self):
+        older_ids = range(100, 200)
         snapshot, _ = self.prepare(
-            {1: [artifact(i, OLD_SHA) for i in range(100, 200)], 2: [artifact(1)]},
-            {1: run()},
-            {1: qualified_archive()},
+            {1: [artifact(i, OLD_SHA) for i in older_ids], 2: [artifact(1)]},
+            {**dict.fromkeys(older_ids, run(OLD_SHA)), 1: run()},
+            {**dict.fromkeys(older_ids, qualified_archive(OLD_SHA)), 1: qualified_archive()},
         )
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
@@ -158,6 +180,37 @@ class FpePagesTest(unittest.TestCase):
         snapshot, _ = self.prepare(
             [artifact(1)], {1: run(path=".github/workflows/nightly-ci.yml", event="schedule")}, {1: qualified_archive()}
         )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
+    def test_partial_nightly_retry_cannot_publish_older_data(self):
+        for status, conclusion in [("waiting", None), ("in_progress", None), ("completed", "failure")]:
+            with self.subTest(status=status, conclusion=conclusion), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "data"
+                with self.assertRaisesRegex(ValueError, "retried"):
+                    self.prepare(
+                        [artifact(10), artifact(20, OLD_SHA)],
+                        {
+                            10: run(
+                                path=".github/workflows/nightly-ci.yml",
+                                event="schedule",
+                                status=status,
+                                conclusion=conclusion,
+                                run_attempt=2,
+                            ),
+                            20: run(OLD_SHA),
+                        },
+                        {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                        output=output,
+                    )
+                self.assertFalse(output.exists())
+
+    def test_retry_of_older_tested_source_does_not_block_newer_snapshot(self):
+        snapshot, _ = self.prepare(
+            [artifact(20), artifact(10)],
+            {10: run(), 20: run(status="in_progress", conclusion=None, run_attempt=2)},
+            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+        )
+        self.assertEqual(snapshot["artifact_id"], 10)
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
     def test_ineligible_producers_cannot_publish(self):
@@ -177,13 +230,80 @@ class FpePagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
             self.prepare([artifact(1, "d" * 40)], {}, {})
 
+    def test_main_dispatch_target_outside_main_history_cannot_publish(self):
+        with self.assertRaisesRegex(ValueError, "no retained qualified"):
+            self.prepare([artifact(1)], {1: run()}, {1: qualified_archive("d" * 40)})
+
+    def test_malformed_off_main_qualification_cannot_fall_back_to_older_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "data"
+            with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
+                self.prepare(
+                    [artifact(20), artifact(10, OLD_SHA)],
+                    {20: run(), 10: run(OLD_SHA)},
+                    {
+                        20: qualified_archive(
+                            overrides={"fpe-qualification.json": json.dumps({"source_sha": "d" * 40})}
+                        ),
+                        10: qualified_archive(OLD_SHA),
+                    },
+                    output=output,
+                )
+            self.assertFalse(output.exists())
+
+    def test_mixed_sources_with_off_main_manifest_cannot_fall_back_to_older_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "data"
+            with self.assertRaisesRegex(ValueError, "mixed source"):
+                self.prepare(
+                    [artifact(20), artifact(10, OLD_SHA)],
+                    {20: run(), 10: run(OLD_SHA)},
+                    {
+                        20: qualified_archive("d" * 40, row_updates={"SourceSHA": NEW_SHA}),
+                        10: qualified_archive(OLD_SHA),
+                    },
+                    output=output,
+                )
+            self.assertFalse(output.exists())
+
+    def test_mixed_sources_cannot_hide_behind_an_older_manifest_source(self):
+        with self.assertRaisesRegex(ValueError, "mixed source"):
+            self.prepare(
+                [artifact(20), artifact(10)],
+                {10: run(), 20: run()},
+                {
+                    20: qualified_archive(OLD_SHA),
+                    10: qualified_archive(OLD_SHA, row_updates={"SourceSHA": NEW_SHA}),
+                },
+            )
+
     def test_expired_newer_snapshot_does_not_fall_back_to_old_data(self):
         with self.assertRaisesRegex(ValueError, "has expired"):
-            self.prepare([artifact(1, expired=True), artifact(2, OLD_SHA)], {1: run()}, {})
+            self.prepare(
+                [artifact(1, expired=True), artifact(2, OLD_SHA)],
+                {1: run(), 2: run(OLD_SHA)},
+                {2: qualified_archive(OLD_SHA)},
+            )
+
+    def test_current_head_snapshot_supersedes_expired_older_artifact(self):
+        snapshot, _ = self.prepare(
+            [artifact(10, expired=True), artifact(20, OLD_SHA)],
+            {10: run(), 20: run(OLD_SHA)},
+            {20: qualified_archive()},
+        )
+        self.assertEqual(snapshot["artifact_id"], 20)
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
     def test_pre_qualification_artifact_is_not_published(self):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
             self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(missing="fpe-qualification.json")})
+
+    def test_duplicate_entries_without_qualification_are_still_rejected(self):
+        archive = io.BytesIO(qualified_archive(missing="fpe-qualification.json"))
+        with zipfile.ZipFile(archive, "a") as bundle, self.assertWarns(UserWarning):
+            bundle.writestr("../../escape.py", "duplicate untrusted code")
+        with self.assertRaisesRegex(ValueError, "duplicate archive entries"):
+            self.prepare([artifact(1)], {1: run()}, {1: archive.getvalue()})
 
     def test_no_artifact_fails_instead_of_using_committed_snapshot(self):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
