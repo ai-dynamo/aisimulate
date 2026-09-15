@@ -4,7 +4,7 @@ This package holds every op class the SDK uses to DESCRIBE a model's work
 — construction, weight sizing, and raw perf-data loading. Since #1357 PR-5
 it deliberately does NOT hold performance math: per-op performance VALUES
 (latency, energy, SOL decomposition) are computed only by the compiled Rust
-engine (`aic-core/rust/aiconfigurator-core`). That invariant is policy
+engine (`crates/core/src/perfmodel`). That invariant is policy
 (`.claude/rules/rust-core/parity.md`, Rule 2) and is enforced by an
 executable contract (`tests/cross_package/test_single_oracle_contract.py`:
 frozen surfaces, banned def-name shapes, a frozen per-file def inventory,
@@ -40,9 +40,9 @@ loop — not a public per-call query API.)
 ## Adding a new op — the single-oracle flow
 
 1. **Model the op in Rust**: an operator in
-   `aic-core/rust/aiconfigurator-core/src/operators/` (query, SOL, energy)
+   `crates/core/src/perfmodel/operators/` (query, SOL, energy)
    and, if table-backed, a loader in
-   `aic-core/rust/aiconfigurator-core/src/perf_database/`. Anchor it with a
+   `crates/core/src/perfmodel/perf_database/`. Anchor it with a
    Rust `#[cfg(test)]` oracle test (hand-derived — there is no Python
    reference to generate against).
 2. **Add the Python op class here**: constructor + fields (the wire
@@ -54,15 +54,15 @@ loop — not a public per-call query API.)
    (`OPERATIONS_DEF_INVENTORY`) — that edit is the deliberate, reviewable
    declaration of the new function.
 3. **Wire the spec conversion**: a `_to_opspec` branch in
-   `aic-core/src/aiconfigurator_core/sdk/engine.py` and an `Op` variant in
-   `aic-core/rust/aiconfigurator-core/src/operators/op.rs` — **append at the enum tail**
+   `python/aisimulate/src/aiconfigurator_core/sdk/engine.py` and an `Op` variant in
+   `crates/core/src/perfmodel/operators/op.rs` — **append at the enum tail**
    (bincode variant indices are positional; a mid-enum insertion requires
    an `ENGINE_SPEC_SCHEMA_VERSION` bump on BOTH sides) — plus the
-   `aic-core/rust/aiconfigurator-core/src/engine/spec.rs` round-trip fixture.
+   `crates/core/src/perfmodel/engine/spec.rs` round-trip fixture.
    `tests/unit/sdk/test_opspec_coverage.py` fails until the op converts or
    carries a justified `EXEMPT` entry.
 4. **Pin the behavior**: a parity case via
-   `aic-core/rust/aiconfigurator-core/parity_tests/pin_goldens.py`
+   `crates/core/parity_tests/perfmodel/pin_goldens.py`
    (append-only) once a config class reaches the op; golden diffs carry the
    review for any later modeling change.
 5. **No per-call query surface**: do not add a `PerfDatabase.query_*`

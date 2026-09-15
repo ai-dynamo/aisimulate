@@ -225,7 +225,23 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         assert expensive_gate in full
         assert expensive_gate not in fast
 
-    assert "uses: ./.github/workflows/fast-ci.yml" in full
+    assert "uses: ./.github/workflows/fast-ci.yml" not in full
+    assert "workflow_call" not in fast_config["on"]
+    assert fast_config["on"]["push"]["branches"] == full_config["on"]["push"]["branches"]
+    prerequisite = full_config["jobs"]["fast-ci"]
+    assert prerequisite["name"] == "Require Fast CI"
+    assert prerequisite["needs"] == "verify-target"
+    assert prerequisite["permissions"] == {"contents": "read", "actions": "read"}
+    assert "uses" not in prerequisite
+    prerequisite_steps = [
+        step for step in prerequisite["steps"]
+        if step.get("run") == "python scripts/require_fast_ci.py"
+    ]
+    assert len(prerequisite_steps) == 1
+    assert prerequisite_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"
+    for job_id, job in full_config["jobs"].items():
+        if job_id not in {"verify-target", "select-full-ci", "fast-ci", "stage-application-wheel"}:
+            assert "fast-ci" in job["needs"], job_id
     assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
     assert "uses: ./.github/workflows/collector-check.yml" in full
     assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
@@ -472,7 +488,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     }
 
     assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
-    assert (tmp_path / "output.txt").read_text() == f"base_sha={base_sha}\n"
+    assert not (tmp_path / "output.txt").exists()
 
     mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
     assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0

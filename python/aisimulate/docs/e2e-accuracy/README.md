@@ -5,6 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate E2E Accuracy Overview
 
+View the published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
+or download its [summary JSON](https://ai-dynamo.org/aisimulate/e2e-accuracy/summary.json).
+
 This directory contains a public-safe, static overview of matched end-to-end
 AISimulate accuracy evidence. It intentionally does not include the exploratory
 E2E Gym interface, raw measurements, internal run identifiers, or internal

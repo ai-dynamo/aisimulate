@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
-    TimingOperationEvidence, TimingPhaseEvidence,
+    Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
 };
 use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
@@ -115,6 +115,28 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .context("agentic execution requires a configured target model")
+}
+
+fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+    let ReplayRuntimeInput::Workload(driver) = input else {
+        return Ok(());
+    };
+    if !driver.is_agentic() {
+        return Ok(());
+    }
+    ensure!(
+        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
+        "agentic M1 execution supports only vLLM and SGLang backends"
+    );
+    ensure!(
+        rank.native_host_offload.is_none(),
+        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+    );
+    ensure!(
+        rank.aic_nextn.is_none(),
+        "agentic M1 execution requires speculative decoding disabled"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,11 +251,14 @@ impl AicTimingConfig {
     }
 }
 
+type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
+    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
 }
 
 impl AicTimingModel {
@@ -304,6 +329,7 @@ impl AicTimingModel {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
         })
     }
 
@@ -315,6 +341,14 @@ impl AicTimingModel {
         prefix: u32,
         mode: &str,
     ) -> Result<TimingPhaseEvidence> {
+        let prefill = mode == "static_ctx";
+        if batch_size == 0 || (prefill && isl <= prefix) {
+            return Ok(TimingPhaseEvidence::default());
+        }
+        let key = (batch_size, isl, osl, prefix, prefill);
+        if let Some(phase) = self.phase_cache.get(&key) {
+            return Ok(phase);
+        }
         let (context, generation) = Python::with_gil(|py| {
             let kwargs = PyDict::new(py);
             kwargs.set_item("batch_size", batch_size)?;
@@ -335,11 +369,14 @@ impl AicTimingModel {
                 )>()
         })
         .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-        phase_evidence_from_python(if mode == "static_ctx" {
-            context
-        } else {
-            generation
-        })
+        let entries = if prefill { context } else { generation };
+        ensure!(
+            !entries.is_empty(),
+            "AIC {mode} returned empty operation evidence for nonzero work"
+        );
+        let phase = phase_evidence_from_python(entries)?;
+        self.phase_cache.insert(key, phase.clone());
+        Ok(phase)
     }
 
     fn record_evidence(&self, phase: TimingPhaseEvidence, prefill: bool) -> Result<()> {
@@ -1053,6 +1090,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            if let Some(built) = &built_input {
+                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+            }
             let resolved_basis = built_input
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
@@ -1230,6 +1270,109 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
+        let directory = tempfile::tempdir().unwrap();
+        let dynamo = serde_json::json!({
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10,
+            "agent_context": {"session_id": "session"},
+            "request": {
+                "request_id": "root", "model": "model", "output_tokens": 1,
+                "request_received_ms": 0, "total_time_ms": 10,
+                "replay": {"trace_block_size": 4, "input_length": 4, "input_sequence_hashes": [1]}
+            }
+        });
+        let mut standard_dynamo = dynamo.clone();
+        standard_dynamo
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_context");
+        let fixtures = [
+            (
+                "weka",
+                vec![serde_json::json!({
+                    "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+                    "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+                })],
+                true,
+            ),
+            (
+                "agentic_mooncake",
+                vec![
+                    serde_json::json!({
+                        "schema": "dynamo.agentic_mooncake", "version": 2,
+                        "block_size": 4, "hash_id_scope": "local",
+                        "source": {"format": "test", "digest": "qualification"}
+                    }),
+                    serde_json::json!({
+                        "request_id": "root", "play_id": "play", "session_id": "session", "model": "model",
+                        "input_length": 4, "output_length": 1, "hash_ids": [1], "not_before_ms": 0.0
+                    }),
+                ],
+                true,
+            ),
+            ("dynamo", vec![dynamo], true),
+            ("dynamo", vec![standard_dynamo], false),
+        ];
+        for (format, rows, agentic) in fixtures {
+            let path = directory.path().join(format!("{format}-{agentic}.jsonl"));
+            std::fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            for (options, message) in [
+                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
+                (
+                    serde_json::json!({"aic_nextn": 1}),
+                    "speculative decoding disabled",
+                ),
+                (
+                    serde_json::json!({
+                        "kv_cache_bytes_per_token": 16,
+                        "native_host_offload": {"num_host_blocks": 8}
+                    }),
+                    "HBM-only",
+                ),
+            ] {
+                let mut rank = serde_json::json!({
+                    "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                rank.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let payload = serde_json::json!({
+                    "spec": {
+                        "version": 1,
+                        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1, "startup_delay_ms": 0.0}},
+                        "engine": {"rank": rank},
+                        "requests": []
+                    },
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps",
+                        "trace_format": format, "trace_path": path,
+                        "trace_block_size": 4, "execution_model": "model"
+                    }
+                });
+                // No lane flag: Dynamo agentic detection must follow loaded content.
+                let result = execute_json(&payload.to_string(), false);
+                if agentic {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains(message), "{format}: {error}");
+                } else {
+                    let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+                    assert_eq!(report["completed_requests"], 1);
+                    assert!(report.get("agentic_qualification").is_none());
+                }
+            }
+        }
+    }
+
     #[pyclass]
     struct DecodeCoordinateProbe;
 
@@ -1250,7 +1393,10 @@ mod tests {
     }
 
     #[pyclass]
-    struct PerOpEvidenceProbe;
+    #[derive(Default)]
+    struct PerOpEvidenceProbe {
+        calls: std::sync::atomic::AtomicUsize,
+    }
 
     type TestPerOpEvidence = (String, f64, f64, String);
 
@@ -1270,6 +1416,11 @@ mod tests {
             mode: &str,
             stride: u32,
         ) -> (Vec<TestPerOpEvidence>, Vec<TestPerOpEvidence>) {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if batch_size == 99 {
+                return (Vec::new(), Vec::new());
+            }
             match mode {
                 "static_ctx" => (
                     vec![
@@ -1293,6 +1444,7 @@ mod tests {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
         }
     }
 
@@ -1451,7 +1603,11 @@ mod tests {
     #[test]
     fn op_level_timing_exposes_typed_python_evidence() {
         pyo3::prepare_freethreaded_python();
-        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe).unwrap().into_any());
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
         let timing = timing_model(engine, false);
 
         assert_eq!(timing.predict_prefill_ms(2, 128, 0).unwrap(), 10.0);
@@ -1471,6 +1627,59 @@ mod tests {
         );
         assert_eq!(evidence.decode.energy_wms, Some(1_600.0));
         assert_eq!(evidence.decode.coverage(), 1.0);
+    }
+
+    #[test]
+    fn repeated_shapes_reuse_provider_evidence_and_accumulate_every_step() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
+        let timing = timing_model(
+            Python::with_gil(|py| engine.clone_ref(py).into_any()),
+            false,
+        );
+        for _ in 0..1_000 {
+            assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
+        }
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            )
+        });
+        assert_eq!(
+            timing.evidence_summary().unwrap().decode.energy_wms,
+            Some(1_600_000.0)
+        );
+        // Distinct coordinates must never reuse the preceding shape's result.
+        timing.predict_decode_ms(2, 260, 129, 1024).unwrap();
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            )
+        });
+    }
+
+    #[test]
+    fn empty_provider_evidence_rejects_nonzero_work() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let timing = timing_model(engine, false);
+        assert!(timing.predict_prefill_ms(99, 128, 0).is_err());
+        assert!(timing.predict_decode_ms(99, 12800, 128, 16384).is_err());
+        assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
+        assert_eq!(timing.predict_decode_ms(0, 0, 128, 16384).unwrap(), 0.0);
+        assert_eq!(timing.predict_prefill_ms(99, 128, 128).unwrap(), 0.0);
     }
 
     #[test]
