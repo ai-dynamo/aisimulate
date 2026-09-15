@@ -250,8 +250,17 @@ def tick(config, *, apply=False):
                     state.update(state="validation_failed", error=str(error))
                     continue
             if status.get("failed", 0):
-                state.update(state="needs_case_fix", failed=status["failed"], done=status.get("done", 0))
-                continue
+                accounted = status.get("done", 0) + status["failed"]
+                state.update(failed=status["failed"], done=status.get("done", 0), accounted=accounted)
+                reviewed = spec["op"] in campaign.get("resume_with_recorded_failures", {})
+                if accounted >= spec["planned_tasks"] or not reviewed:
+                    state["state"] = (
+                        "complete_with_recorded_failures" if accounted == spec["planned_tasks"] else "needs_case_fix"
+                    )
+                    continue
+                # The unchanged CLI --resume retains prior failed IDs and runs
+                # only unattempted work; it does not retry or erase failures.
+                state["failure_review"] = campaign["resume_with_recorded_failures"][spec["op"]]
             if spec.get("smoke_dependency") and spec["smoke_dependency"] not in smoke_validated:
                 state["state"] = "waiting_for_smoke"
                 continue

@@ -71,3 +71,27 @@ underlying problem, not to defeat the retry limit.
 The hook uses `squeue`/`sbatch` under the same authorized user and only submits
 its explicitly declared task-owned shards. Use a scheduler-managed CPU job for
 persistent watching; do not rely on an interactive terminal staying connected.
+
+## Reviewed failures and orderly completion
+
+The optional per-op `resume_with_recorded_failures` campaign mapping and matching
+plan `reviewed_failure_continuation` mapping are **review records, not selectors**.
+They permit the unchanged CLI's `--resume` to finish unattempted cases after an
+observed failure group has been investigated. Prior failed IDs remain failed;
+no failing point is retried, removed, relabeled, or given a synthetic latency.
+An all-attempted shard with failures is reported as
+`complete_with_recorded_failures`, not validated or globally complete.
+
+For the B200 0.25.0 campaign, DSA early stops were reviewed against the installed
+vLLM `dd10e03f95f94edbea1975c67ace3a35ec9a8a40` source:
+`vllm/v1/attention/backends/mla/flashmla_sparse.py:836` requires the BF16 prefill
+padding to be divisible by the requested number of heads. Non-divisor head
+counts remain in the frozen sweep and produce real recorded failures. The
+review allows remaining cases to execute; it does not substitute another backend.
+
+The canonical `run_shard.py` also detects a separate teardown problem: Python
+multiprocessing workers can remain alive after every task is accounted and the
+official parquet/sidecar transaction has committed. After a grace period it
+reaps only its own matching child workers (exact parent PID and UID), recording
+the cleanup. It never uses a global process-name kill or cleans workers while
+cases or publication transactions remain unfinished.
