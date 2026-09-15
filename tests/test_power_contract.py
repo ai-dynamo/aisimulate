@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -35,23 +36,34 @@ def power_validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
+def validated_fixture_number(value: Any, name: str) -> Fraction:
+    """Validate raw fixture evidence before any scaling can hide its sign."""
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"{name} evidence must be finite and non-negative")
+    exact = Fraction(str(value))
+    if exact < 0:
+        raise ValueError(f"{name} evidence must be finite and non-negative")
+    return exact
+
+
 def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
-    """Independently evaluate the documented AIC-compatible formulas."""
+    """Evaluate fixture decimals exactly; convert to floats only for JSON output.
+
+    This independent oracle uses the same exact sums for coverage and the gate,
+    so decimal inputs at 90% qualify without widening the threshold by epsilon.
+    """
     roles = case["roles"]
     all_roles_energy_aware = all(role["energy_aware"] for role in roles)
 
-    total_latency_ms = 0.0
-    covered_latency_ms = 0.0
-    total_energy_wms = 0.0
+    total_latency_ms = Fraction(0)
+    covered_latency_ms = Fraction(0)
+    total_energy_wms = Fraction(0)
     for role in roles:
-        scale = float(role.get("scale", 1.0))
+        scale = validated_fixture_number(role.get("scale", 1.0), "scale")
         for operation in role["operations"]:
-            latency_ms = float(operation["latency_ms"]) * scale
-            energy_wms = float(operation["energy_wms"]) * scale
-            if not math.isfinite(latency_ms) or latency_ms < 0.0:
-                raise ValueError("latency evidence must be finite and non-negative")
-            if not math.isfinite(energy_wms) or energy_wms < 0.0:
-                raise ValueError("energy evidence must be finite and non-negative")
+            latency_ms = validated_fixture_number(operation["latency_ms"], "latency") * scale
+            energy_wms = validated_fixture_number(operation["energy_wms"], "energy") * scale
             total_latency_ms += latency_ms
             total_energy_wms += energy_wms
             if energy_wms > 0.0:
@@ -64,9 +76,9 @@ def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
         return {"power_coverage": 0.0}
 
     power_coverage = covered_latency_ms / total_latency_ms
-    metrics = {"power_coverage": power_coverage}
-    power_w = total_energy_wms / total_latency_ms
-    if power_coverage >= 0.9 and math.isfinite(power_w) and power_w > 0.0:
+    metrics = {"power_coverage": float(power_coverage)}
+    power_w = float(total_energy_wms / total_latency_ms)
+    if power_coverage >= Fraction(9, 10) and math.isfinite(power_w) and power_w > 0.0:
         metrics["power_w"] = power_w
     return metrics
 

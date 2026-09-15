@@ -19,6 +19,32 @@
   },
   "cases": [
     {
+      "name": "decimal_exact_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 0.27, "energy_wms": 135.0},
+            {"latency_ms": 0.03, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_coverage": 0.9, "power_w": 450.0}
+    },
+    {
+      "name": "decimal_just_below_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 0.26999999999999996, "energy_wms": 135.0},
+            {"latency_ms": 0.03000000000000004, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_coverage": 0.8999999999999999}
+    },
+    {
       "name": "aggregate_exact_gate",
       "roles": [
         {
@@ -125,6 +151,66 @@
     }
   ],
   "invalid_evidence_cases": [
+    {
+      "name": "negative_subnormal_latency_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": "-1e-400", "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_latency_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": -1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_energy_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": -10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": -1.0,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "non_finite_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": "Infinity",
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
     {
       "name": "negative_latency",
       "roles": [
