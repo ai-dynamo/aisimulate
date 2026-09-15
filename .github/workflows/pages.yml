@@ -2,11 +2,17 @@ name: GitHub Pages
 
 on:
   workflow_dispatch:
+  schedule:
+    # Pick up release-branch snapshots using the main-branch publisher.
+    - cron: "17 6 * * *"
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "tests/test_pages_site.py"
+      - "scripts/build_e2e_accuracy_overview.py"
+      - "tests/test_e2e_accuracy_overview.py"
+      - "tests/test_e2e_accuracy_ui.mjs"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -18,6 +24,7 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
+      - "scripts/build_e2e_accuracy_overview.py"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -40,13 +47,21 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build allowlisted public site
-        run: python scripts/build_pages_site.py --output-dir _site
-      - name: Test public artifact contract
-        run: python -m unittest discover -s tests -p test_pages_site.py
+        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
+      - name: Test accuracy publication and public artifact contracts
+        run: |
+          python -m pip install pytest==8.4.2
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py -q
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Test accuracy interactions
+        run: node --test tests/test_e2e_accuracy_ui.mjs
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

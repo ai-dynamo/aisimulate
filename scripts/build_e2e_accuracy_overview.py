@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -278,6 +279,104 @@ def _workload_label(workload: str) -> str:
     return f"{short_length(input_tokens)}{short_length(output_tokens)}"
 
 
+def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Publish numeric errors and normalized curves, never raw latency or run IDs."""
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[_topology_key(row)].append(row)
+    summaries = []
+    for key, topology_rows in sorted(groups.items(), key=lambda item: str(item[0])):
+        topology_rows = sorted(topology_rows, key=lambda row: float(row["conc"]))
+        first = topology_rows[0]
+        # Both predictors use the same measured anchor. Missing predictions stay
+        # missing so a failed replay cannot look like a perfect or zero result.
+        anchors = {metric: first[f"silicon_{metric}_ms"] for metric in ("ttft", "tpot")}
+        points = []
+        for row in topology_rows:
+            point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
+                point[name] = {}
+                for metric, anchor in anchors.items():
+                    value = _finite(row.get(f"{prefix}_{metric}_ms"))
+                    point[name][f"{metric}_relative"] = round(value / anchor, 6) if value is not None else None
+                    if name != "measured":
+                        point[name][f"{metric}_error_pct"] = (
+                            _round_metric(_absolute_percentage_error(value, row[f"silicon_{metric}_ms"]))
+                            if value is not None
+                            else None
+                        )
+            points.append(point)
+        summaries.append(
+            {
+                "id": hashlib.sha256(json.dumps(key).encode()).hexdigest()[:16],
+                "framework": first["framework"],
+                "precision": first["precision"],
+                "serving": "disaggregated" if first.get("disagg") else "aggregated",
+                "spec_method": first.get("spec_method") or "none",
+                "parallelism": {
+                    field: first.get(field)
+                    for field in ("tp_size", "pp_size", "attention_dp_size", "moe_ep_size", "moe_tp_size")
+                },
+                "rows": len(topology_rows),
+                "aic": _series_metrics(topology_rows, "aic"),
+                "aisimulate": {
+                    **_series_metrics(topology_rows, "dynamo"),
+                    "status_counts": _status_counts(topology_rows),
+                },
+                "points": points,
+            }
+        )
+    return summaries
+
+
+def _evaluated_revision(runtime: dict[str, Any], branch: str | None) -> dict[str, str] | None:
+    if branch is None:
+        return None
+    if branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", branch):
+        raise SnapshotError("branch must be main or release/<name>")
+    source = runtime.get("source_checkout")
+    if (
+        not isinstance(source, dict)
+        or source.get("clean") is not True
+        or source.get("branch") != branch
+        or not isinstance(source.get("commit_sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
+    ):
+        raise SnapshotError("branch publication requires a matching clean source_checkout branch and full commit_sha")
+    return {"branch": branch, "commit_sha": source["commit_sha"]}
+
+
+def _aic_source(
+    predictions: dict[str, Any],
+    metadata: dict[str, Any],
+    coverage: dict[str, Any],
+    revision: dict[str, str] | None,
+) -> dict[str, str] | None:
+    run = predictions.get("aic_run")
+    if run is None and revision is None:
+        return None  # Historical unqualified exports remain readable.
+    if not isinstance(run, dict) or run.get("status") != "complete":
+        raise SnapshotError("branch publication requires a completed AIC CLI run")
+    if any(document.get("aic_run") != run for document in (metadata, coverage)):
+        raise SnapshotError("predictions, metadata, and coverage AIC provenance disagree")
+    runtime = run.get("runtime")
+    source = runtime.get("source_checkout") if isinstance(runtime, dict) else None
+    if (
+        not isinstance(source, dict)
+        or source.get("repository") != "https://github.com/ai-dynamo/aisimulate"
+        or source.get("clean") is not True
+        or not isinstance(source.get("branch"), str)
+        or not isinstance(source.get("commit_sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
+        or source["commit_sha"] != predictions.get("aic_commit_sha")
+        or runtime.get("cli_entry_point") != "aiconfigurator.main:main"
+    ):
+        raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISimulate checkout")
+    if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
+        raise SnapshotError("AIC baseline and AISimulate replay must evaluate the same branch and commit")
+    return {key: source[key] for key in ("repository", "branch", "commit_sha")}
+
+
 def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     identities = _identity_summary(rows)
     workloads = []
@@ -296,6 +395,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             gpu_summaries.append(
                 {
                     "gpu": gpu,
+                    "topologies": _topology_summaries(gpu_rows),
                     "rows": len(gpu_rows),
                     "precisions": sorted({str(row["precision"]) for row in gpu_rows}),
                     "aic": _series_metrics(gpu_rows, "aic"),
@@ -396,8 +496,10 @@ def _validate_inputs(
             "aic_ttft_ms",
             "aic_tpot_ms",
         ):
-            if _finite(row.get(field)) is None:
-                raise SnapshotError(f"row is missing a finite {field}")
+            if _finite(row.get(field)) is None or row[field] <= 0:
+                raise SnapshotError(f"row is missing a positive finite {field}")
+        if _finite(row.get("conc")) is None or row["conc"] <= 0:
+            raise SnapshotError("row is missing a positive finite conc")
         status = row.get("aisimulate_status")
         if status not in status_counts:
             raise SnapshotError(f"row has unknown aisimulate_status: {status!r}")
@@ -409,6 +511,8 @@ def _validate_inputs(
             raise SnapshotError(
                 "AISimulate TTFT and TPOT must be present or absent together"
             )
+        if has_ttft and (row["dynamo_ttft_ms"] <= 0 or row["dynamo_tpot_ms"] <= 0):
+            raise SnapshotError("successful AISimulate latencies must be positive")
         if status == "success" and not has_ttft:
             raise SnapshotError("successful AISimulate row is missing latency metrics")
         if status != "success" and has_ttft:
@@ -441,6 +545,7 @@ def build_summary(
     predictions_sha256: str,
     source_url: str,
     exclude_multinode: bool = True,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     all_rows = _validate_inputs(predictions, metadata, coverage)
     expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
@@ -526,6 +631,18 @@ def build_summary(
             for model in sorted(by_model, key=str.casefold)
         ],
     }
+    revision = _evaluated_revision(runtime, branch)
+    if revision is not None:
+        prediction_run = predictions.get("aisimulate_run", {})
+        prediction_source = prediction_run.get("runtime", {}).get("source_checkout")
+        if prediction_source != runtime["source_checkout"]:
+            raise SnapshotError("predictions and metadata source_checkout disagree")
+        if aisimulate_run.get("incremental_refreshes"):
+            raise SnapshotError("branch publication requires one complete run, not mixed incremental refreshes")
+        result["snapshot"]["evaluated_revision"] = revision
+    aic_source = _aic_source(predictions, metadata, coverage, revision)
+    if aic_source is not None:
+        result["snapshot"]["aic_source"] = aic_source
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
         if fragment in serialized:
@@ -543,6 +660,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-url", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--branch", help="Evaluated main or release/* branch; requires matching clean runtime provenance"
+    )
+    parser.add_argument(
         "--include-multinode",
         action="store_true",
         help="Include multi-node rows. The public overview excludes them by default.",
@@ -559,6 +679,7 @@ def main() -> int:
         predictions_sha256=_sha256(args.predictions),
         source_url=args.source_url,
         exclude_multinode=not args.include_multinode,
+        branch=args.branch,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")

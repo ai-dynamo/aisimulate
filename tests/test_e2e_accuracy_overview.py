@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,24 @@ def _summary() -> dict[str, object]:
     )
 
 
+def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
+    predictions, metadata, coverage = _inputs()
+    source = {"branch": branch, "commit_sha": "d" * 40, "clean": True}
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = source
+    predictions["aisimulate_run"] = deepcopy(metadata["aisimulate_run"])
+    run = {
+        "status": "complete",
+        "runtime": {
+            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
+            "cli_entry_point": "aiconfigurator.main:main",
+        },
+    }
+    for document in (predictions, metadata, coverage):
+        document["aic_commit_sha"] = source["commit_sha"]
+        document["aic_run"] = deepcopy(run)
+    return predictions, metadata, coverage
+
+
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
     summary = _summary()
 
@@ -292,7 +311,7 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
 
     assert "E2E Gym" not in page
     assert "predictors" not in page
-    assert 'fetch("./summary.json")' in script
+    assert 'fetch("./branches.json")' in script
 
 
 def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
@@ -300,8 +319,8 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
-    assert page.index("AISimulate TPOT MAPE") < page.index("AIC TPOT MAPE")
-    assert script.index('accuracyCard("Average AISimulate Error"') < script.index('accuracyCard("Average AIC Error"')
+    assert page.index("AISim CLI TPOT MAPE") < page.index("AIC CLI TPOT MAPE")
+    assert script.index('accuracyCard("AISim CLI (new) Error"') < script.index('accuracyCard("AIC CLI (legacy) Error"')
     assert "data-series" not in page
 
 
@@ -321,3 +340,191 @@ def test_public_page_validates_snapshot_urls_and_nested_schema() -> None:
 
     assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
     assert "!Array.isArray(model.workloads)" in script
+
+
+def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][1]["aisimulate_status"] = "failed"
+    predictions["rows"][1]["dynamo_ttft_ms"] = None
+    predictions["rows"][1]["dynamo_tpot_ms"] = None
+    metadata["aisimulate_run"].update(success=1, failed=2)
+    # Internal/free-form data must never be spread into the public payload.
+    predictions["rows"][0]["silicon_workflow_run_id"] = "private-run"
+    predictions["rows"][0]["infx_config"] = {"private": "secret"}
+    result = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    gpu = result["models"][0]["workloads"][0]["gpus"][0]
+    topology = gpu["topologies"][0]
+    assert topology["rows"] == 2
+    assert topology["aisimulate"]["status_counts"]["failed"] == 1
+    first, second = topology["points"]
+    assert first["measured"]["ttft_relative"] == 1
+    assert first["aisimulate"]["ttft_relative"] == 0.9
+    assert first["aisimulate"]["ttft_error_pct"] == 10
+    assert second["measured"]["ttft_relative"] == 2
+    assert second["aic"]["ttft_relative"] == 2.2
+    assert second["aisimulate"]["ttft_relative"] is None
+    assert second["aisimulate"]["ttft_error_pct"] is None
+    assert "private-run" not in json.dumps(result)
+    assert "secret" not in json.dumps(result)
+    assert "silicon_ttft_ms" not in json.dumps(result)
+
+
+def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][1]["framework"] = "sglang"
+    result = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    topologies = result["models"][0]["workloads"][0]["gpus"][0]["topologies"]
+    assert len(topologies) == 2
+    assert len({item["id"] for item in topologies}) == 2
+    assert {item["framework"] for item in topologies} == {"vllm", "sglang"}
+    assert all(len(item["points"]) == 1 for item in topologies)
+
+
+@pytest.mark.parametrize("branch", ["main", "release/0.12.0", "release/0.13.0/rc1"])
+def test_branch_publication_records_evaluated_revision(branch: str) -> None:
+    predictions, metadata, coverage = _qualified_inputs(branch)
+    result = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        branch=branch,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    assert result["snapshot"]["evaluated_revision"] == {"branch": branch, "commit_sha": "d" * 40}
+    assert result["snapshot"]["aic_source"] == {
+        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "branch": branch,
+        "commit_sha": "d" * 40,
+    }
+
+
+@pytest.mark.parametrize("defect", ["missing", "repository", "revision", "dirty", "incomplete", "metadata"])
+def test_branch_publication_rejects_wrong_legacy_cli_source(defect: str) -> None:
+    predictions, metadata, coverage = _qualified_inputs()
+    run = predictions["aic_run"]
+    source = run["runtime"]["source_checkout"]
+    if defect == "repository":
+        source["repository"] = "https://github.com/ai-dynamo/aiconfigurator"
+    elif defect == "revision":
+        source["commit_sha"] = "e" * 40
+        for document in (predictions, metadata, coverage):
+            document["aic_commit_sha"] = "e" * 40
+    elif defect == "dirty":
+        source["clean"] = False
+    elif defect == "incomplete":
+        run["status"] = "running"
+    for document in (predictions, metadata, coverage):
+        document["aic_run"] = deepcopy(run)
+        if defect == "missing":
+            del document["aic_run"]
+    if defect == "metadata":
+        metadata["aic_run"]["runtime"]["source_checkout"]["commit_sha"] = "e" * 40
+    with pytest.raises(OVERVIEW.SnapshotError, match="AIC"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        None,
+        {},
+        {"branch": "main", "commit_sha": "d" * 40, "clean": False},
+        {"branch": "release/0.12.0", "commit_sha": "d" * 40, "clean": True},
+        {"branch": "main", "commit_sha": "short", "clean": True},
+    ],
+)
+def test_branch_labels_cannot_relabel_unqualified_results(source: dict | None) -> None:
+    predictions, metadata, coverage = _inputs()
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = source
+    with pytest.raises(OVERVIEW.SnapshotError, match="source_checkout"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value", [("conc", 0), ("conc", float("nan")), ("silicon_ttft_ms", 0), ("silicon_tpot_ms", -1)]
+)
+def test_invalid_curve_inputs_fail_closed(field: str, value: float) -> None:
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0][field] = value
+    with pytest.raises(OVERVIEW.SnapshotError, match="positive finite"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_branch_publication_rejects_mismatched_or_mixed_runs(mixed: bool) -> None:
+    predictions, metadata, coverage = _inputs()
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = {
+        "branch": "main",
+        "commit_sha": "d" * 40,
+        "clean": True,
+    }
+    predictions["aisimulate_run"] = deepcopy(metadata["aisimulate_run"])
+    if mixed:
+        metadata["aisimulate_run"]["incremental_refreshes"] = [{"selected": 1}]
+        message = "one complete run"
+    else:
+        predictions["aisimulate_run"]["runtime"]["source_checkout"]["commit_sha"] = "e" * 40
+        message = "source_checkout disagree"
+    with pytest.raises(OVERVIEW.SnapshotError, match=message):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+def test_successful_replay_rejects_zero_latency() -> None:
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["dynamo_ttft_ms"] = 0
+    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISimulate latencies must be positive"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+def test_page_explains_cli_migration_and_aic_deprecation() -> None:
+    page = (ROOT / "python/aisimulate/docs/e2e-accuracy/index.html").read_text()
+    assert "new AISim CLI with the legacy AIC CLI" in page
+    assert "confidence" in page
+    assert "deprecate the AIC CLI" in page
+    assert "different prediction coverage" in page
