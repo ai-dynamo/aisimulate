@@ -1802,7 +1802,20 @@ where
                 self.notify_causal_terminal(uuid)?;
                 self.cancel_prefill_route(uuid)?;
                 self.cancel_decode_route(uuid)?;
-                self.finish_logical_request(uuid, true)?;
+                if self.state(uuid)?.counted_in_flight {
+                    self.finish_logical_request(uuid, true)?;
+                } else {
+                    // Decode terminal already finalized the request while its
+                    // handoff stayed retained for cleanup, so finalizing again
+                    // would trip `prepare_logical_finish`. Retire it instead,
+                    // dropping the queued actions the way the `remove_actions`
+                    // argument above would have. A request retired twice still
+                    // fails loudly on the handoff index.
+                    self.flow.action_queues.remove(uuid);
+                    if self.flow.retire_completed_request(uuid)? {
+                        self.notify_quiescent(uuid)?;
+                    }
+                }
             }
             None => bail!("handoff completed without a terminal coordinator outcome"),
         }

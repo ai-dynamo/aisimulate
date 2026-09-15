@@ -1052,6 +1052,108 @@ fn decode_terminal_retains_handoff_until_deferred_cleanup_drains() {
     }
 }
 
+/// `decode_terminal_retains_handoff_until_deferred_cleanup_drains` documents the
+/// window where a request is already logically finished while its handoff is
+/// still retained pending cleanup. A cancellation landing in that window drives
+/// the coordinator to a `Canceled` completion, and completing the handoff must
+/// not finalize the request a second time -- that aborts the whole replay run.
+///
+/// Drive the production decode-terminal handler while the handoff is retained,
+/// then cancel and drain cleanup. The original completed record must survive.
+#[test]
+fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
+    let config = disagg_config_with_handoff_delay();
+    let uuid = Uuid::from_u128(1);
+    let input_tokens = config.prefill_args.block_size * 2;
+    let mut runtime = DisaggRuntime::from_requests(
+        &config,
+        None,
+        None,
+        VecDeque::from([request(1, input_tokens, 2, 0.0)]),
+        ReplayMode::Trace,
+    )
+    .unwrap()
+    .with_per_request_records(true);
+
+    runtime.drain_current_timestamp().unwrap();
+    for _ in 0..16 {
+        if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+            break;
+        }
+        let next = runtime.next_timestamp().unwrap();
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+    assert_eq!(
+        runtime.state(uuid).unwrap().phase,
+        DisaggPhase::TransferPending
+    );
+
+    let decode_completed_at = runtime.now_ms;
+    runtime
+        .process_decode_signal(OutputSignal {
+            uuid,
+            token_id: Some(42),
+            completed: true,
+            rejected: false,
+            handoff_delay_ms: None,
+            cached_tokens: None,
+        })
+        .unwrap();
+    assert!(!runtime.state(uuid).unwrap().counted_in_flight);
+    assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
+    assert_eq!(
+        runtime.state(uuid).unwrap().terminal_status(),
+        Some(ReplayTerminalStatus::Completed)
+    );
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].output_length, 1);
+
+    let handoff_id = runtime.state(uuid).unwrap().handoff_id;
+    runtime
+        .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
+        .unwrap();
+    while !runtime.is_done() {
+        let Some(next) = runtime.next_timestamp() else {
+            break;
+        };
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+
+    assert_eq!(
+        runtime.state(uuid).unwrap().coordinator.completion(),
+        Some(HandoffCompletion::Canceled)
+    );
+    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+    assert!(runtime.is_done(), "cancellation cleanup must fully drain");
+    // Tolerating an already finalized request must not hide double retirement.
+    let error = runtime.complete_handoff(uuid).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("offline disagg replay handoff index is inconsistent for {uuid}")
+    );
+    // The retained handoff must still retire into exactly one reported record,
+    // carrying the first terminal status observed for the request.
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].terminal_time_ms, decode_completed_at);
+    assert_eq!(records[0].output_length, 1);
+    assert_eq!(
+        runtime
+            .stats
+            .transition_log
+            .iter()
+            .filter(|event| **event == DisaggTransition::RequestMarkedDone { uuid })
+            .count(),
+        1,
+        "handoff cleanup must not finalize the logical request again"
+    );
+}
+
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
