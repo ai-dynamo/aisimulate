@@ -10,6 +10,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import re
 import subprocess
 import zipfile
@@ -49,7 +50,13 @@ def _strict_json(data: bytes):
     def reject_constant(value):
         raise ValueError(f"invalid JSON constant: {value}")
 
-    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"non-finite JSON number: {value}")
+        return number
+
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float)
 
 
 def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:

@@ -422,6 +422,48 @@ class FpePagesTest(unittest.TestCase):
                 ):
                     FPE.qualified_files(qualified_archive(overrides={name: data}), NEW_SHA)
 
+    def test_overflowing_json_numbers_cannot_publish_or_fall_back(self):
+        with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
+            documents = {
+                name: archive.read(name).decode() for name in ("fpe-qualification.json", FPE.DATA_PREFIX + "index.json")
+            }
+        for name, data in documents.items():
+            for value in ("1e999", "-1e999", '{"nested": [1e999]}', '{"nested": [-1e999]}'):
+                with self.subTest(name=name, value=value), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / "data"
+                    with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+                        self.prepare(
+                            [artifact(10), artifact(20, OLD_SHA)],
+                            {10: run(), 20: run(OLD_SHA)},
+                            {
+                                10: qualified_archive(overrides={name: data[:-1] + ', "extra": ' + value + "}"}),
+                                20: qualified_archive(OLD_SHA),
+                            },
+                            output=output,
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_finite_numeric_metadata_remains_valid_in_published_index(self):
+        metadata = {"fraction": 0.5, "nested": [-0.5, 1.7976931348623157e308, -1.7976931348623157e308, 5e-324]}
+        snapshot, output = self.prepare(
+            [artifact(1)],
+            {1: run()},
+            {
+                1: qualified_archive(
+                    report_updates={"extra": metadata},
+                    overrides={
+                        FPE.DATA_PREFIX + "index.json": json.dumps({"files": ["b200_sxm.csv"], "extra": metadata})
+                    },
+                )
+            },
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            index = json.loads((site / "data/fpe-support-matrix/index.json").read_text(), parse_constant=self.fail)
+            self.assertEqual(index["extra"], metadata)
+            self.assertEqual(index["snapshot"], snapshot)
+
     def test_missing_or_unsafe_indexed_csv_is_rejected(self):
         with self.assertRaises(KeyError):
             FPE.qualified_files(qualified_archive(missing=FPE.DATA_PREFIX + "b200_sxm.csv"), NEW_SHA)
