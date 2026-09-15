@@ -795,6 +795,10 @@ evidence. With no `--detail`, AIC prints its normal summary; this includes per-G
 coverage permits, or an explicit unavailable result. `--detail energy` requests the additional
 breakdown, not permission to publish summary power.
 
+Summary power and energy detail have separate absence messages. In static modes, `--detail energy`
+can print `Energy Breakdown` followed by `<no energy data>` when operation-energy data is absent;
+the summary's `Power (per GPU): unavailable` describes the gated wattage value.
+
 Keep the compatibility command when these reports are required:
 
 ```bash
