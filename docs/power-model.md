@@ -22,11 +22,11 @@ does not by itself make modeled power available in unified AISimulate commands.
 The [AIC migration guide](cli/migrate-from-aiconfigurator.md) is authoritative
 for which workflows are implemented in the current release.
 
-Most semantics below match AIC directly. AISimulate deliberately normalizes
-one legacy representation detail: unavailable `power_w` is omitted from public
-JSON output instead of carrying forward `0.0`, `None`, or `NaN` sentinels used by
-some AIC compatibility paths. An absent value means unavailable, never zero
-watts.
+Most semantics below match AIC directly. AISimulate normalizes unavailable
+values to JSON `null`: both `power_w` and `power_coverage` are always present
+in a conforming summary. A null value means unavailable, never zero watts or
+zero coverage. Legacy AIC sentinels such as `0.0` or `NaN` are not published as
+numeric power.
 
 The existing implementation references are AIC's
 [`InferenceSummary.get_power_data_coverage`](../python/aisimulate/src/aiconfigurator_core/sdk/inference_summary.py),
@@ -86,8 +86,8 @@ of silently repairing it.
 
 ## Publication gate
 
-AISimulate uses AIC's fail-closed 90% coverage threshold. `power_w` may be
-published only when every condition below is true:
+AISimulate uses AIC's fail-closed 90% coverage threshold. A numeric `power_w`
+may be published only when every condition below is true:
 
 1. every replay role uses a timing provider that supplies operation-energy
    evidence;
@@ -98,15 +98,15 @@ published only when every condition below is true:
 Coverage is based on modeled active time, not operation count. If operations
 covering 90 ms of a 100 ms forward pass have energy data, `power_coverage` is
 `0.90`. Because the threshold is inclusive, exactly `0.90` is sufficient;
-`0.899` is not. Below the threshold, JSON output keeps `power_coverage` but omits
-`power_w`, allowing a consumer to distinguish insufficient data from an
-implementation failure. A provider with an energy channel but no covered
-operations therefore reports `power_coverage: 0` and omits `power_w`.
+`0.899` is not. Below the threshold, JSON output keeps numeric `power_coverage`
+and sets `power_w` to `null`, allowing a consumer to distinguish insufficient
+data from an unsupported energy path. A provider with an energy channel but
+no covered operations therefore reports `power_coverage: 0` and `power_w: null`.
 
 Fixed, polynomial, and forward-pass-metrics (FPM) timing providers do not
 synthesize energy. A replay using any of those providers, or mixing an
-energy-aware role with an energy-unaware role, omits both modeled-power JSON fields.
-The absence of `power_w` never means zero watts.
+energy-aware role with an energy-unaware role, returns `power_w: null` and
+`power_coverage: null`. The null values never mean zero watts or zero coverage.
 
 ## Aggregate and disaggregated deployments
 
@@ -143,23 +143,31 @@ not make them supported by the unified CLI.
 ## Output contract
 
 Once the follow-up runtime work adds a conforming producer, Replay JSON and
-prediction summaries will use these optional numeric fields:
+prediction summaries will always include both fields. Each value is a number
+or `null`:
 
-| Field | Unit | Availability |
+| Field | Unit | JSON value (key always present) |
 |---|---|---|
-| `power_coverage` | Ratio in `[0, 1]` | Present when every role has an energy-aware timing provider, including below the gate. |
-| `power_w` | W/GPU | Present only when `power_coverage >= 0.9` and the other publication conditions hold. |
+| `power_coverage` | Ratio in `[0, 1]` | Numeric for a supported energy-aware path, including below the gate and at zero coverage; otherwise `null`. |
+| `power_w` | W/GPU | Numeric only when `power_coverage >= 0.9` and the other publication conditions hold; otherwise `null`. |
+
+For example, insufficient coverage returns
+`{"power_w": null, "power_coverage": 0.75}`. An unsupported energy provider
+returns `{"power_w": null, "power_coverage": null}`. Qualifying synthetic
+evidence can return `{"power_w": 450, "power_coverage": 0.9}`.
 
 The machine-readable fragment is
 [`schemas/power-metrics-v1.schema.json`](schemas/power-metrics-v1.schema.json).
 It deliberately permits unrelated report metrics so it can validate both a
 replay report and a Sweeper candidate's `metrics` object.
 
-Recommendation results will retain the fields in `candidates[].metrics` using
-the same names and units. `candidates[].provenance.power` will repeat the
-published values and may add evidence metadata such as the method, threshold,
-role, and source identities. It must not contain a `power_w` value that the
-candidate metrics correctly withheld.
+Recommendation results with a valid replay report will retain both fields in
+`candidates[].metrics` using the same names, units, and null semantics.
+`candidates[].provenance.power` will repeat both values, including nulls, and
+may add evidence metadata such as the method, threshold, role, and source
+identities. It must not contain numeric watts when candidate metrics contain
+`power_w: null`. Failed attempts without a valid replay report retain the
+existing empty-metrics envelope; they have no power summary to validate.
 
 ### Normal summaries and optional energy details
 
@@ -184,13 +192,13 @@ unavailable reason. A detail request cannot promote partial or unsupported
 evidence into a qualified summary value. Recommendation details use `predict`
 on a saved candidate YAML; this contract does not add `recommend --detail`.
 
-Always-visible CLI labels do not make the JSON fields mandatory. CSV exporters
-will use an empty field for each unavailable value. JSON will retain numeric
-coverage when it can be computed, and omit both fields when the provider or
-topology cannot supply the required energy evidence. It will omit unavailable
-`power_w` rather than serializing `null`, `0`,
-or a non-finite sentinel. Before validating or serializing a host-language
-metrics object, producers must reject `NaN` and positive or negative infinity;
+Both JSON keys are mandatory, independent of detail selection. JSON retains
+numeric coverage when it can be computed, sets unavailable watts to `null`,
+and sets both values to `null` when the provider or topology cannot supply the
+required energy evidence. CSV exporters use an empty field for each null
+value. Unavailable values must not be serialized as strings or zero watts.
+Before validating or serializing a host-language metrics object, producers
+must reject `NaN` and positive or negative infinity;
 permissive encoder extensions are not valid JSON values under this contract.
 
 ## Provenance boundary
@@ -208,10 +216,12 @@ and provenance that states its measurement boundary.
 
 ## Compatibility rules
 
-The two power fields are planned optional additions to existing replay and
-Sweeper objects. Older consumers must ignore fields they do not recognize, and
-newer consumers must accept their absence. Producers must not fabricate
-placeholder values to satisfy consumers.
+This is the initial, not-yet-released v1 power contract. Conforming producers
+must emit both keys and use `null` for unavailable values. Legacy reports
+produced before this integration may lack the keys; readers may treat that
+legacy absence as unavailable, but such reports do not satisfy this schema.
+Consumers must handle nulls before numeric formatting, arithmetic, or ranking.
+Neither a null nor an absent legacy value may be coerced to zero.
 
 Changing a field name, unit, scope, aggregation formula, missing-value rule, or
 the `0.9` gate is a breaking semantic change. It requires a versioned schema

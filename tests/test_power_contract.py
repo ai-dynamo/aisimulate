@@ -47,7 +47,7 @@ def validated_fixture_number(value: Any, name: str) -> Fraction:
     return exact
 
 
-def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
+def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float | None]:
     """Evaluate fixture decimals exactly; convert to floats only for JSON output.
 
     This independent oracle uses the same exact sums for coverage and the gate,
@@ -70,13 +70,13 @@ def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
                 covered_latency_ms += latency_ms
 
     if not all_roles_energy_aware:
-        return {}
+        return {"power_w": None, "power_coverage": None}
 
     if total_latency_ms <= 0.0:
-        return {"power_coverage": 0.0}
+        return {"power_w": None, "power_coverage": 0.0}
 
     power_coverage = covered_latency_ms / total_latency_ms
-    metrics = {"power_coverage": float(power_coverage)}
+    metrics: dict[str, float | None] = {"power_w": None, "power_coverage": float(power_coverage)}
     power_w = float(total_energy_wms / total_latency_ms)
     if power_coverage >= Fraction(9, 10) and math.isfinite(power_w) and power_w > 0.0:
         metrics["power_w"] = power_w
@@ -86,16 +86,17 @@ def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
 @pytest.mark.parametrize(
     "metrics",
     [
-        {},
-        {"power_coverage": 0.0},
-        {"power_coverage": 0.899999},
+        {"power_w": None, "power_coverage": None},
+        {"power_w": None, "power_coverage": 0.0},
+        {"power_w": None, "power_coverage": 0.899999},
+        {"power_w": None, "power_coverage": 1.0},
         {"power_w": 487.5, "power_coverage": 0.9},
         {"power_w": 510.25, "power_coverage": 1.0, "duration_ms": 20.0},
     ],
 )
 def test_power_contract_accepts_supported_availability_states(
     power_validator: Draft202012Validator,
-    metrics: dict[str, float],
+    metrics: dict[str, float | None],
 ) -> None:
     validate_strict_json(power_validator, metrics)
 
@@ -103,23 +104,35 @@ def test_power_contract_accepts_supported_availability_states(
 @pytest.mark.parametrize(
     "metrics",
     [
+        {},
+        {"power_w": None},
+        {"power_coverage": None},
+        {"power_coverage": 0.9},
         {"power_w": 487.5},
+        {"power_w": 487.5, "power_coverage": None},
         {"power_w": 487.5, "power_coverage": 0.899999},
         {"power_w": 0.0, "power_coverage": 1.0},
-        {"power_w": None, "power_coverage": 1.0},
-        {"power_coverage": -0.01},
-        {"power_coverage": 1.01},
+        {"power_w": -1.0, "power_coverage": 1.0},
+        {"power_w": None, "power_coverage": -0.01},
+        {"power_w": None, "power_coverage": 1.01},
+        {"power_w": "unavailable", "power_coverage": 1.0},
+        {"power_w": None, "power_coverage": "unavailable"},
+        {"power_w": True, "power_coverage": 1.0},
+        {"power_w": None, "power_coverage": False},
         {"power_w": math.nan, "power_coverage": 1.0},
         {"power_w": math.inf, "power_coverage": 1.0},
         {"power_w": -math.inf, "power_coverage": 1.0},
         {"power_w": 487.5, "power_coverage": math.nan},
         {"power_w": 487.5, "power_coverage": math.inf},
         {"power_w": 487.5, "power_coverage": -math.inf},
+        {"power_w": None, "power_coverage": math.nan},
+        {"power_w": None, "power_coverage": math.inf},
+        {"power_w": None, "power_coverage": -math.inf},
     ],
 )
 def test_power_contract_rejects_fabricated_or_invalid_metrics(
     power_validator: Draft202012Validator,
-    metrics: dict[str, float | None],
+    metrics: dict[str, Any],
 ) -> None:
     with pytest.raises((ValidationError, ValueError)):
         validate_strict_json(power_validator, metrics)
@@ -137,10 +150,14 @@ def test_reproducible_examples_match_documented_aic_semantics(
     actual = derive_contract_metrics(case)
     expected = case["expected"]
 
-    assert actual.keys() == expected.keys()
+    assert actual.keys() == expected.keys() == {"power_w", "power_coverage"}
     for name, value in expected.items():
-        assert actual[name] == pytest.approx(value)
+        if value is None:
+            assert actual[name] is None
+        else:
+            assert actual[name] == pytest.approx(value)
     validate_strict_json(power_validator, actual)
+    assert json.loads(json.dumps(actual, allow_nan=False)) == actual
 
 
 def test_reproducible_examples_record_provenance() -> None:

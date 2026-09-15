@@ -2,18 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/schemas/power-metrics-v1.schema.json",
   "title": "AISimulate modeled-power metrics v1",
-  "description": "AIC-compatible optional modeled-power fields planned for replay reports and Sweeper candidate metrics.",
+  "description": "Required, nullable modeled-power fields planned for replay reports and Sweeper candidate metrics, using AIC-compatible power and coverage semantics.",
   "$comment": "This schema formalizes field semantics; it does not add a runtime producer. JSON numbers are finite. Producers validating host-language objects must reject NaN and positive or negative infinity before serialization.",
   "type": "object",
+  "required": [
+    "power_w",
+    "power_coverage"
+  ],
   "properties": {
     "power_w": {
-      "description": "Active forward-pass average power per GPU in watts.",
-      "type": "number",
+      "description": "Active forward-pass average power per GPU in watts, or null when publication conditions are not met.",
+      "type": ["number", "null"],
       "exclusiveMinimum": 0
     },
     "power_coverage": {
-      "description": "Fraction of modeled active latency with positive operation-energy evidence, weighted by latency rather than operation count.",
-      "type": "number",
+      "description": "Fraction of modeled active latency with positive operation-energy evidence, weighted by latency rather than operation count; null when the required energy-aware path is unavailable.",
+      "type": ["number", "null"],
       "minimum": 0,
       "maximum": 1
     }
@@ -22,16 +26,14 @@
   "allOf": [
     {
       "if": {
-        "required": [
-          "power_w"
-        ]
+        "properties": {
+          "power_w": {"type": "number"}
+        }
       },
       "then": {
-        "required": [
-          "power_coverage"
-        ],
         "properties": {
           "power_coverage": {
+            "type": "number",
             "minimum": 0.9
           }
         }

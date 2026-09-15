@@ -722,8 +722,9 @@ aisimulate recommend --config budget-search.yaml --output-dir ./power-search
 **Expected result after power integration:** the normal prediction summary and each displayed
 recommendation row always include `power_w` and `power_coverage` labels. Available watts are
 per GPU; coverage is displayed as a percentage. No `--detail` selector is required to calculate
-or display either summary value. JSON retains the optional numeric fields in the prediction
-summary and recommendation candidate metrics, subject to the publication gate below.
+or display either summary value. JSON always includes both keys in the prediction summary and
+recommendation metrics for valid replay reports, using `null` for unavailable values under the
+publication gate below.
 
 #### 4.11.2 Summary power with an energy breakdown
 
@@ -763,15 +764,15 @@ the commands above:
 | Evidence state | CLI `power_w` | CLI `power_coverage` | JSON fields |
 | --- | --- | --- | --- |
 | Qualifying energy evidence | `450 W` | `90%` | `power_w: 450`, `power_coverage: 0.9` |
-| Measurable coverage below 90% | `unavailable` | `89%` | `power_coverage: 0.89`; omit watts |
-| Energy-aware provider with no covered operations | `unavailable` | `0%` | `power_coverage: 0`; omit watts |
-| Unsupported provider, topology, or a role without energy evidence | `unavailable` | `unavailable` | Omit both fields |
+| Measurable coverage below 90% | `unavailable` | `89%` | `power_w: null`, `power_coverage: 0.89` |
+| Energy-aware provider with no covered operations | `unavailable` | `0%` | `power_w: null`, `power_coverage: 0` |
+| Unsupported energy provider, topology, or a role without energy evidence | `unavailable` | `unavailable` | `power_w: null`, `power_coverage: null` |
 
 Unavailable values include a short reason, such as insufficient coverage or an unsupported
 provider. Zero coverage is valid only when the energy-aware path can establish it; an unsupported
-path must not fabricate `0%`. JSON uses numbers when available and omission otherwise, never
-placeholder strings, `null`, `NaN`, or zero watts. These examples do not guarantee power coverage
-for the selected H200/model/backend combination.
+path must not fabricate `0%`. JSON always returns both keys, with numbers when available and
+`null` otherwise, never placeholder strings, `NaN`, or zero watts. These examples do not guarantee
+power coverage for the selected H200/model/backend combination.
 
 **What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
 forward passes. Their power values share the same meaning and coverage rule but need not be
