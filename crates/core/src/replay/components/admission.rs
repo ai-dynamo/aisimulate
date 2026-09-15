@@ -151,6 +151,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
 
     pub(crate) fn next_ready_time_ms(&mut self) -> Option<f64> {
         match (&self.mode, &mut self.source) {
+            // Deliberately lenient: this peek cannot distinguish an empty queue from a
+            // malformed front request, but every caller drains before it peeks, and the
+            // drain rejects a missing or non-finite arrival time first.
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => pending
                 .front()
                 .and_then(|request| request.arrival_timestamp_ms),
@@ -191,18 +194,42 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     ) -> Result<Vec<T>> {
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
-                let mut ready = Vec::new();
-                loop {
-                    let arrival_ms = pending
-                        .front()
-                        .and_then(|request| request.arrival_timestamp_ms)
-                        .filter(|arrival_ms| *arrival_ms <= now_ms);
-                    let Some(arrival_time_ms) = arrival_ms else {
-                        break;
+                // Validate the due prefix before removing requests or invoking `map`.
+                // An error must leave every request queued and produce no admission
+                // side effects, including for valid requests before the malformed one.
+                let mut due_count = 0;
+                for (queue_index, front) in pending.iter().enumerate() {
+                    // This queue drains strictly from the front, so a request whose arrival
+                    // time never compares ready blocks itself and everything behind it
+                    // forever. Reject that malformed input instead of silently wedging, and
+                    // keep it distinct from the "authored, but not due yet" case below.
+                    let arrival_time_ms = match front.arrival_timestamp_ms {
+                        Some(arrival_time_ms) if arrival_time_ms.is_finite() => arrival_time_ms,
+                        malformed => anyhow::bail!(
+                            "trace replay request {} has an unusable arrival timestamp ({}); \
+                             it is at queue index {queue_index} with 0 admitted at {now_ms}ms, and \
+                             trace-sourced requests must carry a finite authored arrival time",
+                            front.request_id().map_or_else(
+                                || "<unidentified>".to_string(),
+                                |uuid| uuid.to_string()
+                            ),
+                            malformed
+                                .map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        ),
                     };
+                    if arrival_time_ms > now_ms {
+                        break;
+                    }
+                    due_count += 1;
+                }
+                let mut ready = Vec::with_capacity(due_count);
+                for _ in 0..due_count {
                     let request = pending
                         .pop_front()
                         .expect("front request must exist when arrival is ready");
+                    let arrival_time_ms = request
+                        .arrival_timestamp_ms
+                        .expect("due prefix has validated arrival timestamps");
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()
@@ -593,6 +620,163 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
 
     fn total_requests(&self) -> usize {
         AdmissionQueue::total_requests(self)
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+
+    fn trace_request(uuid: u128, arrival_timestamp_ms: Option<f64>) -> DirectRequest {
+        DirectRequest {
+            tokens: vec![1, 2, 3],
+            uuid: Some(Uuid::from_u128(uuid)),
+            max_output_tokens: 4,
+            arrival_timestamp_ms,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trace_requests_missing_arrival_timestamp_fail_instead_of_wedging_the_queue() {
+        let pending = VecDeque::from(vec![trace_request(1, None), trace_request(2, Some(0.0))]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+        // `ReplayReadyArrival` is not `Debug`, so match rather than `expect_err`.
+        let Err(error) = admission.drain_ready_compact(10.0, 0, false) else {
+            panic!("a trace request without an arrival timestamp must fail closed");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("arrival timestamp"),
+            "error must name the missing field: {message}"
+        );
+        assert!(
+            message.contains(&Uuid::from_u128(1).to_string()),
+            "error must identify the offending request: {message}"
+        );
+    }
+
+    /// A non-finite arrival time compares false against both `<= now_ms` and
+    /// `> now_ms`, so it can neither become ready nor be recognized as pending.
+    /// It must be rejected rather than admitted with unusable timing.
+    #[test]
+    fn trace_requests_with_non_finite_arrival_timestamps_fail_closed() {
+        for arrival_timestamp_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let pending = VecDeque::from(vec![trace_request(1, Some(arrival_timestamp_ms))]);
+            let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+            let Err(error) = admission.drain_ready_compact(10.0, 0, false) else {
+                panic!("{arrival_timestamp_ms} must fail closed");
+            };
+            assert!(
+                error.to_string().contains("arrival timestamp"),
+                "error must name the offending field: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_validation_preserves_the_queue_and_reports_full_context() {
+        for malformed in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ] {
+            for due_count in [0, 2] {
+                let mut pending: VecDeque<_> = (0..due_count)
+                    .map(|index| trace_request(index + 1, Some(0.0)))
+                    .collect();
+                pending.push_back(trace_request(99, malformed));
+                pending.push_back(trace_request(100, Some(20.0)));
+                let expected_ids: Vec<_> = pending.iter().map(|request| request.uuid).collect();
+                let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+                // Repeated errors must leave the queue and mapper untouched.
+                for _ in 0..2 {
+                    let mut mapped = 0;
+                    let result = admission.drain_ready_compact_with(10.0, 0, false, |_| {
+                        mapped += 1;
+                    });
+                    let message = result
+                        .expect_err("malformed trace input must fail")
+                        .to_string();
+                    assert_eq!(
+                        mapped, 0,
+                        "validation must precede all admission side effects"
+                    );
+                    let AdmissionSource::Requests(pending) = &admission.source else {
+                        unreachable!();
+                    };
+                    assert_eq!(
+                        pending
+                            .iter()
+                            .map(|request| request.uuid)
+                            .collect::<Vec<_>>(),
+                        expected_ids
+                    );
+                    for expected in [
+                        "arrival timestamp".to_string(),
+                        malformed.map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        Uuid::from_u128(99).to_string(),
+                        format!("queue index {due_count}"),
+                        "0 admitted at 10ms".to_string(),
+                    ] {
+                        assert!(
+                            message.contains(&expected),
+                            "missing {expected:?}: {message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trace_validation_stops_at_the_first_future_request() {
+        let pending = VecDeque::from(vec![
+            trace_request(1, Some(0.0)),
+            trace_request(2, Some(5.0)),
+            trace_request(3, None),
+        ]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+        let ready = admission.drain_ready_compact(0.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].request.metadata().uuid, Some(Uuid::from_u128(1)));
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+        assert!(admission.drain_ready_compact(5.0, 0, false).is_err());
+        assert_eq!(admission.total_requests(), 2);
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+    }
+
+    #[test]
+    fn trace_requests_not_yet_due_stay_queued_without_error() {
+        let pending = VecDeque::from(vec![
+            trace_request(1, Some(5.0)),
+            trace_request(2, Some(9.0)),
+        ]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+        assert!(
+            admission
+                .drain_ready_compact(1.0, 0, false)
+                .unwrap()
+                .is_empty(),
+            "nothing is due yet"
+        );
+        assert_eq!(admission.total_requests(), 2);
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+
+        let ready = admission.drain_ready_compact(5.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].arrival_time_ms, 5.0);
+        assert_eq!(admission.total_requests(), 1);
+
+        let ready = admission.drain_ready_compact(100.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].arrival_time_ms, 9.0);
+        assert!(admission.is_drained());
     }
 }
 
