@@ -415,11 +415,11 @@ def _create_msa_attention_module(
     # shape [num_index_heads, tokens padded to a multiple of 4 for
     # build_k2q_csr's int4 loads, sparse_topk_blocks], int32.
     max_num_batched_tokens = vllm_config.scheduler_config.max_num_batched_tokens
-    padded_num_tokens = (max_num_batched_tokens + 3) // 4 * 4
+    # vLLM dd10e03f9 changes HTK -> THK (nvidia/model.py:796-803).
+    # Its indexer writes buf[:num_tokens] (nvidia/indexer_msa.py:340-347),
+    # so retaining 0.24's head-first allocation gives the wrong output shape.
     topk_indices_buffer = torch.empty(
-        num_kv_heads,
-        padded_num_tokens,
-        sparse_cfg["sparse_topk_blocks"],
+        *_msa_topk_buffer_shape(num_kv_heads, max_num_batched_tokens, sparse_cfg["sparse_topk_blocks"], vllm_version),
         dtype=torch.int32,
         device=device,
     )
@@ -508,6 +508,16 @@ def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
         block_ids = block_table[i, token_offsets // block_size].to(torch.long)
         slot_mapping[start:end] = block_ids * block_size + token_offsets % block_size
     return int(block_table.max().item()) + 1  # blocks needed incl. null block
+
+
+def _msa_topk_buffer_shape(num_heads: int, max_tokens: int, topk: int, version: str) -> tuple[int, int, int]:
+    """Match the serving allocation's versioned index-head/token axis order."""
+    from packaging.version import Version
+
+    padded_tokens = (max_tokens + 3) // 4 * 4
+    if Version(version) >= Version("0.25.0"):
+        return padded_tokens, num_heads, topk
+    return num_heads, padded_tokens, topk
 
 
 def _msa_query_positions(batch_size: int, seq_len: int, is_context: bool, prefix_len: int = 0) -> list[int]:

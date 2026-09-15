@@ -84,6 +84,7 @@ behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
 - `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
   and the inference-mode model execution boundary).
 - `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
 
 Upstream source:
 https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40

@@ -7,7 +7,11 @@
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 module qualification after inference-mode correction: job
+# 1968407 passed 30 representative MLA/DSA context/generation cases, including
+# cached-prefix cases and positive supported head-count controls. Known kernel
+# failures at smaller head counts remain observations, not removed cases.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.

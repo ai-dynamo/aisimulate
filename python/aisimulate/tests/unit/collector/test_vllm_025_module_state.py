@@ -70,3 +70,16 @@ def test_inference_mode_spans_entire_callback_and_restores_on_error(filename, wo
 def test_msa_positions_follow_cached_plus_query_coordinate(batch, length, context, prefix, expected):
     fn = load_function("collect_msa_module.py", "_msa_query_positions", {})
     assert fn(batch, length, context, prefix) == expected
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("0.24.0", (4, 8, 16)),
+        ("0.25.0", (8, 4, 16)),
+        ("0.25.0+cu130", (8, 4, 16)),
+    ],
+)
+def test_msa_topk_layout_preserves_024_and_uses_025_token_major(version, expected):
+    fn = load_function("collect_msa_module.py", "_msa_topk_buffer_shape", {})
+    assert fn(4, 5, 16, version) == expected
