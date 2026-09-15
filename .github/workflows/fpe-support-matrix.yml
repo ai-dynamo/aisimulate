@@ -228,4 +228,5 @@ jobs:
             python/aisimulate/docs/fpe-support-matrix/index.html
             python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           if-no-files-found: error
-          retention-days: 7
+          # Pages reuses the latest qualified snapshot on documentation pushes.
+          retention-days: 90
