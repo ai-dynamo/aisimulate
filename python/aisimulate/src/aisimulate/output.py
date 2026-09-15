@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from .detail import format_prediction_details
 from .replay.reporting import format_power_diagnostics, format_report_table
 from .sweeper.result import SweepResult
 
@@ -102,9 +103,12 @@ def format_prediction_stdout(
     output_format: str,
     *,
     power_diagnostics: dict[str, Any] | None = None,
+    details: dict[str, Any] | None = None,
     diagnostics_top_n: int = 12,
 ) -> str:
     if output_format == "json":
+        if details is not None:
+            return json.dumps({"summary": summary, "details": details}, sort_keys=True, separators=(",", ":"))
         if power_diagnostics is not None:
             return json.dumps(
                 {"summary": summary, "power_diagnostics": power_diagnostics},
@@ -130,6 +134,8 @@ def format_prediction_stdout(
         table = "\n".join(lines)
     else:
         table = format_report_table(summary)
+    if details is not None:
+        return f"{table}\n\n{format_prediction_details(details, top_n=diagnostics_top_n)}"
     if power_diagnostics is None:
         return table
     return f"{table}\n\n{format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)}"

@@ -29,6 +29,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
+from .detail import build_prediction_details, parse_detail_sections, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -80,13 +81,21 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
-    subparsers.choices["predict"].add_argument(
+    detail_group = subparsers.choices["predict"].add_mutually_exclusive_group()
+    detail_group.add_argument(
+        "--detail",
+        type=parse_detail_sections,
+        metavar="SECTIONS",
+        help="comma-separated summary,memory,time,energy,source or all",
+    )
+    detail_group.add_argument(
         "--diagnostics",
         choices=("power",),
         help="include an AISimulate-native diagnostic section in stdout",
     )
     subparsers.choices["predict"].add_argument(
         "--diagnostics-top-n",
+        "--detail-top-n",
         type=_positive_int,
         default=12,
         metavar="N",
@@ -200,6 +209,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 output_requirements=ReplayOutputRequirements(
                     include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
+                    capture_memory_diagnostics=bool(args.detail and "memory" in args.detail),
                 ),
             )
         except KeyboardInterrupt:
@@ -252,6 +262,11 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 "INFO: validated the complete Weka corpus with configured "
                 f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
             )
+    details = None
+    if args.detail:
+        details = build_prediction_details(native, args.detail)
+        summary = prediction_summary(native)
+        native = {**native, "details": details}
     report_path = write_prediction_report(root, native)
     write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:
@@ -266,6 +281,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             summary,
             args.format,
             power_diagnostics=power_diagnostics,
+            details=details,
             diagnostics_top_n=args.diagnostics_top_n,
         )
     )

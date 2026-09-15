@@ -921,3 +921,108 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         "feasible": 0,
     }
     assert "saved full result" in capsys.readouterr().err
+
+
+def _detail_config(tmp_path):
+    path = tmp_path / "detail.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    return path
+
+
+@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY"])
+def test_detail_rejects_invalid_sections_before_loading_config(selector, monkeypatch):
+    monkeypatch.setattr(cli, "_load_mapping", lambda *_: pytest.fail("must validate selector first"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["predict", "-c", "missing.yaml", "--detail", selector])
+    assert exc.value.code == 2
+
+
+def test_detail_json_preserves_evidence_and_power_gate(tmp_path, monkeypatch, capsys):
+    config = _detail_config(tmp_path)
+    runner = _Runner()
+    runner.power_coverage = 0.89
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(config),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+                "--detail",
+                "all",
+                "--detail-top-n",
+                "1",
+            ]
+        )
+        == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((output / "prediction.json").read_text())
+    assert stdout["details"] == saved["details"]
+    assert set(stdout["details"]["sections"]) == {"summary", "memory", "time", "energy", "source"}
+    assert stdout["details"]["sections"]["energy"] == saved["power_diagnostics"]
+    assert "power_w" not in stdout["details"]["sections"]["energy"]
+    assert stdout["details"]["sections"]["time"]["phases"][0]["operations"][0]["latency_ms"] == 0.25
+    assert stdout["details"]["sections"]["source"]["phases"][0]["operations"][0]["source"] == "silicon"
+    assert stdout["details"]["sections"]["memory"]["status"] == "unavailable"
+    assert stdout["details"]["sections"]["time"]["sol"]["status"] == "unavailable"
+    assert runner.output_requirements.capture_memory_diagnostics is True
+
+
+def test_detail_selection_and_bounded_table_keep_complete_artifact(tmp_path, monkeypatch, capsys):
+    class ManyOperations(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            ops = report.metadata["native_report"]["power_diagnostics"]["phases"][0]["operations"]
+            ops.append({**ops[0], "name": "second_op", "latency_ms": 0.1})
+            return report
+
+    runner = ManyOperations()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(_detail_config(tmp_path)),
+                "--output-dir",
+                str(output),
+                "--detail",
+                "time,time",
+                "--detail-top-n",
+                "1",
+            ]
+        )
+        == 0
+    )
+    stdout = capsys.readouterr().out
+    assert "gemm: 0.25 ms" in stdout
+    assert "second_op" not in stdout
+    assert "1 more operations in prediction.json" in stdout
+    saved = json.loads((output / "prediction.json").read_text())
+    assert list(saved["details"]["sections"]) == ["time"]
+    assert len(saved["details"]["sections"]["time"]["phases"][0]["operations"]) == 2
+    assert runner.output_requirements.capture_memory_diagnostics is False
+
+
+def test_detail_cannot_be_combined_with_legacy_diagnostics():
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["predict", "-c", "x", "--detail", "all", "--diagnostics", "power"])
+    assert exc.value.code == 2

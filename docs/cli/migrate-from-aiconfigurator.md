@@ -237,7 +237,8 @@ required result, keep the AIC command above.
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
-- [4.10 Power and energy analysis (planned)](#410-power-and-energy-analysis)
+- [4.10 Power and energy analysis](#410-power-and-energy-analysis)
+- [4.11 Detailed serving reports](#411-detailed-serving-reports)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -619,14 +620,14 @@ absolute load; see [AFD topology and limits](../sweeper/afd-topology.md).
 
 ### 4.10 Power and energy analysis
 
-**Migration status: planned.** The power work targets modeled per-GPU reporting in `predict`
-and `recommend`, with phase and operation diagnostics. This is an advanced migration path being
-added; the compatibility workflow below remains the available path until that work is complete.
+**Migration status: active forward-pass reporting.** The native engine reports gated per-GPU
+power for supported aggregated and P/D op-level replay in `predict` and recommendation artifacts.
+Use `predict --detail energy` for phase and operation evidence. This does not add a power/energy
+optimization objective or estimate idle, host, whole-server, or wall-plug consumption.
 
 AIC-style modeled power analysis remains available through the compatibility
-`aiconfigurator cli estimate` command and estimator SDK bundled with AISimulate. Unified
-`aisimulate predict` and `aisimulate recommend` do not provide an equivalent complete power report
-or power/energy optimization objective.
+`aiconfigurator cli estimate` command and estimator SDK bundled with AISimulate. Keep that path
+for static-pass reports and diagnostic semantics unavailable from the selected replay provider.
 
 For modeled power and per-operation energy of a decode pass, run:
 
@@ -647,8 +648,7 @@ coverage, rather than measurements of whole-node or datacenter consumption.
 
 The [modeled-power contract](../power-model.md) defines `power_w` as active forward-pass
 average power per GPU and `power_coverage` as latency-weighted energy-data coverage. These
-reserved field meanings guide future unified-CLI implementations; the contract itself does
-not add power reporting to `predict` or `recommend`.
+field meanings apply to native replay evidence and its prediction/recommendation exports.
 
 The unified EPD path can preserve limited encoder-power metadata in `predict --format json` and
 the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder energy data is
@@ -657,6 +657,39 @@ is omitted. The normal terminal summary does not display these power fields. Rec
 artifacts can also retain this metadata for each candidate. These fields do not provide a power
 report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
 compatibility command or SDK when power is a required analysis result.
+
+### 4.11 Detailed serving reports
+
+Use `--detail` to select diagnostics for a concrete AISimulate prediction. For example, the AIC
+fixed-pass inspection from [section 5.4](#detailed-diagnostics) uses:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,energy,source
+```
+
+To inspect the serving workload in `prediction.yaml` from section 3.1, run:
+
+```bash
+aisimulate predict -c prediction.yaml \
+  --detail memory,time,energy,source --output-dir ./prediction-detail
+```
+
+**Result to inspect:** the terminal contains bounded detail tables; `prediction-detail/prediction.json`
+contains the complete `details` object. Add `--format json` for that structured report on stdout,
+or select `--detail all` to include the additional summary section. `--detail-top-n 12` controls
+only the number of operations printed per phase in table output. Inspect a saved recommendation
+by passing its YAML to this same `predict` command.
+
+These commands inspect different workloads: AIC reports the requested fixed batch, while AISimulate
+reports the configured serving replay. Memory describes each role's configured rank-local capacity
+calculation; timing, energy, and source describe native replay operation evidence when available.
+Requested sections explicitly identify missing evidence. SOL comparisons and fixed-pass equivalence
+remain [separate diagnostic differences](#detailed-diagnostics). See the
+[section contracts](user-guide.md#detailed-prediction-reports) for supported evidence and units.
 
 ## 5. Remaining feature and performance gaps
 
@@ -776,10 +809,10 @@ aiconfigurator cli estimate \
 
 ### 5.4 Detailed diagnostics
 
-The unified CLI does not yet expose AIC's general `estimate --detail` reporting interface.
-This is a separate migration gap from fixed-batch estimation and
-[power and energy reporting](#410-power-and-energy-analysis). A summary power value or a
-power-specific diagnostic report does not supply all of the following breakdowns:
+The unified CLI now supports [selectable serving diagnostics](#411-detailed-serving-reports) with
+the same five section names. The remaining gap is diagnostic equivalence: replay does not export
+matched SOL comparisons, fixed-pass reports, or every provider's operation/fallback evidence.
+Keep AIC when those specific results are required. Its detail selectors provide:
 
 | AIC `--detail` selector | Result to inspect |
 | --- | --- |
@@ -810,10 +843,9 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** memory component totals, per-operation timing and energy, and data-source
-breakdowns in the terminal. A unified replacement needs selectable sections, durable structured
-output, and explicit unavailable results for evidence the selected timing model or topology
-cannot provide. Detailed replay reports must identify their workload and aggregation scope;
-they must not imply fixed-batch or SOL equivalence from serving metrics alone.
+breakdowns in the terminal. AISimulate supplies selectable sections, durable structured output,
+and explicit unavailable results. Its replay reports identify their workload and aggregation scope;
+serving metrics do not establish fixed-batch or SOL equivalence.
 
 <a id="deployment-artifacts"></a>
 

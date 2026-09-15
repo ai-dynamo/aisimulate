@@ -468,3 +468,80 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps() -> None:
     assert native["weka_nested_timestamp_basis"] == "relative"
     assert native["agentic_input_format"] == "weka"
     assert report.metrics["completed_requests"] == 4
+
+
+def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.main import main
+
+    config = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "engine": {
+            "model": "Qwen/Qwen3-30B-A3B",
+            "hardware": "b200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"tensor": 4, "moe_tensor": 1, "moe_expert": 4},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
+                    "kv_cache": {"block_size": 64},
+                }
+            },
+        },
+    }
+    path = tmp_path / "native-detail.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = tmp_path / "out"
+    assert (
+        main(
+            [
+                "predict",
+                "-c",
+                str(path),
+                "--detail",
+                "all",
+                "--format",
+                "json",
+                "--detail-top-n",
+                "1",
+                "--output-dir",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((out / "prediction.json").read_text())
+    assert stdout["details"] == saved["details"]
+    from jsonschema import validate
+
+    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    validate(stdout["details"], schema)
+    sections = stdout["details"]["sections"]
+    assert sections["energy"] == saved["power_diagnostics"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["status"] == "available"
+    assert memory["memory_breakdown"]["weights_bytes"] > 0
+    assert memory["num_gpu_blocks"] == memory["total_kv_size_tokens"] // 64
+    assert memory["total_gpu_capacity_bytes"] > memory["total_kv_size_bytes"] > 0
+    assert sections["time"]["phases"]
+    for timing, energy, source in zip(
+        sections["time"]["phases"], sections["energy"]["phases"], sections["source"]["phases"], strict=True
+    ):
+        assert timing["latency_ms"] == energy["latency_ms"]
+        assert [op["source"] for op in source["operations"]] == [op["source"] for op in energy["operations"]]
+        assert len(timing["operations"]) > 1  # JSON is complete despite the table limit.
+    # Repeating the same prediction without diagnostics keeps modeled metrics identical.
+    plain_out = tmp_path / "plain"
+    assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    for key, value in stdout["summary"].items():
+        if key not in {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}:
+            assert plain[key] == value, key

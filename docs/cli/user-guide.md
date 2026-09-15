@@ -352,12 +352,50 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--detail SECTIONS` | comma-separated selectors | None | Print `summary`, `memory`, `time`, `energy`, `source`, or `all`, and save the selected sections in `prediction.json`. |
 | `--diagnostics power` | enum | None | Add the native timing-energy evidence to standard output. JSON is complete; table output is bounded. |
-| `--diagnostics-top-n N` | positive integer | `12` | Maximum operations shown per phase in the power diagnostics table. It never truncates `prediction.json` or JSON standard output. |
+| `--detail-top-n N`, `--diagnostics-top-n N` | positive integer | `12` | Maximum operations shown per phase in a detail table. It never truncates `prediction.json` or JSON standard output. |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
+
+### Detailed prediction reports
+
+Select evidence for the concrete prediction using the CLI:
+
+```bash
+aisimulate predict -c prediction.yaml --detail memory,time,source --output-dir ./detail-output
+aisimulate predict -c prediction.yaml --detail all --format json --output-dir ./detail-json
+```
+
+`--detail` is a presentation and evidence-capture option; there is no `reporting.detail` YAML field.
+Omitting it preserves the existing output shape. `recommend` does not accept the option: run
+`predict --detail` on a selected `recommendations/0001.yaml` to inspect that concrete deployment.
+`--detail` and the existing `--diagnostics power` option are mutually exclusive. The latter keeps
+its existing output contract.
+
+| Section | Evidence and scope |
+| --- | --- |
+| `summary` | Serving-workload summary metrics. |
+| `memory` | The rank-local capacity estimate actually used to configure each role: weights, activations, runtime/communication overhead, CUDA graph reservation, KV budget, and block count. Byte fields end in `_bytes`. This is configured capacity, not observed peak allocation. |
+| `time` | Serving latency metrics plus native replay phase/operation active latency in milliseconds. These accumulated active times do not equal request latency or wall-clock duration. SOL is explicitly unavailable because replay does not export matched SOL evidence. |
+| `energy` | The native `power_diagnostics` object, preserving per-GPU scope, source tags, coverage, and the 90% publication gate. |
+| `source` | Native phase/operation source tags, normalized source kinds, and available coverage explanations. |
+
+`all` selects all five sections; duplicate selectors are collapsed. Unknown or empty selectors
+fail before loading the configuration. Each requested section remains present when evidence is
+unavailable, with an explicit reason rather than invented zeros. Fixed/polynomial timing, FPM,
+analytical AFD/EPD, and external stacks may lack operation evidence. Explicit KV block counts and
+nested rank inputs do not provide a Python-materialized memory component breakdown.
+
+With `--format json`, stdout is one object containing `summary` and `details`. The same complete
+`details` object is stored in `prediction.json`, with `schema_version: "1.0"` and a `sections`
+mapping, described by the [JSON schema](prediction-details.schema.json). Energy retains the native `publication_status`; the other sections use `status`.
+Unsupported or withheld power values remain omitted. Table output limits operations per phase
+with `--detail-top-n` (default 12); it never truncates JSON. The SDK requests memory capture with
+`ReplayOutputRequirements(capture_memory_diagnostics=True, include_raw_report=True)` and reads
+`metadata.native_report.memory_diagnostics`.
 
 ### Override Semantics
 
