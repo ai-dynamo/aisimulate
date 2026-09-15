@@ -8,7 +8,9 @@
 # this collector follows the 0.24.0 APIs and is pinned to the manifest
 # default runtime (vllm collectors pin exactly; see
 # test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version).
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 validation: job 1968755 passed 8 context and 6 generation
+# cases after matching serving inference mode, positions, and THK top-k layout.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
