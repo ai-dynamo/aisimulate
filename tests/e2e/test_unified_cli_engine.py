@@ -386,6 +386,8 @@ def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
     output = tmp_path / "snapshot"
     _run_cli(
         "predict",
+        "--stack",
+        "engine",
         "--config",
         str(config_path),
         "--set",
@@ -411,6 +413,8 @@ def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
     recommendation_output = tmp_path / "recommendation"
     _run_cli(
         "recommend",
+        "--stack",
+        "engine",
         "--config",
         str(recommendation_config),
         "--output-dir",

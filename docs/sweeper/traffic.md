@@ -62,6 +62,8 @@ Every `Workload` field:
 | `num_prefix_groups` | `int` | `0` | Number of distinct shared-prefix groups. |
 | `turns_per_session` | `int` | `1` | Turns per multi-turn session. |
 | `inter_turn_delay_ms` | `float` | `0.0` | Think-time between turns in a multi-turn synthetic session, ms. |
+| `source_type` | `str \| None` | `None` | Explicit traffic source kind passed to replay; must be `"trace"` when `agentic_lanes` or `agentic_snapshot` is set. |
+| `load_type` | `str \| None` | `None` | Explicit traffic load kind passed to replay; must be `"trace_timestamps"` when `agentic_lanes` or `agentic_snapshot` is set. |
 | `trace_path` | `str \| None` | `None` | Path to a replay trace (shape 1). Its presence selects the trace shape and **forbids** all synthetic fields. |
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
