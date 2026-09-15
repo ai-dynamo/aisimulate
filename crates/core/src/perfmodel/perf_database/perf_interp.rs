@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use crate::common::error::AicError;
+use crate::perfmodel::kd_tree::{KdTree, NeighborCollector, PointSet};
 
 /// One measured table leaf — mirrors the Python loader dict
 /// `{"latency", "power", "energy"}` (`power` straight from the parquet
@@ -91,6 +92,7 @@ struct FlatHoldIndex {
     log_coords: Box<[f64]>,
     offsets: Box<[usize]>,
     leaves: Box<[LeafValue]>,
+    kd_tree: Option<KdTree>,
 }
 
 impl FlatHoldIndex {
@@ -136,12 +138,15 @@ impl FlatHoldIndex {
             &mut offsets,
             &mut leaves,
         );
-        Self {
+        let mut index = Self {
             coords: coords.into_boxed_slice(),
             log_coords: log_coords.into_boxed_slice(),
             offsets: offsets.into_boxed_slice(),
             leaves: leaves.into_boxed_slice(),
-        }
+            kd_tree: None,
+        };
+        index.kd_tree = KdTree::build(&index);
+        index
     }
 
     fn len(&self) -> usize {
@@ -158,6 +163,16 @@ impl FlatHoldIndex {
 
     fn log_coords(&self, leaf_idx: usize) -> &[f64] {
         &self.log_coords[self.offsets[leaf_idx]..self.offsets[leaf_idx + 1]]
+    }
+}
+
+impl PointSet for FlatHoldIndex {
+    fn len(&self) -> usize {
+        FlatHoldIndex::len(self)
+    }
+
+    fn point(&self, sample: usize) -> &[f64] {
+        self.log_coords(sample)
     }
 }
 
@@ -696,20 +711,108 @@ struct HoldAnchor {
 }
 
 /// One entry in the bounded nearest-leaf set.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct HoldCandidate {
     distance_sq: f64,
     leaf_idx: usize,
+}
+
+impl HoldCandidate {
+    fn cmp(self, other: Self) -> std::cmp::Ordering {
+        self.distance_sq
+            .total_cmp(&other.distance_sq)
+            .then_with(|| self.leaf_idx.cmp(&other.leaf_idx))
+    }
+}
+
+struct HoldCandidates {
+    limit: usize,
+    values: Vec<HoldCandidate>,
+}
+
+impl HoldCandidates {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            values: Vec::with_capacity(limit),
+        }
+    }
+
+    /// Consume the max-heap and return the exact nearest-first order expected
+    /// by validity filtering and support-radius selection.
+    fn into_sorted_values(mut self) -> Vec<HoldCandidate> {
+        self.values.sort_unstable_by(|left, right| left.cmp(*right));
+        self.values
+    }
+
+    fn sift_up(&mut self, mut child: usize) {
+        while child > 0 {
+            let parent = (child - 1) / 2;
+            if !self.values[child].cmp(self.values[parent]).is_gt() {
+                break;
+            }
+            self.values.swap(child, parent);
+            child = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut parent: usize) {
+        loop {
+            let left = parent * 2 + 1;
+            if left >= self.values.len() {
+                break;
+            }
+            let right = left + 1;
+            let worse_child =
+                if right < self.values.len() && self.values[right].cmp(self.values[left]).is_gt() {
+                    right
+                } else {
+                    left
+                };
+            if !self.values[worse_child].cmp(self.values[parent]).is_gt() {
+                break;
+            }
+            self.values.swap(parent, worse_child);
+            parent = worse_child;
+        }
+    }
+}
+
+impl NeighborCollector for HoldCandidates {
+    fn consider(&mut self, leaf_idx: usize, distance_sq: f64) {
+        if self.limit == 0 {
+            return;
+        }
+        let candidate = HoldCandidate {
+            distance_sq,
+            leaf_idx,
+        };
+        if self.values.len() < self.limit {
+            self.values.push(candidate);
+            self.sift_up(self.values.len() - 1);
+            return;
+        }
+
+        if !candidate.cmp(self.values[0]).is_lt() {
+            return;
+        }
+        self.values[0] = candidate;
+        self.sift_down(0);
+    }
+
+    fn cutoff_distance_squared(&self) -> Option<f64> {
+        (self.limit > 0 && self.values.len() == self.limit).then(|| self.values[0].distance_sq)
+    }
 }
 
 /// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
 /// leaves in joint log2 space, with tapered modified-Shepard weights (support
 /// radius R = the next valid leaf's distance; leaves at d == R weigh zero, so
 /// no tie-ordering rule is needed).
-/// Selection is a single pass over a lazily prepared flat leaf index with a
-/// small best-M buffer. The index stores coordinates and their log2 values in
-/// contiguous arrays. The buffer carries `SLACK` extra candidates so validity
-/// filtering (lat/sol > 0) almost never needs the full-collect fallback below.
+/// Selection uses an exact k-d tree over a lazily prepared flat leaf index. The
+/// index stores coordinates and their log2 values in contiguous arrays. The
+/// bounded result carries `SLACK` extra candidates so validity filtering
+/// (lat/sol > 0) almost never needs the full-collect fallback below.
 fn hold_anchor_weights_prepared(
     cfg: &OpInterpConfig,
     index: &FlatHoldIndex,
@@ -727,27 +830,18 @@ fn hold_anchor_weights_prepared(
         ));
     }
 
-    let mut best: Vec<HoldCandidate> = Vec::with_capacity(m + 1);
-    for leaf_idx in 0..index.len() {
-        let mut distance_sq = 0.0;
-        for (axis, &value) in index.log_coords(leaf_idx).iter().enumerate() {
-            let delta = value - q_log[axis];
-            distance_sq += delta * delta;
-        }
-        if best.len() == m {
-            if distance_sq >= best[m - 1].distance_sq {
-                continue;
+    let mut best = HoldCandidates::new(m);
+    if let Some(tree) = index.kd_tree.as_ref().filter(|tree| tree.can_query(&q_log)) {
+        tree.search(index, &q_log, &mut best);
+    } else {
+        for leaf_idx in 0..index.len() {
+            let mut distance_sq = 0.0;
+            for (axis, &value) in index.log_coords(leaf_idx).iter().enumerate() {
+                let delta = value - q_log[axis];
+                distance_sq += delta * delta;
             }
-            best.pop();
+            best.consider(leaf_idx, distance_sq);
         }
-        let pos = best.partition_point(|candidate| candidate.distance_sq <= distance_sq);
-        best.insert(
-            pos,
-            HoldCandidate {
-                distance_sq,
-                leaf_idx,
-            },
-        );
     }
 
     // Validity-check in distance order: the first nn_leaves valid candidates
@@ -756,7 +850,7 @@ fn hold_anchor_weights_prepared(
     let mut support_r = f64::INFINITY;
     let mut support_found = false;
     let mut anchor = Vec::with_capacity(coords.len());
-    for candidate in best {
+    for candidate in best.into_sorted_values() {
         let c = index.coords(candidate.leaf_idx);
         let leaf = index.leaves[candidate.leaf_idx];
         anchor.clear();
@@ -2127,6 +2221,52 @@ mod tests {
     }
 
     #[test]
+    fn hold_candidate_heap_matches_exact_sorted_top_k() {
+        let tiny_squared = f64::MIN_POSITIVE * f64::MIN_POSITIVE;
+        let distances = [
+            4.0,
+            1.0,
+            9.0,
+            1.0,
+            0.0,
+            16.0,
+            4.0,
+            2.0,
+            2.0,
+            8.0,
+            3.0,
+            tiny_squared,
+        ];
+
+        for limit in [0, 1, 2, 5, 12, 20] {
+            let mut expected = distances
+                .iter()
+                .enumerate()
+                .map(|(leaf_idx, &distance_sq)| HoldCandidate {
+                    distance_sq,
+                    leaf_idx,
+                })
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by(|left, right| left.cmp(*right));
+            expected.truncate(limit);
+
+            let mut actual = HoldCandidates::new(limit);
+            for (leaf_idx, &distance_sq) in distances.iter().enumerate() {
+                actual.consider(leaf_idx, distance_sq);
+            }
+            if limit > 0 && limit <= distances.len() {
+                assert_eq!(
+                    actual.cutoff_distance_squared().unwrap().to_bits(),
+                    expected.last().unwrap().distance_sq.to_bits()
+                );
+            } else {
+                assert!(actual.cutoff_distance_squared().is_none());
+            }
+            assert_eq!(actual.into_sorted_values(), expected);
+        }
+    }
+
+    #[test]
     fn flat_hold_index_preserves_ties_and_invalid_fallback() {
         let sol = |_: &[f64]| 1.0;
 
@@ -2172,6 +2312,79 @@ mod tests {
             selected,
             vec![vec![12, 2], vec![13, 2], vec![14, 2], vec![15, 2]]
         );
+    }
+
+    #[test]
+    fn indexed_hold_matches_linear_hold_bit_for_bit_in_two_to_four_dimensions() {
+        const AXES_2: &[&str] = &["a", "b"];
+        const AXES_3: &[&str] = &["a", "b", "c"];
+        const AXES_4: &[&str] = &["a", "b", "c", "d"];
+
+        fn build_table(dims: usize) -> Node {
+            fn insert_points(table: &mut Node, dims: usize, path: &mut Vec<u32>) {
+                if path.len() == dims {
+                    let latency = path.iter().enumerate().fold(1.0, |value, (axis, coord)| {
+                        value + f64::from(*coord) * (axis + 1) as f64
+                    });
+                    table.insert_value(path, LeafValue::with_power(latency, latency + 17.0));
+                    return;
+                }
+                for coord in [1, 2, 4, 8] {
+                    // Leave some regular-grid corners absent. All leaves still
+                    // have the same dimensions, so the exact index remains valid.
+                    if path.first() == Some(&8) && coord == 8 {
+                        continue;
+                    }
+                    path.push(coord);
+                    insert_points(table, dims, path);
+                    path.pop();
+                }
+            }
+
+            let mut table = Node::branch();
+            insert_points(&mut table, dims, &mut Vec::new());
+            table
+        }
+
+        fn assert_same_anchor(left: &HoldAnchor, right: &HoldAnchor) {
+            assert_eq!(left.coords, right.coords);
+            assert_eq!(left.latency.to_bits(), right.latency.to_bits());
+            assert_eq!(left.power.to_bits(), right.power.to_bits());
+            assert_eq!(left.sol.to_bits(), right.sol.to_bits());
+            assert_eq!(left.weight.to_bits(), right.weight.to_bits());
+        }
+
+        let sol = |coords: &[f64]| {
+            coords.iter().enumerate().fold(1.0, |value, (axis, coord)| {
+                value + coord * (axis + 2) as f64
+            })
+        };
+        for (axes, queries) in [
+            (AXES_2, vec![vec![16.0, 3.0], vec![3.0, 16.0]]),
+            (AXES_3, vec![vec![16.0, 3.0, 5.0], vec![3.0, 16.0, 12.0]]),
+            (
+                AXES_4,
+                vec![vec![16.0, 3.0, 5.0, 7.0], vec![3.0, 16.0, 12.0, 6.0]],
+            ),
+        ] {
+            let table = build_table(axes.len());
+            let indexed = FlatHoldIndex::build(&table);
+            assert!(indexed.kd_tree.is_some());
+            let mut linear = FlatHoldIndex::build(&table);
+            linear.kd_tree = None;
+            let cfg = OpInterpConfig::grid(axes, &sol);
+
+            for query in queries {
+                let indexed_anchors =
+                    hold_anchor_weights_prepared(&cfg, &indexed, &query, 4).unwrap();
+                let linear_anchors =
+                    hold_anchor_weights_prepared(&cfg, &linear, &query, 4).unwrap();
+                assert_eq!(indexed_anchors.len(), linear_anchors.len());
+                for (indexed_anchor, linear_anchor) in indexed_anchors.iter().zip(&linear_anchors) {
+                    assert_same_anchor(indexed_anchor, linear_anchor);
+                }
+            }
+        }
     }
 
     #[test]
