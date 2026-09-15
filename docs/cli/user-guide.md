@@ -1650,6 +1650,8 @@ sections and skipped-section reasons to the normal prediction summary.
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,
   and unsupported providers/topologies may have no exported estimate.
+  Analytical EPD retains available language-worker estimates and marks the encoder component
+  breakdown unavailable; its memory section is partial when language estimates exist.
 - `time`: existing TTFT, TTST, TPOT, inter-token, and end-to-end request latency statistics in
   milliseconds, plus trajectory latency statistics when exported by the runner. Replay duration
   and simulator wall time remain in the summary.

@@ -671,6 +671,8 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 `details.sections` and `details.skipped`; `--format json` prints the same `details` object beside
 `summary`. Memory may be skipped for explicit KV blocks or providers/topologies without an
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
+Analytical EPD retains available language-worker estimates and identifies the missing encoder
+component breakdown; it does not claim a complete EPD memory report.
 `energy` and `source` are unsupported selectors and are rejected; `all` does not request them.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).

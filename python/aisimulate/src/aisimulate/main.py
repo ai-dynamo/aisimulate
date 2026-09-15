@@ -208,6 +208,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         native = {"summary": dict(report.metrics)}
     if epd:
         native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
+        if "memory_diagnostics" in native["metadata"]:
+            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
         # JSON stdout, like prediction.json, must identify the approximation.
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]

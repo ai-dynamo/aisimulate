@@ -437,7 +437,22 @@ class EngineReplayRunner:
                 or output_requirements.capture_memory_diagnostics
             ),
         )
-        return apply_encoder_overlay(normalized, original_spec) if encoder is not None else normalized
+        if encoder is not None:
+            normalized = apply_encoder_overlay(normalized, original_spec)
+            if memory_diagnostics is not None:
+                memory_diagnostics["encoder"] = {
+                    "scope": "capacity_estimate_per_rank",
+                    "stage": "before_native_capacity_adjustments",
+                    "status": "unavailable",
+                    "unavailable_reason": "analytical EPD does not export an encoder memory component estimate",
+                }
+                # Capacity estimates remain valid across the overlay. Raw language
+                # timing/records do not describe the combined EPD workload.
+                normalized = ReplayReport(
+                    metrics=normalized.metrics,
+                    metadata={**normalized.metadata, "memory_diagnostics": memory_diagnostics},
+                )
+        return normalized
 
     def close(self) -> None:
         """Release worker-local resources.
