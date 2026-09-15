@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,3 +84,66 @@ class PagesSiteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    relative = PAGES.DOCS_ROOT / "e2e-accuracy/summary.json"
+    source = repo / relative
+    source.parent.mkdir(parents=True)
+    main_summary = json.loads((ROOT / relative).read_text())
+    release_summary = json.loads(json.dumps(main_summary))
+    release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
+    source.write_text(json.dumps(release_summary))
+    (source.parent / "app.js").write_text("untrusted release javascript")
+    git("add", ".")
+    git("commit", "-qm", "release snapshot")
+    release_sha = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/release/0.12.0", release_sha)
+    git("update-ref", "refs/remotes/origin/release/nested/rc1", release_sha)
+    source.unlink()
+    git("add", ".")
+    git("commit", "-qm", "no snapshot yet")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
+    source.write_text(json.dumps(main_summary))
+    output = tmp_path / "site"
+    (output / "e2e-accuracy").mkdir(parents=True)
+    PAGES._build_accuracy_catalog(repo, output, True)
+    catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
+    entries = {entry["branch"]: entry for entry in catalog["branches"]}
+    assert list(entries) == ["main", "release/0.12.0", "release/0.13.0", "release/nested/rc1"]
+    assert entries["main"]["status"] == "historical"
+    assert entries["release/0.12.0"]["status"] == "evaluated"
+    assert entries["release/nested/rc1"]["status"] == "inherited"
+    assert entries["release/0.13.0"]["summary_path"] is None
+    assert entries["release/0.13.0"]["status"] == "unavailable"
+    assert entries["release/0.12.0"]["published_from_commit"] == release_sha
+    assert not list(output.rglob("*.js"))
+    assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3
+    published = json.loads((output / "e2e-accuracy" / entries["release/0.12.0"]["summary_path"]).read_text())
+    assert published == release_summary
+    # A deleted release disappears on the next catalog build.
+    git("update-ref", "-d", "refs/remotes/origin/release/0.12.0")
+    PAGES._build_accuracy_catalog(repo, output, True)
+    assert "release/0.12.0" not in [
+        entry["branch"] for entry in json.loads((output / "e2e-accuracy/branches.json").read_text())["branches"]
+    ]
+
+
+def test_malformed_accuracy_data_fails_publication() -> None:
+    for value in (
+        "[]",
+        "{}",
+        "not json",
+        '{"schema_version": 1, "models": [], "snapshot": {"evaluated_revision": {"commit_sha": "oops"}}}',
+    ):
+        with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
+            PAGES._accuracy_summary(value)

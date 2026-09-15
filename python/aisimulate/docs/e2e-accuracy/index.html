@@ -57,7 +57,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="shell tab-nav-inner">
         <a class="active" href="./" aria-current="page">E2E Accuracy Overview</a>
         <a href="https://github.com/ai-dynamo/aisimulate">Repository</a>
-        <a href="./summary.json" download>Download JSON</a>
+        <a id="download-json" href="./summary.json" download>Download JSON</a>
       </div>
     </nav>
 
@@ -65,6 +65,9 @@ SPDX-License-Identifier: Apache-2.0
       <section class="overview-heading" aria-labelledby="page-title">
         <h1 id="page-title">E2E Accuracy Overview</h1>
         <div class="heading-controls">
+          <label class="branch-control" for="branch-select">AISimulate branch
+            <select id="branch-select" disabled><option>Loading…</option></select>
+          </label>
           <span
             class="scope-control"
             title="The checked-in public snapshot contains single-node configurations only."
@@ -76,21 +79,32 @@ SPDX-License-Identifier: Apache-2.0
         </div>
       </section>
 
+      <section class="migration-context" aria-label="CLI migration comparison">
+        <p><strong>Compare the new AISim CLI with the legacy AIC CLI.</strong>
+          We show both CLI results against measured silicon to help users build confidence
+          that the new AISim CLI is comparable to the old AIC CLI during migration.</p>
+        <p>AIC CLI results are temporary: we will remove this comparison series when we
+          deprecate the AIC CLI. Check successful-point counts alongside errors;
+          the two CLIs can have different prediction coverage.</p>
+      </section>
+
+      <p class="branch-status" id="branch-status" role="status">Loading branch evidence…</p>
       <p class="identity-line" id="identity-line">Loading snapshot dimensions…</p>
 
       <section class="summary-grid" id="summary-grid" aria-label="Snapshot summary">
         <div class="loading-card">Loading summary…</div>
       </section>
 
+      <div class="matrix-layout" id="matrix-layout">
       <section class="matrix-panel" aria-labelledby="matrix-heading">
         <h2 id="matrix-heading">
-          MAPE per model vs silicon — AISimulate over successful replay points; AIC over all points
+          MAPE vs silicon — AISim CLI over successful replay points; AIC CLI over all points
         </h2>
         <div class="table-scroll" role="region" aria-label="Accuracy matrix" tabindex="0">
           <table>
             <caption class="sr-only">
               End-to-end accuracy metrics grouped by model and workload. Activate a column heading
-              to sort model groups.
+              to sort model groups. Expand a workload, then select a GPU for details.
             </caption>
             <thead>
               <tr>
@@ -98,10 +112,10 @@ SPDX-License-Identifier: Apache-2.0
                   <button class="sort-button" data-sort="model">Model <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicPoints">AIC points <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aicPoints">AIC CLI points <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISimulate points <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISim CLI points <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
                   <button class="sort-button numeric" data-sort="gpuSkus">GPU SKUs <span aria-hidden="true">↕</span></button>
@@ -113,16 +127,16 @@ SPDX-License-Identifier: Apache-2.0
                   <button class="sort-button" data-sort="precisions">Precisions <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulateTpot">AISimulate TPOT MAPE <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulateTpot">AISim CLI TPOT MAPE <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulateTtft">AISimulate TTFT MAPE <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulateTtft">AISim CLI TTFT MAPE <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicTpot">AIC TPOT MAPE <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aicTpot">AIC CLI TPOT MAPE <span aria-hidden="true">↕</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicTtft">AIC TTFT MAPE <span aria-hidden="true">↕</span></button>
+                  <button class="sort-button numeric" data-sort="aicTtft">AIC CLI TTFT MAPE <span aria-hidden="true">↕</span></button>
                 </th>
               </tr>
             </thead>
@@ -132,6 +146,9 @@ SPDX-License-Identifier: Apache-2.0
           </table>
         </div>
       </section>
+
+      <aside id="drilldown" class="drilldown" aria-label="Accuracy details" hidden></aside>
+      </div>
 
       <section class="public-notes" aria-label="Scope and provenance">
         <details open>

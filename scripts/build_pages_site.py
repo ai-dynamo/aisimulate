@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +77,88 @@ def _copy_dataset(source: Path, destination: Path) -> None:
         _copy_file(csv_path, destination / filename)
 
 
-def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
+def _git(repo_root: Path, *args: str) -> str:
+    try:
+        return subprocess.check_output(["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE).strip()
+    except subprocess.CalledProcessError as exc:
+        raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
+
+
+def _accuracy_summary(text: str) -> dict:
+    try:
+        summary = json.loads(text)
+        if summary.get("schema_version") != 1 or not isinstance(summary.get("models"), list):
+            raise ValueError("unsupported summary schema")
+        if not isinstance(summary.get("snapshot"), dict):
+            raise ValueError("snapshot identity is missing")
+        revision = summary["snapshot"].get("evaluated_revision")
+        if revision is not None and (
+            not isinstance(revision, dict)
+            or not isinstance(revision.get("commit_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", revision["commit_sha"])
+            or not isinstance(revision.get("branch"), str)
+        ):
+            raise ValueError("invalid evaluated revision")
+        return summary
+    except (ValueError, AttributeError) as exc:
+        raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc
+
+
+def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: bool) -> None:
+    """Package data only from release refs; all branches share the reviewed UI.
+
+    A branch's tree is a publication location, never evidence that its current
+    commit was evaluated. Legacy package-only results retain that distinction.
+    """
+    relative_path = DOCS_ROOT / "e2e-accuracy" / "summary.json"
+    entries = []
+    sources = [("main", None)]
+    if include_refs:
+        refs = _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/release/")
+        sources.extend((ref.removeprefix("refs/remotes/origin/"), ref) for ref in refs.splitlines())
+    for branch, ref in sources:
+        entry = {"branch": branch, "summary_path": None, "published_from_commit": None}
+        if ref is None:
+            source = repo_root / relative_path
+            if source.is_symlink():
+                raise PagesBuildError("accuracy summary cannot be a symlink")
+            content = source.read_text()
+            if include_refs:
+                entry["published_from_commit"] = _git(repo_root, "rev-parse", "HEAD")
+        else:
+            commit = _git(repo_root, "rev-parse", ref)
+            entry["published_from_commit"] = commit
+            tree_entry = _git(repo_root, "ls-tree", commit, "--", relative_path.as_posix())
+            if not tree_entry:
+                entry["status"] = "unavailable"
+                entries.append(entry)
+                continue
+            if not tree_entry.startswith("100644 blob "):
+                raise PagesBuildError(f"accuracy summary must be a regular file on {branch}")
+            content = _git(repo_root, "show", f"{commit}:{relative_path.as_posix()}")
+        summary = _accuracy_summary(content)
+        revision = summary["snapshot"].get("evaluated_revision")
+        if revision and revision["branch"] == branch:
+            entry["status"] = "evaluated"
+        elif revision:
+            entry["status"] = "inherited"
+        else:
+            entry["status"] = "historical"
+        if revision:
+            entry["evaluated_revision"] = revision
+        # Fixed hex paths avoid path traversal, slash encoding, and collisions
+        # between release/foo and release-foo. Never copy branch HTML or JS.
+        key = hashlib.sha256(branch.encode()).hexdigest()[:16]
+        entry["summary_path"] = f"branches/{key}/summary.json"
+        destination = output_dir / "e2e-accuracy" / entry["summary_path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        entries.append(entry)
+    catalog = {"schema_version": 1, "default_branch": "main", "branches": entries}
+    (output_dir / "e2e-accuracy" / "branches.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
+
+
+def build_site(repo_root: Path, output_dir: Path, *, accuracy_refs: bool = False) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
     output_dir = output_dir.resolve()
@@ -106,6 +190,8 @@ def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
                 output_dir / "data" / public_name,
             )
 
+    _build_accuracy_catalog(repo_root, output_dir, accuracy_refs)
+
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
 
@@ -113,9 +199,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--accuracy-refs", action="store_true", help="Include every fetched origin/release/* accuracy snapshot"
+    )
     args = parser.parse_args()
 
-    files = build_site(args.repo_root, args.output_dir)
+    files = build_site(args.repo_root, args.output_dir, accuracy_refs=args.accuracy_refs)
     print(f"Built {len(files)} public files in {args.output_dir.resolve()}")
 
 
