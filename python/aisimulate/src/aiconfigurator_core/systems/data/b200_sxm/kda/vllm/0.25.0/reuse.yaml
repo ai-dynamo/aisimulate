@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+reuse:
+- table: kda_perf
+  from_version: "0.1.dev19262"
+  reason: >-
+    Explicit user-approved reuse of the existing B200 Kimi-K3 preview data for
+    the 0.25.0 prediction lane. Original measured build, collection date and
+    data remain unchanged; this is not a new 0.25.0 measurement.
+  approved_by: kimiz
