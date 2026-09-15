@@ -101,6 +101,12 @@ pub struct PreparedAgenticSnapshots {
     evidence: Vec<AgenticSnapshotEvidence>,
 }
 
+enum PlayCut {
+    Sampled,
+    Absolute(f64),
+    FromStart,
+}
+
 impl ValidatedAgenticGraph {
     pub fn prepare_snapshots(
         &self,
@@ -227,13 +233,38 @@ impl AgenticReplayContext {
     }
 
     /// Prepare a deterministic corpus-cycle instance. `None` samples an initial
-    /// cut; `Some(0.0)` starts a normalized Weka play from turn zero. Ordinals
-    /// must advance on lane reuse, including while old server work still exists.
+    /// cut; `Some(cut_ms)` uses an absolute recorded timestamp, so `Some(0.0)`
+    /// starts a play only when its recorded clock begins at zero. Use
+    /// [`Self::prepare_play_from_start`] for an origin-independent full play.
+    /// Ordinals must advance on lane reuse, including while old server work exists.
     pub fn prepare_play(
         self: &Arc<Self>,
         lane_id: usize,
         play_ordinal: u64,
         cut_ms: Option<f64>,
+    ) -> Result<AgenticPlaySnapshot> {
+        self.prepare_play_with_cut(
+            lane_id,
+            play_ordinal,
+            cut_ms.map_or(PlayCut::Sampled, PlayCut::Absolute),
+        )
+    }
+
+    /// Prepare every request in the selected source play, starting at its
+    /// earliest recorded request timestamp regardless of the clock origin.
+    pub fn prepare_play_from_start(
+        self: &Arc<Self>,
+        lane_id: usize,
+        play_ordinal: u64,
+    ) -> Result<AgenticPlaySnapshot> {
+        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart)
+    }
+
+    fn prepare_play_with_cut(
+        self: &Arc<Self>,
+        lane_id: usize,
+        play_ordinal: u64,
+        cut: PlayCut,
     ) -> Result<AgenticPlaySnapshot> {
         if lane_id >= self.lanes {
             bail!("snapshot lane is outside the configured lane count");
@@ -276,7 +307,11 @@ impl AgenticReplayContext {
         let digest = blake3::hash(&key);
         let bits = u64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap());
         let unit = (bits >> 11) as f64 / ((1_u64 << 53) as f64);
-        let t_star_ms = cut_ms.unwrap_or(first + (0.25 + 0.5 * unit) * (last - first));
+        let t_star_ms = match cut {
+            PlayCut::Sampled => first + (0.25 + 0.5 * unit) * (last - first),
+            PlayCut::Absolute(cut_ms) => cut_ms,
+            PlayCut::FromStart => first,
+        };
         if !t_star_ms.is_finite() || t_star_ms < first || t_star_ms > last {
             bail!("snapshot cut must lie within recorded request-start bounds [{first}, {last}]");
         }

@@ -217,8 +217,8 @@ mod tests {
     fn agentic_snapshot_preparation_and_execution_are_public() {
         use aiconfigurator_core::replay::loadgen::{
             AgenticGraphBuilder, AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow,
-            AgenticSnapshotOptions, AgenticSourceProvenance, WorkloadDriver,
-            AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION,
+            AgenticSnapshotOptions, AgenticSourceProvenance, PreparedAgenticSnapshots,
+            WorkloadDriver, AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION,
         };
 
         let mut builder = AgenticGraphBuilder::new(AgenticMooncakeHeader {
@@ -232,7 +232,7 @@ mod tests {
             },
         })
         .unwrap();
-        for (request_id, start) in [("before", 0.0), ("after", 100.0)] {
+        for (request_id, start) in [("before", 1_000.0), ("after", 1_100.0)] {
             builder
                 .push(AgenticMooncakeRow {
                     request_id: request_id.into(),
@@ -255,10 +255,17 @@ mod tests {
         assert_eq!(prepared.snapshots().len(), 1);
         let evidence = &prepared.snapshots()[0];
         assert_eq!(evidence.seed, 42);
-        assert!((25.0..75.0).contains(&evidence.t_star_ms));
+        assert!((1_025.0..1_075.0).contains(&evidence.t_star_ms));
         let context = prepared.context();
-        let first = context.prepare_play(0, 0, Some(0.0)).unwrap();
-        let recycled = context.prepare_play(0, 1, Some(0.0)).unwrap();
+        assert!(context.prepare_play(0, 0, Some(0.0)).is_err());
+        let first = context.prepare_play_from_start(0, 0).unwrap();
+        let recycled = context.prepare_play_from_start(0, 1).unwrap();
+        assert_eq!(first.evidence().t_star_ms, 1_000.0);
+        assert!(first
+            .evidence()
+            .requests
+            .iter()
+            .all(|request| !request.historical));
         assert_ne!(first.evidence().cache_id, recycled.evidence().cache_id);
         assert_ne!(
             first.materialize_prefix("before", 128).unwrap(),
@@ -268,6 +275,14 @@ mod tests {
             first.materialize_prefix("before", 65).unwrap(),
             first.materialize_prefix("after", 128).unwrap()[..65]
         );
-        let _driver = WorkloadDriver::new_agentic_snapshots(prepared, 32, true, 2.0).unwrap();
+        let mut driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
+            32,
+            true,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(driver.total_turns(), 2);
+        assert_eq!(driver.next_ready_time_ms(), Some(0.0));
     }
 }

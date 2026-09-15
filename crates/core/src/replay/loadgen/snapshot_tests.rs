@@ -106,6 +106,95 @@ fn drain(mut driver: WorkloadDriver) -> BTreeMap<String, ReadyTurn> {
 }
 
 #[test]
+fn full_play_start_handles_nonzero_source_clocks_without_changing_absolute_cuts() {
+    let root = row("root", "main", 10_000.0, Some(250.0));
+    let mut next = row("next", "main", 11_000.0, Some(250.0));
+    next.dependencies = vec![edge(
+        "root",
+        AgenticDependencyRelation::Sequence,
+        AgenticDependencyTrigger::Completion,
+        750.0,
+    )];
+    let mut earlier_play = row("other-play", "other", 1_000.0, None);
+    earlier_play.play_id = "earlier-play".into();
+    let mooncake = graph(vec![earlier_play, root, next]);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("nonzero-origin.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "id": "nonzero-origin", "models": ["model"],
+            "block_size": 64, "hash_id_scope": "local",
+            "requests": [
+                {"t": 10, "type": "s", "model": "model", "in": 128,
+                 "out": 3, "api_time": 0.25, "hash_ids": [10, 20]},
+                {"t": 11, "type": "s", "model": "model", "in": 192,
+                 "out": 3, "api_time": 0.25, "hash_ids": [10, 20, 30]}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let weka = load_weka_agentic_graph(&path, Some(64)).unwrap();
+
+    // Weka normalizes its nonzero source clock; Mooncake retains absolute starts.
+    for (graph, first_ms) in [(mooncake, 10_000.0), (weka, 0.0)] {
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        let context = prepared.context();
+        let play = context.prepare_play_from_start(0, 1).unwrap();
+        assert_eq!(play.evidence().t_star_ms, first_ms);
+        assert_eq!(play.evidence().requests.len(), 2);
+        assert!(play.evidence().requests.iter().all(|r| !r.historical));
+        assert!(play.evidence().primers.is_empty());
+        assert_eq!(
+            play.evidence(),
+            context
+                .prepare_play(0, 1, Some(first_ms))
+                .unwrap()
+                .evidence()
+        );
+        assert_eq!(
+            context
+                .prepare_play(0, 1, Some(first_ms + 500.0))
+                .unwrap()
+                .evidence()
+                .requests
+                .iter()
+                .filter(|r| r.historical)
+                .count(),
+            1
+        );
+        if first_ms > 0.0 {
+            assert!(context.prepare_play(0, 1, Some(0.0)).is_err());
+        }
+
+        let mut driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
+            64,
+            true,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(driver.total_turns(), 2);
+        assert_eq!(driver.next_ready_time_ms(), Some(0.0));
+        let root = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(root.len(), 1);
+        assert!(driver.pop_ready(500.0, usize::MAX).is_empty());
+        driver.on_complete(root[0].request_uuid, 600.0).unwrap();
+        // Live completion plus the scaled edge delay controls the second turn.
+        assert_eq!(driver.next_ready_time_ms(), Some(975.0));
+        assert!(driver.pop_ready(974.0, usize::MAX).is_empty());
+        let next = driver.pop_ready(975.0, usize::MAX);
+        assert_eq!(next.len(), 1);
+        driver.on_complete(next[0].request_uuid, 980.0).unwrap();
+        assert!(driver.is_drained());
+    }
+}
+
+#[test]
 fn exact_cut_preserves_active_history_and_original_identity_with_residual_timers() {
     let graph = boundary_graph();
     let play = prepare(&graph, 100.0);

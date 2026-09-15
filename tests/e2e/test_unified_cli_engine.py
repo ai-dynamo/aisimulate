@@ -370,7 +370,7 @@ def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentic_snapshot_cli_and_python_keep_identical_evidence(tmp_path: Path, backend: str) -> None:
+def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(tmp_path: Path, backend: str) -> None:
     config_path = _REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["engine"]["backend"] = backend
@@ -402,3 +402,30 @@ def test_agentic_snapshot_cli_and_python_keep_identical_evidence(tmp_path: Path,
     assert saved["agentic_snapshots"] == report["agentic_snapshots"]
     records = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
     assert records == report["per_request"]
+
+    config["engine"]["workers"]["aggregated"]["parallelism"]["preset"] = False
+    config["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+    config["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 11}
+    recommendation_config = tmp_path / "recommend.yaml"
+    recommendation_config.write_text(yaml.safe_dump(config))
+    recommendation_output = tmp_path / "recommendation"
+    _run_cli(
+        "recommend",
+        "--config",
+        str(recommendation_config),
+        "--output-dir",
+        str(recommendation_output),
+        "--format",
+        "json",
+    )
+    result = json.loads((recommendation_output / "recommendation.json").read_text())
+    [candidate] = result["candidates"]
+    assert candidate["status"] == "feasible", candidate.get("reason")
+    assert candidate["provenance"]["workload"]["agentic_snapshot"] == {"seed": 42}
+    evidence = candidate["provenance"]["runner_metadata"]["agentic_snapshots"]
+    assert evidence == report["agentic_snapshots"]
+    assert [snapshot["seed"] for snapshot in evidence] == [42]
+    assert candidate["metrics"]["completed_requests"] == report["completed_requests"]
+    [recommended_path] = (recommendation_output / "recommendations").glob("*.yaml")
+    recommended = yaml.safe_load(recommended_path.read_text())
+    assert recommended["traffic"]["load"]["agentic_snapshot"] == {"seed": 42}
