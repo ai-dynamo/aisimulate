@@ -729,24 +729,34 @@ fn g3_summary_serializes_g3_counters_only_when_enabled() {
 
 #[test]
 fn agg_settled_steps_resume_without_changing_the_result() {
-    let pending = VecDeque::from([request(1, 0.0), request(2, 3.0)]);
+    let pending = VecDeque::from([
+        DirectRequest {
+            max_output_tokens: 4,
+            ..request(1, 0.0)
+        },
+        request(2, 3.0),
+    ]);
     let (continuous, _) = runtime(pending.clone()).run().unwrap();
 
     let mut stepped = runtime(pending);
-    let mut settled_boundaries = 0;
-    loop {
+    for _ in 0..2 {
         match stepped.step().unwrap() {
-            ReplayStepOutcome::Settled { .. } => settled_boundaries += 1,
-            ReplayStepOutcome::Complete => break,
+            ReplayStepOutcome::Settled { .. } => {}
+            ReplayStepOutcome::Complete => panic!("replay completed before resume point"),
             ReplayStepOutcome::TimeLimitReached { .. } => panic!("unexpected time limit"),
         }
     }
+    assert!(
+        stepped.cluster_in_flight() > 0,
+        "resume must retain live work"
+    );
     let (resumed, _) = stepped.run().unwrap();
+    let resumed = resumed.finish();
 
-    assert!(settled_boundaries >= 2);
+    assert_eq!(resumed.request_counts.completed_requests, 2);
     assert_eq!(
         serde_json::to_value(continuous.finish()).unwrap(),
-        serde_json::to_value(resumed.finish()).unwrap()
+        serde_json::to_value(resumed).unwrap()
     );
 }
 

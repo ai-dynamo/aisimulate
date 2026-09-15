@@ -140,6 +140,7 @@ struct AgenticState {
     lanes: Vec<AgenticLaneState>,
     lifecycle: Vec<AgenticLifecycleRecord>,
     next_lifecycle_ordinal: u64,
+    last_runtime_feedback_at_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1033,6 +1034,7 @@ impl WorkloadDriver {
             lanes,
             lifecycle: Vec::new(),
             next_lifecycle_ordinal: 0,
+            last_runtime_feedback_at_ms: None,
         };
         let mut ready_sessions = BinaryHeap::new();
         if state.lanes.is_empty() {
@@ -1452,7 +1454,8 @@ impl WorkloadDriver {
     /// Callers may collect effects in engine-specific order. This boundary
     /// makes that order unobservable by sorting requests by immutable graph
     /// ordinal, then applying output progress, causal terminals, and finally
-    /// resource quiescence.
+    /// resource quiescence. Batch timestamps must be nondecreasing; a rejected
+    /// batch does not advance the last successfully applied timestamp.
     pub fn apply_agentic_runtime_feedback(
         &mut self,
         mut feedback: AgenticRuntimeFeedback,
@@ -1463,8 +1466,16 @@ impl WorkloadDriver {
                 feedback.at_ms
             );
         }
-        if !matches!(self.policy, SchedulingPolicy::Agentic(_)) {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
             bail!("agentic runtime feedback requires an agentic workload driver");
+        };
+        if let Some(last_at_ms) = state.last_runtime_feedback_at_ms
+            && feedback.at_ms < last_at_ms
+        {
+            bail!(
+                "agentic runtime feedback timestamp regressed from {last_at_ms} ms to {} ms",
+                feedback.at_ms
+            );
         }
 
         let ordinal_by_uuid = feedback
@@ -1529,6 +1540,10 @@ impl WorkloadDriver {
         for request_uuid in feedback.quiescent_requests {
             self.on_quiescent(request_uuid, feedback.at_ms)?;
         }
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            unreachable!("feedback application retains the agentic scheduling policy");
+        };
+        state.last_runtime_feedback_at_ms = Some(feedback.at_ms);
         Ok(())
     }
 
@@ -2703,6 +2718,119 @@ mod tests {
                 .map(|event| event.request_id.as_deref().unwrap())
                 .collect::<Vec<_>>(),
             vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn agentic_feedback_rejects_time_regression_without_advancing_dependencies_or_clock() {
+        let trace = agentic_trace(vec![
+            agentic_node("clock", "play", 0.0, Vec::new()),
+            agentic_node("parent", "play", 0.0, Vec::new()),
+            agentic_node(
+                "child",
+                "play",
+                0.0,
+                vec![dependency(
+                    "parent",
+                    AgenticDependencyTrigger::Completion,
+                    2.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 1).unwrap();
+        let ready = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(ready.len(), 2);
+        let clock = ready[0].request_uuid;
+        let parent = ready[1].request_uuid;
+        let completed = |request_uuid| AgenticTerminalFeedback {
+            request_uuid,
+            status: ReplayTerminalStatus::Completed,
+        };
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(clock)],
+                quiescent_requests: vec![clock],
+                ..Default::default()
+            })
+            .unwrap();
+        let transcript_before = driver.agentic_lifecycle_transcript().unwrap();
+
+        let error = driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 5.0,
+                causal_terminals: vec![completed(parent)],
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("regressed from 10 ms to 5 ms"));
+        assert_eq!(
+            driver.agentic_lifecycle_transcript().unwrap(),
+            transcript_before
+        );
+        assert_eq!(driver.next_ready_time_ms(), None);
+        assert!(driver.in_flight.contains_key(&parent));
+        assert!(!driver.agentic_settling.contains_key(&parent));
+
+        // A known request with invalid lifecycle feedback reaches application
+        // validation, but must not make the next valid t=10 batch look stale.
+        let error = driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 20.0,
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("became quiescent before its causal terminal")
+        );
+        assert_eq!(
+            driver.agentic_lifecycle_transcript().unwrap(),
+            transcript_before
+        );
+        assert_eq!(driver.next_ready_time_ms(), None);
+
+        // A second successful batch at the same timestamp remains legal.
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(parent)],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(driver.next_ready_time_ms(), Some(12.0));
+        assert!(driver.pop_ready(11.0, usize::MAX).is_empty());
+        let child = driver.pop_ready(12.0, usize::MAX);
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].authored_request_id.as_deref(), Some("child"));
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 12.0,
+                causal_terminals: vec![completed(child[0].request_uuid)],
+                quiescent_requests: vec![child[0].request_uuid],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!driver.is_drained(), "parent cleanup is still pending");
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 15.0,
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.is_drained());
+        assert!(
+            driver
+                .agentic_lifecycle_transcript()
+                .unwrap()
+                .events
+                .windows(2)
+                .all(|events| events[0].at_ms <= events[1].at_ms)
         );
     }
 
