@@ -56,6 +56,7 @@ areas:
       - tests/test_host_offload_cli.py
       - tests/test_afd_*.py
       - tests/golden/afd-*
+      - tests/test_g3_offload_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -79,6 +80,7 @@ areas:
       - scripts/
       - tests/test_aic_sync.py
       - tests/test_ci_workflow_contracts.py
+      - tests/test_ci_qualification.py
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_source_compliance.py
@@ -156,6 +158,8 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/golden/afd-*
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_g3_offload_cli.py
+    owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
   - glob: tests/test_traffic.py

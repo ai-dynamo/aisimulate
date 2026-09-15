@@ -21,6 +21,8 @@ encoder model and does not expose per-request EPD replay or deployment outputs.
 search_space:
   model_name: example/model
   hardware_sku: h200_sxm
+  prefill_hardware_sku: h200_sxm
+  decode_hardware_sku: gb200
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
@@ -61,6 +63,8 @@ configuration for each candidate.
 |---|---|---|
 | `model_name` | required | model identifier |
 | `hardware_sku` | required | AI Configurator system identifier |
+| `prefill_hardware_sku` | `None` | optional disaggregated-prefill system override; inherits `hardware_sku` |
+| `decode_hardware_sku` | `None` | optional disaggregated-decode system override; inherits `hardware_sku` |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
@@ -73,6 +77,20 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
 or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+
+`prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
+override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share
+the configured model, backend, backend version, and total `gpu_budget`. When `backend_version` is
+omitted, the latest performance-data version for both effective SKUs must match; otherwise pin one
+version supported by both systems. These overrides are part of the Sweeper YAML/SDK contract; the
+separate `aisimulate recommend` input continues to describe one shared hardware SKU.
+
+The current Dynamo Router adapter uses the shared `hardware_sku` for
+`prefill_load_model.type: aic`. Sweeper rejects a candidate before replay when its materialized
+Router AIC system differs from the effective prefill SKU. This also affects matching overrides:
+`hardware_sku: h200_sxm` with both role SKUs set to `gb200` needs a GB200 prefill load model.
+Use a Router provider that consumes `prefill_hardware_sku`, or select a non-AIC load model.
+Correctly materialized AIC hooks, decode-only overrides, and shared-SKU behavior remain supported.
 
 ## Attention-FFN Disaggregation
 
@@ -167,8 +185,21 @@ algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandi
 `SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
 AI Simulate variable takes precedence.
 
-## Removed KVBM Fields
+<a id="removed-kvbm-fields"></a>
+
+## Host Offload and Removed KVBM Fields
 
 Sweeper rejects the old KVBM block-count, transfer-bandwidth, offload-batch-size, and cache-hit
-fields. The AI Simulate engine and replay path do not support them, and they have no adapter
-migration.
+search fields. Those legacy fields have no adapter migration.
+
+The public `predict` and `recommend` commands support a separate native host-offload descriptor
+at `engine.workers.aggregated.kv_cache.host_offload`. It sets `num_host_blocks`,
+`d2h_bandwidth_gbps`, and `h2d_bandwidth_gbps` as fixed values, not search dimensions. It requires
+aggregated vLLM, prefix caching enabled, and `attention_data: 1`; native speculative decoding is
+not supported. For `recommend`, mode and backend must be concrete, the parallelism preset must be
+disabled (`preset: false`), and `attention_data` must be fixed to `1`. Other parallelism knobs,
+such as `tensor` and `replicas`, may still be searched. This does not add disk offload or restore
+the removed KVBM search fields.
+
+See [Native vLLM host-offload prediction](../cli/user-guide.md#native-vllm-host-offload-prediction)
+for a complete YAML example and CLI command.

@@ -314,6 +314,16 @@ impl EngineCore {
         }
     }
 
+    pub(crate) fn set_g3_offload(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        if let Self::Vllm(core) = self {
+            core.set_g3_offload(registry, node);
+        }
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         if let Self::Vllm(core) = self {
             core.set_host_offload_observer(observer);

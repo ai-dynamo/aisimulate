@@ -1349,6 +1349,7 @@ where
         if let Some(identity) = self.admission.agentic_graph_identity() {
             self.collector.set_agentic_graph(identity);
         }
+        self.collector.g3_offload = self.engine.g3_stats();
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))
     }
@@ -1795,7 +1796,8 @@ where
     }
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
-    /// leaving this runtime's collector empty.
+    /// leaving this runtime's collector empty. G3 counters remain cumulative
+    /// over the reusable runtime, like its retained cache contents.
     pub(crate) fn take_report_dynamic(
         &mut self,
         wall_ms: f64,
@@ -1808,6 +1810,7 @@ where
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        self.collector.g3_offload = self.engine.g3_stats();
         Ok(self
             .collector
             .take_report(self.now_ms)

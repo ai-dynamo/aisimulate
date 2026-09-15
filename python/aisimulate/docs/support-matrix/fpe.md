@@ -1,8 +1,9 @@
 # Strict-native FPE coverage matrix
 
-The Forward Pass Engine (FPE) matrix answers one narrow question: can the
-supported public native estimator build a resolved engine identity and return
-positive, finite latency estimates for representative forward-pass shapes?
+The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+answers one narrow question: can the supported public native estimator build a
+resolved engine identity and return positive, finite latency estimates for
+representative forward-pass shapes?
 
 It does **not** certify the AISimulate CLI, Sweeper, scheduler, Replay,
 disaggregated rate matching, deployment validity, or prediction accuracy.
@@ -14,7 +15,8 @@ own evidence.
 Each row records the model and architecture, system, backend and version,
 the `op_level` forward model, resolved quantization, parallel topology,
 role, probe phase, provenance, exact package version and source SHA, and a
-machine-readable SDK reproducer.
+machine-readable SDK reproducer. Attention-backend overrides remain part of
+the engine identity and are passed through the supported public builder.
 
 An identical engine used by multiple roles is compiled once. The row records
 all applicable roles:
@@ -43,13 +45,22 @@ uses a field that the supported public engine builder cannot encode, such as
 context parallelism or a large-EP communication backend. The generator does
 not silently test a different topology.
 
+A rejected topology is recorded with its actual parallel configuration while
+other choices continue to be probed. The public builder's explicit rejection
+of mixed tensor/expert parallelism across nodes is `SDK_UNREPRESENTABLE`;
+so are its explicit attention-head/TP divisibility and quantized-MoE block
+alignment rejections. These do not count as passing coverage. Unexpected build and query errors
+remain failures.
+
 Other failures distinguish performance-data gaps, unsupported models,
 hardware or framework incompatibility, engine-build failures, and query
 failures. Error text is diagnostic evidence, not a stable API.
 
 ## Run it
 
-Install the repository package, then generate one op-level FPE shard per system:
+Install a built repository wheel, then generate one op-level FPE shard per
+system. The command imports that installed native runtime; it must not prepend
+the source-only application package to Python's import path:
 
 ```bash
 python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
@@ -95,12 +106,43 @@ a time. Native database loading and hot-path queries release the Python GIL,
 but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
-The scheduled workflow creates one shard per system/backend pair and runs at
+Nightly CI calls the reusable FPE workflow after confirming that `main` has
+changed and building its release artifacts. All FPE shards install the exact
+amd64 nightly wheel, verified against the artifact checksums, source commit,
+and one recorded wheel hash. A manual run requires the full `expected_sha` and
+builds one shared wheel. Neither path rebuilds the native runtime in every
+shard.
+
+The workflow discovers one shard per curated system/backend pair and runs at
 most eight shards concurrently on the repository-specific CPU runner set. Each
 shard runs only `forward_model=op_level` with an eight-thread local pool. A
-final job combines the raw shards into the split web CSV artifact. This avoids
+final job validates reports before combining them into the split web CSV
+artifact. Qualification requires every discovered shard, exact source and wheel
+identity, consistent package version and workload, complete role-appropriate
+phases, and no unexpected build or query failure. The small required-probe
+manifest additionally requires all four phases of at least one native topology
+for each known-good model/system/backend identity. An empty or entirely
+unsupported report cannot satisfy that requirement. Classified exploratory
+coverage gaps remain visible; they do not certify support.
+
+`fpe-qualification.json` records the accepted source, wheel digest, shard count,
+and status counts. Nightly release artifacts do not advance to Artifactory if
+qualification fails. The FPE
+workflow remains manually dispatchable for an out-of-band refresh. This avoids
 leaving runners idle when a small system finishes before the largest systems.
 Full runs also suppress repeated SDK warnings at the console while preserving
 every classified failure and representative error in the matrix artifacts.
 Refresh-time claims must name both runner concurrency and per-runner thread
 count, plus the source SHA from the measured run.
+
+Staging waits for the complete matrix. Each shard has a 480-minute timeout;
+the eight-shard concurrency limit and runner queues can make the total wait
+longer than that per-shard limit. A successful wheel build alone does not make
+the nightly available. No release-latency percentile is promised until complete
+runs have been measured with this gate enabled.
+
+The final platform-wheel check invokes the package verifier with
+`--exercise-engine --exercise-fpe` on each runner. The FPE flag requires the
+repository generator and Git checkout; its subprocess runs from an unrelated
+temporary directory against the installed wheel. The reduced Docker build
+context runs the package/runtime verifier without the repository-only FPE flag.

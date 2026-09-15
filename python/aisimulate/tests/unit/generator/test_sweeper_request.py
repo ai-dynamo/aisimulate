@@ -175,6 +175,36 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     assert request.backend.generated_config_version == "1.3.0rc14"
 
 
+def test_disagg_candidate_accepts_matching_effective_role_hardware():
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            hardware_sku="h200_sxm",
+            prefill_hardware_sku="gb200",
+            decode_hardware_sku="gb200",
+        ),
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+
+    assert request.platform.hardware_profile == "gb200"
+    assert to_legacy_params(request)["NodeConfig"]["system_name"] == "gb200"
+
+
+def test_disagg_candidate_rejects_heterogeneous_deployment_artifact_generation():
+    with pytest.raises(
+        SweeperCandidateError,
+        match="heterogeneous P/D deployment artifact generation is unsupported",
+    ):
+        from_sweeper_candidate(
+            _disagg_candidate(
+                prefill_hardware_sku="h200_sxm",
+                decode_hardware_sku="gb200",
+            ),
+            workload={"isl": 8192, "osl": 1024},
+            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        )
+
+
 def test_candidate_gpu_count_must_match_lowered_topology():
     with pytest.raises(SweeperCandidateError, match="used_gpus=16, topology=8"):
         from_sweeper_candidate(

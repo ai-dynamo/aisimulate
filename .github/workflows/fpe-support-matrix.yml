@@ -1,54 +1,138 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 name: FPE Support Matrix
 
 on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+      wheel_artifact:
+        description: Nightly artifact containing the wheel, checksums, and provenance
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
-  schedule:
-    # Daily at 14:00 UTC (07:00 PT during daylight time).
-    - cron: "0 14 * * *"
+    inputs:
+      expected_sha:
+        description: Exact source commit to qualify
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: fpe-support-matrix-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
+  prepare-wheel:
+    name: Prepare exact FPE wheel
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    container:
+      # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    outputs:
+      wheel-sha256: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+      - name: Verify exact target
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: test -n "${EXPECTED_SHA}" && test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+      - uses: ./.github/actions/setup-manylinux-python-rust
+        if: inputs.wheel_artifact == ''
+      - name: Build one wheel for standalone qualification
+        if: inputs.wheel_artifact == ''
+        run: |
+          python -m pip install 'maturin>=1.12,<2'
+          python scripts/build_manylinux_wheel.py --output-dir fpe-wheel
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: inputs.wheel_artifact != ''
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: fpe-wheel
+      - name: Verify nightly artifact checksums and source
+        if: inputs.wheel_artifact != ''
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          (cd fpe-wheel && sha256sum --check --strict SHA256SUMS.txt)
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          provenance = json.loads(Path("fpe-wheel/provenance.json").read_text())
+          if provenance["commit"] != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("nightly artifact belongs to a different source commit")
+          PY
+      - id: digest
+        name: Record the single wheel identity
+        run: |
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          wheels = list(Path("fpe-wheel").glob("aisimulate-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("expected exactly one AISimulate wheel")
+          digest = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"sha256={digest}\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fpe-qualified-wheel
+          path: fpe-wheel/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   discover-shards:
     name: Discover matrix shards
+    needs: prepare-wheel
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.shards.outputs.value }}
     steps:
-      - uses: actions/checkout@v7
-      - id: shards
-        name: Read system/backend identities from the curated matrix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fpe-qualified-wheel
+          path: fpe-wheel
+      - name: Install the exact wheel for live inventory discovery
+        env:
+          FPE_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
         run: |
-          value=$(python - <<'PY'
-          import csv
-          import json
-          from pathlib import Path
-
-          root = Path("python/aisimulate/src/aiconfigurator_core/systems/support_matrix")
-          index = json.loads((root / "index.json").read_text(encoding="utf-8"))
-          shards = set()
-          for filename in index["files"]:
-              with (root / filename).open(newline="", encoding="utf-8") as handle:
-                  for row in csv.DictReader(handle):
-                      shards.add((row["System"], row["Backend"]))
-          print(
-              json.dumps(
-                  [{"system": system, "backend": backend} for system, backend in sorted(shards)],
-                  separators=(",", ":"),
-              )
-          )
+          echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
+          python -m pip install --force-reinstall fpe-wheel/*.whl
+      - id: shards
+        name: Read live system/backend identities from the qualified SDK
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, "python/aisimulate")
+          from tools.support_matrix.support_matrix import SupportMatrix
+          shards = {(system, backend) for _, system, backend, _ in SupportMatrix().generate_combinations()}
+          if not shards:
+              raise SystemExit("no FPE shards discovered")
+          value = json.dumps([{"system": s, "backend": b} for s, b in sorted(shards)])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"value={value}\n")
           PY
-          )
-          echo "value=${value}" >> "${GITHUB_OUTPUT}"
 
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
-    needs: discover-shards
+    needs: [discover-shards, prepare-wheel]
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 480
     container:
@@ -61,27 +145,48 @@ jobs:
       max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.discover-shards.outputs.shards) }}
+    env:
+      FPE_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-python-rust
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Install AISimulate from this source SHA
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fpe-qualified-wheel
+          path: fpe-wheel
+      - name: Verify and install the qualified wheel
         run: |
-          python -m pip install 'maturin>=1.12,<2'
-          python -m pip install './python/aisimulate'
+          echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
+          python -m pip install --force-reinstall fpe-wheel/*.whl
+          python -m pip check
+          python - <<'PY'
+          from importlib.metadata import distribution
+          from pathlib import Path
+          from aisimulate import _runtime
+          dist = distribution("aisimulate")
+          runtime = Path(_runtime.__file__).resolve()
+          owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()
+                   if str(p).startswith("aisimulate/_runtime.")}
+          if runtime not in owned:
+              raise SystemExit(f"native runtime is not owned by the installed AISimulate wheel: {runtime}")
+          print(runtime)
+          PY
       - name: Generate strict-native op-level coverage through the FPE SDK
+        env:
+          FPE_SYSTEM: ${{ matrix.shard.system }}
+          FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
-            --system "${{ matrix.shard.system }}" \
-            --backend "${{ matrix.shard.backend }}" \
-            --output-dir "fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}" \
-            --forward-model op_level \
-            --sdk-log-level ERROR \
-            --max-workers 8
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+            --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
+            --output-dir "fpe-support-matrix/${FPE_SYSTEM}/${FPE_BACKEND}" \
+            --forward-model op_level --sdk-log-level ERROR --max-workers 8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
         with:
           name: fpe-support-matrix-${{ matrix.shard.system }}-${{ matrix.shard.backend }}
           path: fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}
@@ -89,24 +194,38 @@ jobs:
           retention-days: 7
 
   build-web-matrix:
-    name: Build FPE support-matrix CSVs
-    needs: generate
+    name: Qualify and build FPE support matrix
+    needs: [generate, discover-shards, prepare-wheel]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-support-matrix-*
           path: fpe-support-matrix
+      - name: Require complete same-wheel reports and native sentinels
+        env:
+          EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
+        run: |
+          python3 python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py fpe-support-matrix \
+            --expected-shards "${EXPECTED_SHARDS}" --expected-sha "${EXPECTED_SHA}" \
+            --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
+            --required-probes .github/fpe-required-probes.json --output fpe-qualification.json
       - name: Build the deterministic split web matrix
         run: |
-          python python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py \
-            fpe-support-matrix \
+          python3 python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py fpe-support-matrix \
             --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-support-matrix-web
           path: |
+            fpe-qualification.json
             python/aisimulate/docs/fpe-support-matrix/index.html
             python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           if-no-files-found: error
+          retention-days: 7
