@@ -77,7 +77,10 @@ def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float | None]:
 
     power_coverage = covered_latency_ms / total_latency_ms
     metrics: dict[str, float | None] = {"power_w": None, "power_coverage": float(power_coverage)}
-    power_w = float(total_energy_wms / total_latency_ms)
+    try:
+        power_w = float(total_energy_wms / total_latency_ms)
+    except OverflowError:
+        return metrics
     if power_coverage >= Fraction(9, 10) and math.isfinite(power_w) and power_w > 0.0:
         metrics["power_w"] = power_w
     return metrics
@@ -196,3 +199,19 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     assert "fixtures/power-contract-v1.json" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
     assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api
+
+
+def test_exact_oracle_withholds_power_that_overflows_float(
+    power_validator: Draft202012Validator,
+) -> None:
+    case = {
+        "roles": [
+            {
+                "energy_aware": True,
+                "operations": [{"latency_ms": "1e-400", "energy_wms": 1.0}],
+            }
+        ]
+    }
+    actual = derive_contract_metrics(case)
+    assert actual == {"power_w": None, "power_coverage": 1.0}
+    validate_strict_json(power_validator, actual)
