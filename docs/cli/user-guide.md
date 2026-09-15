@@ -875,11 +875,12 @@ engine:
 |---|---:|---|---|---|
 | `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
-| `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
+| `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
+| `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
 | `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
 | `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
 | `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../sweeper/epd.md#unified-cli). |
@@ -923,8 +924,17 @@ engine:
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
-identifier. Language-worker roles in aggregated or disaggregated mode use the same hardware;
-an optional analytical encoder pool can specify its own hardware.
+identifier. Language workers inherit that fallback unless a P/D role overrides it;
+an optional analytical encoder pool can also specify its own hardware.
+
+For heterogeneous P/D, set `engine.workers.prefill.hardware` and/or
+`engine.workers.decode.hardware`. An omitted role inherits `engine.hardware`. Both roles
+share the model, backend and backend version; when an override is present, an omitted
+version must resolve identically on both effective SKUs. Pin a common supported version
+if their latest versions differ. Prediction uses each role's hardware for timing and KV
+capacity. Recommendation checks each role against its own hardware within the shared GPU
+budget and saves the overrides in prediction YAML. See the
+[complete YAML and CLI example](migrate-from-aiconfigurator.md#48-migrate-heterogeneous-pd-hardware).
 
 An aggregated configuration uses `workers.aggregated`. A disaggregated configuration uses
 `workers.prefill` and `workers.decode`:
@@ -963,9 +973,10 @@ engine:
       startup_seconds: 0
 ```
 
-Language-worker roles share the top-level model, hardware, backend, backend version, and context
-length. Per-role overrides for those settings are rejected. The optional analytical encoder pool
-has its own supported hardware and backend-version fields. If `engine.mode` is a
+Language-worker roles share the top-level model, backend, backend version, and context length.
+Per-role overrides for those settings are rejected. P/D workers may override the hardware fallback.
+The optional analytical encoder pool has its own supported hardware and backend-version fields.
+If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
 
@@ -1057,6 +1068,113 @@ Run it with:
 ```bash
 aisimulate predict --stack engine --config host-offload-prediction.yaml
 ```
+
+#### Optional G3 offload
+
+G3 is an optional extension to native vLLM host offload, not a standalone cache
+mode. It requires `host_offload` to be enabled. Add this mapping inside the
+existing `engine.workers.aggregated.kv_cache`, as a sibling of `host_offload`,
+and use the same `predict --stack engine` command above:
+
+```yaml
+g3_offload:
+  scope: cluster_shared
+  num_g3_blocks: 8192
+```
+
+Only `scope` and `num_g3_blocks` are required. `num_g3_blocks` is a positive integer,
+not a nested `capacity` object. Optional controls and defaults are:
+
+- `latency_to_first_byte_ms`: 0.1 ms per transfer.
+- `read_bandwidth_gbps` and `write_bandwidth_gbps`: 10 GB/s each per worker.
+- `shared_read_bandwidth_gbps` and `shared_write_bandwidth_gbps`: 80 GB/s each
+  across the deployment, applied only in `cluster_shared` scope.
+
+These are modeling defaults, not measured or GPU-calibrated values.
+Latency is in milliseconds; bandwidth is in decimal
+GB/s. Latency and bandwidth must be finite and non-negative. Zero bandwidth
+means unlimited, not disabled. Block bytes are `block_size * bytes_per_token`;
+`bytes_per_token: auto` uses the existing model/parallelism estimate. G3 stores
+complete prefix-block identities, not real tensors or files. In native
+ReplaySpec JSON, `g3_offload` and `native_host_offload` are sibling rank fields.
+
+The ownership and bandwidth unit is a replica worker, not a physical host or
+an individual TP rank. Set the initial worker count
+with `engine.workers.aggregated.parallelism.replicas`:
+
+- `worker_local`: each worker gets `num_g3_blocks` of independent capacity,
+  like G2's `num_host_blocks`. Workers cannot reuse each other's stored blocks.
+- `cluster_shared`: workers share one pool of `num_g3_blocks`. Duplicate prefix
+  blocks occupy capacity once, regardless of how many workers use them.
+
+Independent runs never share cached blocks. With N fixed workers, equal total
+capacity means local `num_g3_blocks: C` versus shared `num_g3_blocks: N*C`.
+Keep workload, G1/G2 settings, latency, and bandwidth identical for that comparison.
+To isolate cache sharing from backend contention, make both shared bandwidth
+caps non-binding (for example, set them to zero for unlimited bandwidth).
+During scaling, local total capacity changes with worker count; shared capacity
+does not. New workers start with cold G1/G2 and local G3, but can read existing
+shared G3 blocks. Scale-in drains that worker's accepted I/O and releases its
+pins before removing its local pool. Shared blocks survive their writer's exit.
+Worker IDs are not reused. Replay requires at least one initial worker; its
+existing scaling lifecycle permits scaling to zero and later adding new workers.
+
+Completed G2 stores asynchronously write through to G3. Reads restore a
+contiguous prefix through G3 → G2 → G1: G3 completion alone does not make GPU
+blocks ready. The adapter reserves G2 destinations one block at a time; a later
+miss or capacity failure keeps earlier accepted promotions. New promotions in
+one lookup form one read job, and pending promotions defer H2D until a retry.
+G3 writes retain the leading new blocks that fit while preserving blocks from
+the same write cohort already in G3. A cohort larger than the available capacity is
+partially stored; if no block fits, that optional insertion is skipped.
+Resident, unpinned G3 blocks use deterministic LRU eviction.
+
+Pending G2 destinations cannot be evicted. Completed promotions become ordinary
+evictable G2 entries; a lookup hit alone does not pin them. H2D takes its own
+source pins. Request termination detaches from accepted promotions, which may
+still finish into G2 without activating G1 for the terminated request.
+
+Transfers use the replay virtual clock and begin first-byte latency when
+accepted. Reads start at the current lookup time. First-byte waiters consume
+no bandwidth. Read and write budgets are independent; each moving job gets
+an equal share of its worker's bandwidth. In `cluster_shared` scope, this is
+also capped by its equal share of shared backend bandwidth. `worker_local`
+ignores shared bandwidth limits entirely: for example, 16 workers at 10 GB/s
+can reach 160 GB/s combined, while the default shared backend caps that at
+80 GB/s. Unused shares are not redistributed. This is a fluid bandwidth
+model, with no thread-pool or job-concurrency limit; finite backend execution
+concurrency can therefore make real transfers slower.
+
+For zero-duration I/O, a repeated request/key at the same timestamp falls back
+to cache-miss handling while the recoverable prefix cannot fit in G2. Capacity
+relief or time advancement permits retry. This simulator guard adds no pins or
+invented latency and does not model native CPU retry overhead.
+
+The prediction summary includes `g3_offload` only when enabled, alongside the
+existing TTFT, TPOT, and throughput metrics:
+
+For a reused runtime, G3 counters accumulate across reports and its cache remains warm.
+
+- `lookup_probes`, `lookup_hits`, `lookup_pending` count block probes, including
+  retries. Hit ratio is hits / probes; pending probes are not hits.
+- `read` and `write` report submitted, completed, and canceled jobs, completed
+  bytes, and summed transfer milliseconds including first-byte latency.
+  Canceled jobs add no completed bytes.
+- `evictions`, `resident_blocks`, `pending_blocks`, and
+  `cross_worker_read_blocks` describe tier state and reuse. Cross-worker reuse
+  counts completed reads of blocks first written by another worker, not lookup
+  hits. `--capture-per-request` retains the existing `requests.jsonl` output.
+
+G3 supports aggregated vLLM with fixed or dynamically scaled workers, prefix caching enabled,
+attention DP equal to one, and no native speculative decoding. It does not
+support `recommend`, disaggregated mode, or hardware integration.
+Replay owns the deployment-wide tier; direct scheduler construction cannot
+provide it. Omit `g3_offload` to keep existing G1/G2 behavior.
+
+These controls do not establish filesystem or real-GPU performance parity.
+The existing G2 full-external-hit boundary remains: Replay may recompute one
+full block where the reference vLLM external-receive path recomputes one token.
+G3 byte counters do not resolve that difference.
 
 ## Router (Dynamo Adapter)
 
@@ -1250,7 +1368,7 @@ optimization:
 `pareto` is always the fixed `throughput_per_gpu` and `throughput_per_user` frontier. Goodput targets
 require at least one `evaluation.sla` bound. Strict SLA requires at least one bound and controls only
 the additional aggregate-mean filter. `optimization.hardware` never accepts a list or inventory
-mapping; every candidate uses its single hardware identifier.
+mapping; it supplies the fallback hardware identifier, which P/D workers may override.
 
 ## Optimizer Controls
 
