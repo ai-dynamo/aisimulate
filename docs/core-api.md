@@ -244,21 +244,28 @@ StaticResult, PerOpValue}` and `engine::spec::{EngineSpec, OpSpec}` to load and
 execute a previously compiled specification directly. `PerOpValue` is the
 per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
 `*_per_op` / `evaluate_*` methods (the thin op-list evaluation FFI); per-op
-energy is 0.0 wherever the perf tables carry no power columns.
+energy is 0.0 wherever the perf tables carry no power columns. That zero is a
+missing-data sentinel, not evidence of a zero-power operation. See the
+[modeled-power contract](power-model.md) for the latency-weighted coverage gate,
+aggregation rules, and public output boundary. Typed per-op energy alone does
+not make unified replay power available.
 
 ## Replay timing evidence
 
 The runtime-neutral `TimingModel` contract exposes optional accumulated
 evidence through `evidence_summary()`. Op-level AIC providers return a
 `TimingEvidenceSummary` split into prefill and decode phases. Each
-`TimingPhaseEvidence` carries total modeled energy in W-ms, total latency,
+`TimingPhaseEvidence` carries accumulated known energy in W-ms, total latency,
 latency covered by nonzero energy data, merged provenance, and name-folded
 `TimingOperationEvidence` records with the same fields. Missing operation
-energy is represented by `None`, never by a synthesized zero.
+energy is represented by `None`, never by a synthesized zero. When coverage is
+below one, the energy is partial: it includes only the portion with positive
+operation-energy evidence. It is not a total-workload energy estimate.
 Providers that assemble these public records directly should use
 `TimingPhaseEvidence::try_from_operations` and `try_accumulate`; those paths
 validate numeric fields and canonicalize covered latency to zero when energy is
-missing. The original infallible helpers remain available for already-valid
+missing. Nonempty operation lists must agree with phase totals; a relative
+rounding tolerance applies only to this consistency check. The original infallible helpers remain available for already-valid
 evidence.
 
 Whole-model FPM timing and the built-in fixed and polynomial timing models are

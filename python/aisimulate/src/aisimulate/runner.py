@@ -17,6 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
+from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
 from .sweeper.afd_perfmodel import AFDLayerTimes
@@ -279,6 +280,9 @@ class EngineReplayRunnerFactory:
             ),
             supports_agentic_lanes=True,
             supported_agentic_topologies=("agg",),
+            supported_agentic_backends=("vllm", "sglang"),
+            supports_agentic_host_offload=False,
+            supports_agentic_speculative_decoding=False,
             agentic_qualification="functional_only",
         )
 
@@ -396,10 +400,12 @@ class EngineReplayRunner:
                         raise InvalidRunnerError("analytical EPD requires static worker pools")
             original_spec = spec
             spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
+        memory_diagnostics = {} if output_requirements.capture_memory_diagnostics else None
         execution_spec = _materialize_engine_execution_spec(
             spec,
             trace_block_size=self.trace_block_size,
             record_per_request=output_requirements.capture_per_request,
+            memory_diagnostics=memory_diagnostics,
         )
         execution_spec_json = json.dumps(
             execution_spec,
@@ -422,11 +428,32 @@ class EngineReplayRunner:
                 "when requested, is a corpus-wide heuristic and the resolved basis is included in source identity",
                 resolved_basis,
             )
+        if memory_diagnostics is not None:
+            report = {**report, "memory_diagnostics": memory_diagnostics}
         normalized = _normalize_engine_replay_report(
             report,
-            include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),
+            include_native_report=(
+                output_requirements.include_raw_report
+                or output_requirements.capture_per_request
+                or output_requirements.capture_memory_diagnostics
+            ),
         )
-        return apply_encoder_overlay(normalized, original_spec) if encoder is not None else normalized
+        if encoder is not None:
+            normalized = apply_encoder_overlay(normalized, original_spec)
+            if memory_diagnostics is not None:
+                memory_diagnostics["encoder"] = {
+                    "scope": "capacity_estimate_per_rank",
+                    "stage": "before_native_capacity_adjustments",
+                    "status": "unavailable",
+                    "unavailable_reason": "analytical EPD does not export an encoder memory component estimate",
+                }
+                # Capacity estimates remain valid across the overlay. Raw language
+                # timing/records do not describe the combined EPD workload.
+                normalized = ReplayReport(
+                    metrics=normalized.metrics,
+                    metadata={**normalized.metadata, "memory_diagnostics": memory_diagnostics},
+                )
+        return normalized
 
     def close(self) -> None:
         """Release worker-local resources.
@@ -766,6 +793,7 @@ def _run_afd_replay(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
+    metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {
         "executor": "afd_foreground",
         "deployment_mode": deployment.deployment_mode,
@@ -790,6 +818,8 @@ def _run_afd_replay(
         metadata["native_report"] = native_report
     if include_report:
         metadata["afd_report"] = {"metrics": metrics, **summary}
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)
 
 
@@ -798,6 +828,7 @@ def _materialize_engine_execution_spec(
     *,
     trace_block_size: int,
     record_per_request: bool,
+    memory_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, JSONValue]:
     """Translate the public Runner input into the Rust replay wire schema.
 
@@ -817,6 +848,7 @@ def _materialize_engine_execution_spec(
             deployment.parallel_config,
             raw_engine_args,
             "aggregated",
+            memory_diagnostics=memory_diagnostics,
         )
         _require_parallel_match(
             deployment.parallel_config,
@@ -840,6 +872,7 @@ def _materialize_engine_execution_spec(
             deployment.parallel_config,
             raw_prefill,
             "prefill",
+            memory_diagnostics=memory_diagnostics,
         )
         decode = _materialize_engine_role(
             deployment.backend,
@@ -847,6 +880,7 @@ def _materialize_engine_execution_spec(
             deployment.parallel_config,
             raw_decode,
             "decode",
+            memory_diagnostics=memory_diagnostics,
         )
         _require_parallel_match(
             deployment.parallel_config,
@@ -1076,6 +1110,8 @@ def _materialize_engine_role(
     parallel_config: Mapping[str, JSONValue],
     raw_config: Mapping[str, JSONValue],
     role: str,
+    *,
+    memory_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, JSONValue]:
     """Materialize one single-rank or attention-DP generalized engine."""
 
@@ -1083,11 +1119,30 @@ def _materialize_engine_role(
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
+    role_memory: dict[str, Any] | None = None
+    if memory_diagnostics is not None:
+        role_memory = {
+            "scope": "capacity_estimate_per_rank",
+            "stage": "before_native_capacity_adjustments",
+            "status": "unavailable",
+            "unavailable_reason": (
+                "explicit KV blocks, nested rank input, or a non-AIC capacity provider; "
+                "no memory component estimate was used by the Python materializer"
+            ),
+        }
+        memory_diagnostics[role] = role_memory
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
-        role_config = materialize_aic_num_gpu_blocks(role_config)
+        role_config = materialize_aic_num_gpu_blocks(
+            role_config,
+            **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
+        )
+        if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
+            role_memory["status"] = "available"
+            role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+            role_memory.pop("unavailable_reason", None)
         capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
@@ -1474,7 +1529,12 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     """Normalize an execution report to Sweeper's stable scoring metric names."""
 
     payload = dict(report)
-    metrics: dict[str, float] = {}
+    metrics: dict[str, float | None] = {}
+    try:
+        power = normalize_power_summary(payload)
+    except ValueError as exc:
+        raise InvalidRunnerError(str(exc)) from exc
+    payload.update(power)
 
     def add(name: str, value: object) -> None:
         if isinstance(value, bool) or not isinstance(value, Real):
@@ -1489,15 +1549,19 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     # reconstructed into a second Python report model.
     for name, value in payload.items():
         add(name, value)
-    metadata: dict[str, JSONValue] = {}
+    metadata = {
+        key: payload[key]
+        for key in (
+            "agentic_qualification",
+            "agentic_input_format",
+            "agentic_lanes",
+            "agentic_model_projection",
+            "weka_nested_timestamp_basis",
+        )
+        if key in payload
+    }
     if include_native_report:
         metadata["native_report"] = payload
-    if "power_coverage" in metrics:
-        metadata["power"] = {
-            "source": "modeled",
-            "scope": "active_forward_pass_per_gpu",
-            "power_w_unit": "W",
-            "coverage_gate": 0.9,
-            "publication_status": "available" if "power_w" in metrics else "withheld",
-        }
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)

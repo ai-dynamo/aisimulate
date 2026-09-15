@@ -69,24 +69,27 @@ skipped unexpectedly, canceled, or failed. A non-draft PR without the
 `review-ready` label fails `Fast CI Success`; making a PR ready or removing the
 label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
 `unlabeled` pull-request activity types so those state changes cannot retain a
-stale green result. Direct pull-request runs publish `Fast CI Success`; Full CI
-displays its reusable invocation as `Fast CI / Fast CI Success` and aggregates
-that result into `Full CI Success`. Release staging depends on successful
-validation and remains a separate protected step on `main` and `release/*`
+stale green result. Standalone Fast CI runs publish `Fast CI Success`. Full CI's
+`Require Fast CI` job verifies a successful run and all substantive jobs on the
+same branch and commit; it does not rerun Fast CI internally. Branch pushes
+require matching Fast push evidence; manual Full CI accepts matching Fast push
+or manual evidence. The bounded wait and API checks fail closed. Release staging
+depends on successful validation and remains a separate protected step on `main` and `release/*`
 lifecycle pushes. Waiting for staging approval does not hold `Full CI Success`
 open; a green validation result does not certify staging or publication.
 Require the direct `Fast CI Success` and aggregate `Full CI Success` results in
 branch rules rather than
 individual conditional or reusable-workflow jobs.
 
-The additive ruleset payload and runner-image rollout procedure are in
-[`docs/ci-qualification.md`](docs/ci-qualification.md). A committed ruleset
+The additive ruleset payload and runner-image rollout procedure are in the
+[CI guide](docs/ci.md#required-checks-and-release-approval). A committed ruleset
 payload is not evidence that repository enforcement has been activated.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the
-required `expected_sha` input. Trusted copy-pr-bot `pull-request/*` branches also
-run Full CI automatically as a temporary coverage backstop while the `main`
+required `expected_sha` input. For manual validation, dispatch standalone Fast CI
+with the same ref and SHA first, then dispatch Full CI. Trusted copy-pr-bot
+`pull-request/*` branches also run Full CI automatically as a temporary coverage backstop while the `main`
 ruleset does not require the exact-SHA checks; treat such a run as PR evidence
 only after confirming that its copied SHA equals the PR head. Automatic runs on
 `main` and `release/*` remain lifecycle validation outside the pre-merge
@@ -96,17 +99,18 @@ conditional Codex or post-review Full CI automation until an approved service
 credential and exact-head dispatcher are installed.
 
 For an admitted PR, no second Full CI launch is needed after Fast CI. The
-trusted `pull-request/*` push starts Full CI automatically, and every expensive
-component waits for the exact-SHA Fast CI and scope selector to pass before it
-can acquire a protected runner. Application tests additionally build one wheel
-per architecture and then fan out contracts, unit, integration, CLI-build,
+trusted `pull-request/*` push starts standalone Fast CI and Full CI automatically,
+and every expensive component waits for the exact-branch/SHA Fast CI prerequisite
+and scope selector to pass before it can acquire a protected runner. Application
+tests additionally build one wheel per architecture and then fan out contracts, unit, integration, CLI-build,
 support-matrix, and tool-build shards. Admission itself remains the maintainer security gate;
 do not replace it with PR-authored credentials or a `pull_request_target`
 workflow.
 
-The [application test inventory](docs/ci-test-inventory.md) maps collected cases
-to their Full CI shard and records explicit manual and optional-dependency
-exceptions. The contracts shard fails when a collected test has no assignment.
+The [application test inventory](docs/ci.md#application-test-inventory-and-exceptions)
+maps collected cases to their Full CI shard and records explicit manual and
+optional-dependency exceptions. The contracts shard fails when a collected test
+has no assignment.
 
 ## Product invariants
 

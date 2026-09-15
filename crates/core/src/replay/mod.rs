@@ -153,7 +153,9 @@ pub use handoff::{
 };
 pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
-pub use protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
+pub use protocol::{
+    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};

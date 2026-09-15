@@ -310,7 +310,7 @@ def test_candidate_provenance_preserves_withheld_power_evidence():
     assert provenance.power["source"] == "modeled"
     assert provenance.power["publication_status"] == "withheld"
     assert provenance.power["power_coverage"] == 0.42
-    assert "power_w" not in provenance.power
+    assert provenance.power["power_w"] is None
 
 
 def test_candidate_provenance_does_not_invent_runner_power_semantics():

@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from .detail import format_prediction_details
+from .power import format_power_summary
 from .replay.reporting import format_report_table
 from .sweeper.result import SweepResult
 
@@ -97,9 +99,14 @@ def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[
     return paths
 
 
-def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str:
+def format_prediction_stdout(
+    summary: dict[str, Any], output_format: str, *, details: dict[str, Any] | None = None
+) -> str:
     if output_format == "json":
-        return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+        payload = summary if details is None else {"summary": summary, "details": details}
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    if details is not None:
+        return format_prediction_stdout(summary, output_format) + "\n\n" + format_prediction_details(details)
     if summary.get("metric_semantics") == "analytical_epd_overlay":
         lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
@@ -114,9 +121,13 @@ def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str
             "total_gpus",
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append(format_power_summary(summary))
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return "\n".join(lines)
-    return format_report_table(summary)
+    table = format_report_table(summary)
+    if summary.get("agentic_qualification") == "functional_only":
+        return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
+    return table
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:
@@ -128,10 +139,6 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())
-        power = ""
-        if "power_w" in row:
-            power += f" power_w={row['power_w']:.4g}W"
-        if "power_coverage" in row:
-            power += f" power_coverage={row['power_coverage']:.2%}"
+        power = " " + format_power_summary(row)
         lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}{power} config={row['config_path']}")
     return "\n".join(lines)
