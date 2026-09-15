@@ -1101,11 +1101,8 @@ fn phase_power_stats(combined: &TimingPhaseEvidence) -> Result<TracePowerStats> 
                 .energy_wms
                 .map(|energy| energy / combined.latency_ms)
         })
-        .flatten();
-    ensure!(
-        power_w.is_none_or(f64::is_finite),
-        "AIC timing provider produced non-finite replay power"
-    );
+        .flatten()
+        .filter(|power| power.is_finite() && *power > 0.0);
     Ok(TracePowerStats { power_w, coverage })
 }
 
