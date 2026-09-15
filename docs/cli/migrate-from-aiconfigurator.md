@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#54-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#411-inspect-prediction-details). Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#410-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#411-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -237,8 +237,8 @@ required result, keep the AIC command above.
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
-- [4.10 Power and energy analysis (planned)](#410-power-and-energy-analysis)
-- [4.11 Prediction details](#411-inspect-prediction-details)
+- [4.10 Prediction details](#410-inspect-prediction-details)
+- [4.11 Power and energy analysis (planned)](#411-power-and-energy-analysis)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -615,114 +615,7 @@ These searches do not cover identical operating points. Native
 AFD deployment generation remains unavailable. Use fixed-length synthetic traffic with an
 absolute load; see [AFD topology and limits](../sweeper/afd-topology.md).
 
-<a id="power-and-energy-analysis"></a>
-<a id="54-power-and-energy-analysis"></a>
-
-### 4.10 Power and energy analysis
-
-**Migration status: planned.** Both summary power without `--detail` and an additional energy
-breakdown with `--detail energy` are required by the target workflow. The compatibility AIC
-commands below work today. The AISimulate commands show the intended migration: normal `predict`
-and `recommend` currently lack this modeled-power summary, and `predict --detail energy` is
-currently rejected. The supported `summary`, `memory`, and `time` details are described in
-[section 4.11](#411-inspect-prediction-details).
-
-#### 4.10.1 Summary power without energy details
-
-**Before — AIC includes power in its normal estimate summary:**
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --batch-size 64 --tp-size 2 --isl 1024 --osl 128
-```
-
-**Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
-modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
-
-**After — planned normal AISimulate summary.** Reuse `prediction.yaml` from
-[section 3.1](#31-migrate-one-concrete-deployment) and `budget-search.yaml` from
-[section 3.2](#32-search-with-a-fixed-gpu-budget):
-
-```bash
-aisimulate predict --config prediction.yaml --output-dir ./power-summary
-
-aisimulate recommend --config budget-search.yaml --output-dir ./power-search
-```
-
-**Expected result after power integration:** the normal prediction summary and each displayed
-recommendation row always include `power_w` and `power_coverage` labels. Available watts are
-per GPU; coverage is displayed as a percentage. No `--detail` selector is required to calculate
-or display either summary value. JSON retains the optional numeric fields in the prediction
-summary and recommendation candidate metrics, subject to the publication gate below.
-
-#### 4.10.2 Summary power with an energy breakdown
-
-**Before — add energy detail to the same AIC estimate:**
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
-```
-
-**Result to inspect:** the normal power summary remains visible, followed by available phase
-and per-operation energy detail. Missing energy profiles can leave the detail section without
-measurable data.
-
-**After — planned AISimulate energy detail**, using the same `prediction.yaml`:
-
-```bash
-aisimulate predict --config prediction.yaml --detail energy \
-  --output-dir ./power-details
-```
-
-**Expected result after energy-detail integration:** the same summary power and coverage as the
-normal prediction, plus phase and per-operation energy evidence when available. The selector
-controls only the additional breakdown; it must not enable summary power or relax its coverage
-gate. Missing breakdown evidence must be identified as unavailable with a reason. For a selected
-recommendation, use its saved prediction YAML with `predict --detail energy`; this does not add
-a `--detail` flag to `recommend`.
-
-**Availability in both workflows.** The [modeled-power contract](../power-model.md) defines
-`power_w` as active forward-pass average watts per GPU and `power_coverage` as latency-weighted
-energy-data coverage. Human-readable summaries keep both labels visible in every availability
-state. The following values are synthetic examples of the contract, not captured output from
-the commands above:
-
-| Evidence state | CLI `power_w` | CLI `power_coverage` | JSON fields |
-| --- | --- | --- | --- |
-| Qualifying energy evidence | `450 W` | `90%` | `power_w: 450`, `power_coverage: 0.9` |
-| Measurable coverage below 90% | `unavailable` | `89%` | `power_coverage: 0.89`; omit watts |
-| Energy-aware provider with no covered operations | `unavailable` | `0%` | `power_coverage: 0`; omit watts |
-| Unsupported provider, topology, or a role without energy evidence | `unavailable` | `unavailable` | Omit both fields |
-
-Unavailable values include a short reason, such as insufficient coverage or an unsupported
-provider. Zero coverage is valid only when the energy-aware path can establish it; an unsupported
-path must not fabricate `0%`. JSON uses numbers when available and omission otherwise, never
-placeholder strings, `null`, `NaN`, or zero watts. These examples do not guarantee power coverage
-for the selected H200/model/backend combination.
-
-**What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
-forward passes. Their power values share the same meaning and coverage rule but need not be
-numerically equal for these different workloads. Both workflows must expose summary power
-independently of detail selection. This contract does not implement the runtime integration,
-qualify hardware accuracy, or add a power/energy optimization objective. Modeled GPU power is
-not whole-node or datacenter consumption.
-
-The unified EPD path can preserve limited encoder-power metadata in `predict --format json` and
-the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder energy data is
-available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
-is omitted. The normal terminal summary does not display these power fields. Recommendation
-artifacts can also retain this metadata for each candidate. These fields do not provide a power
-report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
-compatibility command or SDK when power is a required analysis result.
-
-<a id="410-inspect-prediction-details"></a>
-
-### 4.11 Inspect prediction details
+### 4.10 Inspect prediction details
 
 Use `aisimulate predict --detail` to inspect serving metrics and the memory capacity estimate.
 
@@ -789,6 +682,111 @@ See the [detail output contract](user-guide.md#prediction-details).
 AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
 per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 [separate gaps](#detailed-diagnostics).
+
+<a id="power-and-energy-analysis"></a>
+<a id="54-power-and-energy-analysis"></a>
+
+### 4.11 Power and energy analysis
+
+**Migration status: planned.** Both summary power without `--detail` and an additional energy
+breakdown with `--detail energy` are required by the target workflow. The compatibility AIC
+commands below work today. The AISimulate commands show the intended migration: normal `predict`
+and `recommend` currently lack this modeled-power summary, and `predict --detail energy` is
+currently rejected. The supported `summary`, `memory`, and `time` details are described in
+[section 4.10](#410-inspect-prediction-details).
+
+#### 4.11.1 Summary power without energy details
+
+**Before — AIC includes power in its normal estimate summary:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128
+```
+
+**Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
+modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
+
+**After — planned normal AISimulate summary.** Reuse `prediction.yaml` from
+[section 3.1](#31-migrate-one-concrete-deployment) and `budget-search.yaml` from
+[section 3.2](#32-search-with-a-fixed-gpu-budget):
+
+```bash
+aisimulate predict --config prediction.yaml --output-dir ./power-summary
+
+aisimulate recommend --config budget-search.yaml --output-dir ./power-search
+```
+
+**Expected result after power integration:** the normal prediction summary and each displayed
+recommendation row always include `power_w` and `power_coverage` labels. Available watts are
+per GPU; coverage is displayed as a percentage. No `--detail` selector is required to calculate
+or display either summary value. JSON retains the optional numeric fields in the prediction
+summary and recommendation candidate metrics, subject to the publication gate below.
+
+#### 4.11.2 Summary power with an energy breakdown
+
+**Before — add energy detail to the same AIC estimate:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
+```
+
+**Result to inspect:** the normal power summary remains visible, followed by available phase
+and per-operation energy detail. Missing energy profiles can leave the detail section without
+measurable data.
+
+**After — planned AISimulate energy detail**, using the same `prediction.yaml`:
+
+```bash
+aisimulate predict --config prediction.yaml --detail energy \
+  --output-dir ./power-details
+```
+
+**Expected result after energy-detail integration:** the same summary power and coverage as the
+normal prediction, plus phase and per-operation energy evidence when available. The selector
+controls only the additional breakdown; it must not enable summary power or relax its coverage
+gate. Missing breakdown evidence must be identified as unavailable with a reason. For a selected
+recommendation, use its saved prediction YAML with `predict --detail energy`; this does not add
+a `--detail` flag to `recommend`.
+
+**Availability in both workflows.** The [modeled-power contract](../power-model.md) defines
+`power_w` as active forward-pass average watts per GPU and `power_coverage` as latency-weighted
+energy-data coverage. Human-readable summaries keep both labels visible in every availability
+state. The following values are synthetic examples of the contract, not captured output from
+the commands above:
+
+| Evidence state | CLI `power_w` | CLI `power_coverage` | JSON fields |
+| --- | --- | --- | --- |
+| Qualifying energy evidence | `450 W` | `90%` | `power_w: 450`, `power_coverage: 0.9` |
+| Measurable coverage below 90% | `unavailable` | `89%` | `power_coverage: 0.89`; omit watts |
+| Energy-aware provider with no covered operations | `unavailable` | `0%` | `power_coverage: 0`; omit watts |
+| Unsupported provider, topology, or a role without energy evidence | `unavailable` | `unavailable` | Omit both fields |
+
+Unavailable values include a short reason, such as insufficient coverage or an unsupported
+provider. Zero coverage is valid only when the energy-aware path can establish it; an unsupported
+path must not fabricate `0%`. JSON uses numbers when available and omission otherwise, never
+placeholder strings, `null`, `NaN`, or zero watts. These examples do not guarantee power coverage
+for the selected H200/model/backend combination.
+
+**What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
+forward passes. Their power values share the same meaning and coverage rule but need not be
+numerically equal for these different workloads. Both workflows must expose summary power
+independently of detail selection. This contract does not implement the runtime integration,
+qualify hardware accuracy, or add a power/energy optimization objective. Modeled GPU power is
+not whole-node or datacenter consumption.
+
+The unified EPD path can preserve limited encoder-power metadata in `predict --format json` and
+the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder energy data is
+available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
+is omitted. The normal terminal summary does not display these power fields. Recommendation
+artifacts can also retain this metadata for each candidate. These fields do not provide a power
+report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
+compatibility command or SDK when power is a required analysis result.
 
 ## 5. Remaining feature and performance gaps
 
@@ -910,14 +908,14 @@ aiconfigurator cli estimate \
 #### 5.3.2 Remaining detailed-diagnostic gaps
 
 The supported `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.11](#411-inspect-prediction-details). Keep AIC `estimate --detail` when you need
+[section 4.10](#410-inspect-prediction-details). Keep AIC `estimate --detail` when you need
 these additional diagnostic capabilities:
 
 | Remaining gap | AIC selector and evidence |
 | --- | --- |
 | Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
 | Per-operation data provenance and fallback information | `source`. |
-| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#410-power-and-energy-analysis). |
+| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#411-power-and-energy-analysis). |
 
 AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
 three supported sections. Available AIC sections depend on the estimate mode and data;
