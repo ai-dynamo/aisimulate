@@ -1129,6 +1129,12 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
     );
     assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
     assert!(runtime.is_done(), "cancellation cleanup must fully drain");
+    // Tolerating an already finalized request must not hide double retirement.
+    let error = runtime.complete_handoff(uuid).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("offline disagg replay handoff index is inconsistent for {uuid}")
+    );
     // The retained handoff must still retire into exactly one reported record,
     // carrying the first terminal status observed for the request.
     let records = runtime.collector.per_request_records();
