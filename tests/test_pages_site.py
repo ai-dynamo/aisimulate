@@ -204,6 +204,55 @@ class FpePagesTest(unittest.TestCase):
                     )
                 self.assertFalse(output.exists())
 
+    def test_missing_run_attempt_cannot_publish_older_data(self):
+        for status, conclusion in [
+            ("waiting", None),
+            ("in_progress", None),
+            ("completed", "failure"),
+            ("completed", "success"),
+        ]:
+            with self.subTest(status=status, conclusion=conclusion), tempfile.TemporaryDirectory() as temporary:
+                latest_run = run(status=status, conclusion=conclusion)
+                del latest_run["run_attempt"]
+                output = Path(temporary) / "data"
+                with self.assertRaisesRegex(ValueError, "run_attempt"):
+                    self.prepare(
+                        [artifact(10), artifact(20, OLD_SHA)],
+                        {10: latest_run, 20: run(OLD_SHA)},
+                        {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                        output=output,
+                    )
+                self.assertFalse(output.exists())
+
+    def test_invalid_run_attempt_cannot_publish_data(self):
+        for run_attempt in (None, True, False, 0, -1, 0.5, 1.0, 2.0, "1", "2"):
+            for status, conclusion in [
+                ("waiting", None),
+                ("in_progress", None),
+                ("completed", "failure"),
+                ("completed", "success"),
+            ]:
+                with (
+                    self.subTest(run_attempt=run_attempt, status=status, conclusion=conclusion),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    output = Path(temporary) / "data"
+                    with self.assertRaisesRegex(ValueError, "run_attempt"):
+                        self.prepare(
+                            [artifact(10), artifact(20, OLD_SHA)],
+                            {
+                                10: run(status=status, conclusion=conclusion, run_attempt=run_attempt),
+                                20: run(OLD_SHA),
+                            },
+                            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                            output=output,
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_successful_retry_remains_eligible(self):
+        snapshot, _ = self.prepare([artifact(1)], {1: run(run_attempt=2)}, {1: qualified_archive()})
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
     def test_retry_of_older_tested_source_does_not_block_newer_snapshot(self):
         snapshot, _ = self.prepare(
             [artifact(20), artifact(10)],

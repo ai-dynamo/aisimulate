@@ -176,8 +176,11 @@ def prepare(repository: str, repo_root: Path, destination: Path, *, api=github) 
             or run.get("event") not in {"schedule", "workflow_dispatch"}
         ):
             continue
+        run_attempt = run.get("run_attempt")
+        if type(run_attempt) is not int or run_attempt < 1:
+            raise ValueError("eligible main FPE run_attempt must be a positive integer")
         successful = run.get("status") == "completed" and run.get("conclusion") == "success"
-        if not successful and run.get("run_attempt", 1) <= 1:
+        if not successful and run_attempt == 1:
             continue
         if artifact.get("expired"):
             raise ValueError(
