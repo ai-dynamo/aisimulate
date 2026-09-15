@@ -1,0 +1,310 @@
+[
+  {
+    "worker": "brev-135scu64t",
+    "started_at": "2026-09-15T03:56:06.699760+00:00",
+    "shards": [
+      {
+        "system": "h100_sxm",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:56:06.700155+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 222.2340507246554,
+        "completed_at": "2026-09-15T03:59:48.934388+00:00"
+      },
+      {
+        "system": "b200_sxm",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T03:59:48.934901+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 121.91184194758534,
+        "completed_at": "2026-09-15T04:01:50.847207+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:01:50.847575+00:00"
+  },
+  {
+    "worker": "brev-ekmi3wuqq",
+    "started_at": "2026-09-15T03:55:38.311767+00:00",
+    "shards": [
+      {
+        "system": "h200_sxm",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:55:38.312050+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 196.15686932206154,
+        "completed_at": "2026-09-15T03:58:54.469071+00:00"
+      },
+      {
+        "system": "gb300",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T03:58:54.469677+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 107.8258059611544,
+        "completed_at": "2026-09-15T04:00:42.296417+00:00"
+      },
+      {
+        "system": "a100_sxm",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:42.296867+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 30.838978589512408,
+        "completed_at": "2026-09-15T04:01:13.136766+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:01:13.137218+00:00"
+  },
+  {
+    "worker": "brev-77xfdimbd",
+    "started_at": "2026-09-15T03:56:25.445657+00:00",
+    "shards": [
+      {
+        "system": "rtx_pro_6000_server",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:56:25.445939+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 235.0540733523667,
+        "completed_at": "2026-09-15T04:00:20.500172+00:00"
+      },
+      {
+        "system": "rtx_pro_6000_server",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:20.500567+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 108.47482863161713,
+        "completed_at": "2026-09-15T04:02:08.976202+00:00"
+      },
+      {
+        "system": "a100_sxm",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:02:08.976880+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 33.643427095375955,
+        "completed_at": "2026-09-15T04:02:42.620796+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:02:42.621218+00:00"
+  },
+  {
+    "worker": "brev-o6ygh8i31",
+    "started_at": "2026-09-15T03:55:24.924027+00:00",
+    "shards": [
+      {
+        "system": "l40s",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:55:24.924320+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 182.95777312573045,
+        "completed_at": "2026-09-15T03:58:27.882243+00:00"
+      },
+      {
+        "system": "gb300",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T03:58:27.882687+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 121.96833899896592,
+        "completed_at": "2026-09-15T04:00:29.852282+00:00"
+      },
+      {
+        "system": "gb200",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:29.852714+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 109.47032640967518,
+        "completed_at": "2026-09-15T04:02:19.323598+00:00"
+      },
+      {
+        "system": "a100_sxm",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T04:02:19.324271+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 78.80610712897032,
+        "completed_at": "2026-09-15T04:03:38.130948+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:03:38.131401+00:00"
+  },
+  {
+    "worker": "brev-nkusjo10e",
+    "started_at": "2026-09-15T03:56:02.676966+00:00",
+    "shards": [
+      {
+        "system": "rtx_pro_6000_server",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T03:56:02.677252+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 279.16331356950104,
+        "completed_at": "2026-09-15T04:00:41.840722+00:00"
+      },
+      {
+        "system": "h100_sxm",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:41.841142+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 253.60874083358794,
+        "completed_at": "2026-09-15T04:04:55.450780+00:00"
+      },
+      {
+        "system": "b300_sxm",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:04:55.451382+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 106.20719888340682,
+        "completed_at": "2026-09-15T04:06:41.659413+00:00"
+      },
+      {
+        "system": "l40s",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:06:41.660077+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 76.94775157421827,
+        "completed_at": "2026-09-15T04:07:58.608636+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:07:58.609034+00:00"
+  },
+  {
+    "worker": "brev-lxcje8bur",
+    "started_at": "2026-09-15T03:55:37.832688+00:00",
+    "shards": [
+      {
+        "system": "h200_sxm",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T03:55:37.832971+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 284.17571603599936,
+        "completed_at": "2026-09-15T04:00:22.008841+00:00"
+      },
+      {
+        "system": "l40s",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:22.009497+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 248.92748467810452,
+        "completed_at": "2026-09-15T04:04:30.937808+00:00"
+      },
+      {
+        "system": "b300_sxm",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:04:30.938416+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 394.68221831228584,
+        "completed_at": "2026-09-15T04:11:05.621376+00:00"
+      },
+      {
+        "system": "h200_sxm",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:11:05.621770+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 79.34535146318376,
+        "completed_at": "2026-09-15T04:12:24.968326+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:12:24.968798+00:00"
+  },
+  {
+    "worker": "brev-5pukixn5j",
+    "started_at": "2026-09-15T03:55:56.437489+00:00",
+    "shards": [
+      {
+        "system": "gb300",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:55:56.437788+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 293.6696636490524,
+        "completed_at": "2026-09-15T04:00:50.107623+00:00"
+      },
+      {
+        "system": "gb200",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T04:00:50.108079+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 309.8214211333543,
+        "completed_at": "2026-09-15T04:05:59.930252+00:00"
+      },
+      {
+        "system": "b200_sxm",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:05:59.930795+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 541.9592228736728,
+        "completed_at": "2026-09-15T04:15:01.890764+00:00"
+      },
+      {
+        "system": "b60",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:15:01.891213+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 78.97116166725755,
+        "completed_at": "2026-09-15T04:16:20.863145+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:16:20.863500+00:00"
+  },
+  {
+    "worker": "brev-7fyd7gb0c",
+    "started_at": "2026-09-15T03:53:09.820422+00:00",
+    "shards": [
+      {
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:53:09.820707+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 258.73352681845427,
+        "completed_at": "2026-09-15T03:57:28.554405+00:00"
+      },
+      {
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "status": "complete",
+        "started_at": "2026-09-15T03:57:28.554988+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 302.0828382726759,
+        "completed_at": "2026-09-15T04:02:30.638359+00:00"
+      },
+      {
+        "system": "gb200",
+        "backend": "vllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:02:30.638912+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 351.4801480602473,
+        "completed_at": "2026-09-15T04:08:22.119727+00:00"
+      },
+      {
+        "system": "h100_sxm",
+        "backend": "trtllm",
+        "status": "complete",
+        "started_at": "2026-09-15T04:08:22.120210+00:00",
+        "returncode": 0,
+        "elapsed_seconds": 75.6293461881578,
+        "completed_at": "2026-09-15T04:09:37.750545+00:00"
+      }
+    ],
+    "completed_at": "2026-09-15T04:09:37.751029+00:00"
+  }
+]
