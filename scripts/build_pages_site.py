@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -85,22 +86,138 @@ def _git(repo_root: Path, *args: str) -> str:
 
 
 def _accuracy_summary(text: str) -> dict:
+    """Reject incomplete branch artifacts before replacing the deployed site."""
+
+    def require(condition: bool, field: str) -> None:
+        if not condition:
+            raise ValueError(f"invalid or missing {field}")
+
+    def number(value: object) -> bool:
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+    def strings(value: object) -> bool:
+        return isinstance(value, list) and bool(value) and all(isinstance(item, str) for item in value)
+
+    def aggregate(item: dict) -> None:
+        require(isinstance(item, dict) and type(item.get("rows")) is int and item["rows"] > 0, "rows")
+        for name in ("aic", "aisimulate"):
+            metrics = item.get(name)
+            require(isinstance(metrics, dict), name)
+            require(type(metrics.get("points")) is int and 0 <= metrics["points"] <= item["rows"], f"{name}.points")
+            for metric in ("ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"):
+                require(metric in metrics and (metrics[metric] is None or number(metrics[metric])), f"{name}.{metric}")
+        counts = item["aisimulate"].get("status_counts")
+        require(isinstance(counts, dict), "status_counts")
+        require(
+            all(
+                type(counts.get(key)) is int and counts[key] >= 0
+                for key in ("success", "unsupported", "failed", "unknown")
+            ),
+            "status counts",
+        )
+        require(
+            sum(counts.values()) == item["rows"] and counts["success"] == item["aisimulate"]["points"],
+            "coverage totals",
+        )
+
+    def topology(item: dict) -> None:
+        aggregate(item)
+        require(isinstance(item.get("id"), str) and bool(re.fullmatch(r"[0-9a-f]{16}", item["id"])), "topology id")
+        require(
+            all(isinstance(item.get(key), str) for key in ("framework", "precision", "serving", "spec_method")),
+            "topology dimensions",
+        )
+        require(isinstance(item.get("parallelism"), dict), "parallelism")
+        points = item.get("points")
+        require(isinstance(points, list) and len(points) == item["rows"], "topology points")
+        previous = 0
+        counts = {"success": 0, "unsupported": 0, "failed": 0, "unknown": 0}
+        for point in points:
+            require(isinstance(point, dict), "point")
+            concurrency = point.get("concurrency")
+            require(number(concurrency) and concurrency > 0 and concurrency >= previous, "concurrency")
+            previous = concurrency
+            status = point.get("status")
+            require(status in ("success", "unsupported", "failed"), "point status")
+            counts[status] += 1
+            for name in ("measured", "aic", "aisimulate"):
+                series = point.get(name)
+                require(isinstance(series, dict), "point series")
+                for metric in ("ttft", "tpot"):
+                    keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
+                    missing = name == "aisimulate" and status != "success"
+                    require(
+                        all(
+                            key in series and (series[key] is None if missing else number(series[key])) for key in keys
+                        ),
+                        "point metric",
+                    )
+        require(counts == item["aisimulate"]["status_counts"], "topology status counts")
+
     try:
         summary = json.loads(text)
-        if summary.get("schema_version") != 1 or not isinstance(summary.get("models"), list):
-            raise ValueError("unsupported summary schema")
-        if not isinstance(summary.get("snapshot"), dict):
-            raise ValueError("snapshot identity is missing")
-        revision = summary["snapshot"].get("evaluated_revision")
-        if revision is not None and (
-            not isinstance(revision, dict)
-            or not isinstance(revision.get("commit_sha"), str)
-            or not re.fullmatch(r"[0-9a-f]{40}", revision["commit_sha"])
-            or not isinstance(revision.get("branch"), str)
-        ):
-            raise ValueError("invalid evaluated revision")
+        require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
+        snapshot = summary.get("snapshot")
+        require(isinstance(snapshot, dict), "snapshot")
+        require(isinstance(snapshot.get("release_tag"), str), "measurement release")
+        require(
+            snapshot.get("measurement_source_url")
+            == "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + snapshot["release_tag"],
+            "measurement source URL",
+        )
+        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
+        for date in ("measurement_date_through", "aisimulate_completed_at"):
+            require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
+        revision = snapshot.get("evaluated_revision")
+        if revision is not None:
+            require(
+                isinstance(revision, dict)
+                and isinstance(revision.get("commit_sha"), str)
+                and bool(re.fullmatch(r"[0-9a-f]{40}", revision["commit_sha"]))
+                and isinstance(revision.get("branch"), str),
+                "evaluated revision",
+            )
+        scope = summary.get("scope")
+        require(isinstance(scope, dict) and scope.get("multinode") in ("included", "excluded"), "scope")
+        require(
+            type(scope.get("excluded_multinode_rows")) is int and scope["excluded_multinode_rows"] >= 0, "excluded rows"
+        )
+        require(isinstance(scope.get("claim"), str), "scope claim")
+        totals = summary.get("totals")
+        aggregate(totals)
+        require(strings(totals.get("gpu_skus")) and strings(totals.get("precisions")), "total dimensions")
+        models = summary.get("models")
+        require(isinstance(models, list) and bool(models) and len(models) == totals.get("models"), "models")
+        for model in models:
+            aggregate(model)
+            require(isinstance(model.get("model"), str), "model name")
+            require(strings(model.get("gpu_skus")) and strings(model.get("precisions")), "model dimensions")
+            workloads = model.get("workloads")
+            require(isinstance(workloads, list) and bool(workloads), "workloads")
+            for workload in workloads:
+                aggregate(workload)
+                require(
+                    isinstance(workload.get("identity"), str) and isinstance(workload.get("label"), str),
+                    "workload identity",
+                )
+                require(
+                    strings(workload.get("gpu_skus")) and strings(workload.get("precisions")), "workload dimensions"
+                )
+                gpus = workload.get("gpus")
+                require(isinstance(gpus, list) and bool(gpus), "GPUs")
+                for gpu in gpus:
+                    aggregate(gpu)
+                    require(isinstance(gpu.get("gpu"), str) and strings(gpu.get("precisions")), "GPU dimensions")
+                    if "topologies" in gpu:
+                        require(isinstance(gpu["topologies"], list) and bool(gpu["topologies"]), "topologies")
+                        for item in gpu["topologies"]:
+                            topology(item)
+                        require(sum(item["rows"] for item in gpu["topologies"]) == gpu["rows"], "topology coverage")
+                require(sum(item["rows"] for item in gpus) == workload["rows"], "GPU coverage")
+            require(sum(item["rows"] for item in workloads) == model["rows"], "workload coverage")
+        require(sum(item["rows"] for item in models) == totals["rows"], "model coverage")
         return summary
-    except (ValueError, AttributeError) as exc:
+    except (ValueError, AttributeError, TypeError, KeyError) as exc:
         raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc
 
 

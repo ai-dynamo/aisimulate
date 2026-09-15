@@ -147,3 +147,37 @@ def test_malformed_accuracy_data_fails_publication() -> None:
     ):
         with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
             PAGES._accuracy_summary(value)
+
+
+def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
+    from copy import deepcopy
+
+    valid = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    invalid_cases = [
+        {"schema_version": 1, "models": [], "snapshot": {}},
+        {**valid, "scope": {}},
+        {**valid, "totals": {}},
+    ]
+    missing_metric = deepcopy(valid)
+    del missing_metric["models"][0]["workloads"][0]["gpus"][0]["aic"]["ttft_mape_pct"]
+    invalid_cases.append(missing_metric)
+    broken_coverage = deepcopy(valid)
+    broken_coverage["totals"]["aisimulate"]["status_counts"]["success"] += 1
+    invalid_cases.append(broken_coverage)
+    bad_topology = deepcopy(valid)
+    bad_topology["models"][0]["workloads"][0]["gpus"][0]["topologies"] = [{"id": "missing-points"}]
+    invalid_cases.append(bad_topology)
+    for invalid in invalid_cases:
+        with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
+            PAGES._accuracy_summary(json.dumps(invalid))
+
+
+def test_generated_topology_summary_satisfies_publication_contract() -> None:
+    spec = importlib.util.spec_from_file_location("accuracy_tests", ROOT / "tests/test_e2e_accuracy_overview.py")
+    accuracy_tests = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(accuracy_tests)
+    summary = accuracy_tests._summary()
+    assert PAGES._accuracy_summary(json.dumps(summary)) == summary
+    summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]["measured"]["ttft_relative"] = None
+    with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
+        PAGES._accuracy_summary(json.dumps(summary))
