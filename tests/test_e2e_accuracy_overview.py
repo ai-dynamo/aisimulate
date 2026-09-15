@@ -438,7 +438,9 @@ def test_invalid_curve_inputs_fail_closed(field: str, value: float) -> None:
 def test_branch_publication_rejects_mismatched_or_mixed_runs(mixed: bool) -> None:
     predictions, metadata, coverage = _inputs()
     metadata["aisimulate_run"]["runtime"]["source_checkout"] = {
-        "branch": "main", "commit_sha": "d" * 40, "clean": True,
+        "branch": "main",
+        "commit_sha": "d" * 40,
+        "clean": True,
     }
     predictions["aisimulate_run"] = deepcopy(metadata["aisimulate_run"])
     if mixed:
@@ -449,7 +451,11 @@ def test_branch_publication_rejects_mismatched_or_mixed_runs(mixed: bool) -> Non
         message = "source_checkout disagree"
     with pytest.raises(OVERVIEW.SnapshotError, match=message):
         OVERVIEW.build_summary(
-            predictions, metadata, coverage, predictions_sha256="c" * 64, branch="main",
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
             source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
         )
 
@@ -459,7 +465,10 @@ def test_successful_replay_rejects_zero_latency() -> None:
     predictions["rows"][0]["dynamo_ttft_ms"] = 0
     with pytest.raises(OVERVIEW.SnapshotError, match="successful AISimulate latencies must be positive"):
         OVERVIEW.build_summary(
-            predictions, metadata, coverage, predictions_sha256="c" * 64,
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
             source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
         )
 
