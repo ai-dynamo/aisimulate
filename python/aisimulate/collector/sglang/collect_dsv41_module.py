@@ -184,8 +184,11 @@ def bind_output_profile(perf_filename: str, execution_profile: str) -> None:
 def run_dsv41_module_worker(
     model_path: str, tp_size: int, execution_profile: str, sweep: dict, *, perf_filename: str, device: str = "cuda:0"
 ) -> None:
+    from importlib.metadata import version as get_version
+
     from collector.helper import log_perf
 
+    version = get_version("sglang")
     del device  # The native framework owns all ranks in this TP invocation.
     output = Path(perf_filename).parent / f"dsv41-tp{tp_size}-{execution_profile}" / uuid.uuid4().hex
     output.mkdir(parents=True, exist_ok=True)
@@ -248,7 +251,7 @@ def run_dsv41_module_worker(
         log_perf(
             [{k: v for k, v in row.items() if k != "kernel_source"}],
             "sglang",
-            "0.0.0.dev0",
+            version,
             "cuda",
             "dsv41_module",
             row["kernel_source"],

@@ -3,12 +3,19 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# DeepSeek-V4.1 GB300 measured operator databases
+# DeepSeek-V4.1 GB300 preview operator databases
 
 These two systems roots contain the measured operator tables used by the
 DeepSeek-V4.1 SILICON predictor. They are included in the Python distribution.
 End-to-end ground truth, raw experiment logs, and prediction reports remain in
 the immutable archive linked below.
+
+These measurements are specific to a preview build, not a released SGLang
+version. As of September 14, 2026, the
+[official V4.1 guide](https://github.com/sgl-project/sglang/blob/07e1918924b11223c185544507669f9eb02c9b65/docs/cookbook/autoregressive/DeepSeek/DeepSeek-V4_1.mdx)
+states that V4.1 support has not shipped in a release and directs NVIDIA users
+to `dev-dsv41`. A release-specific database requires a new collection on a
+supporting release; these measured files must not be relabeled as that release.
 
 | Systems root | `decoder_replay` | V4.1 module rows | GEMM / MoE / NCCL rows |
 | --- | --- | ---: | ---: |
@@ -55,8 +62,15 @@ operators can still contribute to a whole-model total.
 The September 2026 collection used four GB300 GPUs, the SGLang ARM64 image
 `sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d`,
 and `deepseek-ai/DeepSeek-V4.1-Flash` at checkpoint revision
-`fb2764a5cf321eaa5070ca8f9e892818f477c16d`. Runtime version `0.0.0.dev0` is
-the installed version, not a claim of compatibility with other SGLang builds.
+`fb2764a5cf321eaa5070ca8f9e892818f477c16d`. The reported package version
+`0.0.0.dev0` is a development placeholder, not a release identity. The actual
+image's OCI revision, SGLang build commit and source-overlay commit are all
+`unknown`; its version label is `local/sglang:dev`. The immutable image digest
+above and the captured Python source-manifest digest
+`d50217d8f78e4bd173774c36713650bbf44b058c9575ac8babba208a5c5173a2`
+identify these measurements. The current mutable preview tag may point to a
+different image, and the reference source commit below does not identify the
+entire captured runtime.
 
 Collection used eager text autoregressive execution, HBM-resident Engram,
 unfused shared experts, and separate Torch NCCL 2.29.7 collectives. Local module

@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import csv
 import json
 import shutil
+from importlib import metadata
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 import pytest
@@ -301,6 +304,66 @@ def test_output_profile_binding_rejects_mixed_campaigns(tmp_path):
     bind_output_profile(destination, "full")
     with pytest.raises(ValueError, match="separate output tables"):
         bind_output_profile(destination, "decoder_bounded")
+
+
+@pytest.fixture
+def module_worker_case(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSV41_CHECKPOINT", str(tmp_path / "checkpoint"))
+    monkeypatch.setenv("DSV41_RUNTIME_DIGEST", "sha256:" + "b" * 64)
+    monkeypatch.setenv("DSV41_PROMPT_FILE", str(tmp_path / "prompts.json"))
+    return {
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "tp_size": 4,
+        "execution_profile": "full",
+        "sweep": {"query_lengths": [128], "prefix_lengths": [0], "batch_sizes": [1], "decode_steps": 1},
+        "perf_filename": str(tmp_path / "dsv41_module_perf.txt"),
+    }
+
+
+@pytest.mark.parametrize("installed_version", ["0.5.4", "0.0.0.dev0+g1aa0e962"])
+def test_module_worker_persists_installed_sglang_version(monkeypatch, module_worker_case, installed_version):
+    from collector.sglang import collect_dsv41_module
+
+    get_version = Mock(return_value=installed_version)
+    monkeypatch.setattr(metadata, "version", get_version)
+
+    def invoke_native(command, **kwargs):
+        get_version.assert_called_once_with("sglang")
+        output = Path(command[command.index("--output") + 1])
+        for rank in range(module_worker_case["tp_size"]):
+            point = row() | {"sample": 0, "invocation": 0, "tp_rank": rank}
+            (output / f"rank-{rank}.jsonl").write_text(json.dumps(point) + "\n")
+        (output / "COMPLETE").touch()
+
+    native_run = Mock(side_effect=invoke_native)
+    monkeypatch.setattr(collect_dsv41_module.subprocess, "run", native_run)
+    collect_dsv41_module.run_dsv41_module_worker(**module_worker_case)
+
+    native_run.assert_called_once()
+    with Path(module_worker_case["perf_filename"]).open(newline="") as handle:
+        measured = list(csv.DictReader(handle))
+    assert len(measured) == 1
+    assert measured[0]["framework"] == "sglang"
+    assert measured[0]["version"] == installed_version
+    assert float(measured[0]["latency"]) == 0.125
+
+
+def test_module_worker_missing_sglang_metadata_fails_before_gpu(monkeypatch, module_worker_case):
+    from collector.sglang import collect_dsv41_module
+
+    missing = metadata.PackageNotFoundError("sglang")
+    get_version = Mock(side_effect=missing)
+    monkeypatch.setattr(metadata, "version", get_version)
+    native_run = Mock()
+    monkeypatch.setattr(collect_dsv41_module.subprocess, "run", native_run)
+
+    with pytest.raises(metadata.PackageNotFoundError) as error:
+        collect_dsv41_module.run_dsv41_module_worker(**module_worker_case)
+
+    assert error.value is missing
+    get_version.assert_called_once_with("sglang")
+    native_run.assert_not_called()
+    assert not Path(module_worker_case["perf_filename"]).exists()
 
 
 def test_registry_provenance_covers_execution_and_geometry_dependencies(tmp_path):
