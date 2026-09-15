@@ -1058,9 +1058,8 @@ fn decode_terminal_retains_handoff_until_deferred_cleanup_drains() {
 /// the coordinator to a `Canceled` completion, and completing the handoff must
 /// not finalize the request a second time -- that aborts the whole replay run.
 ///
-/// The window is entered here with the same `finish_logical_request` call
-/// `process_decode_signal` makes at decode terminal, which deliberately leaves
-/// the handoff's queued actions alive.
+/// Drive the production decode-terminal handler while the handoff is retained,
+/// then cancel and drain cleanup. The original completed record must survive.
 #[test]
 fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
     let config = disagg_config_with_handoff_delay();
@@ -1090,9 +1089,27 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
         DisaggPhase::TransferPending
     );
 
-    runtime.finish_logical_request(uuid, false).unwrap();
+    let decode_completed_at = runtime.now_ms;
+    runtime
+        .process_decode_signal(OutputSignal {
+            uuid,
+            token_id: Some(42),
+            completed: true,
+            rejected: false,
+            handoff_delay_ms: None,
+            cached_tokens: None,
+        })
+        .unwrap();
     assert!(!runtime.state(uuid).unwrap().counted_in_flight);
     assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
+    assert_eq!(
+        runtime.state(uuid).unwrap().terminal_status(),
+        Some(ReplayTerminalStatus::Completed)
+    );
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].output_length, 1);
 
     let handoff_id = runtime.state(uuid).unwrap().handoff_id;
     runtime
@@ -1111,11 +1128,24 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
         Some(HandoffCompletion::Canceled)
     );
     assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+    assert!(runtime.is_done(), "cancellation cleanup must fully drain");
     // The retained handoff must still retire into exactly one reported record,
     // carrying the first terminal status observed for the request.
     let records = runtime.collector.per_request_records();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].terminal_time_ms, decode_completed_at);
+    assert_eq!(records[0].output_length, 1);
+    assert_eq!(
+        runtime
+            .stats
+            .transition_log
+            .iter()
+            .filter(|event| **event == DisaggTransition::RequestMarkedDone { uuid })
+            .count(),
+        1,
+        "handoff cleanup must not finalize the logical request again"
+    );
 }
 
 #[rstest::rstest]
