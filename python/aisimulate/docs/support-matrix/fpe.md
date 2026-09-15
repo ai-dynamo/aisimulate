@@ -114,8 +114,9 @@ builds one shared wheel. Neither path rebuilds the native runtime in every
 shard.
 
 The workflow discovers one shard per curated system/backend pair and runs at
-most eight shards concurrently on the repository-specific CPU runner set. Each
-shard runs only `forward_model=op_level` with an eight-thread local pool. A
+most 20 shards concurrently on the repository-specific AMD64 CPU runner set.
+Other CI runs share this pool, so runner availability can reduce concurrency.
+Each shard runs only `forward_model=op_level` with an eight-thread local pool. A
 final job validates reports before combining them into the split web CSV
 artifact. Qualification requires every discovered shard, exact source and wheel
 identity, consistent package version and workload, complete role-appropriate
@@ -154,7 +155,7 @@ to the repository's retention policy. Artifacts generated before the qualificati
 manifest was introduced cannot be published by this path.
 
 Staging waits for the complete matrix. Each shard has a 480-minute timeout;
-the eight-shard concurrency limit and runner queues can make the total wait
+the 20-shard concurrency limit and runner queues can make the total wait
 longer than that per-shard limit. A successful wheel build alone does not make
 the nightly available. No release-latency percentile is promised until complete
 runs have been measured with this gate enabled.
