@@ -1134,6 +1134,7 @@ def estimate_num_gpu_blocks(
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
+    diagnostics: dict[str, Any] | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1147,6 +1148,8 @@ def estimate_num_gpu_blocks(
         memory_fraction_kind: ``"of_total"`` (vLLM / SGLang) or ``"of_free"``
             (TRT-LLM); validated against ``backend``.
         memory_fraction_value: the fraction in ``[0, 1]``.
+        diagnostics: optional output mapping populated with the exact memory
+            estimate used for this block count, including its source and units.
         (remaining kwargs mirror :func:`estimate_kv_cache`.)
 
     Returns:
@@ -1197,4 +1200,8 @@ def estimate_num_gpu_blocks(
     else:
         tokens = int(estimate["total_kv_size_tokens"])
 
+    if diagnostics is not None:
+        diagnostics.update(estimate)
+        diagnostics["scheduler_block_size_tokens"] = block_size
+        diagnostics["num_gpu_blocks"] = tokens // block_size
     return tokens // block_size

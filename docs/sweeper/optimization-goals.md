@@ -34,13 +34,14 @@ Every `OptimizationTarget` and the exact report metric it reads (`score.objectiv
 | `throughput` | maximize | `output_throughput_tok_s` | no |
 | `throughput_per_gpu` | maximize | `output_throughput_tok_s / avg_gpu` (tok/s/gpu) | no |
 | `throughput_per_user` | maximize | `mean_output_token_throughput_per_user` (tok/s/user) | no |
+| `ttft` | **minimize** | `mean_ttft_ms` | no |
 | `e2e_latency` | **minimize** | `mean_e2e_latency_ms` | no |
 | `goodput` | maximize | `goodput_output_throughput_tok_s` | **yes** |
 | `goodput_per_gpu` | maximize | `goodput_output_throughput_tok_s / avg_gpu` (tok/s/gpu) | **yes** |
 | `pareto` | per-objective | a vector — one value per `pareto_objectives` entry | iff an objective needs it |
 
-`e2e_latency` is the only minimized target: `OptimizationTarget.maximize` returns `False`
-for it (and raises for `pareto`, which has no single direction). `score_report` negates
+`ttft` and `e2e_latency` are minimized targets: `OptimizationTarget.maximize` returns
+`False` for both (and raises for `pareto`, which has no single direction). `score_report` negates
 minimized targets so **higher is always better** internally; for a Pareto goal the raw
 (unsigned) value is kept and `_dominates` applies each objective's own direction.
 Missing-key defaults differ by direction: a maximized target reads `0.0` when its key is
@@ -116,16 +117,14 @@ tradeoff between the scalar targets in `pareto_objectives`.
   explicit list is kept as-is so the validator can reject it: `>= 2` entries, distinct, no
   `pareto` among them, and `pareto_objectives` is only legal under a `pareto` target.
 
-- **Vizier study** — the sweep declares **one metric per objective** (each with its own
-  MAXIMIZE/MINIMIZE goal): `Sweeper.run` passes
-  `sampler_objectives = [(t.value, t.maximize) for t in resolved_pareto_objectives]` to the
-  `VizierBranchSampler`, which appends a `vz.MetricInformation` per objective
-  (`sampler.py`). The Vizier algorithm is `"DEFAULT"` for **every** study (scalar or
-  Pareto); what changes is the *number* of metrics. With `>= 2` metrics `DEFAULT`
-  (GP-UCB-PE) behaves multi-objective — optimizing the Pareto tradeoff via **hypervolume
-  scalarization** — and each `observe` reports every objective's raw value in one
-  measurement. (Single-objective goals declare the sampler's default single maximized
-  `"objective"` metric, pre-signed by the caller.)
+- **optimizer selection** — the historical SDK path (`sweep.max_trials: null`)
+  creates round-based Vizier studies. Its default algorithm is `DEFAULT`, subject
+  to the [algorithm override](configuration.md#sampler-algorithm-override).
+  When `sweep.max_trials` is set, `sweep.algorithm` selects the seeded Bayesian
+  or random sampler. The unified CLI always supplies this total-trial budget
+  from `optimizer.max_trials`; `optimizer.algorithm` selects `bayesian` or
+  `random`. Do not assume every CLI study uses Vizier's embedded `DEFAULT`
+  designer. For Pareto, samplers receive every objective and its direction.
 
 - **front** — `score.pareto_front` returns the **non-dominated** subset after optional
   strict aggregate SLA filtering.
@@ -147,3 +146,26 @@ Per-objective raw values are stored on `Candidate.objectives` (keyed by
 `OptimizationTarget` value, e.g. `{"throughput_per_gpu": .., "throughput_per_user": ..}`)
 by `make_candidate`; `Candidate.score` carries the first objective's value as a headline
 number only (not used for Pareto ranking). `objectives` is `None` for a scalar goal.
+
+## SDK and unified CLI fields
+
+This page describes `SmartSearchConfig`. In the unified CLI, put `target` and
+`strict_sla` under `optimization`, SLA bounds under `evaluation.sla`, and search
+controls under `optimizer`. The CLI's Pareto objectives are fixed to
+`throughput_per_gpu` and `throughput_per_user`; the SDK allows an explicit
+`goal.pareto_objectives` list. Do not copy a complete SDK YAML into the CLI.
+
+For a CLI recommendation that minimizes TTFT, start with the
+[bounded recommendation example](../cli/user-guide.md#recommend-under-a-gpu-budget)
+and replace its goal with:
+
+```yaml
+optimization:
+  target: ttft
+  constraints: {max_candidate_gpus: 4}
+```
+
+Its score is negative mean TTFT, so a larger score means lower latency. Use
+`metrics.mean_ttft_ms` when displaying the latency itself. The
+[prediction interpretation guide](../cli/understand-your-prediction.md)
+explains latency populations and why strict aggregate SLA is not a p99 gate.

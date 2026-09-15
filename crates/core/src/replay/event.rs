@@ -11,7 +11,7 @@ use super::core::{EngineEventBatch, EngineProgress};
 use crate::engine::HandoffId;
 use crate::replay::protocol::{ForwardPassSnapshot, OutputSignal};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SimulationWorkerStage {
     Aggregated,
     Prefill,
@@ -88,15 +88,44 @@ pub(crate) enum SimulationEventKind<Events: EngineEventBatch = ()> {
 }
 
 impl<Events: EngineEventBatch> SimulationEventKind<Events> {
-    /// Tie-breaker among events at the *same* `at_ms`: telemetry first observes
-    /// fully settled workload state, then scaling makes a decision from that
-    /// timestamp. `seq_no` is globally unique, so this only reorders control
-    /// events relative to same-timestamp work.
+    /// Canonical phase order among events at the same logical timestamp.
+    /// Runtime drains each phase to a fixed point before telemetry observes the
+    /// settled state and scaling makes a decision.
     fn ordering_rank(&self) -> u8 {
         match self {
-            SimulationEventKind::TelemetryTick => 1,
-            SimulationEventKind::ScalingTick => 2,
-            _ => 0,
+            SimulationEventKind::EnginePassCompletion(_) => 0,
+            SimulationEventKind::WorkerReady { .. } => 1,
+            SimulationEventKind::TransferComplete { .. } => 2,
+            SimulationEventKind::TelemetryTick => 3,
+            SimulationEventKind::ScalingTick => 4,
+        }
+    }
+
+    fn semantic_cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (
+                SimulationEventKind::EnginePassCompletion(left),
+                SimulationEventKind::EnginePassCompletion(right),
+            ) => (right.stage, right.worker_id, right.pass_id.get()).cmp(&(
+                left.stage,
+                left.worker_id,
+                left.pass_id.get(),
+            )),
+            (
+                SimulationEventKind::WorkerReady {
+                    stage: left_stage,
+                    worker_id: left_worker,
+                },
+                SimulationEventKind::WorkerReady {
+                    stage: right_stage,
+                    worker_id: right_worker,
+                },
+            ) => (*right_stage, *right_worker).cmp(&(*left_stage, *left_worker)),
+            (
+                SimulationEventKind::TransferComplete { handoff_id: left },
+                SimulationEventKind::TransferComplete { handoff_id: right },
+            ) => right.cmp(left),
+            _ => Ordering::Equal,
         }
     }
 }
@@ -133,6 +162,7 @@ impl<Events: EngineEventBatch> Ord for SimulationEvent<Events> {
             .at_ms
             .total_cmp(&self.at_ms)
             .then_with(|| other.kind.ordering_rank().cmp(&self.kind.ordering_rank()))
+            .then_with(|| self.kind.semantic_cmp(&other.kind))
             .then_with(|| other.seq_no.cmp(&self.seq_no))
     }
 }
