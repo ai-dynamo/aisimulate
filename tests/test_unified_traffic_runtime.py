@@ -10,6 +10,7 @@ import pytest
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
+from aisimulate.replay.reporting import format_report_table
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 
@@ -69,6 +70,107 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     }
     assert "aic_model_path" not in deployment.agg_engine_args
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+
+
+def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 128,
+                    "output_tokens": 4,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "Qwen/Qwen3-30B-A3B",
+                "hardware": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "current",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "replicas": 1,
+                            "tensor": 4,
+                            "pipeline": 1,
+                            "attention_data": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 4,
+                        },
+                        "scheduler": {
+                            "max_batched_tokens": 8192,
+                            "max_sequences": 256,
+                        },
+                        "kv_cache": {
+                            "block_size": 64,
+                            "prefix_caching": True,
+                            "capacity": {"type": "fixed", "blocks": 4096},
+                        },
+                        "timing": {"type": "default"},
+                    }
+                },
+            },
+        }
+    )
+
+    coverage = report.metrics["power_coverage"]
+    assert coverage == 0.0
+    assert "power_w" not in report.metrics
+    diagnostics = report.metadata["native_report"]["power_diagnostics"]
+    assert diagnostics["schema_version"] == "1.0"
+    assert diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert diagnostics["power_coverage"] == pytest.approx(coverage)
+    assert [phase["name"] for phase in diagnostics["phases"]] == [
+        "prefill",
+        "decode",
+    ]
+    phase_energies = [phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase]
+    if phase_energies:
+        assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
+    else:
+        assert "energy_wms" not in diagnostics
+    assert diagnostics["latency_ms"] == pytest.approx(sum(phase["latency_ms"] for phase in diagnostics["phases"]))
+    assert diagnostics["covered_latency_ms"] == pytest.approx(
+        sum(phase["covered_latency_ms"] for phase in diagnostics["phases"])
+    )
+    for phase in diagnostics["phases"]:
+        operations = phase["operations"]
+        assert [operation["name"] for operation in operations] == sorted(operation["name"] for operation in operations)
+        for operation in operations:
+            assert operation["source_kind"] in {
+                "measured",
+                "transferred",
+                "modeled",
+                "mixed",
+                "other",
+                "missing",
+            }
+            if operation["status"] == "missing":
+                assert "energy_wms" not in operation
+                assert operation["uncovered_reason"]
+
+
+def test_power_report_table_surfaces_available_power_and_coverage() -> None:
+    table = format_report_table({"power_w": 487.5, "power_coverage": 0.95})
+
+    assert "Active Power per GPU (W)" in table
+    assert "487.50" in table
+    assert "Power Data Coverage (%)" in table
+    assert "95.00" in table
+
+
+def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
+    table = format_report_table({"power_coverage": 0.42})
+    active_power_row = next(line for line in table.splitlines() if "Active Power per GPU (W)" in line)
+
+    assert "Active Power per GPU (W)" in table
+    assert "N/A" in active_power_row
+    assert "Power Data Coverage (%)" in table
+    assert "42.00" in table
 
 
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
@@ -281,13 +383,19 @@ def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> N
     assert report.metrics["completed_requests"] == 8
 
 
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(monkeypatch) -> None:
+def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
+    monkeypatch,
+) -> None:
     # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
     # back to op_level; the same shape still replays under op_level timing. This is a wiring
     # check for the data path, not an accuracy statement about either model.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {"tensor": 2, "moe_tensor": 2, "moe_expert": 1}
+    engine["workers"]["aggregated"]["parallelism"] = {
+        "tensor": 2,
+        "moe_tensor": 2,
+        "moe_expert": 1,
+    }
 
     with pytest.raises(RuntimeError, match="FPM"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})

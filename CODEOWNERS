@@ -66,7 +66,11 @@
 /tests/test_power_contract.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners
+<<<<<<< HEAD
 /tests/fixtures/power-contract-v1.json               @ai-dynamo/aisimulate-replay-codeowners
+=======
+/tests/test_power_diagnostics.py                     @ai-dynamo/aisimulate-replay-codeowners
+>>>>>>> origin/jasonzho/aic-1937-power-diagnostics-v2
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
@@ -156,6 +160,7 @@
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_power_diagnostics.py                     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitattributes                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

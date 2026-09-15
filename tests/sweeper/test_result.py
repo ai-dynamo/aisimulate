@@ -100,7 +100,13 @@ def _record(
         prediction_config=({"engine": {"model": "example/model"}} if feasible else None),
         used_gpus=8,
         score=100.0 if feasible else None,
-        metrics={"output_throughput_tok_s": 100.0} if feasible else {},
+        metrics={
+            "output_throughput_tok_s": 100.0,
+            "power_w": 487.5,
+            "power_coverage": 0.95,
+        }
+        if feasible
+        else {},
         reason_category=reason_category,
         reason=None if feasible else f"example {status.value}",
         provenance=_provenance(),
@@ -200,6 +206,19 @@ def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
 
 def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     result = _complete_result()
+    result.candidates[0].provenance = make_candidate_provenance(
+        result.candidates[0].config,
+        metrics=result.candidates[0].metrics,
+        runner_metadata={
+            "operations": [
+                {
+                    "operation": "attention",
+                    "source": "silicon",
+                    "version": "v1",
+                }
+            ]
+        },
+    )
 
     rows = list(csv.DictReader(io.StringIO(result.to_csv())))
 
@@ -209,6 +228,9 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     assert json.loads(rows[0]["config_json"])["backend"] == "trtllm"
     assert json.loads(rows[0]["prediction_config_json"])["engine"]["model"] == "example/model"
     assert json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
+    assert rows[0]["power_w"] == "487.5"
+    assert rows[0]["power_coverage"] == "0.95"
+    assert rows[0]["power_source"] == "runner_reported"
     assert rows[3]["reason_category"] == "runtime_timeout"
 
 
@@ -261,6 +283,50 @@ def test_candidate_provenance_uses_the_materialized_replay_spec():
             },
         }
     ]
+
+
+def test_candidate_provenance_preserves_withheld_power_evidence():
+    candidate = {
+        "deployment_mode": "agg",
+        "backend": "trtllm",
+        "backend_version": "1.0",
+        "model_name": "example/model",
+        "hardware_sku": "h200_sxm",
+    }
+    provenance = make_candidate_provenance(
+        candidate,
+        metrics={"power_coverage": 0.42},
+        runner_metadata={
+            "power": {
+                "source": "modeled",
+                "scope": "active_forward_pass_per_gpu",
+                "power_w_unit": "W",
+                "coverage_gate": 0.9,
+                "publication_status": "withheld",
+            }
+        },
+    )
+
+    assert provenance.power["source"] == "modeled"
+    assert provenance.power["publication_status"] == "withheld"
+    assert provenance.power["power_coverage"] == 0.42
+    assert "power_w" not in provenance.power
+
+
+def test_candidate_provenance_does_not_invent_runner_power_semantics():
+    provenance = make_candidate_provenance(
+        {"model_name": "example/model", "hardware_sku": "h200_sxm"},
+        metrics={"power_w": 321.0, "power_coverage": 1.0},
+        runner_metadata={},
+    )
+
+    assert provenance.power == {
+        "power_w": 321.0,
+        "power_coverage": 1.0,
+        "source": "runner_reported",
+        "scope": "unspecified",
+        "publication_status": "reported",
+    }
 
 
 def test_candidate_provenance_preserves_role_hardware_without_replay_spec():

@@ -58,6 +58,20 @@ class RecordingRuntime:
         )
 
 
+class PowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload.update({"power_w": 487.5, "power_coverage": 0.95})
+        return json.dumps(payload)
+
+
+class WithheldPowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload["power_coverage"] = 0.42
+        return json.dumps(payload)
+
+
 def _engine_args(*, role="aggregated", backend="vllm", timing=None):
     return {
         "worker_type": role,
@@ -617,6 +631,30 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
     assert runtime.execution_spec["record_per_request"] is True
     assert report.metadata["native_report"]["completed_requests"] == 1
+
+
+def test_runner_preserves_native_power_provenance_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=PowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_w"] == 487.5
+    assert report.metrics["power_coverage"] == 0.95
+    assert report.metadata["power"] == {
+        "source": "modeled",
+        "scope": "active_forward_pass_per_gpu",
+        "power_w_unit": "W",
+        "coverage_gate": 0.9,
+        "publication_status": "available",
+    }
+
+
+def test_runner_preserves_withheld_power_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_coverage"] == 0.42
+    assert "power_w" not in report.metrics
+    assert report.metadata["power"]["publication_status"] == "withheld"
 
 
 def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
