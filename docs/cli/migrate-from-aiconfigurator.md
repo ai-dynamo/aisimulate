@@ -872,9 +872,11 @@ aiconfigurator cli generate \
 **Result to inspect:** `deployment/` contains a basic deployment configuration generated without
 search or SLA optimization.
 
-`aisimulate recommend` saves evaluated configurations as `recommendations/*.yaml` for use with
-`predict`. The unified CLI currently does not render launch scripts or deployment manifests from
-these files. For deployment artifacts, use the bundled AIC workflows or, programmatically, the
+`aisimulate recommend` saves the setups it recommends in `recommendations/*.yaml`.
+Pass one of these files to `aisimulate predict` to simulate that setup again.
+
+The unified CLI does not yet create files for launching a serving deployment, such as launch
+scripts or Kubernetes manifests. To create those files, use the bundled AIC commands or the
 [generator SDK](../../python/aisimulate/docs/generator_overview.md). Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
