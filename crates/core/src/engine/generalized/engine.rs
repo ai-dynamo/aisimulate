@@ -259,6 +259,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             let pass = pass.map_err(|error| self.poison(error))?;
             end_ms = end_ms.max(pass.end_ms);
             same_timestamp_retry = match (same_timestamp_retry, pass.same_timestamp_retry) {
+                (
+                    SameTimestampRetry::Countdown { remaining: a },
+                    SameTimestampRetry::Countdown { remaining: b },
+                ) => SameTimestampRetry::Countdown {
+                    remaining: a.max(b),
+                },
+                (_, countdown @ SameTimestampRetry::Countdown { .. })
+                | (countdown @ SameTimestampRetry::Countdown { .. }, _) => countdown,
                 (_, SameTimestampRetry::Retry) => SameTimestampRetry::Retry,
                 (SameTimestampRetry::Retry, _) => SameTimestampRetry::Retry,
                 (_, SameTimestampRetry::Exhausted) => SameTimestampRetry::Exhausted,
@@ -273,6 +281,12 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
                 dp_rank: dp_rank as u32,
                 pending: pass.pending,
             });
+        }
+
+        let any_rank_prefilled = self.ranks.iter().any(RankEngine::prefill_in_pass);
+        let any_rank_ran_model = self.ranks.iter().any(RankEngine::model_work_in_pass);
+        for rank in &mut self.ranks {
+            rank.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
         }
 
         debug_assert!(!pending.is_empty());

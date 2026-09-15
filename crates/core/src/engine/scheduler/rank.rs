@@ -224,6 +224,19 @@ impl RankEngine for SchedulerRank {
         self.core.prepare_group_pass(wave_step, dp_size.get());
     }
 
+    fn prefill_in_pass(&self) -> bool {
+        self.core.prefill_in_pass()
+    }
+
+    fn model_work_in_pass(&self) -> bool {
+        self.core.model_work_in_pass()
+    }
+
+    fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        self.core
+            .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
+    }
+
     fn execute_pass(
         &mut self,
         now_ms: f64,
@@ -390,6 +403,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
+        prefill_decode_interval: config.prefill_decode_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
