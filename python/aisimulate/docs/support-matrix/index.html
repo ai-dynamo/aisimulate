@@ -827,10 +827,15 @@ function LegacyNotice() {
 }
 
 function LegacySnapshot({ snapshot }) {
+  const timestamp = snapshot?.data_updated_at;
   const hasDate = snapshot?.kind === 'historical'
+    && snapshot.qualification === 'not_recorded'
+    && typeof snapshot.data_commit === 'string'
     && /^[0-9a-f]{40}$/.test(snapshot.data_commit || '')
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(snapshot.data_updated_at || '')
-    && Number.isFinite(Date.parse(snapshot.data_updated_at));
+    && typeof timestamp === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(timestamp)
+    && Number.isFinite(Date.parse(timestamp))
+    && new Date(timestamp).toISOString() === (timestamp.includes('.') ? timestamp : timestamp.replace('Z', '.000Z'));
   return (
     <div className="mb-4 text-sm text-slate-500 dark:text-slate-400">
       <p>

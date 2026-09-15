@@ -196,3 +196,11 @@ The Pages builder adds this provenance to the packaged
 date. A build with modified/untracked data, a shallow Git history, or no Git
 history leaves the date unavailable. Direct source-tree previews also show the
 missing-date state because the committed legacy index contains no provenance.
+
+To reproduce the browser checks, install Chromium with
+`uv run --python 3.12 --with playwright playwright install chromium`, then run
+`uv run --python 3.12 --with playwright python scripts/check_legacy_support_matrix_browser.py`.
+The script builds a temporary site and verifies real data, commit links, missing
+and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
+Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
+`--screenshot /path/to/preview.png` to capture the real page before test fixtures.
