@@ -1120,7 +1120,9 @@ contiguous prefix through G3 → G2 → G1: G3 completion alone does not make GP
 blocks ready. The adapter reserves G2 destinations one block at a time; a later
 miss or capacity failure keeps earlier accepted promotions. New promotions in
 one lookup form one read job, and pending promotions defer H2D until a retry.
-If G3 write capacity is unavailable, that optional insertion is skipped.
+G3 writes retain the leading new blocks that fit while preserving blocks from
+the same write cohort already in G3. A cohort larger than the available capacity is
+partially stored; if no block fits, that optional insertion is skipped.
 Resident, unpinned G3 blocks use deterministic LRU eviction.
 
 Pending G2 destinations cannot be evicted. Completed promotions become ordinary

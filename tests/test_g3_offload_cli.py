@@ -122,13 +122,16 @@ def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capsys, scope) 
 
 
 @pytest.mark.parametrize("scope", ["worker_local", "cluster_shared"])
-def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope) -> None:
+@pytest.mark.parametrize("capacity", [1, 2, 4096])
+def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope, capacity) -> None:
     from aisimulate import _runtime
 
     assert callable(_runtime.run_replay_json)
     engine = _prediction_engine()
     engine["workers"]["aggregated"]["kv_cache"].update(
-        bytes_per_token=256, host_offload=_host_offload(), g3_offload={**_g3_offload(), "scope": scope}
+        bytes_per_token=256,
+        host_offload=_host_offload(),
+        g3_offload={**_g3_offload(), "scope": scope, "num_g3_blocks": capacity},
     )
     config = {
         "engine": engine,
@@ -151,8 +154,13 @@ def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope) 
     saved = json.loads((output / "prediction.json").read_text())
     assert stdout == saved
     assert stdout["completed_requests"] == 1
-    assert stdout["g3_offload"]["write"]["completed_bytes"] > 0
-    assert stdout["g3_offload"]["pending_blocks"] == 0
+    # The 33-token prompt stores two full 16-token blocks. Even a one-block
+    # G3 must retain its leading block instead of discarding the whole cohort.
+    stats = stdout["g3_offload"]
+    assert stats["write"]["submitted_jobs"] == stats["write"]["completed_jobs"] == 1
+    assert stats["write"]["completed_bytes"] == min(capacity, 2) * 16 * 256
+    assert stats["resident_blocks"] == min(capacity, 2)
+    assert stats["pending_blocks"] == 0
 
 
 @pytest.mark.parametrize("field", ["scope", "num_g3_blocks"])

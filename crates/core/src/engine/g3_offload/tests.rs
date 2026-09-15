@@ -20,6 +20,64 @@ fn key(n: u64) -> HostBlockKey {
 }
 
 #[test]
+fn oversized_writes_retain_the_leading_blocks_that_fit() {
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let mut cfg = config(scope);
+        cfg.num_g3_blocks = 2;
+        cfg.write_bandwidth_gbps = 0.001;
+        let shared = G3Tier::new(cfg, 2, 1_000).unwrap();
+        let mut tier = shared.lock().unwrap();
+        let cohort = [key(3), key(1), key(2)];
+        let write = tier.submit(0, Direction::Write, &cohort, 0.0).unwrap();
+        assert_eq!(tier.job_keys(write), cohort[..2]);
+        assert_eq!(tier.snapshot().pending_blocks, 2);
+        let done = tier.take_completed(0, 2.0);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].keys, cohort[..2]);
+        assert_eq!(tier.snapshot().write.completed_bytes, 2_000);
+        assert_eq!(tier.snapshot().resident_blocks, 2);
+        assert_eq!(tier.probe(0, key(2)), Probe::Miss);
+        let read = tier.submit(0, Direction::Read, &cohort[..2], 2.0).unwrap();
+        assert_eq!(tier.take_completed(0, 2.0)[0].id, read);
+        assert_eq!(tier.snapshot().read.completed_bytes, 2_000);
+    }
+}
+
+#[test]
+fn partial_writes_preserve_pending_pinned_and_existing_prefix_blocks() {
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let mut cfg = config(scope);
+        cfg.num_g3_blocks = 4;
+        let shared = G3Tier::new(cfg, 1, 1_000).unwrap();
+        let mut tier = shared.lock().unwrap();
+        tier.submit(0, Direction::Write, &[key(1), key(2), key(9)], 0.0)
+            .unwrap();
+        tier.take_completed(0, 0.0);
+        tier.config.read_bandwidth_gbps = 0.001;
+        tier.config.write_bandwidth_gbps = 0.001;
+        let read = tier.submit(0, Direction::Read, &[key(2)], 0.0).unwrap();
+        tier.submit(0, Direction::Write, &[key(3)], 0.0).unwrap();
+        // Only the unrelated resident block 9 can be evicted. Block 1 is
+        // already part of this prefix; block 2 is pinned and block 3 pending.
+        let write = tier
+            .submit(0, Direction::Write, &[key(1), key(4), key(5)], 0.0)
+            .unwrap();
+        assert_eq!(tier.job_keys(write), vec![key(4)]);
+        assert_eq!(tier.probe(0, key(1)), Probe::Resident);
+        assert_eq!(tier.probe(0, key(2)), Probe::Resident);
+        assert_eq!(tier.probe(0, key(3)), Probe::Pending);
+        assert_eq!(tier.probe(0, key(9)), Probe::Miss);
+        assert_eq!(tier.snapshot().evictions, 1);
+        tier.cancel(write, 0.0);
+        tier.cancel(read, 0.0);
+        tier.take_completed(0, 1.0);
+        assert_eq!(tier.snapshot().resident_blocks, 3);
+        assert_eq!(tier.snapshot().pending_blocks, 0);
+        assert_eq!(tier.entries[&(0, key(2))].pins, 0);
+    }
+}
+
+#[test]
 fn ready_count_snapshot_visits_each_job_once_and_reuses_counts_for_rates() {
     use std::cell::Cell;
     for n in [16, 128, 1024] {

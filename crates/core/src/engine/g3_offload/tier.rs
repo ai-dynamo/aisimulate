@@ -7,7 +7,7 @@
 use crate::engine::config::{G3OffloadConfig, G3Scope};
 use crate::engine::host_offload::HostBlockKey;
 use anyhow::{Result, ensure};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -268,7 +268,8 @@ impl G3Tier {
         // Commands from a lagging rank can never schedule work in the past.
         self.advance(now.max(self.now));
         let pool = self.pool(worker);
-        let keys = match direction {
+        let protected: FxHashSet<_> = keys.iter().copied().collect();
+        let mut keys = match direction {
             Direction::Write => keys
                 .iter()
                 .copied()
@@ -281,17 +282,24 @@ impl G3Tier {
         }
         if direction == Direction::Write {
             let used = self.entries.keys().filter(|(p, _)| *p == pool).count();
-            let needed = (used + keys.len()).saturating_sub(self.config.num_g3_blocks);
+            let free = self.config.num_g3_blocks - used;
             let mut victims = self
                 .entries
                 .iter()
-                .filter(|((p, _), e)| *p == pool && !e.pending && e.pins == 0)
+                .filter(|((p, key), e)| {
+                    *p == pool && !e.pending && e.pins == 0 && !protected.contains(key)
+                })
                 .map(|(key, entry)| (entry.touched, *key))
                 .collect::<Vec<_>>();
             victims.sort_unstable();
-            if victims.len() < needed {
+            // Keep the leading new blocks that fit, preserving any blocks of
+            // this prefix already stored. Pending writes and read pins retain
+            // their capacity; only accepted blocks own source pins and bytes.
+            keys.truncate(free + victims.len());
+            if keys.is_empty() {
                 return None;
             }
+            let needed = keys.len().saturating_sub(free);
             for (_, key) in victims.into_iter().take(needed) {
                 self.entries.remove(&key);
                 self.stats.evictions += 1;
