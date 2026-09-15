@@ -100,6 +100,9 @@ report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
+For fixed-batch prefill/decode calculations and per-operation diagnostics, use
+[`aisimulate estimate`](docs/cli/user-guide.md#estimate-a-fixed-configuration).
+
 ## Recommend a deployment
 
 `recommend` searches the prediction schema plus search domains and an

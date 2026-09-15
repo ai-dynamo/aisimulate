@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate CLI User Guide
 
-Predict serving behavior and search deployment configurations with `aisimulate`.
+Predict serving behavior, search deployment configurations, and estimate fixed batches with `aisimulate`.
 
 Use this guide for the unified CLI. For the six `aiconfigurator cli` commands still shipped
 with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). The
@@ -20,6 +20,7 @@ with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). 
 - **Getting started**
   - [1. Start here](#start-here)
   - [2. Commands](#commands)
+    - [2.1 Estimate a fixed configuration](#estimate-a-fixed-configuration)
   - [3. Install](#install)
   - [4. Predict one deployment](#predict-one-deployment)
   - [5. Try your own workload](#try-your-own-workload)
@@ -67,9 +68,59 @@ Use the [configuration reference](#configuration-model) when you need individual
 |---|---|---|---|
 | `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
+| `estimate` | Estimate one fixed batch or configuration. | `aisimulate estimate --model-path meta-llama/Meta-Llama-3.1-8B --system h200_sxm --estimate-mode static_gen` | A terminal estimate and optional diagnostic breakdowns. |
 
 Unless labeled as captured output, metric values in example results are hypothetical and
 illustrate the output format. Captured detail examples are simulation results, not hardware measurements.
+
+<a id="estimate-a-fixed-configuration"></a>
+
+### 2.1 Estimate a fixed configuration
+
+Use `aisimulate estimate` for the fixed-configuration calculations available through
+`aiconfigurator cli estimate`. Both commands call the same estimator and use the same model,
+workload, parallelism, timing, and diagnostic options. No GPU deployment is launched.
+
+For example, estimate a decode batch of 64 sequences with tensor parallelism across two H200s:
+
+```bash
+aisimulate estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,source
+```
+
+The terminal prints `Performance Estimate (static_gen)` with generation latency, time per output
+token, memory, and the requested breakdowns. Values depend on the selected performance data.
+
+| `--estimate-mode` | Calculation |
+|---|---|
+| `agg` (default) | Aggregated prefill/decode estimation with continuous batching. |
+| `disagg` | Separate prefill and decode workers with explicit batch sizes and worker counts. |
+| `afd` | Attention/feed-forward disaggregation with explicit topology settings. |
+| `static` | Fixed-batch prefill and decode timing without continuous batching. |
+| `static_ctx` | Prefill/context only. |
+| `static_gen` | Generation/decode only. |
+
+`--detail` accepts `summary`, `memory`, `time`, `energy`, `source`, or `all`; combine selectors
+with commas. Omitting it prints only the normal estimate. `time` includes a speed-of-light
+comparison when available; `energy` and `source` depend on estimator evidence. Missing energy
+is reported as unavailable, not inferred from latency. The estimator's `all` selects all five
+sections; [`predict --detail all`](#prediction-details) selects only serving summary, memory,
+and time.
+
+Use `aisimulate estimate --help` for the full flag reference, including per-role disaggregation,
+EPD, quantization, cached-prefix assumptions, speculative estimates, and data selection. Existing
+[estimate options and restrictions](legacy-aic-user-guide.md#estimate-mode) also apply here.
+`--systems-paths`, `--engine-step-backend`, `--forward-model`, and logging options are supported.
+
+This command takes explicit flags and prints terminal reports. It does not accept serving YAML,
+`--stack`, `--set`, `--format`, or `--output-dir`, and does not write prediction or recommendation
+artifacts. Search/generation-only options such as `--top-n`, `--save-dir`, and
+`--deployment-target` are not accepted. Redirect stdout to save a text report.
+`--estimate-mode` belongs only to `estimate`; use `predict` for scheduled serving traffic and
+`recommend` for configuration search. Static estimates do not measure traffic throughput or queueing.
 
 <a id="install"></a>
 
@@ -97,9 +148,10 @@ python -m pip install aisimulate
 aisimulate --help
 aisimulate predict --help
 aisimulate recommend --help
+aisimulate estimate --help
 ```
 
-The help output should list `predict` and `recommend`. Save the YAML files below in this working
+The help output should list `predict`, `recommend`, and `estimate`. Save the YAML files below in this working
 directory and run the commands from there. Reactivate `.venv` when opening a new terminal.
 
 The built-in engine predicts behavior offline without launching a GPU serving deployment.
@@ -395,6 +447,9 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 <a id="common-options"></a>
 
 ## 7. Common Options
+
+These options apply to `predict` and `recommend`. For `estimate`, see
+[estimate options](#estimate-a-fixed-configuration).
 
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
@@ -1789,7 +1844,8 @@ Sections without evidence are omitted from `details.sections` and listed with re
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
 why other roles are unavailable. Missing values are never filled with zero. `energy` and
 `source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
-SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+SOL, and power are available for fixed configurations through
+[`estimate --detail`](#estimate-a-fixed-configuration); they are not serving-replay reports.
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -1942,12 +1998,15 @@ energy are absent from all these examples.
 
 | Exit Code | Meaning |
 |---:|---|
-| `0` | Successful prediction or recommendation. |
+| `0` | Successful prediction, recommendation, or estimate. |
 | `1` | Execution failure or a completed recommendation with no feasible candidate. |
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
 | `130` | Interrupted by the user. |
 
-Configuration errors identify the input file and validation details. These shortened examples
+`estimate` retains the estimator's exit code `1` for invalid configurations or missing performance
+data, with a concise error message. Malformed command-line arguments return `2`.
+
+Configuration errors in `predict` and `recommend` identify the input file and validation details. These shortened examples
 illustrate the invalid field and cause; exact formatting can vary:
 
 ```text

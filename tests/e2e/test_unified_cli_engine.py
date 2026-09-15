@@ -365,3 +365,72 @@ def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) 
     # FPM-vs-silicon question and is not asserted anywhere in the test suite.
     assert fpm["completed_requests"] == 8
     assert op_level["completed_requests"] == 8
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg", "static", "static_ctx", "static_gen"])
+def test_estimate_matches_compatibility_with_native_timing(mode):
+    """Compare both public entry points using real CPU estimator execution, offline."""
+    arguments = [
+        "estimate",
+        "--model-path",
+        str(_REPO_ROOT / _CONFIG_ROOT / "fixtures/tiny-model"),
+        "--system",
+        "h200_sxm",
+        "--backend",
+        "vllm",
+        "--backend-version",
+        "0.24.0",
+        "--database-mode",
+        "SOL",
+        "--estimate-mode",
+        mode,
+        "--batch-size",
+        "2",
+        "--tp-size",
+        "1",
+        "--isl",
+        "16",
+        "--osl",
+        "4",
+        "--detail",
+        "all",
+        "--no-color",
+        "--log-level",
+        "ERROR",
+    ]
+    if mode == "disagg":
+        arguments += [
+            "--prefill-batch-size",
+            "1",
+            "--prefill-num-workers",
+            "1",
+            "--decode-batch-size",
+            "2",
+            "--decode-num-workers",
+            "1",
+        ]
+    unified = _run_cli(*arguments)
+    compatibility = subprocess.run(
+        [sys.executable, "-m", "aiconfigurator.main", "cli", *arguments],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert compatibility.returncode == 0, compatibility.stderr
+    # The legacy entry point logs its migration warning before applying --log-level.
+    # Compare the complete estimate report, excluding only that unrelated banner.
+    legacy_report = "".join(
+        line
+        for line in compatibility.stdout.splitlines(keepends=True)
+        if "is running from the deprecated AIConfigurator distribution" not in line
+    )
+    assert unified.stdout == legacy_report
+    assert f"Performance Estimate ({mode})" in unified.stdout
+    assert "Detailed Breakdown (all)" in unified.stdout
+    if mode == "disagg":
+        assert "(p) Memory:" in unified.stdout
+        assert "(d) Memory:" in unified.stdout
+    else:
+        assert "Memory Layout" in unified.stdout
+    assert "deprecated" not in unified.stderr.lower()

@@ -52,10 +52,11 @@ class _CliExecutionError(RuntimeError):
     pass
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, estimate_arguments: bool = True) -> argparse.ArgumentParser:
+    """Build the CLI; main skips estimator options for unrelated invocations."""
     parser = argparse.ArgumentParser(
         prog="aisimulate",
-        description="Predict or recommend an LLM serving configuration.",
+        description="Predict serving behavior, recommend configurations, or estimate a fixed batch.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("predict", "recommend"):
@@ -72,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--output-dir", default="./aisimulate-output")
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
+    estimate = subparsers.add_parser(
+        "estimate",
+        help="Estimate a fixed configuration or static prefill/decode batch.",
+        description="Estimate a fixed configuration with the bundled estimator. "
+        "Uses explicit model, hardware, batch, and parallelism flags; no serving-workload YAML is required.",
+    )
+    if estimate_arguments:
+        # Keep estimator imports out of predict/recommend and top-level help.
+        from aiconfigurator.cli.main import configure_estimate_parser
+
+        configure_estimate_parser(estimate)
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].epilog = (
         "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
@@ -316,9 +328,32 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     return 0
 
 
+def _estimate(args: argparse.Namespace) -> int:
+    from aiconfigurator.cli.main import _resolve_cli_log_level, run_estimate
+    from aiconfigurator.logging_utils import setup_logging
+    from aiconfigurator.sdk import perf_database
+
+    setup_logging(level=_resolve_cli_log_level(args), no_color=args.no_color)
+    try:
+        perf_database.set_systems_paths(args.systems_paths)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    run_estimate(args)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser(estimate_arguments=arguments[:1] == ["estimate"])
+    args = parser.parse_args(arguments)
+    if args.command == "estimate":
+        try:
+            return _estimate(args)
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:
+            sys.stderr.write(f"aisimulate estimate failed: {type(exc).__name__}: {exc}\n")
+            return 1
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)
