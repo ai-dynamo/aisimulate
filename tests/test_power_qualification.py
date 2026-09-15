@@ -821,3 +821,21 @@ def test_output_rejects_existing_files_and_symlinks(tmp_path):
     with pytest.raises(ValueError, match="symlink"):
         runner.output_directory(tmp_path, requested / "link")
     assert runner.output_directory(tmp_path, requested) == output
+
+
+@pytest.mark.parametrize("status", ["pending_approval", "approved"])
+@pytest.mark.parametrize("maximum,minimum", [(None, None), (10.0, None), (None, 3), (10.0, 3)])
+def test_schema_enforces_accuracy_threshold_approval(status, maximum, minimum):
+    schema = json.loads(SCHEMA.read_text())["properties"]["policy"]["properties"]["silicon_accuracy"]
+    policy = {
+        "metric": "power_w_mape_pct",
+        "threshold_status": status,
+        "maximum_error_pct": maximum,
+        "minimum_points_per_case": minimum,
+    }
+    expected_valid = (
+        (maximum is None and minimum is None)
+        if status == "pending_approval"
+        else (maximum is not None and minimum is not None)
+    )
+    assert Draft202012Validator(schema).is_valid(policy) == expected_valid

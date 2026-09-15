@@ -47,6 +47,19 @@
             "maximum_error_pct": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 100},
             "minimum_points_per_case": {"type": ["integer", "null"], "minimum": 1},
             "threshold_status": {"enum": ["pending_approval", "approved"]}
+          },
+          "if": {"properties": {"threshold_status": {"const": "pending_approval"}}},
+          "then": {
+            "properties": {
+              "maximum_error_pct": {"type": "null"},
+              "minimum_points_per_case": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "maximum_error_pct": {"type": "number"},
+              "minimum_points_per_case": {"type": "integer"}
+            }
           }
         }
       }

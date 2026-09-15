@@ -99,7 +99,7 @@ jobs:
             --verify-execution --expected-revision "${TARGET_SHA}"
           python -m pytest -c /dev/null tests/test_power_qualification.py -q -p no:cacheprovider
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+        if: always() && hashFiles('artifacts/power-qualification/**') != ''
         with:
           name: power-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/power-qualification/
