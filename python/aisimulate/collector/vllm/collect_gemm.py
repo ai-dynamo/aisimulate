@@ -47,15 +47,21 @@ quantized-weight preparation, and selected-kernel reporting.
 # the DeepGEMM/CUTLASS-side citations (csrc/apis/layout.hpp,
 # cutlass_gemm_caller.cuh) live outside this vllm clone and were not
 # re-derived, but nothing on the vllm side suggests the upstream gap closed.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"
+# 0.25.0 collection audit against the installed official runtime, vLLM
+# dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# RowParallelLinear's class body is AST-identical to 0.24.0; Fp8LinearMethod
+# changes only type annotations. scaled_mm/flashinfer.py is byte-identical,
+# preserving its m>=32 leaf dispatch. The CUDA fp8/block-fp8 selector lists
+# append Humming after the existing candidates (kernels/linear/__init__.py:
+# 322-363); NVFP4 still uses CT's factory and records the selected kernel
+# (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
+# exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
+__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
 
 from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
-from collector.case_generator import get_gemm_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.kernels.linear.scaled_mm.flashinfer import (
@@ -68,6 +74,10 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
+
+from collector.case_generator import get_gemm_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.vllm.utils import setup_distributed, with_exit_stack
 
 FP8_BLOCK_SHAPE = (128, 128)
 
