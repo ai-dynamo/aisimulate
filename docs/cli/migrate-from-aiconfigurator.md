@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, diagnostics, and [power reports](#54-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, [detailed diagnostics](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -235,7 +235,7 @@ required result, keep the AIC command above.
 - [4.5 Dynamo routing and planning](#45-include-dynamo-routing-and-planning)
 - [4.6 Op-level and FPM timing](#46-select-op-level-or-whole-forward-fpm-timing)
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
-- [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware-with-sweeper)
+- [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
@@ -275,8 +275,8 @@ for the two-GPU deployment.
 model, hardware, backend, and backend version; their parallelism, scheduler, and KV-cache settings
 can differ. `engine.kv_transfer` controls transfer bandwidth and which prompt KV bytes are charged.
 For search, use the same two roles with recommendation domains; see the
-[engine fields](user-guide.md#engine-fields). Different P/D hardware requires the
-[Sweeper SDK path](#48-migrate-heterogeneous-pd-hardware-with-sweeper) below.
+[engine fields](user-guide.md#engine-fields). To override hardware per role, use the
+[heterogeneous P/D YAML example](#48-migrate-heterogeneous-pd-hardware) below.
 
 <a id="search-parallelism-and-throughput-tradeoffs"></a>
 
@@ -308,7 +308,7 @@ aisimulate recommend --config budget-search.yaml \
 **What changed:** the AIC command uses its capacity sweep and default parallelism domain. The
 AISimulate command uses the earlier 32-request concurrency, restricts TP to 1/2/4, and returns a
 Pareto front instead of a scalar ranking. AISimulate also exposes attention DP, MoE TP/EP, replicas,
-and supported backend choices; one run uses one hardware SKU. See
+and supported backend choices; P/D workers can also override the fallback hardware SKU. See
 [parallelism presets](user-guide.md#parallelism-preset-behavior) and
 [optimization goals](user-guide.md#optimization-goal).
 
@@ -463,8 +463,9 @@ capacity and latency without event-level encoder queueing or embedding transfer.
 [EPD inputs and limits](../sweeper/epd.md#unified-cli).
 
 <a id="migrate-heterogeneous-pd-hardware-with-sweeper"></a>
+<a id="48-migrate-heterogeneous-pd-hardware-with-sweeper"></a>
 
-### 4.8 Migrate heterogeneous P/D hardware with Sweeper
+### 4.8 Migrate heterogeneous P/D hardware
 
 **Before — AIC searches H200 prefill with GB200 decode:**
 
@@ -472,52 +473,75 @@ capacity and latency without event-level encoder queueing or embedding transfer.
 aiconfigurator cli default \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --decode-system gb200 --backend vllm --backend-version 0.24.0 \
-  --serving-mode disagg --total-gpus 8 --isl 1024 --osl 128 \
+  --serving-mode disagg --total-gpus 2 --isl 128 --osl 8 \
   --ttft 800 --tpot 30 --strict-sla
 ```
 
-**After — use the Sweeper SDK for a bounded search over those two hardware roles.** Save as
-`heterogeneous-pd.py`:
+AIC disaggregated experiment YAML uses `prefill_system_name` and `decode_system_name`.
+Translate them to `engine.workers.prefill.hardware` and `engine.workers.decode.hardware`.
+Each omitted role inherits the required `engine.hardware` fallback. These are concrete
+hardware identifiers, not search domains.
 
-```python
-from pathlib import Path
+**After — save this as `heterogeneous-pd.yaml`.** It uses H200 prefill and GB200 decode, real op-level
+timing, and inferred KV capacity on each GPU type:
 
-from aisimulate import EngineReplayRunnerFactory
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
-
-if __name__ == "__main__":
-    config = SmartSearchConfig.model_validate({
-        "search_space": {
-            "model_name": "meta-llama/Meta-Llama-3.1-8B",
-            "hardware_sku": "h200_sxm",
-            "prefill_hardware_sku": "h200_sxm",
-            "decode_hardware_sku": "gb200",
-            "backend": ["vllm"], "backend_version": "0.24.0",
-            "deployment_mode": ["disagg"], "gpu_budget": 8,
-        },
-        "workload": {"isl": 1024, "osl": 128, "request_rate": 4, "num_request_ratio": 10},
-        "goal": {"target": "throughput", "strict_sla": True,
-                 "sla": {"ttft_ms": 800, "itl_ms": 30}},
-        "sweep": {"algorithm": "random", "max_trials": 4, "parallel_evals": 1},
-    })
-    result = Sweeper(runner_factory=EngineReplayRunnerFactory()).run(config)
-    Path("heterogeneous-pd-results.json").write_text(result.to_json())
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 128, output_tokens: 8}
+  load: {type: concurrency, concurrency: 2}
+  stop: {requests: 6}
+engine:
+  mode: disaggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: h200_sxm
+  backend: vllm
+  backend_version: 0.24.0
+  context_length: 4096
+  kv_transfer: {bytes_per_token: auto, bandwidth_gb_per_second: 50}
+  workers:
+    prefill:
+      parallelism: {preset: [{replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}]}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 1}
+    decode:
+      hardware: gb200
+      parallelism: {preset: [{replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}]}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 8}
+evaluation:
+  sla: {ttft_ms: 800, itl_ms: 30}
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints: {max_candidate_gpus: 2}
+optimizer: {algorithm: random, max_trials: 1, parallelism: 1, seed: 14}
 ```
 
 ```bash
-python3 heterogeneous-pd.py
+aisimulate recommend --config heterogeneous-pd.yaml --output-dir /tmp/heterogeneous-pd
+aisimulate predict --config /tmp/heterogeneous-pd/recommendations/0001.yaml \
+  --output-dir /tmp/heterogeneous-pd-predict
 ```
 
-**Result to inspect:** `heterogeneous-pd-results.json` contains candidate configurations and metrics
-for the two hardware roles within the shared eight-GPU budget.
+**Result to inspect:** the saved recommendation retains `engine.hardware: h200_sxm` and the decode override
+`hardware: gb200`. Prediction reuses those identities and reports `completed_requests: 6`.
+This bounded example pins one GPU per role and evaluates one candidate; remove the fixed
+`parallelism` entries and increase `max_candidate_gpus` and `max_trials` to search parallel layouts. Each role is independently checked for parallelism
+and KV capacity on its effective hardware, within the shared GPU budget. In a search over
+both aggregated and disaggregated modes, only P/D candidates use the role overrides;
+aggregated candidates use the fallback.
 
-**What changed:** AIC `--system` / `--decode-system` (or experiment fields `prefill_system_name` /
-`decode_system_name`) become `search_space.prefill_hardware_sku` / `decode_hardware_sku`.
-`hardware_sku` supplies the fallback for an omitted role. This SDK example ranks throughput under
-four requests/s and four random suggestions, so it does not reproduce AIC's capacity sweep.
-Both roles must share the model and backend/version. The unified CLI still uses a shared hardware
-SKU; see the [SDK hardware/backend restrictions](../sweeper/configuration.md#backend-fields),
-including the Dynamo Router AIC load-model restriction.
+**What changed:** this example fixes concurrency at two requests instead of reproducing
+AIC's capacity sweep. P/D still shares one model, backend, and backend version. When a role hardware override
+is present and `backend_version` is omitted, both effective SKUs must resolve to the same
+latest version; otherwise set a common supported version explicitly, as above. Hardware
+overrides are rejected on aggregated workers and AFD companions. The separate analytical
+EPD encoder hardware setting is unchanged.
+
+The Sweeper SDK also retains `search_space.prefill_hardware_sku` and
+`search_space.decode_hardware_sku`. Heterogeneous deployment-manifest generation remains
+unsupported. With the Dynamo stack, Router AIC hooks must use the effective prefill SKU.
+Search and prediction reject a hook using the fallback when it differs from the prefill
+override, including when both P/D overrides match each other. Use a Router provider that
+consumes the role hardware, or a non-AIC prefill load model.
 
 <a id="afd-translation"></a>
 
@@ -686,20 +710,57 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 ### 5.3 Static estimates and diagnostics
 
-Keep `estimate` for a fixed batch or single pass, including per-operation reports. For example,
-inspect one decode pass and its memory, timing, energy, and data sources:
+#### 5.3.1 Static estimates
+
+Keep `estimate` for a fixed batch or single pass. `aisimulate predict` models a serving workload;
+its concurrency and scheduling controls do not reproduce a fixed-batch estimate. For example,
+inspect one decode pass:
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,energy,source
+  --isl 1024 --osl 128
 ```
 
-**Result to inspect:** the terminal contains per-operation memory, timing, energy, and data-source
-breakdowns. See
+**Result to inspect:** the terminal summary describes the fixed batch and decode pass. See
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
+
+<a id="detailed-diagnostics"></a>
+
+#### 5.3.2 Detailed diagnostics
+
+The unified `aisimulate predict` and `aisimulate recommend` commands do not yet expose an
+equivalent of AIC's selectable `estimate --detail` reports. This is a separate migration gap
+from fixed-batch estimation. Keep the compatibility CLI when these breakdowns are required.
+
+`--detail` belongs to `aiconfigurator cli estimate`; `aiconfigurator cli default` does not accept
+it. With no `--detail`, `estimate` prints its normal summary without extra detail sections.
+
+| AIC `--detail` selector | Result to inspect |
+| --- | --- |
+| `summary` | Latency, throughput, phase totals, and memory status. |
+| `memory` | Memory components such as weights, KV cache, activations, and communication buffers, plus capacity. |
+| `time` | Phase and per-operation latency, with a speed-of-light (SOL) comparison when available. |
+| `energy` | Phase and per-operation energy when data is available. |
+| `source` | Per-operation data provenance and available fallback information. |
+| `all` | All five sections above. |
+
+Combine selectors with commas. The available sections depend on the estimate mode and data;
+for example, static-mode `--detail energy` can display `<no energy data>` when operation-energy
+data is absent. To inspect memory, timing, and data sources using the default aggregated mode:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,source
+```
+
+**Result to inspect:** memory component totals, per-operation timing, and data-source breakdowns
+in the terminal. These selectable reports have no direct unified-CLI replacement yet.
 
 <a id="power-and-energy-analysis"></a>
 
@@ -942,7 +1003,7 @@ feature's restrictions before migrating:
 |---|---|
 | [Analytical EPD](#predict-and-search-analytical-epd) | Fixed synthetic images and concurrency; no event-level encoder queueing or embedding transfer. |
 | [AFD](#afd-translation) | Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
-| [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Sweeper SDK only; both roles share one model, backend, and backend version. |
+| [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Unified `predict` / `recommend` and Sweeper; P/D roles can override hardware but share one model, backend, and backend version. |
 | [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation requires `preset: false` and fixed `attention_data: 1`, while other supported parallelism fields may be searched. |
 
 ## 6. Reference

@@ -1601,10 +1601,11 @@ function App() {
           <div className="max-w-[1600px] mx-auto p-6">
             <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
               {snapshot ? <>
-                {snapshot.origin === 'manual' ? 'Qualified manual snapshot: ' : 'Qualified snapshot: '}
-                <a href={snapshot.evidence_url || snapshot.run_url} target="_blank" rel="noopener noreferrer" className="underline">
+                {'Qualified snapshot: '}
+                <a href={snapshot.run_url} target="_blank" rel="noopener noreferrer" className="underline">
                   {snapshot.generated_at}
                 </a>{' · '}Source <code>{snapshot.source_sha.slice(0, 12)}</code>
+                {snapshot.tooling_sha && <> · Probe tooling <code>{snapshot.tooling_sha.slice(0, 12)}</code></>}
               </> : 'Historical repository snapshot; refresh provenance is unavailable.'}
             </p>
             <Legend />

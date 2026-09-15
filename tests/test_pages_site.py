@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import importlib.util
 import io
 import json
@@ -12,7 +11,6 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
-from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -96,16 +94,17 @@ def run(sha=NEW_SHA, **updates):
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
+        "run_attempt": 1,
     }
     value.update(updates)
     return value
 
 
 class FpePagesTest(unittest.TestCase):
-    def prepare(self, artifacts, runs, archives):
+    def prepare(self, artifacts, runs, archives, *, output=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        output = Path(temporary.name) / "data"
+        output = output or Path(temporary.name) / "data"
 
         def api(repository, endpoint):
             self.assertEqual(repository, REPOSITORY)
@@ -154,15 +153,36 @@ class FpePagesTest(unittest.TestCase):
         )
         self.assertEqual(snapshot["artifact_id"], 10)
 
+    def test_main_dispatch_publishes_the_qualified_target_commit(self):
+        snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(OLD_SHA)})
+        self.assertEqual(snapshot["source_sha"], OLD_SHA)
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            index = json.loads((site / "data/fpe-support-matrix/index.json").read_text())
+            self.assertEqual(index["snapshot"], snapshot)
+            with (site / "data/fpe-support-matrix/b200_sxm.csv").open() as handle:
+                self.assertEqual({row["SourceSHA"] for row in csv.DictReader(handle)}, {OLD_SHA})
+
+    def test_later_historical_dispatch_cannot_displace_newer_tested_source(self):
+        snapshot, _ = self.prepare(
+            [artifact(20), artifact(10)],
+            {10: run(), 20: run()},
+            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+        )
+        self.assertEqual(snapshot["artifact_id"], 10)
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
     def test_latest_run_of_same_source_wins(self):
         snapshot, _ = self.prepare([artifact(1), artifact(2)], {2: run()}, {2: qualified_archive()})
         self.assertEqual(snapshot["artifact_id"], 2)
 
     def test_newest_source_can_be_on_a_later_artifact_page(self):
+        older_ids = range(100, 200)
         snapshot, _ = self.prepare(
-            {1: [artifact(i, OLD_SHA) for i in range(100, 200)], 2: [artifact(1)]},
-            {1: run()},
-            {1: qualified_archive()},
+            {1: [artifact(i, OLD_SHA) for i in older_ids], 2: [artifact(1)]},
+            {**dict.fromkeys(older_ids, run(OLD_SHA)), 1: run()},
+            {**dict.fromkeys(older_ids, qualified_archive(OLD_SHA)), 1: qualified_archive()},
         )
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
@@ -170,6 +190,86 @@ class FpePagesTest(unittest.TestCase):
         snapshot, _ = self.prepare(
             [artifact(1)], {1: run(path=".github/workflows/nightly-ci.yml", event="schedule")}, {1: qualified_archive()}
         )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
+    def test_partial_nightly_retry_cannot_publish_older_data(self):
+        for status, conclusion in [("waiting", None), ("in_progress", None), ("completed", "failure")]:
+            with self.subTest(status=status, conclusion=conclusion), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "data"
+                with self.assertRaisesRegex(ValueError, "retried"):
+                    self.prepare(
+                        [artifact(10), artifact(20, OLD_SHA)],
+                        {
+                            10: run(
+                                path=".github/workflows/nightly-ci.yml",
+                                event="schedule",
+                                status=status,
+                                conclusion=conclusion,
+                                run_attempt=2,
+                            ),
+                            20: run(OLD_SHA),
+                        },
+                        {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                        output=output,
+                    )
+                self.assertFalse(output.exists())
+
+    def test_missing_run_attempt_cannot_publish_older_data(self):
+        for status, conclusion in [
+            ("waiting", None),
+            ("in_progress", None),
+            ("completed", "failure"),
+            ("completed", "success"),
+        ]:
+            with self.subTest(status=status, conclusion=conclusion), tempfile.TemporaryDirectory() as temporary:
+                latest_run = run(status=status, conclusion=conclusion)
+                del latest_run["run_attempt"]
+                output = Path(temporary) / "data"
+                with self.assertRaisesRegex(ValueError, "run_attempt"):
+                    self.prepare(
+                        [artifact(10), artifact(20, OLD_SHA)],
+                        {10: latest_run, 20: run(OLD_SHA)},
+                        {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                        output=output,
+                    )
+                self.assertFalse(output.exists())
+
+    def test_invalid_run_attempt_cannot_publish_data(self):
+        for run_attempt in (None, True, False, 0, -1, 0.5, 1.0, 2.0, "1", "2"):
+            for status, conclusion in [
+                ("waiting", None),
+                ("in_progress", None),
+                ("completed", "failure"),
+                ("completed", "success"),
+            ]:
+                with (
+                    self.subTest(run_attempt=run_attempt, status=status, conclusion=conclusion),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    output = Path(temporary) / "data"
+                    with self.assertRaisesRegex(ValueError, "run_attempt"):
+                        self.prepare(
+                            [artifact(10), artifact(20, OLD_SHA)],
+                            {
+                                10: run(status=status, conclusion=conclusion, run_attempt=run_attempt),
+                                20: run(OLD_SHA),
+                            },
+                            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+                            output=output,
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_successful_retry_remains_eligible(self):
+        snapshot, _ = self.prepare([artifact(1)], {1: run(run_attempt=2)}, {1: qualified_archive()})
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+
+    def test_retry_of_older_tested_source_does_not_block_newer_snapshot(self):
+        snapshot, _ = self.prepare(
+            [artifact(20), artifact(10)],
+            {10: run(), 20: run(status="in_progress", conclusion=None, run_attempt=2)},
+            {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
+        )
+        self.assertEqual(snapshot["artifact_id"], 10)
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
     def test_ineligible_producers_cannot_publish(self):
@@ -189,13 +289,80 @@ class FpePagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
             self.prepare([artifact(1, "d" * 40)], {}, {})
 
+    def test_main_dispatch_target_outside_main_history_cannot_publish(self):
+        with self.assertRaisesRegex(ValueError, "no retained qualified"):
+            self.prepare([artifact(1)], {1: run()}, {1: qualified_archive("d" * 40)})
+
+    def test_malformed_off_main_qualification_cannot_fall_back_to_older_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "data"
+            with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
+                self.prepare(
+                    [artifact(20), artifact(10, OLD_SHA)],
+                    {20: run(), 10: run(OLD_SHA)},
+                    {
+                        20: qualified_archive(
+                            overrides={"fpe-qualification.json": json.dumps({"source_sha": "d" * 40})}
+                        ),
+                        10: qualified_archive(OLD_SHA),
+                    },
+                    output=output,
+                )
+            self.assertFalse(output.exists())
+
+    def test_mixed_sources_with_off_main_manifest_cannot_fall_back_to_older_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "data"
+            with self.assertRaisesRegex(ValueError, "mixed source"):
+                self.prepare(
+                    [artifact(20), artifact(10, OLD_SHA)],
+                    {20: run(), 10: run(OLD_SHA)},
+                    {
+                        20: qualified_archive("d" * 40, row_updates={"SourceSHA": NEW_SHA}),
+                        10: qualified_archive(OLD_SHA),
+                    },
+                    output=output,
+                )
+            self.assertFalse(output.exists())
+
+    def test_mixed_sources_cannot_hide_behind_an_older_manifest_source(self):
+        with self.assertRaisesRegex(ValueError, "mixed source"):
+            self.prepare(
+                [artifact(20), artifact(10)],
+                {10: run(), 20: run()},
+                {
+                    20: qualified_archive(OLD_SHA),
+                    10: qualified_archive(OLD_SHA, row_updates={"SourceSHA": NEW_SHA}),
+                },
+            )
+
     def test_expired_newer_snapshot_does_not_fall_back_to_old_data(self):
         with self.assertRaisesRegex(ValueError, "has expired"):
-            self.prepare([artifact(1, expired=True), artifact(2, OLD_SHA)], {1: run()}, {})
+            self.prepare(
+                [artifact(1, expired=True), artifact(2, OLD_SHA)],
+                {1: run(), 2: run(OLD_SHA)},
+                {2: qualified_archive(OLD_SHA)},
+            )
+
+    def test_current_head_snapshot_supersedes_expired_older_artifact(self):
+        snapshot, _ = self.prepare(
+            [artifact(10, expired=True), artifact(20, OLD_SHA)],
+            {10: run(), 20: run(OLD_SHA)},
+            {20: qualified_archive()},
+        )
+        self.assertEqual(snapshot["artifact_id"], 20)
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
 
     def test_pre_qualification_artifact_is_not_published(self):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
             self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(missing="fpe-qualification.json")})
+
+    def test_duplicate_entries_without_qualification_are_still_rejected(self):
+        archive = io.BytesIO(qualified_archive(missing="fpe-qualification.json"))
+        with zipfile.ZipFile(archive, "a") as bundle, self.assertWarns(UserWarning):
+            bundle.writestr("../../escape.py", "duplicate untrusted code")
+        with self.assertRaisesRegex(ValueError, "duplicate archive entries"):
+            self.prepare([artifact(1)], {1: run()}, {1: archive.getvalue()})
 
     def test_no_artifact_fails_instead_of_using_committed_snapshot(self):
         with self.assertRaisesRegex(ValueError, "no retained qualified"):
@@ -314,6 +481,48 @@ class FpePagesTest(unittest.TestCase):
                 ):
                     FPE.qualified_files(qualified_archive(overrides={name: data}), NEW_SHA)
 
+    def test_overflowing_json_numbers_cannot_publish_or_fall_back(self):
+        with zipfile.ZipFile(io.BytesIO(qualified_archive())) as archive:
+            documents = {
+                name: archive.read(name).decode() for name in ("fpe-qualification.json", FPE.DATA_PREFIX + "index.json")
+            }
+        for name, data in documents.items():
+            for value in ("1e999", "-1e999", '{"nested": [1e999]}', '{"nested": [-1e999]}'):
+                with self.subTest(name=name, value=value), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / "data"
+                    with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+                        self.prepare(
+                            [artifact(10), artifact(20, OLD_SHA)],
+                            {10: run(), 20: run(OLD_SHA)},
+                            {
+                                10: qualified_archive(overrides={name: data[:-1] + ', "extra": ' + value + "}"}),
+                                20: qualified_archive(OLD_SHA),
+                            },
+                            output=output,
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_finite_numeric_metadata_remains_valid_in_published_index(self):
+        metadata = {"fraction": 0.5, "nested": [-0.5, 1.7976931348623157e308, -1.7976931348623157e308, 5e-324]}
+        snapshot, output = self.prepare(
+            [artifact(1)],
+            {1: run()},
+            {
+                1: qualified_archive(
+                    report_updates={"extra": metadata},
+                    overrides={
+                        FPE.DATA_PREFIX + "index.json": json.dumps({"files": ["b200_sxm.csv"], "extra": metadata})
+                    },
+                )
+            },
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            index = json.loads((site / "data/fpe-support-matrix/index.json").read_text(), parse_constant=self.fail)
+            self.assertEqual(index["extra"], metadata)
+            self.assertEqual(index["snapshot"], snapshot)
+
     def test_missing_or_unsafe_indexed_csv_is_rejected(self):
         with self.assertRaises(KeyError):
             FPE.qualified_files(qualified_archive(missing=FPE.DATA_PREFIX + "b200_sxm.csv"), NEW_SHA)
@@ -345,7 +554,9 @@ class FpeBranchesTest(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repository, text=True, stderr=subprocess.DEVNULL)
 
-    def prepare(self, release_sha=None, *, expired=False, malformed=False):
+    def prepare(
+        self, release_sha=None, *, expired=False, malformed=False, hosted=False, run_updates=None, report_updates=None
+    ):
         artifacts = [artifact(1, self.main_sha)]
         runs = {1: run(self.main_sha)}
         archives = {1: qualified_archive(self.main_sha)}
@@ -359,7 +570,14 @@ class FpeBranchesTest(unittest.TestCase):
                 )
             )
             runs[2] = run(release_sha, head_branch="release/0.12.0")
-            archives[2] = qualified_archive(release_sha, report_updates={"shard_count": 0} if malformed else {})
+            qualification = {"shard_count": 0} if malformed else {}
+            if hosted:
+                artifacts[-1]["workflow_run"] = {"id": 2, "head_branch": "main", "head_sha": self.main_sha}
+                runs[2] = run(self.main_sha, path=FPE.RELEASE_WORKFLOW, event="schedule")
+                qualification.update(source_branch="release/0.12.0", tooling_sha=self.main_sha)
+            runs[2].update(run_updates or {})
+            qualification.update(report_updates or {})
+            archives[2] = qualified_archive(release_sha, report_updates=qualification)
         calls = []
 
         def api(repository, endpoint):
@@ -416,83 +634,49 @@ class FpeBranchesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
             self.prepare(self.release_sha, malformed=True)
 
-    def write_manual(self, sha, *, manifest_updates=None, archive=None):
-        archive = archive or qualified_archive(sha)
-        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-            qualification = json.loads(bundle.read("fpe-qualification.json"))
-        manifest = {
-            "schema_version": 1,
-            "branch": "release/0.12.0",
-            "source_sha": sha,
-            "tooling_sha": NEW_SHA,
-            "generated_at": "2026-09-15T00:00:00Z",
-            "archive_sha256": hashlib.sha256(archive).hexdigest(),
-            "qualification": qualification,
-        }
-        manifest.update(manifest_updates or {})
-        directory = self.repository / FPE.MANUAL_SNAPSHOTS / "release/0.12.0"
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "manifest.json").write_text(json.dumps(manifest))
-        (directory / "snapshot.zip").write_bytes(archive)
-
-    def test_manual_release_bootstrap_is_published_with_explicit_provenance(self):
-        self.write_manual(self.release_sha)
-        catalog, data = self.prepare()
+    def test_main_hosted_release_run_publishes_distinct_source_and_tooling(self):
+        catalog, data = self.prepare(self.release_sha, hosted=True)
         self.assertEqual(catalog["branches"][1]["status"], "available")
         snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
-        self.assertEqual(snapshot["origin"], "manual")
         self.assertEqual(snapshot["source_sha"], self.release_sha)
-        self.assertNotIn("run_url", snapshot)
-        self.assertIn(f"/tree/{self.main_sha}/.github/fpe-manual-snapshots/release/0.12.0", snapshot["evidence_url"])
+        self.assertEqual(snapshot["tooling_sha"], self.main_sha)
+        self.assertEqual(snapshot["run_url"], f"https://github.com/{REPOSITORY}/actions/runs/2")
+        self.assertEqual(json.loads((data / "index.json").read_text())["snapshot"]["artifact_id"], 1)
 
-    def test_newer_automatic_release_snapshot_supersedes_manual_bootstrap(self):
-        self.write_manual(self.common)
-        _, data = self.prepare(self.release_sha)
-        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
-        self.assertEqual(snapshot["source_sha"], self.release_sha)
-        self.assertIn("run_url", snapshot)
+    def test_release_producer_cannot_misidentify_tooling(self):
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self.prepare(self.release_sha, hosted=True, report_updates={"tooling_sha": self.common})
 
-    def test_older_automatic_run_cannot_displace_newer_manual_source(self):
-        self.write_manual(self.release_sha)
-        _, data = self.prepare(self.common)
-        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
-        self.assertEqual(snapshot["source_sha"], self.release_sha)
-        self.assertEqual(snapshot["origin"], "manual")
+    def test_release_producer_requires_explicit_release_identity(self):
+        for branch in ["main", "feature/test", "release/../escape", ""]:
+            with self.subTest(branch=branch):
+                # Each attempted preparation may already have prepared main.
+                import shutil
 
-    def test_same_source_prefers_automatic_qualification(self):
-        self.write_manual(self.release_sha)
-        _, data = self.prepare(self.release_sha)
-        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
-        self.assertIn("run_url", snapshot)
+                shutil.rmtree(self.root / "data", ignore_errors=True)
+                with self.assertRaises(ValueError):
+                    self.prepare(self.release_sha, hosted=True, report_updates={"source_branch": branch})
 
-    def test_expired_newer_auto_snapshot_does_not_restore_older_manual_source(self):
-        self.write_manual(self.common)
-        catalog, _ = self.prepare(self.release_sha, expired=True)
+    def test_release_artifact_cannot_be_relabelled_as_another_release(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, report_updates={"source_branch": "release/other"})
         self.assertEqual(catalog["branches"][1]["status"], "unavailable")
 
-    def test_manual_source_must_belong_to_release_history(self):
-        self.write_manual(self.main_sha)
-        with self.assertRaisesRegex(ValueError, "outside the release branch history"):
-            self.prepare()
+    def test_main_hosted_source_must_still_belong_to_release_history(self):
+        catalog, _ = self.prepare(self.main_sha, hosted=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
 
-    def test_manual_snapshot_rejects_wrong_digest_branch_and_qualification(self):
-        for changes in [
-            {"archive_sha256": "0" * 64},
-            {"branch": "release/other"},
-            {"source_sha": self.common},
-            {"qualification": {}},
-            {"tooling_sha": "main"},
-        ]:
-            self.write_manual(self.release_sha, manifest_updates=changes)
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                FPE.manual_snapshot(self.repository, "release/0.12.0")
+    def test_main_hosted_release_expiry_does_not_publish_old_manual_data(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, expired=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertFalse((ROOT / ".github/fpe-manual-snapshots").exists())
 
-    def test_manual_snapshot_requires_qualified_data(self):
-        self.write_manual(
-            self.release_sha, archive=qualified_archive(self.release_sha, report_updates={"shard_count": 0})
-        )
-        with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
-            self.prepare()
+    def test_failed_release_retry_preserves_existing_site(self):
+        with self.assertRaisesRegex(ValueError, "retried without success"):
+            self.prepare(self.release_sha, hosted=True, run_updates={"run_attempt": 2, "conclusion": "failure"})
+
+    def test_untrusted_release_producer_cannot_publish(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, run_updates={"event": "pull_request"})
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
 
     def test_unsafe_and_feature_branch_names_are_rejected(self):
         for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/"]:
@@ -518,59 +702,24 @@ class FpeBranchesTest(unittest.TestCase):
                 PAGES._copy_fpe_branches(source, output)
 
 
-class ManualReleaseEvidenceTest(unittest.TestCase):
-    def test_checked_in_release_snapshot_matches_qualification_and_execution(self):
-        branch = "release/0.12.0"
-        directory = ROOT / FPE.MANUAL_SNAPSHOTS / branch
-        snapshot = FPE.manual_snapshot(ROOT, branch)
-        self.assertIsNotNone(snapshot)
-        manifest = snapshot["manifest"]
-        self.assertEqual(manifest["source_sha"], "1f728534910187ecb2f021ef5e4bd4949bd555d0")
-        report = manifest["qualification"]
-        expected_shards = {(s["system"], s["backend"]) for s in json.loads((directory / "shards.json").read_text())}
-        self.assertEqual(report["shard_count"], len(expected_shards))
-        self.assertEqual(report["required_probe_count"], 4)
-        rows = [
-            row
-            for name, data in snapshot["files"].items()
-            if name.endswith(".csv")
-            for row in csv.DictReader(io.StringIO(data.decode()))
-        ]
-        self.assertEqual({(r["System"], r["Backend"]) for r in rows}, expected_shards)
-        summary = manifest["summary"]
-        self.assertEqual(summary["capability_rows"], len(rows))
-        self.assertEqual(summary["models"], len({r["HuggingFaceID"] for r in rows}))
-        self.assertEqual(summary["systems"], len({r["System"] for r in rows}))
-        self.assertEqual(summary["web_status_counts"], dict(Counter(r["Status"] for r in rows)))
-        self.assertEqual(
-            summary["systems_summary"],
-            {
-                system: dict(Counter(r["Status"] for r in rows if r["System"] == system))
-                for system in {r["System"] for r in rows}
-            },
-        )
-        self.assertTrue(all(r["Command"].startswith("python run_shard.py --model ") for r in rows))
-        ledger_bytes = (directory / "raw-reports.json").read_bytes()
-        self.assertEqual(hashlib.sha256(ledger_bytes).hexdigest(), manifest["raw_report_ledger_sha256"])
-        self.assertEqual(len(json.loads(ledger_bytes)), len(expected_shards))
-        execution_bytes = (directory / "execution.json").read_bytes()
-        execution = json.loads(execution_bytes)
-        self.assertEqual(len(execution), manifest["execution"]["cpu_workers"])
-        completed = []
-        for worker in execution:
-            self.assertTrue(worker["completed_at"])
-            for shard in worker["shards"]:
-                self.assertEqual(shard["status"], "complete")
-                self.assertEqual(shard["returncode"], 0)
-                completed.append((shard["system"], shard["backend"]))
-        self.assertEqual(len(completed), len(expected_shards))
-        self.assertEqual(set(completed), expected_shards)
-        with zipfile.ZipFile(directory / "snapshot.zip") as bundle:
-            self.assertEqual(bundle.read("raw-reports.json"), ledger_bytes)
-            self.assertEqual(bundle.read("execution.json"), execution_bytes)
-
-
 class PagesSiteTest(unittest.TestCase):
+    def test_prepared_input_requires_a_branch_catalog(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(PAGES.PagesBuildError, "requires branches.json"),
+        ):
+            PAGES.build_site(
+                ROOT, Path(temporary) / "site", fpe_data_dir=ROOT / PAGES.SYSTEMS_ROOT / "fpe_support_matrix"
+            )
+
+    def test_prepared_input_cannot_enable_preview_exemption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "data"
+            source.mkdir()
+            (source / "branches.json").write_text(json.dumps({"schema_version": 1, "default": "main", "preview": True}))
+            with self.assertRaisesRegex(PAGES.PagesBuildError, "cannot be a repository preview"):
+                PAGES._copy_fpe_branches(source, Path(temporary) / "site", require_catalog=True)
+
     def test_public_pages_artifact_is_allowlisted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory) / "site"
@@ -620,23 +769,6 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn('href="../"', fpe_page)
             self.assertNotIn("raw.githubusercontent.com", fpe_page)
             self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
-
-    def test_prepared_input_requires_a_branch_catalog(self):
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            self.assertRaisesRegex(PAGES.PagesBuildError, "requires branches.json"),
-        ):
-            PAGES.build_site(
-                ROOT, Path(temporary) / "site", fpe_data_dir=ROOT / PAGES.SYSTEMS_ROOT / "fpe_support_matrix"
-            )
-
-    def test_prepared_input_cannot_enable_preview_exemption(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary) / "data"
-            source.mkdir()
-            (source / "branches.json").write_text(json.dumps({"schema_version": 1, "default": "main", "preview": True}))
-            with self.assertRaisesRegex(PAGES.PagesBuildError, "cannot be a repository preview"):
-                PAGES._copy_fpe_branches(source, Path(temporary) / "site", require_catalog=True)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

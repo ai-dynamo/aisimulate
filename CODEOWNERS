@@ -63,6 +63,7 @@
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_g3_offload_cli.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
@@ -84,6 +85,7 @@
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_release_fpe.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                      @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
@@ -149,6 +151,7 @@
 /crates/core/tests/perfmodel/                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_g3_offload_cli.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

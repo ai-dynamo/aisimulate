@@ -3,7 +3,7 @@ name: GitHub Pages
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["FPE Support Matrix", "Nightly CI"]
+    workflows: ["FPE Support Matrix", "Nightly CI", "FPE Release Nightly"]
     types: [completed]
     branches: [main, 'release/**']
   pull_request:
@@ -11,7 +11,8 @@ on:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/prepare_fpe_pages.py"
-      - ".github/fpe-manual-snapshots/**"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/fpe-release-nightly.yml"
       - "tests/test_pages_site.py"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
@@ -25,7 +26,8 @@ on:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/prepare_fpe_pages.py"
-      - ".github/fpe-manual-snapshots/**"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/fpe-release-nightly.yml"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"

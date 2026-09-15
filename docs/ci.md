@@ -1,0 +1,459 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# AISimulate CI guide
+
+AISimulate uses **Fast CI** for quick code and policy checks, **Full CI** for
+compiled tests and package validation, and **Nightly CI** for release artifacts
+and broader Forward Pass Engine (FPE) qualification. Fast and Full CI are
+separate workflows: Full CI verifies a successful standalone Fast CI run for
+the same branch and commit before starting compiled validation.
+Nightly has its own build and qualification pipeline; it does not rerun the
+entire Full CI suite.
+
+**Code review runs alongside CI.** Fast CI checks code mechanically; reviewers
+assess behavior, design, compatibility, and evidence. Passing validation,
+receiving review approval, and publishing artifacts are separate outcomes.
+
+## Contents
+
+- [Workflow map and triggers](#workflow-map-and-triggers)
+- [Code review and PR admission](#code-review-and-pr-admission)
+- [Fast CI](#fast-ci)
+- [Full CI](#full-ci)
+- [Application test inventory and exceptions](#application-test-inventory-and-exceptions)
+- [Nightly CI and FPE qualification](#nightly-ci-and-fpe-qualification)
+- [Reading results and troubleshooting](#reading-results-and-troubleshooting)
+- [Running and inspecting CI](#running-and-inspecting-ci)
+- [Required checks and release approval](#required-checks-and-release-approval)
+- [Runner environment and performance](#runner-environment-and-performance)
+
+## Workflow map and triggers
+
+The executable definitions live in the root
+[`.github/workflows/`](../.github/workflows/). Imported workflow copies under
+`python/aisimulate/.github/` are migration history and do not run for this repo.
+
+```mermaid
+flowchart TD
+    PR[PR admitted for review] --> Fast[Fast CI]
+    PR --> Review[CodeRabbit and required code reviews]
+    Fast -->|Pass for the same branch and SHA| Full[Full CI]
+    Full --> Scope[Select components]
+    Scope --> Checks[Selected Full CI tests and package checks]
+    Checks --> Success[Full CI Success]
+    Success --> Stage[Main or release push: protected staging]
+    Nightly[Nightly CI] --> Build[Build nightly wheels and crate]
+    Build --> Smoke[Installed-wheel smoke tests]
+    Build --> FPE[FPE Support Matrix]
+    Smoke --> Publish[Protected nightly staging]
+    FPE --> Publish
+```
+
+The diagram shows the high-level validation flow. Full CI verifies the
+standalone Fast CI result at its entry check. In the actual workflow, this
+check and component selection run in parallel; selected tests wait for both
+to succeed. The arrows describe prerequisites, not automatic dispatch.
+Review policy controls admission; the YAML does not automatically dispatch
+Full CI when a review finishes.
+
+| Workflow | When it runs | Role |
+| --- | --- | --- |
+| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
+| [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
+| [Nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
+| [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
+| [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
+| [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
+| [FPE Support Matrix](../.github/workflows/fpe-support-matrix.yml) | Called by Nightly; manual dispatch with `expected_sha` | Broad native operation-level support qualification |
+| [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Qualifies the current `release/0.12.0` wheel and retains release matrix evidence |
+| [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
+| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
+| [GitHub Pages](../.github/workflows/pages.yml) | Relevant site changes on PRs/`main`; manual dispatch | Builds dashboard/support-matrix pages; deployment is restricted to `main` |
+
+The last three workflows run independently of the Fast/Full/Nightly pipelines.
+The DCO sign-off check and review services are additional PR signals, not jobs
+inside Fast CI. See [CONTRIBUTING.md](../CONTRIBUTING.md) for DCO requirements.
+
+## Code review and PR admission
+
+The [review contract](../REVIEW.md#risk-tiered-review-and-ci) defines review
+depth and merge policy. The root [CodeRabbit configuration](../.coderabbit.yaml)
+configures automated review separately from GitHub Actions.
+
+1. Mark the PR non-draft and apply `review-ready`. Fast CI and CodeRabbit run
+   in parallel. The label admits work for review; it is not an approval.
+2. Complete the reviews required for the risk level on the current commit:
+   CodeRabbit for all tiers, plus Codex for medium/high risk.
+3. A maintainer admits Full CI after the required initial reviews complete with
+   no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER review may
+   proceed while Full CI runs.
+4. Before merge, confirm the current head, applicable CODEOWNER approval,
+   required conversation resolution, CI results, and effective branch rules.
+   High-risk changes also need the relevant domain, architecture, security,
+   or release owner.
+
+Trusted copy-pr-bot branches also launch Full CI automatically as a coverage
+backstop. Check that the copy's SHA matches the PR head before using its result.
+If that run already validates the current head, a second manual launch is
+unnecessary. The maintainer admission boundary remains in place. Conditional
+Codex review and a review-completion dispatcher are not implemented by these
+workflow files.
+
+## Fast CI
+
+Fast CI has three substantive jobs, followed by an aggregate result:
+
+| Job | Checks |
+| --- | --- |
+| Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
+| Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
+| Rust Format | `cargo fmt --all -- --check` |
+| Fast CI Success | Requires the three jobs to succeed for an admitted PR, branch push, or manual run |
+
+Draft PRs skip substantive work and report Fast CI as not applicable. A
+non-draft PR missing `review-ready` fails the aggregate. The exact Ruff paths
+are listed in [the workflow](../.github/workflows/fast-ci.yml); this is not a
+claim that every migrated source file is linted.
+
+Every standalone run publishes `Fast CI Success`. Full CI contains only a
+lightweight **Require Fast CI** job, which reads the standalone run and verifies
+all three substantive jobs plus its aggregate. The Fast checks are not rerun
+inside Full CI. A direct PR event and a trusted-copy push can each produce a
+separate Fast run; this preserves validation in both admission contexts.
+
+## Full CI
+
+Full CI first verifies the target commit, checks the standalone Fast CI
+prerequisite, and calculates validation scope. Expensive jobs wait for the
+prerequisite and scope selection.
+
+[The prerequisite checker](../scripts/require_fast_ci.py) waits up to ten minutes
+for the latest Fast run on the exact branch and SHA. A push requires a Fast push
+run on that branch; manual Full CI accepts a same-branch Fast push or manual run.
+It verifies the current attempt and every job, rejects missing/failed/skipped or
+wrong-commit evidence, and rechecks for a newer run or attempt before succeeding.
+API errors fail closed. Draft PR aggregate success cannot satisfy this gate.
+The summary links the standalone run used as evidence.
+
+Fast CI runs alongside Full CI on lifecycle and trusted-copy pushes. For a
+manual branch validation, launch standalone Fast CI first, as shown below.
+The gate reads Actions metadata with a read-only token; it does not dispatch
+another workflow or grant new release permissions.
+
+### Component selection
+
+[The selector](../scripts/select_full_ci.py) uses the complete changed-file set
+of a trusted PR copy, classifying both paths of a rename. The independent
+[selection cases](../.github/full-ci-selection-cases.yml) document expected
+components and their consumer rationale; Fast CI checks this contract.
+
+- **Main, release, and manual runs:** every Full CI component.
+- **Trusted PR copies:** components affected by the change. Documentation and
+  review-policy-only changes can mark every expensive component N/A.
+- **Unknown paths, shared dependency/test configuration, or CI execution
+  changes:** conservative full coverage. Failed or incomplete change discovery
+  must not produce a reduced green result.
+
+`Full CI Success` runs even when dependencies fail. It rejects missing/invalid
+selection outputs, missing dependencies, failures, cancellations, and unexpected
+skips. A skipped component is acceptable only when the selector explicitly
+marked it N/A.
+
+### Validation components
+
+| Component | Coverage |
+| --- | --- |
+| Rust workspace and public API | Workspace tests and external Rust consumer tests on amd64 and arm64 |
+| Rust feature modes | Supported feature builds/tests, including embedded Python and replay benchmarks |
+| Cargo Deny | Workspace dependency license and banned-package policy on both architectures |
+| Application wheels and tests | One prebuilt test wheel per architecture, installed into the application shards below; wheel verification reuses it |
+| Python compatibility | Cross-package contracts and dependency checks on Python 3.11 and 3.13; application shards use Python 3.12 |
+| Engine Golden Regression | Engine-step and compiled-engine parity suites, plus frozen native numerical checks |
+| Platform Wheels | Build, repair, install, and exercise Linux x86-64/ARM64 and macOS ARM64 wheels |
+| Collector Data | Collector V3 invariants, backend-facts registry, and changed-operation manifest; cross-backend sanity scan is informational |
+| Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
+| Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
+
+### Numerical and installed-package evidence
+
+[Native numerical checks](../scripts/check_prediction_numerics.py) exercise
+eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
+short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
+records a full baseline commit that must resolve in the checkout. Tolerances
+are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
+nonpositive, or out-of-tolerance results fail. Intentional modeling changes
+need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
+reports numerical drift, gains, and added/removed rows for review. It blocks
+previously working cases becoming broken. If the comparison base predates the
+harness, the report explicitly contains new-side statistics only. Frozen
+goldens establish numerical stability; hardware accuracy is supported by the
+specific measured configurations in the
+[accuracy evidence](../README.md#accuracy-evidence).
+
+Each platform-wheel job verifies installed package/native-extension identity,
+then runs `recommend` and feeds the generated YAML to `predict` from an unrelated
+temporary directory with isolated Python. The fixed-timing fixture requires all
+six requests to finish. This establishes packaging and public configuration
+round trips, with wheel hashes and request counts in `installed-cli-*` artifacts.
+
+## Application test inventory and exceptions
+
+Full CI uses **12 application jobs per architecture, 24 total**. Paths in this
+table are relative to `python/aisimulate/` unless marked repository-root.
+
+| Shard | Test selection | Parallelism per architecture |
+| --- | --- | --- |
+| `contracts` | Repository-root `tests/`, `tests/cross_package/`, CLI compatibility, and collection inventory | One job; four workers for repository-root tests |
+| `unit` | Entire `tests/unit/` and `tests/golden/`, including unmarked tests | Four disjoint groups, four workers each |
+| `integration` | Entire `tests/integration/` against the installed native wheel and packaged data | One job, two workers |
+| `cli-build` | Build-marked `tests/e2e/cli/`; recommendation E2E runs separately within group 1 | Four disjoint groups, four workers each; recommendation runs serially |
+| `support-matrix` | Build-marked `tests/e2e/support_matrix/` | One job, pytest automatic worker count |
+| `tools-build` | Build-marked `tests/e2e/tools/`; installed FPM verification reuses the wheel | One job, pytest automatic worker count |
+
+Unit and CLI groups use pytest-split's `least_duration` partitioning. Every
+group is scheduled when application tests are selected. Integration coverage
+includes configuration-adapter estimates, memory estimation, configuration
+picking, and TRT-LLM KV capacity; selecting the whole directory includes newly
+added modules without requiring a marker.
+
+The [inventory checker](../scripts/check_application_test_inventory.py) uses
+actual pytest collection and uploads `application-test-inventory-<arch>`.
+Every collected case needs a shard or documented manual destination. Unknown
+categories, unexplained collection skips, and collection errors fail the check.
+Use each run's artifact for current counts; assignment alone does not prove
+that a test executed or passed.
+
+[Explicit exceptions](../.github/application-test-inventory.json) are:
+
+- **Manual extended CLI coverage:** API equivalence, broad model/system/backend
+  compatibility, static estimates, estimate-versus-default comparisons, and
+  non-build experiment cases. Their build-marked subsets still run in CI.
+- **Optional real-PyTorch collection:** DeepSeek V4 MegaMoE workload, helper MoE
+  distribution, and SGLang MoE EP routing tensor suites. Run these in a Collector
+  environment with real PyTorch; a collection skip is recorded, not a pass.
+- **Runtime fixture/dependency skips:** inspect the shard's reasons, including
+  any integration fixture or optional downstream dependency that is absent.
+
+Nightly does not automatically execute the manual suites or fill optional
+dependency gaps. Downstream Dynamo runtime qualification also needs separate
+evidence; the AISimulate wheel remains standalone.
+
+After installing and activating the [development environment](../DEVELOPMENT.md),
+run this from the repository root for extended CLI coverage:
+
+```bash
+cd python/aisimulate
+python -m pytest tests/e2e/cli -m 'not build'
+```
+
+On macOS, add `-p no:timeout` for local runs to avoid the project's SIGALRM
+timeout behavior. Local editable installs do not replace installed-wheel CI.
+
+## Nightly CI and FPE qualification
+
+Nightly builds the approved release surface: one `aisimulate` wheel per Linux
+architecture and one `aisimulate-core` Rust source crate. A changes guard compares
+`main` with the last successful nightly. The build stamps a date-based dev
+version, uses pinned build tooling, and records checksums and provenance.
+
+After artifacts are stored, two kinds of validation run:
+
+- **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
+  Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
+  and console commands are checked without a source checkout.
+- **FPE Support Matrix:** the amd64 nightly wheel is reused and checked against
+  the expected source SHA and checksum. The installed SDK discovers live
+  system/backend combinations, then shards native `op_level` evaluation across
+  them. Qualification requires complete reports from the same wheel and the
+  [required native probes](../.github/fpe-required-probes.json).
+
+FPE generates deterministic web-matrix artifacts. Its standalone manual mode
+builds one wheel for the requested source SHA and uses that same wheel for all
+shards. This is native operation-level support qualification; it does not
+certify hardware accuracy, backend serving performance, or FPM coverage.
+
+Nightly staging depends on both smoke tests and FPE qualification. It uploads
+checksum-verified artifacts to internal Artifactory under `nightly/<run_id>/`
+through the protected `automated-release` environment. FPE output is retained
+as workflow artifacts; publishing dashboard pages is a separate Pages workflow.
+
+[FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) separately
+refreshes `release/0.12.0` every day, including days when its source is unchanged.
+The workflow runs on `main`, resolves the release tip once, builds its unchanged
+wheel, and probes the release inventory with the current qualification harness.
+It records release and tooling commits separately. Up to 20 system/backend jobs
+use eight probe threads each. Complete qualified results remain GitHub Actions
+artifacts for 90 days and trigger Pages; this job does not publish packages.
+Release branches without retained qualified CI evidence appear unavailable.
+See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
+
+## Reading results and troubleshooting
+
+| What you see | Meaning and next check |
+| --- | --- |
+| **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
+| `Fast CI Success` failed with no substantive jobs | Check that the PR is non-draft and has `review-ready` |
+| Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
+| `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
+| New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
+| Prediction Regression green with reported drift | Working-case regression checks passed; review the numerical changes in the report |
+| Performance/data-sanity result marked advisory or informational | Supplemental evidence, outside the stable validation guarantee; inspect the report |
+| Pytest skipped cases | Read collection/runtime reasons and qualify the missing environment when relevant |
+| Green checks on an older SHA | Recheck the current PR head and its corresponding reviews/results |
+
+Useful retained evidence includes `application-test-inventory-<arch>`,
+`native-prediction-numerics`, `installed-cli-*`,
+`prediction-regression-gate-report`, `changed-ops`, and the
+`fpe-support-matrix-web` artifact containing `fpe-qualification.json`.
+
+## Running and inspecting CI
+
+Run commands from the repository root. GitHub CLI commands require repository
+access. For local setup and focused tests, use [DEVELOPMENT.md](../DEVELOPMENT.md).
+
+Inspect runs and the job results inside a run:
+
+```bash
+gh run list --repo ai-dynamo/aisimulate --workflow ci.yml --branch main --limit 10
+gh run view --repo ai-dynamo/aisimulate
+```
+
+For a maintainer-admitted manual Full CI run, first ensure the checked-out
+branch is pushed to this repository and its current commit has the required
+review evidence. Launch standalone Fast CI, then Full CI; both verify the supplied
+commit. Full CI waits for the Fast result:
+
+```bash
+ci_branch="$(git branch --show-current)"
+ci_sha="$(git rev-parse HEAD)"
+gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
+  --ref "${ci_branch}" -f expected_sha="${ci_sha}"
+gh workflow run ci.yml --repo ai-dynamo/aisimulate \
+  --ref "${ci_branch}" -f expected_sha="${ci_sha}"
+```
+
+Standalone Fast CI accepts these manual inputs:
+
+| Input | Behavior |
+| --- | --- |
+| `expected_sha` | Required full commit SHA; it must match the selected branch's commit when the run starts |
+| `base_sha` | Optional immutable comparison commit for changed-line whitespace; a supplied base uses `git diff --check BASE...HEAD` |
+
+On an ordinary manually dispatched branch, omitting `base_sha` checks only
+the last commit's whitespace (`HEAD^` to `HEAD`). To check the whole change,
+resolve the intended comparison base to a full SHA and add
+`-f base_sha="${ci_base}"` to the Fast CI command, with `ci_base` set to that SHA.
+This input affects only Fast CI whitespace checks, not Full CI component
+selection. Trusted `pull-request/*` copies always use the originating PR's
+current base, overriding any supplied `base_sha`; direct PR runs also use the
+PR base. Other automatic pushes compare against their previous head, falling
+back to the last commit when no previous head exists.
+
+To qualify FPE independently at the current `main`, without waiting for a
+nightly run:
+
+```bash
+ci_sha="$(gh api repos/ai-dynamo/aisimulate/commits/main --jq .sha)"
+gh workflow run fpe-support-matrix.yml --repo ai-dynamo/aisimulate \
+  --ref main -f expected_sha="${ci_sha}"
+```
+
+FPE is a broad, potentially long-running audit; it is outside the Full CI
+latency target. A manual FPE run does not publish nightly release artifacts.
+
+## Required checks and release approval
+
+The intended required statuses are **`Fast CI Success`**, **`Full CI Success`**,
+and **`codeowners`**, bound to the GitHub Actions application, with strict branch
+currency. Use the direct Fast result and Full aggregate rather than requiring
+each conditional/reusable job. Code review requirements remain independent.
+
+The additive [ruleset payload](../.github/required-main-checks.json) describes
+that policy. **Rollout status checked September 14, 2026:** effective `main`
+rules required review/CODEOWNER approval and conversation resolution, but did
+not yet contain the required CI statuses. Recheck live rules before relying on
+enforcement; committing the JSON does not activate it.
+
+```bash
+gh api repos/ai-dynamo/aisimulate/rules/branches/main
+gh api repos/ai-dynamo/aisimulate/rulesets
+```
+
+After validating the workflow on `main`, a repository administrator can apply
+the payload. Inspect existing rules first: update a rule with the same name
+instead of creating duplicates, and preserve the existing review/CODEOWNER
+rules. If the CI rule does not exist, create it with:
+
+```bash
+gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
+  --input .github/required-main-checks.json
+gh api repos/ai-dynamo/aisimulate/rules/branches/main
+```
+
+Confirm all three status contexts and strict branch currency in the effective
+rules. Maintainer access alone did not permit activation during rollout. Keep
+the trusted-copy Full CI backstop until enforcement is verified.
+
+Release staging has a separate control: `automated-release` must exist with
+required reviewers before use, and Artifactory credentials belong in that
+environment. A reference to a missing environment can create it without the
+intended protection. Successful validation does not authorize publication.
+
+## Runner environment and performance
+
+The Full CI target is **ten minutes from workflow creation to `Full CI Success`**,
+including runner queues, the standalone Fast prerequisite, and cold setup. Release-approval waits and FPE
+qualification are outside that target. Compare exact run SHAs and selected
+components; a documentation-only run and a complete matrix measure different
+workloads. Use job timestamps rather than the overall workflow completion time
+when staging is waiting.
+
+The implementation reduces repeated work through wheel reuse, 24 application
+shards, pytest workers, and uv installation. Wheel verification overlaps test
+execution. Rust embedding prepares Python and Rust binaries concurrently in
+separate Cargo target directories and requires both builds to succeed. The
+informational data-sanity scan uses four processes, then combines fingerprints
+for cross-system/op comparisons. Retain complete collection and all assertions
+when optimizing CI; faster execution must not silently reduce coverage.
+
+For existing runner images,
+[`ci_install_build_tools.sh`](../scripts/ci_install_build_tools.sh) skips apt if
+`cc`, `c++`, and `make` already exist; otherwise it makes three bounded bootstrap
+attempts with transport retries and refreshed indexes. Signature and checksum
+verification stay enabled. The prediction comparison uses setup helpers from
+the workflow checkout when preparing a historical comparison revision.
+
+The [prepared runner image](../.github/ci-image/Dockerfile) installs build tools
+once. An authorized runner-image owner can build **and push** both Linux
+architectures with [the wrapper](../scripts/build_ci_image.sh): set
+`AISIM_BASE_IMAGE_BY_DIGEST` to an immutable `image@sha256:...` reference and
+`AISIM_BUILD_IMAGE_TAG` to an authorized destination, then run:
+
+```bash
+bash scripts/build_ci_image.sh
+```
+
+Validate runner user/entrypoint, both architectures, native compilation, and a
+complete CI run before changing `CI_JOB_CONTAINER_IMAGE` to the new image digest.
+Keep the previous digest for rollback. Manylinux release/platform builders have
+their own image definitions; changing the shared runner image does not replace
+all builders.
+
+### Maintenance ownership
+
+Update this guide alongside workflow triggers, component selection, test
+placement, review admission, or release behavior. Add new application cases to
+an executed shard or an explicit exception; verify actual collection.
+
+- [AIC-1931](https://linear.app/nvidia/issue/AIC-1931): execution inventory,
+  selective Full CI, and efficiency.
+- [AIC-1911](https://linear.app/nvidia/issue/AIC-1911): enforcement of stable
+  Fast/Full results.
+- [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
+  Model Data Quality Gate. Existing collector and prediction jobs alone do not
+  establish that combined gate.

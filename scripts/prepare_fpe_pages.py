@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import io
 import json
+import math
 import re
 import subprocess
 import zipfile
@@ -19,6 +19,7 @@ from pathlib import Path
 ARTIFACT_NAME = "fpe-support-matrix-web"
 DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
+RELEASE_WORKFLOW = ".github/workflows/fpe-release-nightly.yml"
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"
 # Producer contract: tools/support_matrix/qualify_fpe_support_matrix.py::STATUSES.
 PROBE_STATUSES = {
@@ -32,7 +33,6 @@ PROBE_STATUSES = {
     "QUERY_FAILED",
 }
 CAPABILITY_FIELDS = ("HuggingFaceID", "Architecture", "System", "Backend", "Version")
-MANUAL_SNAPSHOTS = Path(".github/fpe-manual-snapshots")
 
 
 class SnapshotUnavailable(ValueError):
@@ -42,8 +42,10 @@ class SnapshotUnavailable(ValueError):
 def branch_path(branch: str) -> str:
     if branch == "main":
         return "."
-    if not branch.startswith("release/") or not all(
-        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part) for part in branch.split("/")
+    if (
+        not isinstance(branch, str)
+        or not branch.startswith("release/")
+        or not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part) for part in branch.split("/"))
     ):
         raise ValueError(f"unsupported FPE branch: {branch}")
     return f"branches/{branch}"
@@ -65,7 +67,13 @@ def _strict_json(data: bytes):
     def reject_constant(value):
         raise ValueError(f"invalid JSON constant: {value}")
 
-    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"non-finite JSON number: {value}")
+        return number
+
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float)
 
 
 def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
@@ -148,39 +156,6 @@ def list_artifacts(repository: str, *, api=github) -> list[dict]:
     return artifacts
 
 
-def manual_snapshot(repo_root: Path, branch: str) -> dict | None:
-    """Load an explicitly reviewed, hash-pinned release bootstrap from repository data."""
-    branch_path(branch)
-    if branch == "main":
-        return None
-    directory = repo_root / MANUAL_SNAPSHOTS / branch
-    manifest_path = directory / "manifest.json"
-    if not manifest_path.exists():
-        return None
-    if manifest_path.is_symlink() or (directory / "snapshot.zip").is_symlink():
-        raise ValueError("manual FPE snapshot files cannot be symlinks")
-    manifest = _strict_json(manifest_path.read_bytes())
-    if (
-        type(manifest.get("schema_version")) is not int
-        or manifest["schema_version"] != 1
-        or manifest.get("branch") != branch
-        or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("source_sha", "")))
-        or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("tooling_sha", "")))
-        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", str(manifest.get("generated_at", "")))
-    ):
-        raise ValueError("invalid manual FPE snapshot identity")
-    archive = (directory / "snapshot.zip").read_bytes()
-    if hashlib.sha256(archive).hexdigest() != manifest.get("archive_sha256"):
-        raise ValueError("manual FPE snapshot archive digest does not match its manifest")
-    files = qualified_files(archive, manifest["source_sha"])
-    if files is None:
-        raise ValueError("manual FPE snapshot is missing qualification")
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        if _strict_json(bundle.read("fpe-qualification.json")) != manifest.get("qualification"):
-            raise ValueError("manual FPE snapshot qualification does not match its manifest")
-    return {"manifest": manifest, "files": files}
-
-
 def prepare(
     repository: str,
     repo_root: Path,
@@ -191,7 +166,7 @@ def prepare(
     artifacts=None,
     api=github,
 ) -> dict:
-    """Prefer the newest tested commit in this branch's history over a later old rerun."""
+    """Select only CI-qualified data from the requested branch history."""
     branch_path(branch)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("invalid repository")
@@ -203,58 +178,88 @@ def prepare(
     ranks = {sha: index for index, sha in enumerate(ancestors)}
     if artifacts is None:
         artifacts = list_artifacts(repository, api=api)
+    tooling_history = set(
+        subprocess.check_output(
+            ["git", "rev-list", "--topo-order", "HEAD", "--"], cwd=repo_root, text=True
+        ).splitlines()
+    )
     candidates = []
     for artifact in artifacts:
         identity = artifact.get("workflow_run") or {}
-        if (
-            artifact.get("name") != ARTIFACT_NAME
-            or identity.get("head_branch") != branch
-            or identity.get("head_sha") not in ranks
+        if artifact.get("name") != ARTIFACT_NAME or not (
+            (identity.get("head_branch") == branch and identity.get("head_sha") in ranks)
+            or (
+                branch != "main"
+                and identity.get("head_branch") == "main"
+                and identity.get("head_sha") in tooling_history
+            )
         ):
             continue
         candidates.append(artifact)
-    manual = manual_snapshot(repo_root, branch)
-    if manual is not None:
-        source_sha = manual["manifest"]["source_sha"]
-        if source_sha not in ranks:
-            raise ValueError("manual FPE snapshot source is outside the release branch history")
-        # Automatic qualification wins a tie; otherwise prefer the newest source.
-        candidates.append({"id": 0, "workflow_run": {"head_sha": source_sha}, "manual": manual})
-    candidates.sort(key=lambda a: (ranks[a["workflow_run"]["head_sha"]], -a["id"]))
+    candidates.sort(key=lambda a: -a["id"])
+    selected_key = None
+    selected_files = None
+    selected_successful = False
+    snapshot = None
     for artifact in candidates:
-        source_sha = artifact["workflow_run"]["head_sha"]
-        if "manual" in artifact:
-            revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
-            manifest = artifact["manual"]["manifest"]
-            snapshot = {
-                "origin": "manual",
-                "branch": branch,
-                "source_sha": source_sha,
-                "generated_at": manifest["generated_at"],
-                "wheel_sha256": manifest["qualification"]["wheel_sha256"],
-                "tooling_sha": manifest["tooling_sha"],
-                "evidence_url": f"https://github.com/{repository}/tree/{revision}/{MANUAL_SNAPSHOTS}/{branch}",
-            }
-            return write_snapshot(destination, artifact["manual"]["files"], snapshot)
+        # A dispatch can test a different SHA. Only current HEAD bounds every
+        # remaining source; descending artifact IDs also settle ties at HEAD.
+        if selected_key is not None and selected_key[0] == 0:
+            break
         run_id = artifact["workflow_run"]["id"]
         run = json.loads(api(repository, f"actions/runs/{run_id}"))
+        workflow_sha = artifact["workflow_run"]["head_sha"]
+        release_producer = branch != "main" and run.get("path") == RELEASE_WORKFLOW
+        producer_branch = "main" if release_producer else branch
         if (
-            run.get("path") not in WORKFLOWS
+            (run.get("path") not in WORKFLOWS and not release_producer)
             or run.get("head_repository", {}).get("full_name") != repository
-            or run.get("head_branch") != branch
-            or run.get("head_sha") != source_sha
+            or run.get("head_branch") != producer_branch
+            or artifact["workflow_run"].get("head_branch") != producer_branch
+            or run.get("head_sha") != workflow_sha
             or run.get("event") not in {"schedule", "workflow_dispatch"}
-            or run.get("status") != "completed"
-            or run.get("conclusion") != "success"
         ):
+            continue
+        run_attempt = run.get("run_attempt")
+        if type(run_attempt) is not int or run_attempt < 1:
+            raise ValueError("eligible FPE run_attempt must be a positive integer")
+        successful = run.get("status") == "completed" and run.get("conclusion") == "success"
+        if not successful and run_attempt == 1:
             continue
         if artifact.get("expired"):
             raise SnapshotUnavailable(
-                f"newest successful {branch} FPE artifact has expired; refresh FPE before publishing"
+                f"eligible {branch} FPE artifact has expired and its tested source is unknown; "
+                "refresh FPE before publishing"
             )
-        files = qualified_files(api(repository, f"actions/artifacts/{artifact['id']}/zip"), source_sha)
-        if files is None:
+        archive = api(repository, f"actions/artifacts/{artifact['id']}/zip")
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            names = bundle.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError("duplicate archive entries")
+            if "fpe-qualification.json" not in names:
+                continue
+            qualification = _strict_json(bundle.read("fpe-qualification.json"))
+        if release_producer:
+            if not isinstance(qualification, dict):
+                raise ValueError("invalid release FPE qualification")
+            declared_branch = qualification.get("source_branch", "")
+            branch_path(declared_branch)
+            if declared_branch == "main" or qualification.get("tooling_sha") != workflow_sha:
+                raise ValueError("release FPE source/tooling provenance does not match its CI run")
+            if declared_branch != branch:
+                continue
+        source_sha = qualification.get("source_sha") if isinstance(qualification, dict) else None
+        if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            raise ValueError("invalid FPE qualification source commit")
+        files = qualified_files(archive, source_sha)
+        if source_sha not in ranks:
             continue
+        key = (ranks[source_sha], -artifact["id"])
+        if selected_key is not None and key >= selected_key:
+            continue
+        selected_key = key
+        selected_files = files
+        selected_successful = successful
         snapshot = {
             "branch": branch,
             "source_sha": source_sha,
@@ -262,18 +267,23 @@ def prepare(
             "run_url": f"https://github.com/{repository}/actions/runs/{run_id}",
             "artifact_id": artifact["id"],
         }
-        return write_snapshot(destination, files, snapshot)
-    raise SnapshotUnavailable(f"no retained qualified {branch} FPE artifact; run FPE Support Matrix on that branch")
-
-
-def write_snapshot(destination: Path, files: dict[str, bytes], snapshot: dict) -> dict:
-    index = json.loads(files["index.json"])
-    index["snapshot"] = snapshot
-    files["index.json"] = (json.dumps(index, indent=2) + "\n").encode()
-    destination.mkdir(parents=True, exist_ok=True)
-    for name, data in files.items():
-        (destination / name).write_bytes(data)
-    return snapshot
+        if release_producer:
+            snapshot["tooling_sha"] = workflow_sha
+            snapshot["wheel_sha256"] = qualification["wheel_sha256"]
+    if snapshot is not None:
+        if not selected_successful:
+            raise ValueError(
+                f"newest qualified {branch} FPE run was retried without success; preserve the current site"
+            )
+        files = selected_files
+        index = json.loads(files["index.json"])
+        index["snapshot"] = snapshot
+        files["index.json"] = (json.dumps(index, indent=2) + "\n").encode()
+        destination.mkdir(parents=True, exist_ok=True)
+        for name, data in files.items():
+            (destination / name).write_bytes(data)
+        return snapshot
+    raise SnapshotUnavailable(f"no retained qualified {branch} FPE artifact; run FPE qualification for that branch")
 
 
 def prepare_branches(repository: str, repo_root: Path, destination: Path, *, api=github) -> dict:

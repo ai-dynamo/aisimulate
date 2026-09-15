@@ -138,8 +138,8 @@ count, plus the source SHA from the measured run.
 
 ## Website publication
 
-GitHub Pages rebuilds after a successful main-branch FPE or Nightly run and on
-public-documentation changes. Every deployment selects the retained qualified
+GitHub Pages rebuilds after a successful FPE, Nightly, or FPE Release Nightly run
+and on public-documentation changes. For main, every deployment selects the retained qualified
 FPE artifact with the newest tested source commit in the current main history.
 Re-running an older commit cannot displace a newer qualified snapshot. The page
 shows the snapshot's source SHA, artifact creation time, and producing CI run.
@@ -176,36 +176,54 @@ Each selection loads a separate packaged dataset with its own tested source
 SHA, timestamp, and evidence link. Release results never fall back to main's data.
 
 Pages discovers release branches from the fetched `origin` refs. For each
-branch, it selects the newest retained qualified artifact produced by a
-successful FPE or Nightly run **on that branch**, with a source SHA in that
-branch's history. An old-commit rerun cannot displace a newer tested commit.
+branch, it selects the newest retained qualified artifact with a source SHA in
+that branch's history. Eligible producers are successful FPE or Nightly runs on
+the selected branch, or the main-hosted release workflow described below with
+explicit release and tooling provenance. An old-commit rerun cannot displace a newer tested commit.
 A release without retained qualification is labeled **unavailable**; an
 expired release artifact also removes its data from the next deployment.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
-For automatic release coverage, the release branch must contain the exact-wheel
-FPE workflow, generator, qualifier, and required-probe manifest. Run
-**FPE Support Matrix** using that release as the workflow ref and its full
-commit SHA as `expected_sha`. A successful release run triggers the main Pages
-publisher, which rebuilds the whole catalog from trusted main code.
-Manual Pages dispatch on main also discovers newly created release branches.
+**FPE Release Nightly** runs daily at 09:23 UTC from trusted `main`, and can
+also be dispatched on `main`. It currently targets `release/0.12.0`. It resolves
+the release tip once, builds one wheel from that unmodified checkout, and uses
+the release's locked dependencies, curated model inventory, SDK, estimator,
+model definitions, and performance tables. Up to 20 system/backend shards run
+concurrently with eight probe threads each; the runner pool is shared with
+other CI. Every scheduled run refreshes the evidence, even if the release SHA
+is unchanged, so retained artifacts do not silently expire.
 
-Older releases can be bootstrapped with a reviewed manual snapshot under
-`.github/fpe-manual-snapshots/release/<version>/`. Its manifest pins the source
-and tooling commits, archive SHA256, timestamp, and complete qualification
-report. The archive contains the same qualified web dataset used by CI; the
-publisher validates its digest, qualification, CSV identities, and membership
-in the release branch's history before publishing. The page labels it
-**Qualified manual snapshot** and links to the checked-in evidence at the
-publisher's exact commit. It is never described as a GitHub Actions run.
+The probe harness and required-probe manifest come from the workflow's exact
+`main` commit. CI records that tooling SHA separately from the tested release
+SHA and wheel digest. Before discovery or probing, it verifies the installed
+package bytes and import locations against the shared wheel. The release branch
+does not need a workflow backport. This job produces qualification evidence;
+it does not stage or publish release packages.
 
-Automatic and manual candidates are ordered by tested source history, with
-an automatic run winning at the same SHA. This lets a later qualified CI run
-replace the bootstrap while preventing an old rerun from restoring stale data.
-An expired newer CI artifact still makes that release unavailable, rather than
-restoring an older manual snapshot. This does not schedule release refreshes or
-change the release's source code or native estimator.
+After all shards and required probes pass, CI uploads `fpe-support-matrix-web`
+for 90 days and triggers Pages. The publisher verifies the trusted producing
+workflow, its main-history tooling commit, the artifact's release identity,
+and the tested source's membership in release history. It ranks snapshots by
+tested source history, then artifact ID, while preserving the existing failed
+rerun and expired-artifact protections. An older-source rerun cannot replace a
+newer tested source.
+
+Release results come only from GitHub Actions artifacts. No manual ZIP,
+committed-result fallback, or main-data fallback is used. Until the first
+qualified release run succeeds, the release selector shows **unavailable**.
+The page links to the CI run and shows both tested source and probe tooling.
+
+To reproduce a release result, check out the recorded tooling commit at the
+workspace root and the recorded release source under `release-source/`.
+Download the run's `fpe-release-wheel` artifact into the workspace (preserving
+its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
+release's locked environment and exact wheel as in the workflow, and activate
+that environment. The matrix's per-cell command runs the verified release
+wrapper with the recorded source, tooling, and branch. Each invocation requires
+a fresh `release-probe-harness/` directory; remove only that generated directory
+between reproductions. Raw shard reports and the wheel are retained for seven
+days; the smaller qualified web dataset is retained for 90 days.
 
 The deployed `data/fpe-support-matrix/branches.json` catalog lists available
 and unavailable branches. Main retains the existing data path, and release
