@@ -57,7 +57,7 @@ jobs:
         run: |
           python -m pip install pytest==8.4.2
           python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py -q
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Test accuracy interactions

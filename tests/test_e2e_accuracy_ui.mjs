@@ -8,6 +8,11 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.js", import.meta.url), "utf8");
 const historical = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
+// Exercise the legacy contract even after the published snapshot is refreshed.
+delete historical.snapshot.evaluated_revision;
+for (const model of historical.models) for (const workload of model.workloads) {
+  for (const gpu of workload.gpus) delete gpu.topologies;
+}
 const pathFor = (key) => `branches/${key.repeat(16)}/summary.json`;
 const catalog = { schema_version: 1, default_branch: "main", branches: [
   { branch: "main", status: "historical", summary_path: pathFor("a") },
@@ -21,7 +26,11 @@ function harness(fetch = async () => response(historical), url = "https://exampl
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
       innerHTML: "", textContent: "", hidden: false, dataset: {}, attributes: {},
-      events: {}, classList: { toggle() {} },
+      events: {}, classes: new Set(),
+      get classList() {
+        const owner = this;
+        return { toggle(name, on) { owner.classes[on ? "add" : "delete"](name); } };
+      },
       addEventListener(name, callback) { this.events[name] = callback; },
       setAttribute(name, value) { this.attributes[name] = value; },
       removeAttribute(name) { delete this.attributes[name]; if (name === "href") delete this.href; },
@@ -118,6 +127,7 @@ test("GPU selection opens historical error and coverage details and survives sor
   const app = setup(); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
   assert.equal(app.element("drilldown").hidden, false);
+  assert.equal(app.element("matrix-layout").classes.has("has-details"), true);
   assert.match(app.element("drilldown").innerHTML, /successful replay points/);
   assert.match(app.element("drilldown").innerHTML, /historical snapshot contains GPU aggregates only/);
   assert.match(app.location.href, /branch=main.*model=.*workload=.*gpu=/);
@@ -125,6 +135,16 @@ test("GPU selection opens historical error and coverage details and survives sor
   assert.equal(app.element("drilldown").hidden, false);
   await app.run('loadBranch("release/0.12.0")');
   assert.equal(app.element("drilldown").hidden, true);
+  assert.doesNotMatch(app.location.href, /model=/);
+  assert.equal(app.element("matrix-layout").classes.has("has-details"), false);
+});
+
+test("closing details clears the expanded layout and shared selection", async () => {
+  const app = setup(); await app.run('loadBranch("main")');
+  app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
+  app.element("close-details").events.click();
+  assert.equal(app.element("drilldown").hidden, true);
+  assert.equal(app.element("matrix-layout").classes.has("has-details"), false);
   assert.doesNotMatch(app.location.href, /model=/);
 });
 
@@ -174,6 +194,26 @@ test("catalog 404 permits direct source preview; other errors do not silently fa
   assert.equal(app.element("download-json").href, "./summary.json");
   const failing = setup(async () => response({}, 500));
   await assert.rejects(failing.run("initialize()"), /HTTP 500/);
+});
+
+test("catalog initialization failure replaces loading with an unavailable control", async () => {
+  for (const result of [response({}, 503), response({})]) {
+    const app = harness(async () => result);
+    app.element("branch-select").innerHTML = "<option>Loading…</option>";
+    await app.run("initialize().catch(showError)");
+    assert.match(app.element("branch-select").innerHTML, /Unavailable/);
+    assert.equal(app.element("branch-select").disabled, true);
+    assert.equal(app.element("error-banner").hidden, false);
+  }
+});
+
+test("partial GPU links and topology-only links fail explicitly", async () => {
+  for (const query of ["model=X&gpu=Y", "workload=1024%3A1024", "topology=0123456789abcdef"]) {
+    const app = setup(undefined, `https://example.com/e2e-accuracy/?branch=main&${query}`);
+    await app.run('loadBranch("main", true)');
+    assert.match(app.element("error-banner").textContent, /missing part of the GPU selection/);
+    assert.equal(app.run("state.data"), null);
+  }
 });
 
 test("inherited evaluated evidence identifies its original branch", async () => {

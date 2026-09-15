@@ -100,6 +100,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     source = repo / relative
     source.parent.mkdir(parents=True)
     main_summary = json.loads((ROOT / relative).read_text())
+    main_summary["snapshot"].pop("evaluated_revision", None)
     release_summary = json.loads(json.dumps(main_summary))
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
     source.write_text(json.dumps(release_summary))

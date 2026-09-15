@@ -32,16 +32,38 @@ are separate identities:
 - **Unavailable:** the branch has no committed summary. The page shows an empty
   state instead of falling back to main's results.
 
-The existing `summary.json` remains the historical AISimulate 0.12.0 replay
-snapshot against the public [InferenceX db-dump/2026-08-24 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24).
-This change does not rerun that evaluation or invent branch-specific results.
+The refreshed `summary.json` evaluates AISimulate main at
+[`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
+against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
+Its legacy AIC baseline is regenerated from
+[`f254959eb89e2f206b8f9a77051644d7c1cbdb89`](https://github.com/ai-dynamo/aiconfigurator/commit/f254959eb89e2f206b8f9a77051644d7c1cbdb89).
 The measurement release is shown separately from the AISimulate branch selector.
+Release branches continue to display the evidence committed on those branches.
+
+Both predictions run on remote CPU workers. The AISimulate wheel is built from
+a clean source checkout, and the complete campaign records its evaluated branch,
+commit, runtime hashes, and input checksum. Replays use the recorded model,
+topology, backend version, and reviewed recipe settings where available, with
+seed 0, randomized input/output lengths from 80% to 100% of the nominal lengths,
+and ten requests per concurrency slot. Unsupported configurations, unresolved
+reviewed recipes, and runtime failures remain explicit outcomes.
+Replay settings use the public API available on the evaluated commit.
+
+The comparison cohort contains operating points with a successful AIC SILICON
+estimate. AISimulate attempts every point in that cohort; the published view
+excludes multi-node points. A lower error on a refreshed snapshot does not by
+itself prove an improvement on the previous snapshot, because the measurement
+release, included points, and successful replay coverage can change.
+This refresh publishes 807 single-node points across 193 topologies: 771
+successful AISimulate replays, 18 unsupported points, and 18 failures.
 
 Main-branch changes and manual Pages builds publish immediately after a
 successful workflow. A daily main-branch Pages build also picks up release-branch
 snapshot updates and newly created release branches. It imports **only JSON**
 from release branches, never their HTML or JavaScript. Deleted branches disappear
 from the next catalog built with freshly fetched refs.
+This daily publication job does not rerun either predictor; new accuracy results
+require a completed prediction campaign and a regenerated summary.
 
 ## Drill down
 

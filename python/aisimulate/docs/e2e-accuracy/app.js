@@ -536,6 +536,10 @@ function clearSnapshot(message) {
 
 function showError(error) {
   clearSnapshot("Accuracy data unavailable.");
+  if (!state.catalog) {
+    branchSelect.innerHTML = '<option value="">Unavailable</option>';
+    branchSelect.disabled = true;
+  }
   branchStatus.textContent = "Snapshot unavailable";
   errorBanner.hidden = false;
   errorBanner.textContent = `Could not load the published accuracy snapshot: ${error.message}`;
@@ -572,7 +576,11 @@ async function loadBranch(branchName, restoreSelection = false) {
     }
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
-    if (restoreSelection && ["model", "workload", "gpu"].every((key) => params.has(key))) {
+    const linked = ["model", "workload", "gpu", "topology"].some((key) => params.has(key));
+    if (restoreSelection && linked) {
+      if (!["model", "workload", "gpu"].every((key) => params.has(key))) {
+        throw new Error("The shared link is missing part of the GPU selection");
+      }
       state.selection = JSON.stringify([params.get("model"), params.get("workload"), params.get("gpu")]);
       if (!selectedGpu()) throw new Error("The linked GPU selection is not present in this branch snapshot");
       const topologies = selectedGpu().gpu.topologies ?? [];
