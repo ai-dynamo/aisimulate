@@ -68,7 +68,11 @@ approximation must be retired.
 # and every kwarg this collector passes are unaffected -- fixed below with a
 # version-conditional import mirroring collect_gemm.py's (sglang round)
 # established try/except-import pattern.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"
+# B200 0.25.0 runtime qualification against installed dd10e03f9 (job
+# 1968047). Existing framework construction/dispatch is unchanged. Invalid
+# model/quant shapes continue to raise and remain recorded failures; this is
+# API compatibility, not a claim that every Cartesian shape is supported.
+__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
 
 import contextlib
 import json

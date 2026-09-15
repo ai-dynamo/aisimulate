@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: local
+runtime:
+  framework: vllm
+  version: 0.25.0
+  image: aisim-b200-vllm-0250-sqsh-9ae776fd614406ea136d29aeb5ac05d9980865cd4a10eb8ec6956437da7d4ab7
+  source_commit: dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+tables:
+  mhc_module_perf:
+    rows: 140
+    status: complete
+    collections:
+    - collector_ref: c79cc132552deb677becc37f8139b0cca2b08d75
+      collector_hash: sha256:112b0ed90f5a1454185222c470f05cbf0c2778daa2372fb997e8ea69758f54e6
+      case_plan_hash: sha256:4251dd697ea2e18fcaeed92b1a7cbdf452549a75d3a38284340d5da8502e03a1
+      collected_at: '2026-09-15'
+      rows: 140
+      classified_failures: 0
+      status: complete

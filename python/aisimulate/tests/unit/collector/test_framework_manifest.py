@@ -83,6 +83,8 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
+    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe", "collector.vllm.collect_gdn"}:
+        expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -783,3 +785,19 @@ frameworks:
     )
     with pytest.raises(ValueError, match="digest-pinned"):
         get_collector_runtime("sglang", path=manifest)
+
+
+@pytest.mark.parametrize(
+    "version,accepted",
+    [("0.24.0", True), ("0.25.0", True), ("0.25.1", False), ("0.26.0", False), ("0.27.0", False), ("0.27.1", True)],
+)
+def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
+    import ast
+
+    source = ast.parse((COLLECTOR_ROOT / "vllm" / "collect_gemm.py").read_text())
+    declaration = next(
+        node.value.value
+        for node in source.body
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__compat__" for t in node.targets)
+    )
+    assert _check_compat(declaration, version) is accepted
