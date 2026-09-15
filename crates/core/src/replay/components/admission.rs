@@ -194,8 +194,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     ) -> Result<Vec<T>> {
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
-                let mut ready = Vec::new();
-                while let Some(front) = pending.front() {
+                // Validate the due prefix before removing requests or invoking `map`.
+                // An error must leave every request queued and produce no admission
+                // side effects, including for valid requests before the malformed one.
+                let mut due_count = 0;
+                for (queue_index, front) in pending.iter().enumerate() {
                     // This queue drains strictly from the front, so a request whose arrival
                     // time never compares ready blocks itself and everything behind it
                     // forever. Reject that malformed input instead of silently wedging, and
@@ -204,7 +207,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         Some(arrival_time_ms) if arrival_time_ms.is_finite() => arrival_time_ms,
                         malformed => anyhow::bail!(
                             "trace replay request {} has an unusable arrival timestamp ({}); \
-                             it is at the queue front after {} admitted at {now_ms}ms, and \
+                             it is at queue index {queue_index} with 0 admitted at {now_ms}ms, and \
                              trace-sourced requests must carry a finite authored arrival time",
                             front.request_id().map_or_else(
                                 || "<unidentified>".to_string(),
@@ -212,15 +215,21 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             ),
                             malformed
                                 .map_or_else(|| "missing".to_string(), |value| value.to_string()),
-                            ready.len(),
                         ),
                     };
                     if arrival_time_ms > now_ms {
                         break;
                     }
+                    due_count += 1;
+                }
+                let mut ready = Vec::with_capacity(due_count);
+                for _ in 0..due_count {
                     let request = pending
                         .pop_front()
                         .expect("front request must exist when arrival is ready");
+                    let arrival_time_ms = request
+                        .arrival_timestamp_ms
+                        .expect("due prefix has validated arrival timestamps");
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()
@@ -665,6 +674,80 @@ mod trace_tests {
                 "error must name the offending field: {error}"
             );
         }
+    }
+
+    #[test]
+    fn trace_validation_preserves_the_queue_and_reports_full_context() {
+        for malformed in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ] {
+            for due_count in [0, 2] {
+                let mut pending: VecDeque<_> = (0..due_count)
+                    .map(|index| trace_request(index + 1, Some(0.0)))
+                    .collect();
+                pending.push_back(trace_request(99, malformed));
+                pending.push_back(trace_request(100, Some(20.0)));
+                let expected_ids: Vec<_> = pending.iter().map(|request| request.uuid).collect();
+                let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+                // Repeated errors must leave the queue and mapper untouched.
+                for _ in 0..2 {
+                    let mut mapped = 0;
+                    let result = admission.drain_ready_compact_with(10.0, 0, false, |_| {
+                        mapped += 1;
+                    });
+                    let message = result
+                        .expect_err("malformed trace input must fail")
+                        .to_string();
+                    assert_eq!(
+                        mapped, 0,
+                        "validation must precede all admission side effects"
+                    );
+                    let AdmissionSource::Requests(pending) = &admission.source else {
+                        unreachable!();
+                    };
+                    assert_eq!(
+                        pending
+                            .iter()
+                            .map(|request| request.uuid)
+                            .collect::<Vec<_>>(),
+                        expected_ids
+                    );
+                    for expected in [
+                        "arrival timestamp".to_string(),
+                        malformed.map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        Uuid::from_u128(99).to_string(),
+                        format!("queue index {due_count}"),
+                        "0 admitted at 10ms".to_string(),
+                    ] {
+                        assert!(
+                            message.contains(&expected),
+                            "missing {expected:?}: {message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trace_validation_stops_at_the_first_future_request() {
+        let pending = VecDeque::from(vec![
+            trace_request(1, Some(0.0)),
+            trace_request(2, Some(5.0)),
+            trace_request(3, None),
+        ]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+        let ready = admission.drain_ready_compact(0.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].request.metadata().uuid, Some(Uuid::from_u128(1)));
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+        assert!(admission.drain_ready_compact(5.0, 0, false).is_err());
+        assert_eq!(admission.total_requests(), 2);
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
     }
 
     #[test]
