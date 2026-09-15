@@ -131,10 +131,32 @@ def latest_status(root, shard):
     return max(paths, key=lambda p: int(p.parent.name.split("-")[1])) if paths else None
 
 
+def submission_environment():
+    """Do not export the CPU watcher's resource limits into GPU job steps."""
+    resource_variables = {
+        "SLURM_MEM_PER_NODE",
+        "SLURM_MEM_PER_CPU",
+        "SLURM_MEM_PER_GPU",
+        "SLURM_CPUS_PER_TASK",
+        "SLURM_CPUS_PER_GPU",
+        "SLURM_NTASKS",
+        "SLURM_NTASKS_PER_NODE",
+        "SLURM_NNODES",
+        "SLURM_TRES_PER_TASK",
+        "SBATCH_MEM_PER_NODE",
+        "SBATCH_MEM_PER_CPU",
+        "SBATCH_CPUS_PER_TASK",
+        "SRUN_MEM_PER_NODE",
+        "SRUN_CPUS_PER_TASK",
+    }
+    return {key: value for key, value in os.environ.items() if key not in resource_variables}
+
+
 def submit(config, campaign, spec):
     root = Path(campaign["root"])
     args = campaign["slurm"]
     qos = "interactive" if spec["mode"] == "smoke" else "short"
+    memory = args.get("memory", "128G")
     step = [
         "srun",
         f"--account={args['account']}",
@@ -142,6 +164,8 @@ def submit(config, campaign, spec):
         "--nodes=1",
         "--ntasks=1",
         "--gres=gpu:8",
+        f"--mem={memory}",
+        "--cpus-per-task=32",
         "--gpu-freq=1965",
         f"--container-image={args['image']}",
         f"--container-mounts={root}:/campaign",
@@ -161,11 +185,12 @@ def submit(config, campaign, spec):
         "--gres=gpu:8",
         "--exclusive",
         "--cpus-per-task=32",
+        f"--mem={memory}",
         "--time=" + ("00:15:00" if spec["mode"] == "smoke" else "02:00:00"),
         f"--output={root}/logs/hook-{spec['id']}-%j.out",
         "--wrap=" + shlex.join(step),
     ]
-    job = subprocess.check_output(command, text=True).strip().split(";")[0]
+    job = subprocess.check_output(command, text=True, env=submission_environment()).strip().split(";")[0]
     record = {
         "shard": spec["id"],
         "job": job,

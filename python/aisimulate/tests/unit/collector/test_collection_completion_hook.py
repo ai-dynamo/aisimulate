@@ -72,3 +72,31 @@ def test_rejects_incomplete_or_mislabeled_data(tmp_path, failure):
     (tmp_path / "data/checkpoint/vllm/gemm.json").write_text(json.dumps(checkpoint))
     with pytest.raises(ValueError):
         validate_snapshot(tmp_path, spec, table_reader=lambda _: rows)
+
+
+def test_cpu_hook_memory_limit_cannot_leak_into_gpu_step(tmp_path, monkeypatch):
+    from collector.campaigns import slurm_collection_hook as hook
+
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "4096")
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "2")
+    monkeypatch.setenv("SLURM_CONF", "/etc/slurm/cluster.conf")
+    captured = {}
+
+    def fake_submit(command, **kwargs):
+        captured.update(command=command, **kwargs)
+        return "12345\n"
+
+    monkeypatch.setattr(hook.subprocess, "check_output", fake_submit)
+    campaign = {
+        "root": str(tmp_path),
+        "runner_revision": "test",
+        "slurm": {"account": "test", "partition": "batch", "image": "/image.sqsh", "memory": "128G"},
+    }
+    spec = {"id": "gemm-00", "op": "gemm", "mode": "full", "planned_tasks": 1}
+    hook.submit({}, campaign, spec)
+    assert "--mem=128G" in captured["command"]
+    wrapped = next(v for v in captured["command"] if v.startswith("--wrap="))
+    assert "--mem=128G" in wrapped and "--cpus-per-task=32" in wrapped
+    assert "SLURM_MEM_PER_NODE" not in captured["env"]
+    assert "SLURM_CPUS_PER_TASK" not in captured["env"]
+    assert captured["env"]["SLURM_CONF"] == "/etc/slurm/cluster.conf"
