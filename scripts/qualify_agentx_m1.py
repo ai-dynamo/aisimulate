@@ -62,7 +62,7 @@ def prediction_config(path: Path, trace_format: str, block_size: int, backend: s
             "workers": {
                 "aggregated": {
                     "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
-                    "kv_cache": {"block_size": 64, "capacity": {"type": "fixed", "blocks": 65_536}},
+                    "kv_cache": {"block_size": block_size, "capacity": {"type": "fixed", "blocks": 65_536}},
                     "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
                 }
             },

@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
-import builtins
 import json
+import runpy
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -375,27 +378,68 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str, monkeypatch) -> None:
-    original_import = builtins.__import__
+def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
+    config = {
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(_TRACE_FIXTURES / "weka-relative.json")]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+        "engine": {**_engine(), "backend": backend},
+    }
+    code = textwrap.dedent("""
+        import importlib.abc
+        import json
+        import sys
 
-    def reject_dynamo(name, *args, **kwargs):
-        if name == "dynamo" or name.startswith("dynamo."):
-            raise AssertionError("public AISimulate Weka replay must not import Dynamo")
-        return original_import(name, *args, **kwargs)
+        assert not any(name.split(".")[0] in {"aisimulate", "dynamo"} for name in sys.modules)
 
-    monkeypatch.setattr(builtins, "__import__", reject_dynamo)
-    config = CorePredictionConfig.model_validate(
-        {
-            "traffic": {
-                "source": {"type": "trace", "format": "weka", "paths": [str(_TRACE_FIXTURES / "weka-relative.json")]},
-                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
-            },
-            "engine": {**_engine(), "backend": backend},
-        }
+        class RejectDynamo(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "dynamo" or fullname.startswith("dynamo."):
+                    raise AssertionError("public AISimulate Weka replay must not import Dynamo")
+
+        sys.meta_path.insert(0, RejectDynamo())
+
+        from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory
+        from aisimulate.compiler import prediction_to_replay_spec
+
+        config = CorePredictionConfig.model_validate(json.load(sys.stdin))
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            report = runner.run(prediction_to_replay_spec(config))
+        finally:
+            runner.close()
+        print(json.dumps({"metrics": report.metrics, "metadata": report.metadata}))
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        input=json.dumps(config),
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=120,
     )
-    report = EngineReplayRunnerFactory().create(0).run(prediction_to_replay_spec(config))
-    assert report.metrics["completed_requests"] == 4
-    assert report.metadata["agentic_qualification"] == "functional_only"
-    assert report.metadata["agentic_lanes"] == 1
-    assert report.metadata["agentic_model_projection"]["target_model"] == "example/model"
-    assert "native_report" not in report.metadata
+    report = json.loads(completed.stdout)
+    assert report["metrics"]["completed_requests"] == 4
+    assert report["metadata"]["agentic_qualification"] == "functional_only"
+    assert report["metadata"]["agentic_lanes"] == 1
+    assert report["metadata"]["agentic_model_projection"]["target_model"] == "example/model"
+    assert "native_report" not in report["metadata"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentx_m1_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    gate = runpy.run_path(str(scripts / "qualify_agentx_m1.py"))
+    source = _TRACE_FIXTURES / "weka-relative.json"
+    block_size = json.loads(source.read_text())["block_size"]
+    assert block_size == 4
+    config = gate["prediction_config"](source, "weka", block_size, backend)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    assert spec.workload["trace_block_size"] == block_size
+    assert spec.backend_deployment.agg_engine_args["block_size"] == block_size
+    report = gate["run_python"](config)
+    evidence = gate["evidence"](report)
+    assert evidence["agentic_graph"]["block_size"] == block_size
+    assert report["completed_requests"] == 4

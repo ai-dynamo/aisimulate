@@ -165,6 +165,17 @@ qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/
 and must be rerun against matching AISimulate artifacts before declaring the
 cross-repository M1 milestone complete.
 
+When Dynamo upgrades its AISimulate dependency to include these capability
+fields, `DynamoReplayRunnerFactory` must explicitly declare its qualified
+AgentX backend, host-offload, and speculative-decoding support. Matching this
+M1 boundary requires `supported_agentic_backends=("vllm", "sglang")`,
+`supports_agentic_host_offload=False`, and
+`supports_agentic_speculative_decoding=False`, with corresponding rejection
+tests. Shared `RunnerCapabilities` defaults preserve generic runner behavior;
+they do not certify a downstream factory's AgentX support. Coordinate the
+factory change with the dependency upgrade because older AISimulate revisions
+do not accept these constructor fields.
+
 ## File Map
 
 - `src/replay/replayer.rs`
