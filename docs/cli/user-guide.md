@@ -32,8 +32,8 @@ Use the [configuration reference](#configuration-model) when you need individual
 | `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
-The metric values in example results are hypothetical; they illustrate the output format and are
-not measurements from running these commands.
+Unless labeled as captured output, metric values in example results are hypothetical and
+illustrate the output format. Captured detail examples are simulation results, not hardware measurements.
 
 ## Install
 
@@ -356,6 +356,7 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, or `all`. See [prediction details](#prediction-details). |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
@@ -1622,10 +1623,190 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON on standard output is a summary object. Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
+
+<a id="prediction-details"></a>
+
+### Prediction details
+
+```bash
+aisimulate predict -c prediction.yaml --detail summary,memory,time \
+  --format json --output-dir ./prediction-details
+```
+
+`--detail` selects additional reports on `predict`. With no selector, stdout and durable
+reports retain their existing shape. With a selector, JSON stdout contains `summary` and
+`details`; the same versioned `details` object is added to `prediction.json` and follows the
+[prediction-details schema](prediction-details.schema.json). Table output appends selected
+sections and skipped-section reasons to the normal prediction summary.
+
+- `summary`: existing serving metrics.
+- `memory`: the existing initial per-rank memory capacity estimate, including components when
+  available, with sizes in bytes and token counts in tokens. The only current `stage` value is
+  `before_native_capacity_adjustments`; `estimated_num_gpu_blocks` is captured at this stage,
+  before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
+  nor observed memory usage. Explicit KV blocks, nested rank input,
+  and unsupported providers/topologies may have no exported estimate.
+  Analytical EPD retains available language-worker estimates and marks the encoder component
+  breakdown unavailable; its memory section is partial when language estimates exist.
+- `time`: existing TTFT, TTST, TPOT, inter-token, and end-to-end request latency statistics in
+  milliseconds, plus trajectory latency statistics when exported by the runner. Replay duration
+  and simulator wall time remain in the summary.
+  This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
+  approximation labels in the summary.
+- `all`: the three supported sections above, when evidence exists.
+
+Sections without evidence are omitted from `details.sections` and listed with reasons in
+`details.skipped`. A memory section with only some estimated roles is `partial` and records
+why other roles are unavailable. Missing values are never filled with zero. `energy` and
+`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
+SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+
+Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
+are CLI-only; this change adds no YAML configuration fields.
+
+#### Captured detail output
+
+Use `prediction.yaml` from [Predict one deployment](#predict-one-deployment): Qwen3-32B-FP8,
+one H200, vLLM performance-data version `0.24.0`, 1,024 input tokens, 128 output tokens,
+concurrency four, and twelve requests. These outputs were captured from the built-in engine
+on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
+results; values may change with the implementation or performance data.
+
+```bash
+aisimulate predict -c prediction.yaml --detail all \
+  --output-dir ./prediction-details-table
+```
+
+Selected results, with latency and throughput rounded for readability:
+
+| Section | Field | Captured value |
+| --- | --- | ---: |
+| `summary` | Completed requests | 12 |
+| `summary` | Output throughput (tokens/s) | 164.96 |
+| `time` | Mean TTFT (ms) | 262.58 |
+| `time` | Mean inter-token latency (ms) | 22.37 |
+| `time` | Mean request latency (ms) | 3103.77 |
+| `memory` | Weights per rank (bytes) | 34,317,271,040 |
+| `memory` | KV capacity estimate per rank (bytes) | 96,706,075,033 |
+| `memory` | Estimated GPU blocks per rank | 11,528 |
+
+<details>
+<summary>Terminal detail output (selected lines)</summary>
+
+The normal metrics table appears first. This excerpt keeps the complete memory section and
+selected summary/time lines; `...` marks omitted lines. Memory is explicitly labeled as the
+estimate before native adjustments.
+
+```text
+Detail: summary
+  scope: serving_workload
+  status: available
+  completed_requests: 12
+  output_throughput_tok_s: 164.96061998541668
+  ...
+
+Detail: memory
+  scope: capacity_estimate_per_rank
+  status: available
+  aggregated: available
+    stage: before_native_capacity_adjustments
+    total_gpu_capacity_bytes: 151397597184
+    total_kv_size_bytes: 96706075033
+    kv_size_per_token_bytes: 131072
+    total_kv_size_tokens: 737808
+    source: native
+    scheduler_block_size_tokens: 64
+    estimated_num_gpu_blocks: 11528
+    weights_bytes: 34317271040
+    activations_bytes: 1476395008
+    runtime_overhead_bytes: 3758096384
+    comm_overhead_bytes: 0
+    cuda_graph_reserved_bytes: 0
+
+Detail: time
+  scope: serving_workload
+  status: available
+  mean_e2e_latency_ms: 3103.7710699999993
+  mean_itl_ms: 22.37155098425194
+  mean_ttft_ms: 262.58409499999993
+  ...
+```
+
+</details>
+
+For machine-readable output, select just memory and use a separate output directory:
+
+```bash
+aisimulate predict -c prediction.yaml --detail memory --format json \
+  --output-dir ./prediction-details-json
+```
+
+JSON stdout has `summary` and `details`. The same `details` object is saved in
+`prediction-details-json/prediction.json`.
+
+<details>
+<summary>Complete captured JSON details object (summary omitted)</summary>
+
+This is the value of `details`, pretty-printed without changing its values:
+
+```json
+{
+  "schema_version": "1.0",
+  "sections": {
+    "memory": {
+      "roles": {
+        "aggregated": {
+          "estimated_num_gpu_blocks": 11528,
+          "kv_size_per_token_bytes": 131072,
+          "memory_breakdown": {
+            "activations_bytes": 1476395008,
+            "comm_overhead_bytes": 0,
+            "cuda_graph_reserved_bytes": 0,
+            "runtime_overhead_bytes": 3758096384,
+            "weights_bytes": 34317271040
+          },
+          "scheduler_block_size_tokens": 64,
+          "scope": "capacity_estimate_per_rank",
+          "source": "native",
+          "stage": "before_native_capacity_adjustments",
+          "status": "available",
+          "tolerance_adjusted": null,
+          "total_gpu_capacity_bytes": 151397597184,
+          "total_kv_size_bytes": 96706075033,
+          "total_kv_size_tokens": 737808
+        }
+      },
+      "scope": "capacity_estimate_per_rank",
+      "status": "available"
+    }
+  },
+  "skipped": {}
+}
+```
+
+</details>
+
+**When memory evidence is unavailable:** explicitly configure KV blocks and request memory:
+
+```bash
+aisimulate predict -c prediction.yaml --detail memory \
+  --set 'engine.workers.aggregated.kv_cache.capacity={type: fixed, blocks: 512}' \
+  --output-dir ./prediction-details-fixed
+```
+
+The normal prediction summary still prints, followed by this captured line:
+
+```text
+Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC capacity provider; no memory component estimate was used by the Python materializer
+```
+
+For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
+above. `--detail all` would still include summary and time while skipping memory. Power and
+energy are absent from all these examples.
 
 ## Errors and Exit Codes
 
