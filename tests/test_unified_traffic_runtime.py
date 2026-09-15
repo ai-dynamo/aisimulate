@@ -592,7 +592,7 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
+def test_agentx_replay_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
     config = {
         "traffic": {
             "source": {"type": "trace", "format": "weka", "paths": [str(_TRACE_FIXTURES / "weka-relative.json")]},
@@ -642,10 +642,10 @@ def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(ba
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
+def test_agentx_replay_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
-    gate = runpy.run_path(str(scripts / "qualify_agentx_m1.py"))
+    gate = runpy.run_path(str(scripts / "qualify_agentx_replay.py"))
     source = _TRACE_FIXTURES / "weka-relative.json"
     block_size = json.loads(source.read_text())["block_size"]
     assert block_size == 4

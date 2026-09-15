@@ -179,7 +179,7 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("trace", ["weka-two-plays.jsonl", "weka-relative.json"])
-def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path: Path) -> None:
+def test_agentx_replay_cli_matches_public_python(backend: str, trace: str, tmp_path: Path) -> None:
     config = yaml.safe_load(
         (_REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml").read_text()
     )
@@ -223,7 +223,7 @@ def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path:
         assert cli_report[key] == python_report[key], key
 
 
-def test_agentx_m1_cli_table_and_help_identify_qualification(tmp_path: Path) -> None:
+def test_agentx_replay_cli_table_and_help_identify_qualification(tmp_path: Path) -> None:
     result = _run_cli(
         "predict",
         "--config",
