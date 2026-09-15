@@ -113,7 +113,10 @@ def format_prediction_stdout(
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return "\n".join(lines)
-    return format_report_table(summary)
+    table = format_report_table(summary)
+    if summary.get("agentic_qualification") == "functional_only":
+        return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
+    return table
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:

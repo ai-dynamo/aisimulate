@@ -179,6 +179,9 @@ class RunnerCapabilities:
     supported_agentic_topologies: tuple[str, ...] = ("agg", "disagg")
     agentic_qualification: str | None = None
     supports_analytical_epd: bool = False
+    supported_agentic_backends: tuple[str, ...] = ("*",)
+    supports_agentic_host_offload: bool = True
+    supports_agentic_speculative_decoding: bool = True
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -262,6 +265,26 @@ class RunnerCapabilities:
                 f"runner does not support agentic trace format {trace_format!r} "
                 f"with topology {deployment.deployment_mode!r}"
             )
+        if agentic_topology_required:
+            if "*" not in self.supported_agentic_backends and deployment.backend not in self.supported_agentic_backends:
+                raise ValueError(f"runner does not support agentic execution with backend {deployment.backend!r}")
+            role_args = (
+                [deployment.agg_engine_args]
+                if deployment.deployment_mode == "agg"
+                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+            )
+            for args in role_args:
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if not isinstance(rank, Mapping):
+                    continue  # The engine descriptor validator reports malformed ranks.
+                if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
+                    raise ValueError("agentic M1 execution requires HBM-only KV cache; host offload is unsupported")
+                if not self.supports_agentic_speculative_decoding and any(
+                    rank.get(key) is not None for key in ("aic_nextn", "nextn")
+                ):
+                    raise ValueError("agentic M1 execution requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
             labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)
