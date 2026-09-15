@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# Copyright contributors to the vLLM project. Modified for collector execution.
 
 # 0.27.0 audit (pod GB300 probe): DeepseekV2MLAAttention ctor params,
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
@@ -1060,19 +1062,24 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    return run_mla_module(
-        seq_len=seq_len,
-        batch_size=batch_size,
-        num_heads=num_heads,
-        kv_cache_dtype=kv_cache_dtype,
-        compute_dtype=compute_dtype,
-        gemm_type=gemm_type,
-        prefix_len=prefix_len,
-        perf_filename=perf_filename,
-        model_path=model_path,
-        attn_type=attn_type,
-        device=device,
-    )
+    # Serving executes model forward under inference mode (vLLM dd10e03f9,
+    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
+    # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
+    # mutates a cached workspace that may have been created by the dry run.
+    with torch.inference_mode():
+        return run_mla_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            prefix_len=prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            attn_type=attn_type,
+            device=device,
+        )
 
 
 def _cleanup():

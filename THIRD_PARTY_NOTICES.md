@@ -76,6 +76,22 @@ claim that AIConfigurator is owned by an unaffiliated third party.
 
 ## vLLM
 
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
+
 The independently written Rust deferred-queue and post-lookup-touch behavior in
 `crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
 and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at

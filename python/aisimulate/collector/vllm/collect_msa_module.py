@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# Copyright contributors to the vLLM project. Modified for collector execution.
 
 # MiniMax-M3 support landed in vLLM 0.24.0 (vllm/models/minimax_m3/ +
 # MinimaxM3QKVParallelLinearWithIndexer + fused_minimax_m3_qknorm_rope_kv_insert);
@@ -508,6 +510,13 @@ def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
     return int(block_table.max().item()) + 1  # blocks needed incl. null block
 
 
+def _msa_query_positions(batch_size: int, seq_len: int, is_context: bool, prefix_len: int = 0) -> list[int]:
+    """Absolute positions of only the current query tokens, not cached tokens."""
+    start = prefix_len if is_context else seq_len
+    width = seq_len if is_context else 1
+    return [position for _ in range(batch_size) for position in range(start, start + width)]
+
+
 def _create_kv_caches_and_metadata(
     vllm_config,
     attn_module,
@@ -555,6 +564,16 @@ def _create_kv_caches_and_metadata(
         )
 
     common_attn_metadata = create_common_attn_metadata(batch_spec, block_size, torch_device, arange_block_indices=True)
+    # vLLM dd10e03f9 supplies CommonAttentionMetadata.positions in
+    # gpu_model_runner.py:2393; its values are cached-token count plus the
+    # query-local offset (:1946-1949). MSA's new indexer consumes this field
+    # at models/minimax_m3/nvidia/indexer_msa.py:169-172. The field already
+    # exists in 0.24.0; leaving it None fails the 0.25.0 MSA builder.
+    common_attn_metadata.positions = torch.tensor(
+        _msa_query_positions(batch_size, seq_len, is_context, prefix_len),
+        dtype=torch.long,
+        device=torch_device,
+    )
     num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
 
     # Main paged K/V cache: shape from the layer's own backend
@@ -849,18 +868,23 @@ def run_msa_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    return run_msa_module(
-        seq_len=seq_len,
-        batch_size=batch_size,
-        num_heads=num_heads,
-        kv_cache_dtype=kv_cache_dtype,
-        compute_dtype=compute_dtype,
-        gemm_type=gemm_type,
-        prefix_len=prefix_len,
-        perf_filename=perf_filename,
-        model_path=model_path,
-        device=device,
-    )
+    # Serving executes model forward under inference mode (vLLM dd10e03f9,
+    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
+    # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
+    # mutates a cached workspace that may have been created by the dry run.
+    with torch.inference_mode():
+        return run_msa_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            prefix_len=prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            device=device,
+        )
 
 
 def _cleanup():

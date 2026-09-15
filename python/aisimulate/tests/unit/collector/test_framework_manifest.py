@@ -83,7 +83,7 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
-    if module == "collector.vllm.collect_gemm":
+    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe", "collector.vllm.collect_gdn"}:
         expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
