@@ -53,6 +53,9 @@ from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
+from collector.case_generator import get_gemm_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.kernels.linear.scaled_mm.flashinfer import (
@@ -65,10 +68,6 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
-
-from collector.case_generator import get_gemm_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.vllm.utils import setup_distributed, with_exit_stack
 
 FP8_BLOCK_SHAPE = (128, 128)
 
@@ -286,9 +285,15 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         num_warmups=3,
         num_runs=6,
         repeat_n=1,
-        use_cuda_graph=gemm_type != "fp8_block",
+        # These rows model GPU execution, including graph-replayed decode.
+        # Eager fp8_block timing includes host launch gaps and is not a valid
+        # substitute for this contract. Capture failures must remain failures.
+        allow_graph_fail=False,
+        use_cuda_graph=True,
     ) as results:
         pass
+    if results.get("used_cuda_graph") is not True:
+        raise RuntimeError("vLLM GEMM collection requires CUDA Graph replay; refusing to publish eager timing")
 
     log_perf(
         item_list=[
