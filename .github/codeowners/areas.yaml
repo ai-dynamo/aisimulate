@@ -32,7 +32,6 @@ areas:
       - python/aisimulate/
       - python/aisimulate/src/aisimulate/aic.py
       - tests/test_aic.py
-      - tests/test_static_prediction.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
@@ -151,8 +150,6 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: tests/test_static_prediction.py
-    owners: [forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
   - glob: tests/test_host_offload_cli.py

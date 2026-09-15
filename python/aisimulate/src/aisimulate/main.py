@@ -72,17 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--output-dir", default="./aisimulate-output")
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
-    subparsers.choices["predict"].add_argument(
-        "--estimate-mode",
-        choices=("serving", "static", "static_ctx", "static_gen"),
-        default="serving",
-        help="serving (default) simulates traffic; static modes estimate a fixed batch",
-    )
-    subparsers.choices["predict"].add_argument(
-        "--batch-size",
-        type=int,
-        help="positive fixed batch size, required only for static estimate modes",
-    )
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].epilog = (
         "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
@@ -180,26 +169,6 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
-    if args.estimate_mode != "serving":
-        from .static_prediction import format_static_prediction, run_static_prediction, static_prediction_kwargs
-
-        if args.stack != "engine" or args.online or args.capture_per_request or adapter_raw:
-            raise ValueError(
-                "static prediction requires offline --stack engine without adapters or per-request capture"
-            )
-        kwargs = static_prediction_kwargs(config, args.estimate_mode, args.batch_size)
-        root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-        try:
-            report = run_static_prediction(kwargs, args.detail)
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
-        report_path = write_prediction_report(root, report)
-        sys.stdout.write(format_static_prediction(report, args.format) + "\n")
-        if args.format == "table":
-            sys.stdout.write(f"Saved full report to: {report_path}\n")
-        return 0
     epd = config.engine.workers.encoder is not None
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
         raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
@@ -350,11 +319,6 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    if args.command == "predict":
-        if args.estimate_mode == "serving" and args.batch_size is not None:
-            parser.error("--batch-size is only supported with a static --estimate-mode")
-        if args.estimate_mode != "serving" and (args.batch_size is None or args.batch_size <= 0):
-            parser.error("static --estimate-mode requires a positive --batch-size")
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)

@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). Use `predict --estimate-mode static\|static_ctx\|static_gen --batch-size N` for [static estimates](#531-static-estimates). | Use `predict --detail` for summary, memory, and timing; static modes include per-operation timing. Keep AIC for [remaining diagnostics and SOL](#detailed-diagnostics), [advanced estimator controls](#57-estimator-controls-and-speculative-decoding), and [power reports](#54-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -107,9 +107,8 @@ inter-token latency, and output throughput. Recorded report excerpt (rounded):
 
 **What changed:** AIC's `--batch-size 64` fixes an estimator batch. AISimulate's `concurrency: 64`
 keeps up to 64 requests in flight while the scheduler forms batches. Here TP=2 and one replica
-use two GPUs, but the latency and throughput results describe serving traffic. For a fixed-batch
-static estimate, use the explicit [static prediction modes](#531-static-estimates). AIC's `agg`
-in-flight batching estimate remains a separate compatibility workflow.
+use two GPUs, but the latency and throughput results describe serving traffic. Use AIC when you
+need its original batch-level result.
 
 <a id="search-with-a-fixed-gpu-budget"></a>
 
@@ -689,6 +688,10 @@ These gaps concern the unified `aisimulate predict` and `aisimulate recommend` c
 AISimulate package still includes the compatibility AIC CLI and SDKs, so a feature can be available
 in the package without a unified-CLI replacement.
 
+Migration prioritizes features that materially support serving prediction and deployment decisions.
+It does not aim to reproduce every AIC option. Some differences are deliberate product boundaries,
+including the [static estimate modes](#531-static-estimates), rather than planned migration work.
+
 <a id="recommendation-runtime"></a>
 
 ### 5.1 Recommendation runtime
@@ -782,10 +785,23 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 #### 5.3.1 Static estimates
 
-Use `predict --estimate-mode` to request a fixed-batch static estimate with the existing
-prediction YAML. The default `serving` mode continues to simulate a serving workload.
+**Intentionally not migrated to the AISimulate CLI.** AIC's `static` (fixed-batch prefill plus
+decode), `static_ctx` (prefill only), and `static_gen` (decode only) modes are not exposed by
+`aisimulate predict` or `aisimulate recommend`.
 
-**Before — AIC decode-only estimate:**
+Fixed-batch estimates omit request arrivals, queueing, and serving scheduling. An isolated
+prefill-only or decode-only estimate does not answer the end-to-end latency, throughput, or SLA
+questions that drive AISimulate's serving workflow. These modes do not provide enough value for
+that workflow to justify additional CLI modes and output contracts.
+
+Use `predict` to [evaluate a deployment under its workload](#31-migrate-one-concrete-deployment)
+and `recommend` to [compare deployments](#32-search-with-a-fixed-gpu-budget). Serving concurrency
+controls in-flight requests; it is not a substitute for a fixed batch size.
+[Serving with prefill/decode disaggregation](#41-predict-regular-prefilldecode-disaggregation)
+remains supported.
+
+For specialized estimator diagnostics, the existing AIC compatibility CLI and SDK remain available.
+For example, estimate decode for a fixed batch:
 
 ```bash
 aiconfigurator cli estimate \
@@ -795,36 +811,8 @@ aiconfigurator cli estimate \
   --isl 1024 --osl 128
 ```
 
-**After — reuse `prediction.yaml` from [section 3.1](#31-migrate-one-concrete-deployment):**
-
-```bash
-aisimulate predict --config prediction.yaml \
-  --estimate-mode static_gen --batch-size 64 --detail memory,time \
-  --output-dir ./static-prediction
-```
-
-**Result to inspect:** the terminal and `static-prediction/prediction.json` report the fixed
-batch's decode latency and memory estimate. `--format json` prints the complete static report.
-The same native estimator provides the values. Select `static_ctx` for prefill only or `static`
-for prefill plus decode. Decode operation timings cover all modeled decode tokens; TPOT is
-the per-token average.
-
-Captured summary for this H200/vLLM configuration (estimated, rounded):
-
-```text
-Static prediction (static_gen)
-  Fixed batch: 64; input/output tokens: 1024/128
-  memory_gib: 15.881
-  tpot_ms: 4.790
-  generation_latency_ms: 608.299
-```
-
-**What changed:** `--batch-size` explicitly sets the batch. The YAML supplies model, hardware,
-backend/version, token lengths, and worker parallelism. `traffic.load`, `traffic.stop`, scheduler,
-and SLA controls do not affect a static estimate. This path supports one aggregated worker with
-synthetic text and default KV settings; unsupported configurations fail explicitly. See the
-[supported inputs](user-guide.md#41-predict-a-fixed-batch) and
-[static output contract](user-guide.md#static-prediction-output).
+**Result to inspect:** the terminal summary describes the fixed batch and modeled decode phase. See
+[estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
 
 <a id="detailed-diagnostics"></a>
 <a id="532-detailed-diagnostics"></a>
@@ -837,14 +825,14 @@ these additional diagnostic capabilities:
 
 | Remaining gap | AIC selector and evidence |
 | --- | --- |
-| Serving per-operation timing and speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. Static prediction already exports native phase/operation timing via `predict --estimate-mode static\|static_ctx\|static_gen --detail time`. |
+| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
 | Per-operation data provenance and fallback information | `source`. |
 | Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#54-power-and-energy-analysis). |
 
 AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
 three supported sections. Available AIC sections depend on the estimate mode and data;
 static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For fixed-batch static semantics, use the
+absent. For specialized fixed-batch diagnostics, use the compatibility
 [static-estimate workflow](#531-static-estimates).
 
 <a id="power-and-energy-analysis"></a>
@@ -1063,7 +1051,8 @@ exact candidate domain; see the [default search projection](../sweeper/architect
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
 form batches from the workload: `traffic.load.concurrency` controls in-flight requests, while
 `scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
-Keep AIC for fixed-batch estimates or its original capacity-sweep behavior.
+Fixed-batch static modes are [intentionally not migrated](#531-static-estimates). Keep AIC for
+those diagnostics or its original capacity-sweep behavior.
 
 #### 5.8.5 Context and request-length sweeps
 

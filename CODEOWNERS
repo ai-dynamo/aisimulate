@@ -44,7 +44,6 @@
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/src/perfmodel/                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/tests/perfmodel/                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners
-/tests/test_static_prediction.py                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/parity_tests/perfmodel/                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /python/aisimulate/src/aisimulate/aic.py             @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 
@@ -155,7 +154,6 @@
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/tests/test_static_prediction.py                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitattributes                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

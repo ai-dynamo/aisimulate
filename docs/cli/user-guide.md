@@ -208,40 +208,6 @@ to print the summary as one compact JSON object instead of the metrics table and
 `predict` accepts concrete values only. Search domains, `optimization`, and `optimizer` belong
 in a recommendation input.
 
-### 4.1 Predict a fixed batch
-
-Use the same `prediction.yaml` for an explicit static estimate:
-
-```bash
-aisimulate predict --config prediction.yaml \
-  --estimate-mode static_gen --batch-size 4 --detail memory,time \
-  --output-dir ./static-prediction
-```
-
-| `--estimate-mode` | Behavior |
-| --- | --- |
-| `serving` (default) | Simulate request arrivals, queueing, and scheduling with the configured traffic. |
-| `static` | Estimate prefill and decode for a fixed batch. |
-| `static_ctx` | Estimate only prefill for a fixed batch. |
-| `static_gen` | Estimate only decode for a fixed batch. |
-
-Static modes require a positive `--batch-size`. This is independent of serving concurrency;
-`traffic.load`, `traffic.stop`, the worker scheduler, and `evaluation` are not modeled.
-Model, hardware, backend/version, token lengths, parallelism, and forward model come from
-the YAML after applying `--set`. The native static estimator supplies the results.
-
-Static prediction currently supports one aggregated worker with synthetic text, default
-KV-cache settings, and `timing.type: default` (`op_level` or `fpm`). The worker can span GPUs
-using the supported parallelism settings. It assumes zero cached prefix tokens and derives
-the context from input/output lengths; leave `engine.context_length` at its default `max`.
-Custom KV settings, replicas above one, nonzero startup time, traces, sessions, images,
-P/D or AFD topologies, adapters, `--online`, and `--capture-per-request` are rejected.
-
-The command writes `prediction.json`; `--format json` prints the same static report. See
-[static prediction output](#static-prediction-output) for metrics and details.
-`--estimate-mode` and `--batch-size` are prediction options; `recommend` continues to rank
-serving simulations.
-
 <a id="try-your-own-workload"></a>
 
 ## 5. Try your own workload
@@ -444,13 +410,11 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
-| `--estimate-mode` | `serving`, `static`, `static_ctx`, `static_gen` | `serving` | Select serving simulation or a [fixed-batch estimate](#41-predict-a-fixed-batch). |
-| `--batch-size` | positive integer | required for static modes | Explicit static batch size; rejected in serving mode. |
 | `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, or `all`. See [prediction details](#prediction-details). |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
-Serving inputs such as request rate and worker count are configured in YAML. Static prediction
-adds the explicit `--batch-size` input because serving concurrency does not specify a fixed batch.
+The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
+`--num-workers`. YAML is the authoritative semantic configuration surface.
 
 <a id="override-semantics"></a>
 
@@ -1785,9 +1749,7 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Serving prediction JSON without `--detail` on standard output is a summary object.
-Static prediction JSON is the [complete static report](#static-prediction-output).
-Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
@@ -1801,9 +1763,7 @@ aisimulate predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
-In the default `serving` mode, `--detail` selects additional reports on `predict` as described
-below. Static modes use the [static prediction output contract](#static-prediction-output).
-With no selector, stdout and durable
+`--detail` selects additional reports on `predict`. With no selector, stdout and durable
 reports retain their existing shape. With a selector, JSON stdout contains `summary` and
 `details`; the same versioned `details` object is added to `prediction.json` and follows the
 [prediction-details schema](prediction-details.schema.json). Table output appends selected
@@ -1828,7 +1788,7 @@ sections and skipped-section reasons to the normal prediction summary.
 Sections without evidence are omitted from `details.sections` and listed with reasons in
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
 why other roles are unavailable. Missing values are never filled with zero. `energy` and
-`source` are unsupported selectors; `all` does not include them. Serving per-operation timings,
+`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
 SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
@@ -1975,40 +1935,6 @@ Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC 
 For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
 above. `--detail all` would still include summary and time while skipping memory. Power and
 energy are absent from all these examples.
-
-<a id="static-prediction-output"></a>
-
-### 22.6 Static prediction output
-
-Static modes write a report with `schema_version: "1.0"` and
-`prediction_kind: "static_estimate"`. Both JSON stdout and `prediction.json` contain:
-
-| Field | Meaning |
-| --- | --- |
-| `estimate_mode` | `static`, `static_ctx`, or `static_gen`. |
-| `inputs` | Estimator inputs, including the explicit batch size and resolved backend version. |
-| `summary` | Per-rank `memory_gib` and the latency metrics modeled by the selected phase. |
-| `assumptions` | One-worker scope, zero cached prefix, and serving controls not modeled. |
-| `warnings` | Estimator warnings, including an over-capacity batch. |
-| `details` | Optional selected sections and skipped-section reasons. |
-
-`static_ctx` reports `ttft_ms`; `static_gen` reports `tpot_ms` and, when exported,
-`generation_latency_ms`. `static` reports both and `request_latency_ms`. Decode latency covers
-the generated tokens after the first token; TPOT is their average. An unmodeled phase is omitted.
-These are fixed-batch estimates, with no serving request counts, queueing, throughput, or SLA results.
-An OOM warning means the batch does not fit, even though diagnostic estimates are retained.
-
-The existing `--detail` selectors have static-specific meanings:
-
-- `summary`: the static summary metrics.
-- `memory`: per-rank estimated components in GiB and GPU capacity in bytes.
-- `time`: native operation latencies in milliseconds, grouped into `prefill` and/or `decode`.
-  `scope: phase_total` means values cover the whole phase, including all modeled decode tokens;
-  they are not per-token latencies or SOL comparisons.
-- `all`: the three sections above. Missing evidence is listed in `details.skipped`.
-
-Energy, power, data-source diagnostics, and SOL comparisons remain on the
-[compatibility CLI](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 <a id="errors-and-exit-codes"></a>
 
