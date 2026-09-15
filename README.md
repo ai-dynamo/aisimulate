@@ -24,6 +24,10 @@ LLM Serving](https://arxiv.org/abs/2601.06288).
 
 ## Install
 
+See the [installation guide](docs/installation.md) for published versions,
+platform requirements, current-source setup, and internal nightlies. Documentation
+on `main` can describe features newer than the latest published wheel.
+
 ### Engine-only
 
 Install AISimulate by itself to use the built-in simulation engine without a
@@ -229,6 +233,9 @@ APIs:
 
 ## Support and accuracy
 
+[Understand your prediction](docs/cli/understand-your-prediction.md) explains
+report fields, latency populations, incomplete requests, and SLA interpretation.
+
 Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
@@ -352,7 +359,7 @@ that were measured. It is not a universal support or deployment-certification
 claim. Forward-pass accuracy and strict-native estimator coverage remain
 separate evidence lanes.
 
-Run the repository validation suites with:
+For a quick local validation subset:
 
 ```bash
 cargo test --workspace
@@ -360,5 +367,7 @@ python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for environment and test details and
-[CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.
+See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
+complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
+for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
+before sending a change.

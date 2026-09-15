@@ -76,6 +76,17 @@ claim that AIConfigurator is owned by an unaffiliated third party.
 
 ## vLLM
 
+The independently written Rust deferred-queue and post-lookup-touch behavior in
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
+and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at
+immutable revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`:
+[`vllm/v1/core/sched/scheduler.py`](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/core/sched/scheduler.py),
+`vllm/v1/core/sched/request_queue.py` and `vllm/v1/kv_offload/tiering/manager.py`.
+The upstream project is copyright contributors to the vLLM project and licensed
+under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
+no upstream method bodies are copied. The Rust implementation and fixtures are
+modified for simulation and do not reproduce native filesystem timing.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 

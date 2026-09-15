@@ -24,7 +24,7 @@ for which workflows are implemented in the current release.
 
 Most semantics below match AIC directly. AISimulate deliberately normalizes
 one legacy representation detail: unavailable `power_w` is omitted from public
-output instead of carrying forward `0.0`, `None`, or `NaN` sentinels used by
+JSON output instead of carrying forward `0.0`, `None`, or `NaN` sentinels used by
 some AIC compatibility paths. An absent value means unavailable, never zero
 watts.
 
@@ -98,14 +98,14 @@ published only when every condition below is true:
 Coverage is based on modeled active time, not operation count. If operations
 covering 90 ms of a 100 ms forward pass have energy data, `power_coverage` is
 `0.90`. Because the threshold is inclusive, exactly `0.90` is sufficient;
-`0.899` is not. Below the threshold, the output keeps `power_coverage` but omits
+`0.899` is not. Below the threshold, JSON output keeps `power_coverage` but omits
 `power_w`, allowing a consumer to distinguish insufficient data from an
 implementation failure. A provider with an energy channel but no covered
 operations therefore reports `power_coverage: 0` and omits `power_w`.
 
 Fixed, polynomial, and forward-pass-metrics (FPM) timing providers do not
 synthesize energy. A replay using any of those providers, or mixing an
-energy-aware role with an energy-unaware role, omits both modeled-power fields.
+energy-aware role with an energy-unaware role, omits both modeled-power JSON fields.
 The absence of `power_w` never means zero watts.
 
 ## Aggregate and disaggregated deployments
@@ -143,7 +143,7 @@ not make them supported by the unified CLI.
 ## Output contract
 
 Once the follow-up runtime work adds a conforming producer, Replay JSON and
-prediction tables will use these optional fields:
+prediction summaries will use these optional numeric fields:
 
 | Field | Unit | Availability |
 |---|---|---|
@@ -161,9 +161,34 @@ published values and may add evidence metadata such as the method, threshold,
 role, and source identities. It must not contain a `power_w` value that the
 candidate metrics correctly withheld.
 
-Conforming human-readable tables will display unavailable power as `N/A` or
-`unavailable`, not as `0 W`. CSV exporters will use an empty field for
-unavailable power. JSON will omit `power_w` rather than serializing `null`, `0`,
+### Normal summaries and optional energy details
+
+Normal human-readable `predict` summaries and each displayed `recommend`
+candidate row must always show both `power_w` and `power_coverage` labels,
+without requiring `--detail`. Watts are per GPU; display numeric coverage as a
+percentage. When a value is unavailable, keep its label and show `unavailable`
+with a short reason:
+
+- Qualifying evidence: show numeric watts and coverage.
+- Coverage below 90%: show unavailable watts and the computed coverage ratio,
+  including `0%` when an energy-aware provider has no covered operations.
+- Zero active latency on an energy-aware path: show unavailable watts and
+  `0%` coverage, with a reason identifying the absence of active latency.
+- Unsupported providers or topologies, including a role without an energy
+  channel: show both values as unavailable; do not invent `0 W` or `0%`.
+
+The planned `predict --detail energy` selector adds phase and per-operation
+energy evidence to that normal summary. It must not change summary power,
+coverage, or the publication gate. Missing breakdown evidence must carry an
+unavailable reason. A detail request cannot promote partial or unsupported
+evidence into a qualified summary value. Recommendation details use `predict`
+on a saved candidate YAML; this contract does not add `recommend --detail`.
+
+Always-visible CLI labels do not make the JSON fields mandatory. CSV exporters
+will use an empty field for each unavailable value. JSON will retain numeric
+coverage when it can be computed, and omit both fields when the provider or
+topology cannot supply the required energy evidence. It will omit unavailable
+`power_w` rather than serializing `null`, `0`,
 or a non-finite sentinel. Before validating or serializing a host-language
 metrics object, producers must reject `NaN` and positive or negative infinity;
 permissive encoder extensions are not valid JSON values under this contract.
