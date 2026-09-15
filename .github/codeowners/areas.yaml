@@ -83,6 +83,7 @@ areas:
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_e2e_accuracy_ui.mjs
+      - tests/test_e2e_accuracy_nightly.py
       - tests/test_source_compliance.py
 
 # More-specific shared entries are emitted after base area rules, preserving
@@ -116,6 +117,8 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py

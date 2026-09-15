@@ -61,8 +61,89 @@ successful workflow. A daily main-branch Pages build also picks up release-branc
 snapshot updates and newly created release branches. It imports **only JSON**
 from release branches, never their HTML or JavaScript. Deleted branches disappear
 from the next catalog built with freshly fetched refs.
-This daily publication job does not rerun either predictor; new accuracy results
-require a completed prediction campaign and a regenerated summary.
+Pages also consumes validated artifacts from the **E2E Accuracy Matrix** workflow.
+That workflow runs after Nightly CI completes and reuses its exact amd64 wheel
+for both predictors. A successful accuracy campaign triggers Pages publication.
+The daily Pages build itself only republishes available evidence.
+
+## Automated accuracy campaigns
+
+The workflow is `.github/workflows/e2e-accuracy.yml`. It has its own success/failure
+status and does not gate Nightly CI or release staging. Because it starts on
+Nightly CI completion, a nightly waiting for staging approval also delays this
+automatic campaign. A nightly without a successful amd64 artifact produces no
+new accuracy snapshot. The previous validated snapshot remains available.
+
+Manual execution uses the workflow on **main**, with an explicit evaluated
+branch and full source SHA:
+
+```bash
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
+  -f branch=release/0.12.0 \
+  -f expected_sha=FULL_40_CHARACTER_COMMIT_SHA
+```
+
+The SHA must belong to `main` or the selected `release/*` branch. Manual runs build
+one wheel from that revision; nightly runs verify the existing wheel's checksums
+and producer provenance. The main-branch campaign code checks both the installed
+legacy CLI and native runtime against that wheel. Historical release revisions
+must support these public APIs and the manylinux builder; an incompatible revision
+fails without replacing its published evidence.
+
+### Measurement and prediction policy
+
+- `.github/e2e-accuracy-dataset.json` pins the InferenceX release, every compressed
+  dump part's size and SHA-256, and selection policy. Refresh it in a reviewed PR
+  when adopting new measurements. A nightly reruns predictions against this fixed
+  silicon dataset; it does not collect new GPU measurements.
+- The downloader verifies every part, decompresses the public PostgreSQL archive,
+  and reads only `configs`, `benchmark_results`, and `workflow_runs` via COPY text.
+  It never executes SQL from the dump. The September 14 release downloads about
+  25 GB and requires at least 35 GB of free temporary disk. Decompression streams
+  directly into the serial `pg_restore` reader, avoiding an expanded dump on disk.
+  Raw data and child logs
+  remain on the runner; they are not uploaded as Actions or Pages artifacts.
+- Policy `latest-complete-config-run-v1` selects single-turn, single-node,
+  non-offloaded points with positive mean TTFT/TPOT, at most 30 days older than the
+  latest measurement for that model/GPU/framework/precision/serving/speculation/
+  workload family. Families without recent measurements retain historical evidence.
+  Each topology/workload/recipe uses one latest run and
+  a consistent image; missing concurrency points are never borrowed from older
+  runs. Duplicate IDs or ambiguous curves fail validation.
+- The public InferenceX adapter supplies topology and quantization. Speculative
+  configurations requiring acceptance-rate overrides and unresolved recipe
+  fingerprints are excluded with counts. Both predictors use the bundled CLI's
+  resolved performance-database version. These versions are reported; they can
+  differ from the measured server image. Replay uses default scheduler settings,
+  seed 0, lengths from 80–100% of nominal, and ten requests per concurrency slot.
+  This policy differs from the earlier private campaign's reviewed recipe mapping;
+  aggregate differences are not evidence of a runtime improvement.
+- Six CPU worker processes execute bounded point predictions (180 seconds each).
+  Every selected point must have one outcome. Adapter exclusions and failed AIC
+  baselines are counted before forming the comparison cohort. Replay failures in
+  that cohort remain chart gaps. Missing/duplicate outcomes, a killed/timed-out
+  worker, invalid latencies, or no successful matched predictions fail qualification.
+- Accuracy values and coverage are advisory. There is no MAPE threshold or claim
+  that a lower aggregate on a different cohort is an improvement. Campaign integrity
+  is required for publication.
+
+### Artifact and publication contract
+
+Only `summary.json` and `qualification.json` are uploaded in `e2e-accuracy-web`,
+retained for 90 days. They record the evaluated branch/commit, wheel/dataset/input/
+cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
+completion time. Public data contains derived errors and normalized curves.
+
+Pages runs trusted main code and reads only successful main-workflow campaigns.
+It checks the producer event/repository/workflow, run attempt, ZIP members,
+summary checksum, exact source ancestry, complete coverage, and recursive public
+field allowlist. Branch HTML and JavaScript never come from artifacts. Newer
+evaluated commits supersede older ones; rerunning an older release commit cannot
+roll back a newer snapshot. A missing/expired artifact falls back to that branch's
+committed evidence; malformed available artifacts fail the Pages build, preserving
+the currently deployed site. Main's legacy JSON download and branch catalog update
+together. The page's provenance section links the accuracy run and exposes wheel,
+dataset, exclusion counts, and prediction database versions.
 
 ## Drill down
 

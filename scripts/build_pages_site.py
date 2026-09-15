@@ -233,7 +233,7 @@ def _accuracy_summary(text: str) -> dict:
         raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc
 
 
-def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: bool) -> None:
+def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: bool, artifacts: Path | None = None) -> None:
     """Package data only from release refs; all branches share the reviewed UI.
 
     A branch's tree is a publication location, never evidence that its current
@@ -247,7 +247,23 @@ def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: boo
         sources.extend((ref.removeprefix("refs/remotes/origin/"), ref) for ref in refs.splitlines())
     for branch, ref in sources:
         entry = {"branch": branch, "summary_path": None, "published_from_commit": None}
-        if ref is None:
+        qualified = artifacts / (hashlib.sha256(branch.encode()).hexdigest()[:16] + ".json") if artifacts else None
+        if qualified is not None and qualified.exists():
+            if qualified.is_symlink():
+                raise PagesBuildError("qualified accuracy summary cannot be a symlink")
+            content = qualified.read_text()
+            if __package__:
+                from .prepare_e2e_accuracy_pages import public_contract, strict_json
+            else:
+                from prepare_e2e_accuracy_pages import public_contract, strict_json
+            qualified_summary = public_contract(strict_json(content))
+            revision = qualified_summary["snapshot"]["evaluated_revision"]
+            if revision["branch"] != branch:
+                raise PagesBuildError("qualified accuracy artifact belongs to another branch")
+            entry["published_from_commit"] = revision["commit_sha"]
+            if branch == "main":
+                (output_dir / "e2e-accuracy" / "summary.json").write_text(content)
+        elif ref is None:
             source = repo_root / relative_path
             if source.is_symlink():
                 raise PagesBuildError("accuracy summary cannot be a symlink")
@@ -287,7 +303,10 @@ def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: boo
     (output_dir / "e2e-accuracy" / "branches.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
 
 
-def build_site(repo_root: Path, output_dir: Path, *, accuracy_refs: bool = False) -> set[Path]:
+def build_site(
+    repo_root: Path, output_dir: Path, *, accuracy_refs: bool = False,
+    accuracy_artifacts: Path | None = None,
+) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
     output_dir = output_dir.resolve()
@@ -319,7 +338,7 @@ def build_site(repo_root: Path, output_dir: Path, *, accuracy_refs: bool = False
                 output_dir / "data" / public_name,
             )
 
-    _build_accuracy_catalog(repo_root, output_dir, accuracy_refs)
+    _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
@@ -331,9 +350,11 @@ def main() -> None:
     parser.add_argument(
         "--accuracy-refs", action="store_true", help="Include every fetched origin/release/* accuracy snapshot"
     )
+    parser.add_argument("--accuracy-artifacts", type=Path, help="Validated nightly accuracy summaries")
     args = parser.parse_args()
 
-    files = build_site(args.repo_root, args.output_dir, accuracy_refs=args.accuracy_refs)
+    files = build_site(args.repo_root, args.output_dir, accuracy_refs=args.accuracy_refs,
+                       accuracy_artifacts=args.accuracy_artifacts)
     print(f"Built {len(files)} public files in {args.output_dir.resolve()}")
 
 

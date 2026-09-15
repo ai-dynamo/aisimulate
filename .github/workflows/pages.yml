@@ -2,6 +2,10 @@ name: GitHub Pages
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [E2E Accuracy Matrix]
+    types: [completed]
+    branches: [main]
   schedule:
     # Pick up release-branch snapshots using the main-branch publisher.
     - cron: "17 6 * * *"
@@ -11,6 +15,10 @@ on:
       - "scripts/build_pages_site.py"
       - "tests/test_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_e2e_accuracy_pages.py"
+      - "scripts/run_e2e_accuracy.py"
+      - "scripts/fetch_accuracy_measurements.py"
+      - "tests/test_e2e_accuracy_nightly.py"
       - "tests/test_e2e_accuracy_overview.py"
       - "tests/test_e2e_accuracy_ui.mjs"
       - "python/aisimulate/docs/index.html"
@@ -25,6 +33,9 @@ on:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_e2e_accuracy_pages.py"
+      - "scripts/run_e2e_accuracy.py"
+      - "scripts/fetch_accuracy_measurements.py"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -42,21 +53,34 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
+          # workflow_run consumes data only; publisher code always comes from main.
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Prepare qualified accuracy snapshots
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
       - name: Build allowlisted public site
-        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
+        run: |
+          python scripts/build_pages_site.py --accuracy-refs \
+            --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy" --output-dir _site
       - name: Test accuracy publication and public artifact contracts
         run: |
-          python -m pip install pytest==8.4.2
-          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py -q
+          python -m pip install pytest==8.4.2 pyyaml==6.0.3
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"

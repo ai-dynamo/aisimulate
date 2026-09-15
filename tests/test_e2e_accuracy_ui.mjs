@@ -74,6 +74,29 @@ function withTopology() {
   return data;
 }
 
+test("qualified campaign shows its run and exclusions and rejects unsafe provenance", async () => {
+  const data = structuredClone(historical);
+  const revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.evaluated_revision = revision;
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows + 3, published: data.totals.rows,
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 3 },
+    selection_policy: "latest-complete-config-run-v1",
+  };
+  const app = setup(async () => response(data));
+  await app.run('loadBranch("main")');
+  assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
+  assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
+  for (const change of [{ run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) }, { advisory: false }]) {
+    const invalid = structuredClone(data);
+    Object.assign(invalid.snapshot.campaign, change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /campaign provenance/);
+  }
+});
+
 test("legacy summary loads with historical provenance and branch-specific download", async () => {
   const app = setup();
   await app.run('loadBranch("release/0.12.0")');
