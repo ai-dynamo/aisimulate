@@ -46,6 +46,7 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
 }
 
 struct CaptureAndScaleOncePolicy {
+    at_ms: f64,
     captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
 }
 
@@ -187,7 +188,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
 
 impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
     fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
-        Ok(0.1)
+        Ok(self.at_ms)
     }
 
     fn on_tick(
@@ -246,6 +247,14 @@ struct TestDisaggConfig {
 
 impl TestDisaggConfig {
     fn runtime_config(&self, emit_kv_events: bool) -> anyhow::Result<OfflineDisaggReplayConfig> {
+        self.runtime_config_with_factory(emit_kv_events, ReplayEngineFactory::new())
+    }
+
+    fn runtime_config_with_factory(
+        &self,
+        emit_kv_events: bool,
+        factory: ReplayEngineFactory,
+    ) -> anyhow::Result<OfflineDisaggReplayConfig> {
         let engine = ReplayEngineConfig {
             dp_size: 1,
             tensor_parallel_size: 1,
@@ -264,7 +273,6 @@ impl TestDisaggConfig {
                 rank: self.decode_args.clone(),
             }),
         };
-        let factory = ReplayEngineFactory::new();
         let prefill_factory =
             factory.role_factory(&engine, crate::replay::WorkerStage::Prefill, emit_kv_events)?;
         let decode_factory =
@@ -444,6 +452,42 @@ fn request(
     }
 }
 
+#[test]
+fn simultaneous_handoffs_follow_arrival_order_across_replays() {
+    let request_ids = [3, 1, 2].map(Uuid::from_u128);
+    let run = || {
+        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, false);
+        let mut collector = TraceCollector::default();
+        let handoffs = request_ids.map(|uuid| {
+            flow.on_external_arrival(
+                ReplayRequestPayload::materialized(request(uuid.as_u128(), 64, 1, 0.0)),
+                0.0,
+                None,
+                None,
+                &mut collector,
+            )
+            .unwrap();
+            flow.state(uuid).unwrap().handoff_id
+        });
+
+        // Completion callback order and request UUID order must not change
+        // which request reaches decode first when transfers complete together.
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        for handoff_id in handoffs.into_iter().rev() {
+            push_transfer_complete(&mut events, &mut next_event_seq, 10.0, handoff_id);
+        }
+        let mut released = Vec::new();
+        while let Some(handoff_id) = pop_ready_transfer_complete(&mut events, 10.0) {
+            released.push(flow.uuid_for_handoff(handoff_id).unwrap());
+        }
+        assert_eq!(released, request_ids);
+        handoffs
+    };
+
+    assert_eq!(run(), run());
+}
+
 fn agentic_row(
     request_id: &str,
     play_id: &str,
@@ -563,6 +607,89 @@ fn run_trace_collect(
         .unwrap()
         .run()
         .unwrap()
+}
+
+#[test]
+fn disagg_settled_steps_resume_without_changing_the_result() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(1, 64, 4, 0.0), request(2, 64, 1, 3.0)]);
+    let (continuous, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let mut stepped =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace).unwrap();
+    for _ in 0..2 {
+        match stepped.step().unwrap() {
+            ReplayStepOutcome::Settled { .. } => {}
+            ReplayStepOutcome::Complete => panic!("replay completed before resume point"),
+            ReplayStepOutcome::TimeLimitReached { .. } => panic!("unexpected time limit"),
+        }
+    }
+    assert!(
+        stepped.cluster_in_flight() > 0,
+        "resume must retain live work"
+    );
+    let (resumed, _) = stepped.run().unwrap();
+    let resumed = resumed.finish();
+
+    assert_eq!(resumed.request_counts.completed_requests, 2);
+    assert_eq!(
+        serde_json::to_value(continuous.finish()).unwrap(),
+        serde_json::to_value(resumed).unwrap()
+    );
+}
+
+#[test]
+fn disagg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
+    let mut config = disagg_config().runtime_config(false).unwrap();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    config.prefill_startup_time_ms = Some(0.0);
+    config.decode_startup_time_ms = Some(0.0);
+    let captured = Rc::new(RefCell::new(None));
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let mut stepped = RoundRobinDisaggRuntime::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                PoolRoundRobinPlacement::new(prefill_topology),
+                PoolRoundRobinPlacement::new(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_telemetry_observer(
+        1.0,
+        Box::new(CaptureTelemetryObserver {
+            samples: Arc::clone(&telemetry_samples),
+        }),
+    )
+    .with_scaling_policy(Box::new(CaptureAndScaleOncePolicy {
+        at_ms: 0.0,
+        captured: Rc::clone(&captured),
+    }));
+
+    assert_eq!(
+        stepped.step().unwrap(),
+        ReplayStepOutcome::Settled { now_ms: 0.0 }
+    );
+    assert_eq!(captured.borrow().as_ref().unwrap().now_ms, 0.0);
+    assert_eq!(stepped.prefill_engine.active_group_ids(), vec![0, 1]);
+    assert_eq!(stepped.decode_engine.active_group_ids(), vec![0, 1]);
+    assert!(stepped.prefill_engine.starting_group_ids().is_empty());
+    assert!(stepped.decode_engine.starting_group_ids().is_empty());
+    assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
+    assert!(stepped.next_timestamps().1.unwrap() > 0.0);
+    let samples = telemetry_samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].active_prefill_ids, vec![0]);
+    assert_eq!(samples[0].active_decode_ids, vec![0]);
 }
 
 fn run_concurrency_collect(
@@ -733,6 +860,7 @@ fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
         crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
     let captured = Rc::new(RefCell::new(None));
     let policy = CaptureAndScaleOncePolicy {
+        at_ms: 0.1,
         captured: Rc::clone(&captured),
     };
     let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
@@ -1225,7 +1353,7 @@ fn agentic_pd_edges_use_emission_and_final_decode_boundaries(#[case] engine_type
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
-fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineType) {
+fn agentic_lane_waits_for_background_child_terminal(#[case] engine_type: EngineType) {
     let mut config = cleanup_overtake_config(engine_type);
     config.num_prefill_workers = 1;
     config.num_decode_workers = 1;
@@ -1278,12 +1406,250 @@ fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineTyp
     for request_id in ["first-root", "long-prefill-child"] {
         let prior = by_id[request_id];
         assert!(next_dispatch >= prior.terminal_time_ms);
-        assert!(next_dispatch >= prior.source_released_ms.unwrap());
     }
+    assert_eq!(
+        next_dispatch,
+        by_id["first-root"]
+            .terminal_time_ms
+            .max(by_id["long-prefill-child"].terminal_time_ms)
+    );
     let trajectories = report.trajectories.unwrap();
     assert_eq!(trajectories.total, 2);
     assert_eq!(trajectories.completed, 2);
     assert_eq!(trajectories.incomplete, 0);
+}
+
+#[rstest::rstest]
+#[case(EngineType::Vllm)]
+#[case(EngineType::Sglang)]
+fn agentic_lane_submission_is_independent_of_pd_source_cleanup(#[case] engine_type: EngineType) {
+    struct BusyPrefillTiming {
+        large_prefill_ms: f64,
+    }
+
+    impl crate::engine::TimingModel for BusyPrefillTiming {
+        fn predict_prefill_ms(
+            &self,
+            batch_size: usize,
+            mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 {
+                0.0
+            } else if mean_isl >= 1_024 {
+                self.large_prefill_ms
+            } else {
+                1.0
+            })
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 { 0.0 } else { 1.0 })
+        }
+    }
+
+    let mut config = match engine_type {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        EngineType::Trtllm => unreachable!(),
+    };
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    for args in [&mut config.prefill_args, &mut config.decode_args] {
+        args.speedup_ratio = 1.0;
+        args.decode_speedup_ratio = 1.0;
+    }
+    let block_size = config.prefill_args.block_size;
+    // Play IDs sort into lane 0's first-play then next-play. An independent play on lane 1
+    // starts a long prefill at t=2, after both short roots finish prefill but
+    // before their transfers finish at t=3. Its busy source worker delays
+    // ReleaseSource without changing first-root's final decode terminal.
+    let trace = agentic_trace(
+        block_size,
+        vec![
+            agentic_row(
+                "first-root",
+                "00-first-play",
+                4,
+                2,
+                block_size,
+                10_000,
+                vec![],
+            ),
+            agentic_row(
+                "other-root",
+                "01-other-play",
+                4,
+                1,
+                block_size,
+                20_000,
+                vec![],
+            ),
+            agentic_row(
+                "busy-prefill",
+                "01-other-play",
+                4_096,
+                1,
+                block_size,
+                30_000,
+                vec![AgenticDependency {
+                    request_id: "other-root".to_string(),
+                    trigger: AgenticDependencyTrigger::Dispatch,
+                    delay_ms: 2.0,
+                    relation: AgenticDependencyRelation::Spawn,
+                }],
+            ),
+            agentic_row(
+                "next-root",
+                "02-next-play",
+                4,
+                1,
+                block_size,
+                40_000,
+                vec![],
+            ),
+        ],
+    );
+
+    let run = |large_prefill_ms, stepped| {
+        let factory = ReplayEngineFactory::with_timing_model(Arc::new(BusyPrefillTiming {
+            large_prefill_ms,
+        }));
+        let mut runtime_config = config.runtime_config_with_factory(false, factory).unwrap();
+        runtime_config.handoff_latency_ms = 2.0;
+        let driver =
+            WorkloadDriver::new_agentic_trace_with_lanes(trace.clone(), block_size, 2).unwrap();
+        let mut runtime = RoundRobinDisaggRuntime::new_round_robin_workload(
+            &runtime_config,
+            driver,
+            ReplayMode::Trace,
+        )
+        .unwrap()
+        .with_per_request_records(true);
+
+        if stepped {
+            let mut observed_terminal_with_source_held = false;
+            while !runtime.is_done() {
+                runtime.step().unwrap();
+                let first = runtime
+                    .collector
+                    .per_request_records()
+                    .into_iter()
+                    .find(|record| record.request_id.as_deref() == Some("first-root"));
+                if let Some(first) = first
+                    && !observed_terminal_with_source_held
+                {
+                    assert_eq!(first.terminal_status, ReplayTerminalStatus::Completed);
+                    assert!(first.source_released_ms.is_none());
+                    let uuid = Uuid::parse_str(&first.uuid).unwrap();
+                    let state = runtime.state(uuid).unwrap();
+                    assert_eq!(state.phase, DisaggPhase::CleanupPending);
+                    assert!(!state.counted_in_flight);
+                    assert!(!state.coordinator.is_complete());
+                    assert!(
+                        runtime
+                            .flow
+                            .requests_by_handoff
+                            .contains_key(&state.handoff_id)
+                    );
+                    assert!(runtime.flow.action_queues.contains(uuid));
+                    assert!(runtime.prefill_engine.worker_is_busy(0).unwrap());
+                    assert!(!runtime.prefill_engine.is_drained());
+                    assert!(!CoreAdmissionSource::is_drained(&runtime.admission));
+                    let transcript = runtime.admission.agentic_lifecycle_transcript().unwrap();
+                    assert!(
+                        transcript.events.iter().any(|event| {
+                            event.request_id.as_deref() == Some("next-root")
+                                && event.event
+                                    == crate::replay::loadgen::AgenticLifecycleEventKind::Dispatch
+                                && event.at_ms == first.terminal_time_ms
+                        }),
+                        "the next play must be submitted while source cleanup is still pending"
+                    );
+                    observed_terminal_with_source_held = true;
+                }
+            }
+            assert!(observed_terminal_with_source_held);
+        } else {
+            runtime.run_to_completion().unwrap();
+        }
+
+        assert!(runtime.is_done());
+        assert!(runtime.prefill_engine.is_drained());
+        assert!(runtime.decode_engine.is_drained());
+        assert!(runtime.flow.action_queues.is_empty());
+        assert!(runtime.flow.requests_by_handoff.is_empty());
+        assert!(CoreAdmissionSource::is_drained(&runtime.admission));
+        let drained_at_ms = runtime.now_ms;
+        let (collector, stats) = runtime.run().unwrap();
+        assert!(
+            stats
+                .request_snapshots
+                .values()
+                .all(|state| state.phase == DisaggPhase::Done)
+        );
+        let report = collector.finish();
+        assert_eq!(report.request_counts.completed_requests, 4);
+        assert_eq!(report.request_counts.total_output_tokens, 5);
+        (report, drained_at_ms)
+    };
+
+    let mut observations = Vec::new();
+    for large_prefill_ms in [20.0, 40.0] {
+        let (report, drained_at_ms) = run(large_prefill_ms, false);
+        let (stepped, stepped_drained_at_ms) = run(large_prefill_ms, true);
+        assert_eq!(drained_at_ms, stepped_drained_at_ms);
+        assert_eq!(report.agentic_lifecycle, stepped.agentic_lifecycle);
+        assert_eq!(
+            serde_json::to_vec(&report.per_request).unwrap(),
+            serde_json::to_vec(&stepped.per_request).unwrap()
+        );
+        let by_id = report
+            .per_request
+            .iter()
+            .map(|record| (record.request_id.as_deref().unwrap(), record))
+            .collect::<std::collections::HashMap<_, _>>();
+        let first = by_id["first-root"];
+        let next = by_id["next-root"];
+        let source_released_ms = first.source_released_ms.unwrap();
+        let next_dispatch_ms = next.dispatched_at_ms.unwrap();
+        let next_admit_ms = next.first_admit_ms.unwrap();
+        assert_eq!(next_dispatch_ms, first.terminal_time_ms);
+        assert!(source_released_ms > first.terminal_time_ms);
+        assert!(next_admit_ms >= source_released_ms);
+        assert!(next_admit_ms > next_dispatch_ms);
+        assert!(drained_at_ms > source_released_ms);
+        observations.push((
+            first.terminal_time_ms,
+            next_dispatch_ms,
+            source_released_ms,
+            next_admit_ms,
+            drained_at_ms,
+        ));
+    }
+    let [short, long] = observations.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(short.0, long.0, "client terminal must stay fixed");
+    assert_eq!(short.1, long.1, "client lane timing must stay fixed");
+    assert!(
+        short.2 < long.2,
+        "source ownership must reflect the cleanup delay"
+    );
+    assert!(
+        short.3 < long.3,
+        "backend admission must respect the occupied worker"
+    );
+    assert!(
+        short.4 < long.4,
+        "final drain must still wait for all server work"
+    );
 }
 
 #[test]

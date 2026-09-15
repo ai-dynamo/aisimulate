@@ -45,6 +45,49 @@ the importer against two revision-pinned rows from the public SemiAnalysis
 `cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
 and deleted when the check exits; the complete 570 MB corpus is not downloaded.
 
+### Agentic driver/runtime contract
+
+M1 execution consumes one completely preloaded, immutable
+`ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
+client or extends the graph dynamically. The replay runtime is the sole owner
+of logical time. At each timestamp it collects engine feedback and applies it
+as one `AgenticRuntimeFeedback`, ordered by immutable graph ordinal: output
+progress first, causal terminals second, and resource quiescence last.
+
+A causal terminal resolves a request's client-visible outcome; successful
+completion releases completion-triggered graph edges. Client lanes limit whole
+plays, including background requests. A successful play releases its lane only
+after all authored nodes complete, including delayed or blocked nodes. Under the
+current failure policy, a failed play skips undispatched nodes and releases its
+lane after every already-dispatched request becomes terminal. Merely finishing
+the root or a blocking join does not finish still-running background requests.
+
+Quiescence means the engine/router/handoff state owned by a request has settled.
+It controls resource settlement and final drain, independently of client lane
+reuse. The next play can therefore submit while an earlier play retains P/D
+source holds or has pending cancellation actions; engine admission still queues
+requests when those resources are unavailable. Late cleanup records the earlier
+play's settlement without releasing the lane again. Request quiescence does not
+require flushing reusable prefix-cache entries or ending an agent conversation.
+
+In this in-process timing model, final decode or an observed request failure
+stands in for the client response terminal. HTTP/SSE delivery and client task
+teardown latency are not modeled. The strict failed-play policy above is an
+explicit replay contract, not a claim of full AIPerf error-policy parity.
+
+Equal-time event phases are engine pass completion, worker ready,
+transfer completion, admission, telemetry, then scaling. Within a phase,
+stable worker/pass/handoff identities replace insertion order as the primary
+tie-breaker.
+
+Both aggregated and disaggregated runtimes expose an internal `step()` seam.
+It returns only after a semantic timestamp reaches a fixed point and preserves
+all engine, placement, router, handoff, and KV state, so resuming does not
+rebuild the simulation. Agentic requests carry a stable identity envelope
+(request, play, conversation, and optional lane/tree/cache identities) across
+the workload-to-runtime boundary. The driver can emit a canonical lifecycle
+JSONL transcript and domain-separated digest for conformance tests.
+
 ## File Map
 
 - `src/replay/replayer.rs`
