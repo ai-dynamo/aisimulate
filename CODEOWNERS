@@ -66,11 +66,8 @@
 /tests/test_power_contract.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners
-<<<<<<< HEAD
-/tests/fixtures/power-contract-v1.json               @ai-dynamo/aisimulate-replay-codeowners
-=======
 /tests/test_power_diagnostics.py                     @ai-dynamo/aisimulate-replay-codeowners
->>>>>>> origin/jasonzho/aic-1937-power-diagnostics-v2
+/tests/fixtures/power-contract-v1.json               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
