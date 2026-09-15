@@ -376,7 +376,7 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str, monkeypatch) -> None:
+def test_agentx_replay_default_python_result_retains_qualification_without_dynamo(backend: str, monkeypatch) -> None:
     original_import = builtins.__import__
 
     def reject_dynamo(name, *args, **kwargs):

@@ -126,15 +126,15 @@ fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfi
     }
     ensure!(
         matches!(rank.backend, Backend::Vllm | Backend::Sglang),
-        "agentic M1 execution supports only vLLM and SGLang backends"
+        "agentic replay supports only vLLM and SGLang backends"
     );
     ensure!(
         rank.native_host_offload.is_none(),
-        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+        "agentic replay requires HBM-only KV cache; host offload is unsupported"
     );
     ensure!(
         rank.aic_nextn.is_none(),
-        "agentic M1 execution requires speculative decoding disabled"
+        "agentic replay requires speculative decoding disabled"
     );
     Ok(())
 }

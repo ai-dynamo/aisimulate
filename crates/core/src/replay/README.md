@@ -47,7 +47,7 @@ and deleted when the check exits; the complete 570 MB corpus is not downloaded.
 
 ### Agentic driver/runtime contract
 
-M1 execution consumes one completely preloaded, immutable
+Static agentic replay consumes one completely preloaded, immutable
 `ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
 client or extends the graph dynamically. The replay runtime is the sole owner
 of logical time. At each timestamp it collects engine feedback and applies it
@@ -110,13 +110,13 @@ reason independent of engine callback order.
 For a failed play, `causal_terminal_ms` records this primary failure, which may
 precede client lane release while already-dispatched siblings finish.
 
-### Public AgentX M1 qualification
+### Public AgentX replay qualification
 
 The built-in Python/CLI engine stack qualifies aggregated vLLM and SGLang with
 HBM-only KV cache and speculative decoding disabled. Use a Weka or Agentic
-Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; M1 starts at
-turn zero and runs the play to settlement. The public engine boundary rejects
-agentic TensorRT-LLM, host offload, and speculative decoding configurations.
+Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; the functional
+qualification starts at turn zero and runs the play to settlement. The public
+engine boundary rejects agentic TensorRT-LLM, host offload, and speculative decoding configurations.
 Generic native runtime conformance, including P/D, has a broader scope than
 this public qualification.
 
@@ -132,8 +132,8 @@ run these commands from the repository root:
 
 ```sh
 cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
-python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_m1'
-python/aisimulate/.venv/bin/python scripts/qualify_agentx_m1.py --output /tmp/agentx-m1.json
+python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay'
+python/aisimulate/.venv/bin/python scripts/qualify_agentx_replay.py --output /tmp/agentx-replay.json
 ```
 
 The last command is an opt-in network gate. It verifies the revision-pinned
@@ -163,7 +163,7 @@ default public runner while rejecting any attempted Dynamo import.
 These gates cover the AISimulate portion of AIC-1815. Dynamo compatibility
 qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
 and must be rerun against matching AISimulate artifacts before declaring the
-cross-repository M1 milestone complete.
+cross-repository Milestone 1 complete.
 
 ### Seeded request-boundary snapshots
 
