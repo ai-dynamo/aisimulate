@@ -70,13 +70,13 @@ def test_candidate_omits_unavailable_power_instead_of_defaulting_to_zero():
     report = {key: value for key, value in REPORT.items() if key not in {"power_w", "power_coverage"}}
     candidate = make_candidate({"used_gpus": 4}, report, OptimizationTarget.THROUGHPUT)
 
-    assert "power_w" not in candidate.metrics
-    assert "power_coverage" not in candidate.metrics
+    assert candidate.metrics["power_w"] is None
+    assert candidate.metrics["power_coverage"] is None
 
     withheld_report = dict(report, power_coverage=0.42)
     withheld = make_candidate({"used_gpus": 4}, withheld_report, OptimizationTarget.THROUGHPUT)
     assert withheld.metrics["power_coverage"] == 0.42
-    assert "power_w" not in withheld.metrics
+    assert withheld.metrics["power_w"] is None
 
 
 def test_throughput_per_gpu_zero_when_avg_gpu_unavailable():

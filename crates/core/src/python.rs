@@ -119,6 +119,28 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .context("agentic execution requires a configured target model")
 }
 
+fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+    let ReplayRuntimeInput::Workload(driver) = input else {
+        return Ok(());
+    };
+    if !driver.is_agentic() {
+        return Ok(());
+    }
+    ensure!(
+        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
+        "agentic M1 execution supports only vLLM and SGLang backends"
+    );
+    ensure!(
+        rank.native_host_offload.is_none(),
+        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+    );
+    ensure!(
+        rank.aic_nextn.is_none(),
+        "agentic M1 execution requires speculative decoding disabled"
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AicTimingConfig {
@@ -231,11 +253,14 @@ impl AicTimingConfig {
     }
 }
 
+type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
+    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
 }
 
 impl AicTimingModel {
@@ -306,6 +331,7 @@ impl AicTimingModel {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
         })
     }
 
@@ -317,6 +343,14 @@ impl AicTimingModel {
         prefix: u32,
         mode: &str,
     ) -> Result<TimingPhaseEvidence> {
+        let prefill = mode == "static_ctx";
+        if batch_size == 0 || (prefill && isl <= prefix) {
+            return Ok(TimingPhaseEvidence::default());
+        }
+        let key = (batch_size, isl, osl, prefix, prefill);
+        if let Some(phase) = self.phase_cache.get(&key) {
+            return Ok(phase);
+        }
         let (context, generation) = Python::with_gil(|py| {
             let kwargs = PyDict::new(py);
             kwargs.set_item("batch_size", batch_size)?;
@@ -337,11 +371,14 @@ impl AicTimingModel {
                 )>()
         })
         .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-        phase_evidence_from_python(if mode == "static_ctx" {
-            context
-        } else {
-            generation
-        })
+        let entries = if prefill { context } else { generation };
+        ensure!(
+            !entries.is_empty(),
+            "AIC {mode} returned empty operation evidence for nonzero work"
+        );
+        let phase = phase_evidence_from_python(entries)?;
+        self.phase_cache.insert(key, phase.clone());
+        Ok(phase)
     }
 
     fn record_evidence(&self, phase: TimingPhaseEvidence, prefill: bool) -> Result<()> {
@@ -1028,14 +1065,37 @@ fn replay_timing_evidence(sources: &[TimingPowerSource]) -> Result<Option<Timing
 fn replay_power_stats(summary: &TimingEvidenceSummary) -> Result<TracePowerStats> {
     let mut combined = summary.prefill.clone();
     combined.try_accumulate(summary.decode.clone())?;
+    phase_power_stats(&combined)
+}
+
+fn phase_power_stats(combined: &TimingPhaseEvidence) -> Result<TracePowerStats> {
     if combined.latency_ms <= 0.0 {
         return Ok(TracePowerStats {
             power_w: None,
             coverage: 0.0,
         });
     }
-    let coverage = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
-    let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD)
+    // Keep uncovered latency separate: subtracting two rounded totals loses
+    // the exact 0.27 covered + 0.03 uncovered boundary. C >= 9U expresses the
+    // same 90% gate without a tolerance that would admit the next lower case.
+    let uncovered: f64 = if combined.operations.is_empty() {
+        combined.latency_ms - combined.covered_latency_ms
+    } else {
+        combined
+            .operations
+            .iter()
+            .map(|op| op.latency_ms - op.covered_latency_ms)
+            .sum()
+    };
+    let qualifies =
+        combined.covered_latency_ms > 0.0 && combined.covered_latency_ms / 9.0 >= uncovered;
+    let ratio = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
+    let coverage = if qualifies {
+        ratio.max(POWER_DATA_COVERAGE_THRESHOLD)
+    } else {
+        ratio.min(POWER_DATA_COVERAGE_THRESHOLD.next_down())
+    };
+    let power_w = qualifies
         .then(|| {
             combined
                 .energy_wms
@@ -1091,8 +1151,8 @@ fn replay_power_diagnostics(
         power_coverage: Some(stats.coverage),
         unavailable_reason: (!observed).then_some("no forward-pass timing evidence was observed"),
         phases: vec![
-            phase_power_diagnostics("prefill", &summary.prefill),
-            phase_power_diagnostics("decode", &summary.decode),
+            phase_power_diagnostics("prefill", &summary.prefill)?,
+            phase_power_diagnostics("decode", &summary.decode)?,
         ],
     })
 }
@@ -1100,12 +1160,11 @@ fn replay_power_diagnostics(
 fn phase_power_diagnostics(
     name: &'static str,
     phase: &TimingPhaseEvidence,
-) -> ReplayPhasePowerDiagnostics {
-    let coverage = phase.coverage();
+) -> Result<ReplayPhasePowerDiagnostics> {
+    let stats = phase_power_stats(phase)?;
+    let coverage = stats.coverage;
+    let power_w = stats.power_w;
     let phase_energy = phase.energy_wms.filter(|energy| *energy > 0.0);
-    let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD && phase.latency_ms > 0.0)
-        .then(|| phase_energy.map(|energy| energy / phase.latency_ms))
-        .flatten();
     let mut operations = phase
         .operations
         .iter()
@@ -1120,7 +1179,7 @@ fn phase_power_diagnostics(
         || "missing".to_string(),
         |source| source.as_str().to_string(),
     );
-    ReplayPhasePowerDiagnostics {
+    Ok(ReplayPhasePowerDiagnostics {
         name,
         energy_wms: phase_energy,
         latency_ms: phase.latency_ms,
@@ -1131,7 +1190,7 @@ fn phase_power_diagnostics(
         source_kind: evidence_source_kind(phase.source.as_ref(), phase_energy.is_some()),
         source,
         operations,
-    }
+    })
 }
 
 fn operation_power_diagnostics(
@@ -1300,6 +1359,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            if let Some(built) = &built_input {
+                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+            }
             let resolved_basis = built_input
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
@@ -1531,6 +1593,109 @@ mod tests {
         }
     }
 
+    #[test]
+    fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
+        let directory = tempfile::tempdir().unwrap();
+        let dynamo = serde_json::json!({
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10,
+            "agent_context": {"session_id": "session"},
+            "request": {
+                "request_id": "root", "model": "model", "output_tokens": 1,
+                "request_received_ms": 0, "total_time_ms": 10,
+                "replay": {"trace_block_size": 4, "input_length": 4, "input_sequence_hashes": [1]}
+            }
+        });
+        let mut standard_dynamo = dynamo.clone();
+        standard_dynamo
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_context");
+        let fixtures = [
+            (
+                "weka",
+                vec![serde_json::json!({
+                    "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+                    "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+                })],
+                true,
+            ),
+            (
+                "agentic_mooncake",
+                vec![
+                    serde_json::json!({
+                        "schema": "dynamo.agentic_mooncake", "version": 2,
+                        "block_size": 4, "hash_id_scope": "local",
+                        "source": {"format": "test", "digest": "qualification"}
+                    }),
+                    serde_json::json!({
+                        "request_id": "root", "play_id": "play", "session_id": "session", "model": "model",
+                        "input_length": 4, "output_length": 1, "hash_ids": [1], "not_before_ms": 0.0
+                    }),
+                ],
+                true,
+            ),
+            ("dynamo", vec![dynamo], true),
+            ("dynamo", vec![standard_dynamo], false),
+        ];
+        for (format, rows, agentic) in fixtures {
+            let path = directory.path().join(format!("{format}-{agentic}.jsonl"));
+            std::fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            for (options, message) in [
+                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
+                (
+                    serde_json::json!({"aic_nextn": 1}),
+                    "speculative decoding disabled",
+                ),
+                (
+                    serde_json::json!({
+                        "kv_cache_bytes_per_token": 16,
+                        "native_host_offload": {"num_host_blocks": 8}
+                    }),
+                    "HBM-only",
+                ),
+            ] {
+                let mut rank = serde_json::json!({
+                    "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                rank.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let payload = serde_json::json!({
+                    "spec": {
+                        "version": 1,
+                        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1, "startup_delay_ms": 0.0}},
+                        "engine": {"rank": rank},
+                        "requests": []
+                    },
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps",
+                        "trace_format": format, "trace_path": path,
+                        "trace_block_size": 4, "execution_model": "model"
+                    }
+                });
+                // No lane flag: Dynamo agentic detection must follow loaded content.
+                let result = execute_json(&payload.to_string(), false);
+                if agentic {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains(message), "{format}: {error}");
+                } else {
+                    let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+                    assert_eq!(report["completed_requests"], 1);
+                    assert!(report.get("agentic_qualification").is_none());
+                }
+            }
+        }
+    }
+
     #[pyclass]
     struct DecodeCoordinateProbe;
 
@@ -1583,7 +1748,10 @@ mod tests {
     }
 
     #[pyclass]
-    struct PerOpEvidenceProbe;
+    #[derive(Default)]
+    struct PerOpEvidenceProbe {
+        calls: std::sync::atomic::AtomicUsize,
+    }
 
     type TestPerOpEvidence = (String, f64, f64, String);
 
@@ -1603,6 +1771,11 @@ mod tests {
             mode: &str,
             stride: u32,
         ) -> (Vec<TestPerOpEvidence>, Vec<TestPerOpEvidence>) {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if batch_size == 99 {
+                return (Vec::new(), Vec::new());
+            }
             match mode {
                 "static_ctx" => (
                     vec![
@@ -1626,6 +1799,7 @@ mod tests {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
         }
     }
 
@@ -1848,6 +2022,96 @@ mod tests {
     }
 
     #[test]
+    fn replay_power_matches_shared_contract_fixtures() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/power-contract-v1.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut sources = Vec::new();
+            for role in case["roles"].as_array().unwrap() {
+                let timing: Arc<dyn TimingModel> = if role["energy_aware"].as_bool().unwrap() {
+                    let ops = role["operations"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, op)| {
+                            TimingOperationEvidence::new(
+                                index.to_string(),
+                                op["latency_ms"].as_f64().unwrap(),
+                                op["energy_wms"].as_f64(),
+                                TimingEvidenceSource::Silicon,
+                            )
+                            .unwrap()
+                        })
+                        .collect();
+                    Arc::new(PowerTiming(TimingEvidenceSummary {
+                        prefill: TimingPhaseEvidence::from_operations(ops),
+                        decode: TimingPhaseEvidence::default(),
+                    }))
+                } else {
+                    struct LatencyOnly;
+                    impl TimingModel for LatencyOnly {
+                        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+                            Ok(1.0)
+                        }
+                        fn predict_decode_ms(
+                            &self,
+                            _: usize,
+                            _: usize,
+                            _: usize,
+                            _: usize,
+                        ) -> Result<f64> {
+                            Ok(1.0)
+                        }
+                    }
+                    Arc::new(LatencyOnly)
+                };
+                let speedup = 1.0 / role["scale"].as_f64().unwrap_or(1.0);
+                sources.push(TimingPowerSource {
+                    timing,
+                    prefill_speedup_ratio: speedup,
+                    decode_speedup_ratio: speedup,
+                });
+            }
+            let evidence = replay_timing_evidence(&sources).unwrap();
+            let stats = evidence
+                .as_ref()
+                .map(replay_power_stats)
+                .transpose()
+                .unwrap();
+            let diagnostics =
+                serde_json::to_value(replay_power_diagnostics(evidence.as_ref(), None).unwrap())
+                    .unwrap();
+            assert_eq!(
+                diagnostics["power_w"].is_null(),
+                stats.and_then(|power| power.power_w).is_none()
+            );
+            assert_eq!(diagnostics["power_coverage"].is_null(), stats.is_none());
+            let actual = [
+                stats.and_then(|power| power.power_w),
+                stats.map(|power| power.coverage),
+            ];
+            for (index, name) in ["power_w", "power_coverage"].iter().enumerate() {
+                let expected = case["expected"][name].as_f64();
+                match (actual[index], expected) {
+                    (Some(actual), Some(expected)) => assert!(
+                        (actual - expected).abs() < 1e-10,
+                        "{} {name}: {actual} != {expected}",
+                        case["name"]
+                    ),
+                    (None, None) => (),
+                    _ => panic!(
+                        "{} {name}: {:?} != {expected:?}",
+                        case["name"], actual[index]
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn replay_power_is_published_at_the_exact_coverage_gate() {
         let source = TimingPowerSource {
             timing: Arc::new(PowerTiming(TimingEvidenceSummary {
@@ -1906,7 +2170,7 @@ mod tests {
         assert_eq!(value["energy_wms"], 4_800.0);
         assert_eq!(value["latency_ms"], 14.0);
         assert_eq!(value["covered_latency_ms"], 12.0);
-        assert!(value.get("power_w").is_none());
+        assert_eq!(value.get("power_w"), Some(&serde_json::Value::Null));
         assert_eq!(value["phases"][0]["energy_wms"], 3_200.0);
         assert_eq!(value["phases"][1]["energy_wms"], 1_600.0);
         assert_eq!(value["phases"][1]["power_w"], 400.0);
@@ -1964,8 +2228,8 @@ mod tests {
         let value = serde_json::to_value(diagnostics).unwrap();
 
         assert_eq!(value["publication_status"], "unsupported");
-        assert!(value.get("power_w").is_none());
-        assert!(value.get("power_coverage").is_none());
+        assert_eq!(value.get("power_w"), Some(&serde_json::Value::Null));
+        assert_eq!(value.get("power_coverage"), Some(&serde_json::Value::Null));
         assert!(value.get("energy_wms").is_none());
         assert_eq!(
             value["unavailable_reason"],
@@ -2017,7 +2281,11 @@ mod tests {
     #[test]
     fn op_level_timing_exposes_typed_python_evidence() {
         pyo3::prepare_freethreaded_python();
-        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe).unwrap().into_any());
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
         let timing = timing_model(engine, false);
 
         assert_eq!(timing.predict_prefill_ms(2, 128, 0).unwrap(), 10.0);
@@ -2037,6 +2305,59 @@ mod tests {
         );
         assert_eq!(evidence.decode.energy_wms, Some(1_600.0));
         assert_eq!(evidence.decode.coverage(), 1.0);
+    }
+
+    #[test]
+    fn repeated_shapes_reuse_provider_evidence_and_accumulate_every_step() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
+        let timing = timing_model(
+            Python::with_gil(|py| engine.clone_ref(py).into_any()),
+            false,
+        );
+        for _ in 0..1_000 {
+            assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
+        }
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            )
+        });
+        assert_eq!(
+            timing.evidence_summary().unwrap().decode.energy_wms,
+            Some(1_600_000.0)
+        );
+        // Distinct coordinates must never reuse the preceding shape's result.
+        timing.predict_decode_ms(2, 260, 129, 1024).unwrap();
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            )
+        });
+    }
+
+    #[test]
+    fn empty_provider_evidence_rejects_nonzero_work() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let timing = timing_model(engine, false);
+        assert!(timing.predict_prefill_ms(99, 128, 0).is_err());
+        assert!(timing.predict_decode_ms(99, 12800, 128, 16384).is_err());
+        assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
+        assert_eq!(timing.predict_decode_ms(0, 0, 128, 16384).unwrap(), 0.0);
+        assert_eq!(timing.predict_prefill_ms(99, 128, 128).unwrap(), 0.0);
     }
 
     #[test]

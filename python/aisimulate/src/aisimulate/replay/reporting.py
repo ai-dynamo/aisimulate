@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from ..power import normalize_power_summary, power_unavailable_reason
 
 TITLE = "NVIDIA AIPerf | LLM Metrics"
 STAT_COLUMNS = ("avg", "min", "max", "p99", "p90", "p75", "std")
@@ -80,21 +83,22 @@ def format_report_table(report: dict[str, Any]) -> str:
             ],
         ]
     )
-    if "power_coverage" in report:
-        rows.extend(
+    power = normalize_power_summary(report)
+    unavailable = f"unavailable ({power_unavailable_reason(power)})"
+    rows.extend(
+        [
             [
-                [
-                    "Active Power per GPU (W)",
-                    _format_value(report.get("power_w")),
-                    *["N/A"] * (len(STAT_COLUMNS) - 1),
-                ],
-                [
-                    "Power Data Coverage (%)",
-                    _format_value(float(report["power_coverage"]) * 100.0),
-                    *["N/A"] * (len(STAT_COLUMNS) - 1),
-                ],
-            ]
-        )
+                "Active Power per GPU (W) [power_w]",
+                _format_value(power["power_w"]) if power["power_w"] is not None else unavailable,
+                *["N/A"] * (len(STAT_COLUMNS) - 1),
+            ],
+            [
+                "Power Data Coverage (%) [power_coverage]",
+                _format_value(power["power_coverage"] * 100.0) if power["power_coverage"] is not None else unavailable,
+                *["N/A"] * (len(STAT_COLUMNS) - 1),
+            ],
+        ]
+    )
     lines = [TITLE, _render_table(rows)]
     wall_time_ms = report.get("wall_time_ms")
     if isinstance(wall_time_ms, int | float):
@@ -152,7 +156,10 @@ def format_power_diagnostics(
                 _format_latency(phase.get("covered_latency_ms")),
                 _format_percent(phase.get("power_coverage")),
                 _format_power(phase.get("power_w")),
-                str(phase.get("source_kind", "missing")),
+                (
+                    f"{phase.get('publication_status', 'missing')} "
+                    f"{phase.get('source_kind', 'missing')}:{phase.get('source', 'missing')}"
+                ),
             ]
         )
         raw_operations = phase.get("operations")
@@ -235,7 +242,7 @@ def format_power_diagnostics(
 
 def _operation_sort_key(operation: dict[str, Any]) -> tuple[bool, float, str, str]:
     energy = operation.get("energy_wms")
-    has_energy = isinstance(energy, int | float)
+    has_energy = _finite_measurement(energy)
     return (
         not has_energy,
         -float(energy) if has_energy else 0.0,
@@ -255,26 +262,30 @@ def _render_diagnostics_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(rendered)
 
 
+def _finite_measurement(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _format_power(value: object) -> str:
-    if not isinstance(value, int | float):
+    if not _finite_measurement(value):
         return "N/A"
     return f"{float(value):,.2f} W"
 
 
 def _format_energy(value: object) -> str:
-    if not isinstance(value, int | float):
+    if not _finite_measurement(value):
         return "N/A"
     return f"{float(value):,.2f} W-ms"
 
 
 def _format_latency(value: object) -> str:
-    if not isinstance(value, int | float):
+    if not _finite_measurement(value):
         return "N/A"
     return f"{float(value):,.2f} ms"
 
 
 def _format_percent(value: object) -> str:
-    if not isinstance(value, int | float):
+    if not _finite_measurement(value):
         return "N/A"
     return f"{float(value):.2%}"
 

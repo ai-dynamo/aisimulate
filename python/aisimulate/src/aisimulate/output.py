@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from .detail import format_prediction_details
+from .power import format_power_summary
 from .replay.reporting import format_power_diagnostics, format_report_table
 from .sweeper.result import SweepResult
 
@@ -101,17 +103,34 @@ def format_prediction_stdout(
     summary: dict[str, Any],
     output_format: str,
     *,
+    details: dict[str, Any] | None = None,
     power_diagnostics: dict[str, Any] | None = None,
     diagnostics_top_n: int = 12,
 ) -> str:
     if output_format == "json":
+        payload = summary if details is None else {"summary": summary, "details": details}
         if power_diagnostics is not None:
-            return json.dumps(
-                {"summary": summary, "power_diagnostics": power_diagnostics},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+            payload = {
+                "summary": summary,
+                "power_diagnostics": power_diagnostics,
+                **({"details": details} if details is not None else {}),
+            }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    if details is not None:
+        rendered = (
+            format_prediction_stdout(summary, output_format)
+            + "\n\n"
+            + format_prediction_details(details, energy_top_n=diagnostics_top_n)
+        )
+        if power_diagnostics is not None and "energy" not in details["sections"]:
+            rendered += "\n\n" + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
+        return rendered
+    if power_diagnostics is not None:
+        return (
+            format_prediction_stdout(summary, output_format)
+            + "\n\n"
+            + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
+        )
     if summary.get("metric_semantics") == "analytical_epd_overlay":
         lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
@@ -126,13 +145,13 @@ def format_prediction_stdout(
             "total_gpus",
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append(format_power_summary(summary))
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
-        table = "\n".join(lines)
-    else:
-        table = format_report_table(summary)
-    if power_diagnostics is None:
-        return table
-    return f"{table}\n\n{format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)}"
+        return "\n".join(lines)
+    table = format_report_table(summary)
+    if summary.get("agentic_qualification") == "functional_only":
+        return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
+    return table
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:
@@ -144,10 +163,6 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())
-        power = ""
-        if "power_w" in row:
-            power += f" power_w={row['power_w']:.4g}W"
-        if "power_coverage" in row:
-            power += f" power_coverage={row['power_coverage']:.2%}"
+        power = " " + format_power_summary(row)
         lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}{power} config={row['config_path']}")
     return "\n".join(lines)

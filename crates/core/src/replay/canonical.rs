@@ -192,10 +192,7 @@ fn validate_report_finite(report: &ReplayReport) -> Result<()> {
         )?;
     }
     if let Some(power) = report.power {
-        ensure_finite("/summary/power_coverage", power.coverage)?;
-        if let Some(power_w) = power.power_w {
-            ensure_finite("/summary/power_w", power_w)?;
-        }
+        power.validate()?;
     }
     for record in &report.per_request {
         validate_per_request_finite(record)?;
@@ -389,5 +386,49 @@ mod tests {
         let error =
             CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap_err();
         assert!(error.to_string().contains("/summary/wall_time_ms"));
+    }
+    #[test]
+    fn canonical_record_rejects_invalid_power_contract() {
+        use crate::replay::TracePowerStats;
+        for power in [
+            TracePowerStats {
+                power_w: None,
+                coverage: -0.1,
+            },
+            TracePowerStats {
+                power_w: None,
+                coverage: 1.1,
+            },
+            TracePowerStats {
+                power_w: Some(500.0),
+                coverage: 0.89,
+            },
+            TracePowerStats {
+                power_w: Some(-1.0),
+                coverage: 1.0,
+            },
+            TracePowerStats {
+                power_w: Some(0.0),
+                coverage: 1.0,
+            },
+        ] {
+            let report = TraceCollector::default().finish().with_power(Some(power));
+            let coverage =
+                CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+            assert!(
+                CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).is_err()
+            );
+            assert!(serde_json::to_value(&report).is_err());
+        }
+        // High coverage alone does not guarantee all publication conditions.
+        let report = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: None,
+                coverage: 1.0,
+            }));
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        assert!(CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).is_ok());
     }
 }

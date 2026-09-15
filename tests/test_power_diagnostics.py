@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from aisimulate.output import format_prediction_stdout
 from aisimulate.replay.reporting import format_power_diagnostics
 
@@ -79,7 +81,8 @@ def test_power_diagnostics_table_is_bounded_and_energy_specific() -> None:
     assert "gemm" in rendered
     assert "attention" not in rendered
     assert "... 1 more in prediction.json" in rendered
-    assert "modeled:estimated" not in rendered
+    assert "available modeled:estimated" in rendered
+    assert "withheld mixed:mixed" in rendered
     assert "wall-clock or provisioned-fleet energy" in rendered
 
     complete = format_power_diagnostics(_diagnostics(), top_n=2)
@@ -114,3 +117,42 @@ def test_unsupported_diagnostics_explain_missing_provider_evidence() -> None:
 
     assert "status=unsupported" in rendered
     assert "typed timing-energy evidence is unavailable" in rendered
+
+
+@pytest.mark.parametrize("value", [True, False, float("nan"), float("inf"), float("-inf")])
+def test_invalid_measurements_are_unavailable_and_sort_last(value):
+    from aisimulate.replay.reporting import (
+        _format_energy,
+        _format_latency,
+        _format_percent,
+        _format_power,
+        _operation_sort_key,
+    )
+
+    for formatter in (_format_energy, _format_latency, _format_percent, _format_power):
+        assert formatter(value) == "N/A"
+    ordered = sorted(
+        [{"name": "invalid", "energy_wms": value}, {"name": "valid", "energy_wms": 1.0}], key=_operation_sort_key
+    )
+    assert [op["name"] for op in ordered] == ["valid", "invalid"]
+
+
+def test_compatibility_diagnostics_remain_visible_with_other_details() -> None:
+    from aisimulate.output import format_prediction_stdout
+
+    diagnostics = {
+        "publication_status": "unsupported",
+        "power_w": None,
+        "power_coverage": None,
+        "phases": [],
+    }
+    memory = {"status": "available", "scope": "capacity_estimate_per_rank", "roles": {}}
+    energy = {"status": "unsupported", "diagnostics": diagnostics}
+    for sections in ({"memory": memory}, {"memory": memory, "energy": energy}):
+        rendered = format_prediction_stdout(
+            {"power_w": None, "power_coverage": None},
+            "table",
+            details={"schema_version": "1.0", "sections": sections, "skipped": {}},
+            power_diagnostics=diagnostics,
+        )
+        assert rendered.count("AISimulate active forward-pass energy diagnostics (per GPU)") == 1

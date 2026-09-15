@@ -1,0 +1,490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-dynamo.github.io/aisimulate/cli/prediction-details.schema.json",
+  "title": "AISimulate prediction details v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "scope": {
+              "const": "serving_workload"
+            },
+            "metrics": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "metrics"
+          ],
+          "additionalProperties": false
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "available",
+                "partial"
+              ]
+            },
+            "scope": {
+              "const": "capacity_estimate_per_rank"
+            },
+            "roles": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/memoryAvailable"
+                  },
+                  {
+                    "$ref": "#/$defs/memoryUnavailable"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "roles"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "available"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "roles": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/memoryAvailable"
+                    }
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "roles": {
+                    "allOf": [
+                      {
+                        "not": {
+                          "additionalProperties": {
+                            "$ref": "#/$defs/memoryAvailable"
+                          }
+                        }
+                      },
+                      {
+                        "not": {
+                          "additionalProperties": {
+                            "$ref": "#/$defs/memoryUnavailable"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "time": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "scope": {
+              "const": "serving_workload"
+            },
+            "latency_unit": {
+              "const": "ms"
+            },
+            "serving_metrics": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {
+                "enum": [
+                  "max_e2e_latency_ms",
+                  "max_itl_ms",
+                  "max_tpot_ms",
+                  "max_trajectory_e2e_latency_ms",
+                  "max_ttft_ms",
+                  "max_ttst_ms",
+                  "mean_e2e_latency_ms",
+                  "mean_itl_ms",
+                  "mean_tpot_ms",
+                  "mean_trajectory_e2e_latency_ms",
+                  "mean_ttft_ms",
+                  "mean_ttst_ms",
+                  "median_e2e_latency_ms",
+                  "median_itl_ms",
+                  "median_tpot_ms",
+                  "median_trajectory_e2e_latency_ms",
+                  "median_ttft_ms",
+                  "median_ttst_ms",
+                  "min_e2e_latency_ms",
+                  "min_itl_ms",
+                  "min_tpot_ms",
+                  "min_trajectory_e2e_latency_ms",
+                  "min_ttft_ms",
+                  "min_ttst_ms",
+                  "p50_trajectory_e2e_latency_ms",
+                  "p75_e2e_latency_ms",
+                  "p75_itl_ms",
+                  "p75_tpot_ms",
+                  "p75_trajectory_e2e_latency_ms",
+                  "p75_ttft_ms",
+                  "p75_ttst_ms",
+                  "p90_e2e_latency_ms",
+                  "p90_itl_ms",
+                  "p90_tpot_ms",
+                  "p90_trajectory_e2e_latency_ms",
+                  "p90_ttft_ms",
+                  "p90_ttst_ms",
+                  "p95_e2e_latency_ms",
+                  "p95_itl_ms",
+                  "p95_tpot_ms",
+                  "p95_trajectory_e2e_latency_ms",
+                  "p95_ttft_ms",
+                  "p95_ttst_ms",
+                  "p99_e2e_latency_ms",
+                  "p99_itl_ms",
+                  "p99_tpot_ms",
+                  "p99_trajectory_e2e_latency_ms",
+                  "p99_ttft_ms",
+                  "p99_ttst_ms",
+                  "std_e2e_latency_ms",
+                  "std_itl_ms",
+                  "std_tpot_ms",
+                  "std_trajectory_e2e_latency_ms",
+                  "std_ttft_ms",
+                  "std_ttst_ms"
+                ]
+              },
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "latency_unit",
+            "serving_metrics"
+          ],
+          "additionalProperties": false
+        },
+        "energy": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "available",
+                "withheld",
+                "unsupported",
+                "not_observed",
+                "missing"
+              ]
+            },
+            "scope": {
+              "const": "active_forward_pass_per_gpu"
+            },
+            "diagnostics": {
+              "type": "object",
+              "properties": {
+                "power_w": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "exclusiveMinimum": 0
+                },
+                "power_coverage": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "phases": {
+                  "type": "array"
+                }
+              },
+              "required": [
+                "power_w",
+                "power_coverage",
+                "phases",
+                "publication_status"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "diagnostics"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "skipped": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "time": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "sections",
+    "skipped"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "memoryAvailable": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "available"
+        },
+        "scope": {
+          "const": "capacity_estimate_per_rank"
+        },
+        "stage": {
+          "const": "before_native_capacity_adjustments"
+        },
+        "source": {
+          "enum": [
+            "native",
+            "naive_fallback"
+          ]
+        },
+        "total_gpu_capacity_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_kv_size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kv_size_per_token_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_kv_size_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_num_gpu_blocks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scheduler_block_size_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_breakdown": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "weights_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "activations_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "runtime_overhead_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "comm_overhead_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cuda_graph_reserved_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "weights_bytes",
+                "activations_bytes",
+                "runtime_overhead_bytes",
+                "comm_overhead_bytes",
+                "cuda_graph_reserved_bytes"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "tolerance_adjusted": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tolerance_fraction": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMaximum": 1
+                },
+                "total_kv_size_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total_kv_size_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "tolerance_fraction",
+                "total_kv_size_bytes",
+                "total_kv_size_tokens"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "scope",
+        "stage",
+        "source",
+        "total_gpu_capacity_bytes",
+        "total_kv_size_bytes",
+        "kv_size_per_token_bytes",
+        "total_kv_size_tokens",
+        "estimated_num_gpu_blocks",
+        "scheduler_block_size_tokens",
+        "memory_breakdown",
+        "tolerance_adjusted"
+      ],
+      "additionalProperties": false
+    },
+    "memoryUnavailable": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "unavailable"
+        },
+        "scope": {
+          "const": "capacity_estimate_per_rank"
+        },
+        "stage": {
+          "const": "before_native_capacity_adjustments"
+        },
+        "unavailable_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "status",
+        "scope",
+        "stage",
+        "unavailable_reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "summary"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "summary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "memory"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "memory"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "time"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "time"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

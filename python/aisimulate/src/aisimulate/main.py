@@ -29,6 +29,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
+from .detail import build_prediction_details, energy_diagnostics, parse_detail_sections, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -39,6 +40,7 @@ from .output import (
     write_recommendations,
     write_requests,
 )
+from .power import normalize_power_summary
 from .stack import StackResolutionError, resolve_runner_factory
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
@@ -80,17 +82,28 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].epilog = (
+        "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
+        "trace_timestamps and agentic_lanes=1. The engine stack supports aggregated "
+        "vLLM/SGLang, HBM-only, speculative decoding disabled. Results are "
+        "functional_only; benchmark warmup and profiling are not qualified."
+    )
     subparsers.choices["predict"].add_argument(
-        "--diagnostics",
-        choices=("power",),
-        help="include an AISimulate-native diagnostic section in stdout",
+        "--detail",
+        type=parse_detail_sections,
+        default=(),
+        metavar="SECTIONS",
+        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
     )
     subparsers.choices["predict"].add_argument(
         "--diagnostics-top-n",
         type=_positive_int,
         default=12,
         metavar="N",
-        help="maximum operations shown per phase in the diagnostics table (default: 12)",
+        help="maximum operations per phase in energy detail tables (default: 12)",
     )
     subparsers.choices["predict"].add_argument(
         "--online",
@@ -200,6 +213,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 output_requirements=ReplayOutputRequirements(
                     include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
+                    capture_memory_diagnostics="memory" in args.detail,
                 ),
             )
         except KeyboardInterrupt:
@@ -213,31 +227,21 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         native = {"summary": dict(report.metrics)}
     if epd:
         native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
+        if "memory_diagnostics" in native["metadata"]:
+            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
         # JSON stdout, like prediction.json, must identify the approximation.
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]
-    summary = native.get("summary", native)
-    if not isinstance(summary, dict):
-        raise RuntimeError("prediction report summary must be a JSON mapping")
-    power_diagnostics: dict[str, Any] | None = None
+    summary = prediction_summary(native)
+    summary.update(normalize_power_summary(summary))
+    if "summary" in native:
+        native = {**native, "summary": summary}
+    else:
+        native = {**native, **summary}
+    power_diagnostics = None
     if args.diagnostics == "power":
-        raw_diagnostics = native.get("power_diagnostics")
-        if isinstance(raw_diagnostics, dict):
-            power_diagnostics = raw_diagnostics
-        else:
-            power_diagnostics = {
-                "schema_version": "1.0",
-                "scope": "active_forward_pass_per_gpu",
-                "publication_status": "unsupported",
-                "unavailable_reason": (
-                    "selected runner did not provide typed timing-energy evidence; "
-                    "use engine timing.forward_model=op_level on a supported topology"
-                ),
-                "coverage_gate": 0.9,
-                "phases": [],
-            }
-            native = dict(native)
-            native["power_diagnostics"] = power_diagnostics
+        power_diagnostics = energy_diagnostics(native)
+        native = {**native, "power_diagnostics": power_diagnostics}
     resolved_basis = native.get("weka_nested_timestamp_basis")
     if isinstance(resolved_basis, str):
         source = config.traffic.source
@@ -252,6 +256,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 "INFO: validated the complete Weka corpus with configured "
                 f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
             )
+    details = build_prediction_details(native, args.detail) if args.detail else None
+    if details is not None:
+        native = {**native, "details": details}
     report_path = write_prediction_report(root, native)
     write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:
@@ -265,6 +272,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         format_prediction_stdout(
             summary,
             args.format,
+            details=details,
             power_diagnostics=power_diagnostics,
             diagnostics_top_n=args.diagnostics_top_n,
         )
@@ -337,7 +345,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             "used_gpus": candidate.used_gpus,
             "config_path": str(path),
         }
-        row.update({key: candidate.metrics[key] for key in ("power_w", "power_coverage") if key in candidate.metrics})
+        row.update(normalize_power_summary(candidate.metrics))
         rows.append(row)
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")

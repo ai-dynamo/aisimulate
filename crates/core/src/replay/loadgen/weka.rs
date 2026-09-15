@@ -2032,6 +2032,22 @@ mod tests {
                     && edge.relation == AgenticDependencyRelation::Join
             })
         }));
+
+        let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        let parent = driver.pop_ready(0.0, 1);
+        assert_eq!(parent.len(), 1);
+        assert!(driver.pop_ready(299.0, usize::MAX).is_empty());
+        let overlapping_child = driver.pop_ready(300.0, usize::MAX);
+        assert_eq!(overlapping_child.len(), 1);
+        assert!(
+            overlapping_child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
+        );
     }
 
     #[test]
@@ -2085,6 +2101,42 @@ mod tests {
                 && edge.trigger == AgenticDependencyTrigger::Completion
                 && edge.relation == AgenticDependencyRelation::Join
         }));
+
+        let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        let parent = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(parent.len(), 1);
+        driver.on_complete(parent[0].request_uuid, 500.0).unwrap();
+
+        let first_child = driver.pop_ready(900.0, usize::MAX);
+        assert_eq!(first_child.len(), 1);
+        assert!(
+            first_child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
+        );
+        driver
+            .on_complete(first_child[0].request_uuid, 1_100.0)
+            .unwrap();
+
+        let second_child = driver.pop_ready(1_150.0, usize::MAX);
+        assert_eq!(second_child.len(), 1);
+        driver
+            .on_complete(second_child[0].request_uuid, 1_200.0)
+            .unwrap();
+
+        let resumed_parent = driver.pop_ready(1_200.0, usize::MAX);
+        assert_eq!(resumed_parent.len(), 1);
+        assert!(
+            resumed_parent[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:2")
+        );
     }
 
     #[test]
@@ -2883,6 +2935,75 @@ mod tests {
                 "{name} must use a zero-width interval for graph shaping: {rows:#?}"
             );
         }
+    }
+
+    #[test]
+    fn completion_end_to_start_delay_covers_positive_zero_and_clamped_negative_gaps() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        for (name, next_start, expected_delay_ms) in [("positive", 1.5, 500.0), ("zero", 1.0, 0.0)]
+        {
+            write_trace(
+                &path,
+                serde_json::json!([
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1],"api_time":1.0},
+                    {"t":next_start,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.1}
+                ]),
+            );
+
+            let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+            let first = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:0"))
+                .unwrap();
+            let second = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:1"))
+                .unwrap();
+            let sequence = second
+                .dependencies
+                .iter()
+                .find(|edge| {
+                    edge.request_id == first.request_id
+                        && edge.relation == AgenticDependencyRelation::Sequence
+                })
+                .unwrap_or_else(|| panic!("{name}: missing sequence edge in {rows:#?}"));
+            assert_eq!(sequence.trigger, AgenticDependencyTrigger::Completion);
+            assert!(
+                (sequence.delay_ms - expected_delay_ms).abs() < 1e-6,
+                "{name}: {sequence:#?}"
+            );
+        }
+
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1],"api_time":0.1},
+                {"t":0.2,"type":"subagent","agent_id":"blocking","subagent_type":"Explore","duration_ms":600,"status":"completed","requests":[
+                    {"t":0.3,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2],"api_time":1.0}
+                ],"models":["model"]},
+                {"t":0.8,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,3],"api_time":0.1}
+            ]),
+        );
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:0"))
+            .unwrap();
+        let resumed_parent = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2"))
+            .unwrap();
+        let join = resumed_parent
+            .dependencies
+            .iter()
+            .find(|edge| {
+                edge.request_id == child.request_id
+                    && edge.relation == AgenticDependencyRelation::Join
+            })
+            .unwrap_or_else(|| panic!("clamped-negative: missing join edge in {rows:#?}"));
+        assert_eq!(join.trigger, AgenticDependencyTrigger::Completion);
+        assert_eq!(join.delay_ms, 0.0);
     }
 
     #[test]

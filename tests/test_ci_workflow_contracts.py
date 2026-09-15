@@ -11,18 +11,226 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
+from scripts import build_manylinux_wheel as manylinux_builder
+from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
+from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
 from scripts.select_full_ci import COMPONENTS, select_components
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
+
+
+def _fast_run(**overrides):
+    return {
+        "id": 10,
+        "path": ".github/workflows/fast-ci.yml",
+        "head_sha": "a" * 40,
+        "head_branch": "main",
+        "head_repository": {"full_name": "ai-dynamo/aisimulate"},
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "html_url": "https://github.com/ai-dynamo/aisimulate/actions/runs/10",
+        **overrides,
+    }
+
+
+def _fast_jobs():
+    return [
+        {"name": name, "head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+        for name in sorted(REQUIRED_JOBS)
+    ]
+
+
+def _require_fast(api, **kwargs):
+    return require_fast_ci("ai-dynamo/aisimulate", "a" * 40, "refs/heads/main", "push", api=api, **kwargs)
+
+
+def test_fast_prerequisite_accepts_all_jobs_from_the_latest_attempt_across_pages():
+    calls = []
+
+    def api(endpoint):
+        calls.append(endpoint)
+        if "/jobs?" in endpoint:
+            assert "/attempts/2/" in endpoint
+            return [{"jobs": _fast_jobs()[:2]}, {"jobs": _fast_jobs()[2:]}]
+        return [
+            {"workflow_runs": [_fast_run(id=9, conclusion="failure")]},
+            {"workflow_runs": [_fast_run(run_attempt=2)]},
+        ]
+
+    assert _require_fast(api)["run_attempt"] == 2
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"head_sha": "b" * 40},
+        {"head_branch": "release/old"},
+        {"head_repository": {"full_name": "someone/aisimulate"}},
+        {"path": ".github/workflows/ci.yml"},
+        {"event": "pull_request"},
+        {"event": "workflow_dispatch"},
+    ],
+)
+def test_fast_prerequisite_rejects_wrong_commit_branch_origin_workflow_and_event(override):
+    with pytest.raises(GateError, match="No complete Fast CI evidence"):
+        _require_fast(lambda _: [{"workflow_runs": [_fast_run(**override)]}], timeout=0)
+
+
+def test_manual_full_ci_can_reuse_a_same_branch_push_or_manual_fast_run():
+    for event in ("push", "workflow_dispatch"):
+        run = _fast_run(event=event)
+        assert (
+            latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisimulate") == run
+        )
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", None])
+def test_fast_prerequisite_cannot_fall_back_to_an_older_success(conclusion):
+    pages = [{"workflow_runs": [_fast_run(), _fast_run(id=11, conclusion=conclusion)]}]
+    with pytest.raises(GateError, match="Latest Fast CI run 11"):
+        _require_fast(lambda _: pages)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"head_sha": "b" * 40}, {"status": "queued"}, {"conclusion": "skipped"}, {"conclusion": "failure"}],
+)
+def test_fast_prerequisite_rejects_partial_or_wrong_commit_job_evidence(override):
+    jobs = _fast_jobs()
+    jobs[0].update(override)
+    with pytest.raises(GateError, match="wrong-commit job"):
+        verify_jobs([{"jobs": jobs}], "a" * 40)
+
+
+@pytest.mark.parametrize("kind", ["missing", "duplicate", "aggregate-only"])
+def test_fast_prerequisite_requires_substantive_jobs_not_just_a_green_aggregate(kind):
+    jobs = _fast_jobs()
+    jobs = jobs[1:] if kind == "missing" else jobs + [jobs[0]] if kind == "duplicate" else [jobs[0]]
+    with pytest.raises(GateError, match="every required job"):
+        verify_jobs([{"jobs": jobs}], "a" * 40)
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "waiting"])
+def test_fast_prerequisite_waits_with_a_bounded_timeout(status):
+    now = [0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    with pytest.raises(GateError, match="within 20s"):
+        _require_fast(
+            lambda _: [{"workflow_runs": [_fast_run(status=status, conclusion=None)]}],
+            timeout=20,
+            interval=15,
+            clock=lambda: now[0],
+            sleep=sleep,
+        )
+    assert now[0] == 20
+
+
+def test_fast_prerequisite_rechecks_a_rerun_started_during_job_inspection():
+    reads = [0]
+
+    def api(endpoint):
+        if "/jobs?" in endpoint:
+            return [{"jobs": _fast_jobs()}]
+        reads[0] += 1
+        run = _fast_run() if reads[0] == 1 else _fast_run(run_attempt=2, conclusion="failure")
+        return [{"workflow_runs": [run]}]
+
+    with pytest.raises(GateError, match="Latest Fast CI run 10"):
+        _require_fast(api, sleep=lambda _: None)
+
+
+def test_fast_prerequisite_api_failure_never_becomes_success():
+    def api(_):
+        raise GateError("API unavailable")
+
+    with pytest.raises(GateError, match="API unavailable"):
+        _require_fast(api)
+
+
+def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
+    run = _fast_run(head_branch="codex/manual", event="workflow_dispatch")
+    jobs = _fast_jobs()
+    if failure == "wrong-job-sha":
+        jobs[0]["head_sha"] = "b" * 40
+    fixture = tmp_path / "api.json"
+    fixture.write_text(json.dumps({"run": run, "jobs": jobs}))
+    gh = tmp_path / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "assert sys.argv[1:4] == ['api', '--paginate', '--slurp']\n"
+        "if os.environ['TEST_API_FAILURE'] == 'true': sys.exit(1)\n"
+        "data = json.loads(pathlib.Path(os.environ['TEST_API_FIXTURE']).read_text())\n"
+        "with open(os.environ['TEST_API_CALLS'], 'a') as stream: stream.write(sys.argv[-1] + '\\n')\n"
+        "print(json.dumps([{'jobs': data['jobs']} if '/jobs?' in sys.argv[-1] "
+        "else {'workflow_runs': [data['run']]}]))\n"
+    )
+    gh.chmod(0o755)
+    summary = tmp_path / "summary.md"
+    summary.write_text("Existing evidence\n")
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "ai-dynamo/aisimulate",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_REF": "refs/heads/codex/manual",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "TEST_API_FIXTURE": str(fixture),
+        "TEST_API_CALLS": str(tmp_path / "calls"),
+        "TEST_API_FAILURE": str(failure == "api").lower(),
+    }
+    args = [sys.executable, str(REPOSITORY_ROOT / "scripts/require_fast_ci.py"), "--timeout", "0"]
+    if overrides:
+        for option, variable in (
+            ("--repository", "GITHUB_REPOSITORY"),
+            ("--sha", "GITHUB_SHA"),
+            ("--ref", "GITHUB_REF"),
+            ("--event", "GITHUB_EVENT_NAME"),
+        ):
+            args.extend([option, env[variable]])
+            env[variable] = "invalid-environment-default"
+    result = subprocess.run(args, env=env, capture_output=True, text=True, check=False, timeout=10)
+    return result, summary
+
+
+@pytest.mark.parametrize("overrides", [False, True], ids=["environment-defaults", "cli-overrides"])
+def test_fast_prerequisite_cli_verifies_manual_run_and_appends_summary(tmp_path, overrides):
+    result, summary = _run_fast_prerequisite_cli(tmp_path, overrides=overrides)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert summary.read_text().startswith("Existing evidence\n### Standalone Fast CI verified")
+    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisimulate/actions/runs/10", "attempt 1"):
+        assert evidence in result.stdout
+        assert evidence in summary.read_text()
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert calls[0] == calls[2]
+    assert calls[0].startswith("repos/ai-dynamo/aisimulate/actions/workflows/fast-ci.yml/runs?")
+    assert calls[1] == "repos/ai-dynamo/aisimulate/actions/runs/10/attempts/1/jobs?per_page=100"
+
+
+@pytest.mark.parametrize("failure", ["api", "wrong-job-sha"])
+def test_fast_prerequisite_cli_errors_leave_success_summary_unwritten(tmp_path, failure):
+    result, summary = _run_fast_prerequisite_cli(tmp_path, failure=failure)
+    assert result.returncode != 0
+    assert "::error::" in result.stderr
+    assert "Standalone Fast CI verified" not in result.stdout
+    assert summary.read_text() == "Existing evidence\n"
 
 
 @pytest.mark.parametrize(
@@ -380,6 +588,131 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     assert 'importlib.import_module("collector.fpm_forward")' in installed_verifier
 
 
+def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
+    expected_images = {
+        "amd64": "quay.io/pypa/manylinux_2_28_x86_64@sha256:",
+        "arm64": "quay.io/pypa/manylinux_2_28_aarch64@sha256:",
+    }
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in ("application-test-wheel", "release-artifact-contract"):
+        job = full_ci[job_name]
+        assert job["container"]["image"] == "${{ matrix.container_image }}"
+        images = {entry["arch"]: entry["container_image"] for entry in job["strategy"]["matrix"]["include"]}
+        assert images.keys() == expected_images.keys()
+        for arch, prefix in expected_images.items():
+            assert images[arch].startswith(prefix)
+            assert len(images[arch].removeprefix(prefix)) == 64
+
+    application_commands = _run_commands(full_ci["application-test-wheel"])
+    assert "scripts/build_manylinux_wheel.py" in application_commands
+    assert "maturin build" not in application_commands
+
+    fpe_prepare = _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]
+    assert fpe_prepare["container"]["image"].startswith(expected_images["amd64"])
+    assert "scripts/build_manylinux_wheel.py" in _run_commands(fpe_prepare)
+
+    release_builder = (REPOSITORY_ROOT / "scripts" / "build_release_artifacts.py").read_text()
+    assert 'sys.platform.startswith("linux")' in release_builder
+    assert '"build_manylinux_wheel.py"' in release_builder
+
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
+    assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
+    assert "auditwheel repair" in dockerfile
+    assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
+    assert "--compatibility manylinux_2_28" not in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "manylinux_2_28_x86_64"),
+        ("amd64", "manylinux_2_28_x86_64"),
+        ("aarch64", "manylinux_2_28_aarch64"),
+        ("arm64", "manylinux_2_28_aarch64"),
+    ],
+)
+def test_manylinux_platform_maps_native_architectures(machine: str, expected: str) -> None:
+    assert manylinux_platform(machine) == expected
+
+
+def test_manylinux_platform_rejects_unknown_architecture() -> None:
+    with pytest.raises(SystemExit, match="unsupported wheel architecture"):
+        manylinux_platform("riscv64")
+
+
+def _manylinux_build_case(
+    tmp_path, monkeypatch, *, machine="x86_64", raw_count=1, repaired_count=1, repaired_tag=None, fail_repair=False
+):
+    monkeypatch.setattr(manylinux_builder.sys, "platform", "linux")
+    monkeypatch.setattr(manylinux_builder.platform, "machine", lambda: machine)
+    monkeypatch.setattr(manylinux_builder.shutil, "which", lambda _: "/usr/bin/auditwheel")
+    calls = []
+    output = tmp_path / "dist"
+
+    def run(*command, cwd=REPOSITORY_ROOT):
+        calls.append((command, cwd))
+        if command[:3] == (sys.executable, "-m", "maturin"):
+            raw_output = Path(command[command.index("--out") + 1])
+            for index in range(raw_count):
+                (raw_output / f"aisimulate-0.12.{index}-cp311-abi3-linux_{machine}.whl").touch()
+        elif command[:2] == ("auditwheel", "repair"):
+            if fail_repair:
+                raise subprocess.CalledProcessError(1, command)
+            tag = repaired_tag or f"manylinux_2_28_{machine}"
+            for index in range(repaired_count):
+                (output / f"aisimulate-0.12.{index}-cp311-abi3-{tag}.whl").touch()
+        else:
+            assert command[:2] == ("auditwheel", "show")
+
+    monkeypatch.setattr(manylinux_builder, "_run", run)
+    return output, calls
+
+
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, monkeypatch, machine):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, machine=machine)
+    repaired = manylinux_builder.build(output)
+    raw_output = calls[0][0][-1]
+    raw_wheel = str(Path(raw_output) / f"aisimulate-0.12.0-cp311-abi3-linux_{machine}.whl")
+    assert repaired == output / f"aisimulate-0.12.0-cp311-abi3-manylinux_2_28_{machine}.whl"
+    assert list(output.iterdir()) == [repaired]
+    assert calls == [
+        (
+            (sys.executable, "-m", "maturin", "build", "--release", "--auditwheel", "skip", "--out", raw_output),
+            manylinux_builder.PYTHON_PROJECT,
+        ),
+        (
+            ("auditwheel", "repair", "--plat", f"manylinux_2_28_{machine}", "--wheel-dir", str(output), raw_wheel),
+            REPOSITORY_ROOT,
+        ),
+        (("auditwheel", "show", str(repaired)), REPOSITORY_ROOT),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"raw_count": 0}, "exactly one unrepaired"),
+        ({"raw_count": 2}, "exactly one unrepaired"),
+        ({"repaired_count": 0}, "exactly one repaired"),
+        ({"repaired_count": 2}, "exactly one repaired"),
+        ({"repaired_tag": "manylinux_2_17_x86_64"}, "required tag manylinux_2_28_x86_64"),
+    ],
+)
+def test_manylinux_build_rejects_missing_duplicate_or_wrong_policy_wheels(tmp_path, monkeypatch, options, message):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, **options)
+    with pytest.raises(SystemExit, match=message):
+        manylinux_builder.build(output)
+    assert not any(command[:2] == ("auditwheel", "show") for command, _ in calls)
+
+
+def test_manylinux_build_propagates_repair_failure(tmp_path, monkeypatch):
+    output, calls = _manylinux_build_case(tmp_path, monkeypatch, fail_repair=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        manylinux_builder.build(output)
+    assert not any(command[:2] == ("auditwheel", "show") for command, _ in calls)
+
+
 def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> None:
     jobs = _workflow("prediction-regression-gate.yml")["jobs"]
     report_commands = _run_commands(jobs["report"])
@@ -463,14 +796,19 @@ def _run_comparison_base(
     return result, output
 
 
-def test_fast_ci_whitespace_receives_the_verified_pr_base() -> None:
-    jobs = _workflow("ci.yml")["jobs"]
-    assert jobs["verify-target"]["outputs"]["whitespace-base"] == "${{ steps.pr-target.outputs.base_sha }}"
-    assert jobs["fast-ci"]["with"]["base_sha"] == "${{ needs.verify-target.outputs.whitespace-base }}"
+def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
     fast_ci = _workflow("fast-ci.yml")
-    base_input = fast_ci["on"]["workflow_call"]["inputs"]["base_sha"]
-    assert base_input["required"] == "false"
-    assert base_input["type"] == "string"
+    assert "workflow_call" not in fast_ci["on"]
+    assert set(fast_ci["on"]["push"]["branches"]) == {"main", "pull-request/*", "release/*"}
+    assert fast_ci["on"]["workflow_dispatch"]["inputs"]["expected_sha"]["required"] == "true"
+    gate = _workflow("ci.yml")["jobs"]["fast-ci"]
+    assert gate["name"] == "Require Fast CI"
+    assert "uses" not in gate
+    assert gate["permissions"] == {"contents": "read", "actions": "read"}
+    assert "scripts/require_fast_ci.py" in _run_commands(gate)
+    assert "workflow_run" not in _workflow("ci.yml")["on"]
+    whitespace = _run_commands(fast_ci["jobs"]["python-static"])
+    assert "[.head.sha, .base.sha] | @tsv" in whitespace
     assert fast_ci["jobs"]["python-static"]["env"]["BASE_SHA"] == (
         "${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}"
     )
@@ -527,10 +865,10 @@ def _run_pr_target(
     return result, output
 
 
-def test_full_ci_trusted_copy_exports_the_stacked_pr_base(tmp_path: Path) -> None:
+def test_full_ci_trusted_copy_validates_the_stacked_pr_base(tmp_path: Path) -> None:
     result, output = _run_pr_target(tmp_path, "a" * 40, "d" * 40)
     assert result.returncode == 0, result.stderr
-    assert output == {"base_sha": "d" * 40}
+    assert output == {}
 
 
 @pytest.mark.parametrize(
@@ -579,9 +917,18 @@ def _commit_file(repository: Path, name: str, contents: str) -> str:
     return _git(repository, "rev-parse", "HEAD").stdout.strip()
 
 
-def _run_whitespace_step(repository: Path, base: str, target: str) -> subprocess.CompletedProcess[str]:
+def _run_whitespace_step(
+    repository: Path,
+    base: str,
+    target: str,
+    ref: str = "refs/heads/pull-request/121",
+    event: str = "push",
+) -> subprocess.CompletedProcess[str]:
     job = _workflow("fast-ci.yml")["jobs"]["python-static"]
     script = next(step["run"] for step in job["steps"] if step.get("name") == "Check changed-line whitespace")
+    gh = repository / "gh"
+    gh.write_text('#!/bin/bash\nprintf "%s\\t%s\\n" "$TARGET_SHA" "$TEST_PR_BASE"\n')
+    gh.chmod(0o755)
     return subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         cwd=repository,
@@ -589,17 +936,75 @@ def _run_whitespace_step(repository: Path, base: str, target: str) -> subprocess
             **os.environ,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
-            "GITHUB_EVENT_NAME": "push",
-            "GITHUB_REF": "refs/heads/pull-request/121",
+            "GITHUB_EVENT_NAME": event,
+            "GITHUB_REF": ref,
             "BEFORE_SHA": "f" * 40,
             "BASE_SHA": base,
             "TARGET_SHA": target,
             "GH_TOKEN": "ci-contract-dummy-token",
+            "PATH": f"{repository}{os.pathsep}{os.environ['PATH']}",
+            "REPOSITORY": "ai-dynamo/aisimulate",
+            "TEST_PR_BASE": base,
         },
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize("case", ["matching", "missing-expected", "wrong-run-sha", "wrong-checkout"])
+def test_fast_ci_manual_exact_target_guard(tmp_path: Path, case: str) -> None:
+    _git(tmp_path, "init", "--quiet")
+    head = _commit_file(tmp_path, "root.txt", "root\n")
+    job = _workflow("fast-ci.yml")["jobs"]["policy"]
+    assert job["env"]["EXPECTED_SHA"] == "${{ inputs.expected_sha }}"
+    assert job["env"]["TARGET_SHA"] == "${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}"
+    step = next(step for step in job["steps"] if step.get("name") == "Verify exact target")
+    expected = "" if case == "missing-expected" else "b" * 40 if case == "wrong-checkout" else head
+    target = expected or head
+    run_sha = "b" * 40 if case in {"wrong-run-sha", "wrong-checkout"} else head
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "EXPECTED_SHA": expected,
+            "TARGET_SHA": target,
+            "GITHUB_SHA": run_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (case == "matching"), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("supplied_base", [False, True], ids=["default-last-commit", "explicit-whole-change"])
+def test_fast_ci_manual_base_selects_the_whitespace_range(tmp_path: Path, supplied_base: bool) -> None:
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "root.txt", "root\n")
+    _commit_file(tmp_path, "first.txt", "earlier whitespace error \n")
+    target = _commit_file(tmp_path, "last.txt", "clean final commit\n")
+    workflow = _workflow("fast-ci.yml")
+    base_input = workflow["on"]["workflow_dispatch"]["inputs"]["base_sha"]
+    assert base_input["required"] == "false"
+    assert base_input["type"] == "string"
+    assert base_input["default"] == ""
+    # A manual event has neither pull_request.base.sha nor before; the workflow
+    # expression selects this input or its empty default.
+    assert workflow["jobs"]["python-static"]["env"]["BASE_SHA"] == (
+        "${{ inputs.base_sha || github.event.pull_request.base.sha || github.event.before }}"
+    )
+    result = _run_whitespace_step(
+        tmp_path,
+        base if supplied_base else base_input["default"],
+        target,
+        ref="refs/heads/codex/manual",
+        event="workflow_dispatch",
+    )
+    assert (result.returncode != 0) is supplied_base, result.stdout + result.stderr
+    assert ("first.txt" in result.stdout) is supplied_base
 
 
 @pytest.mark.parametrize("earlier_whitespace", [False, True], ids=["clean-rebased-copy", "earlier-pr-commit"])
@@ -629,7 +1034,7 @@ def test_fast_ci_without_a_base_preserves_the_last_commit_range(tmp_path: Path, 
     _commit_file(tmp_path, "earlier.txt", "outside the last commit \n")
     target = _commit_file(tmp_path, "last.txt", "last change\n")
 
-    result = _run_whitespace_step(tmp_path, base, target)
+    result = _run_whitespace_step(tmp_path, base, target, ref="refs/heads/release/new")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "earlier.txt" not in result.stdout
@@ -702,17 +1107,98 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
         "rust",
         "rust-feature-modes",
         "public-api-rust",
-        "application-test-wheel",
         "python-compatibility",
         "engine-golden-regression",
-        "release-artifact-contract",
     ):
         assert any(step.get("uses") == action_path for step in full_ci[job_name]["steps"])
 
     assert any(step.get("uses") == action_path for step in _workflow("collector-check.yml")["jobs"]["check"]["steps"])
-    assert any(
-        step.get("uses") == action_path
-        for step in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
+
+
+def test_manylinux_jobs_select_bundled_python_without_setup_python() -> None:
+    action_path = "./.github/actions/setup-manylinux-python-rust"
+    for workflow_name, job_name in (
+        ("ci.yml", "application-test-wheel"),
+        ("ci.yml", "release-artifact-contract"),
+        ("fpe-support-matrix.yml", "prepare-wheel"),
+    ):
+        steps = _workflow(workflow_name)["jobs"][job_name]["steps"]
+        assert any(step.get("uses") == action_path for step in steps)
+        assert not any(
+            step.get("uses", "").startswith(("actions/setup-python@", "./.github/actions/setup-python-rust"))
+            for step in steps
+        )
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    assert action["runs"]["steps"][0]["env"]["MANYLINUX_PYTHON_ROOT"] == "/opt/python/cp312-cp312"
+    assert not any(step.get("uses", "").startswith("actions/setup-python@") for step in action["runs"]["steps"])
+    rust = next(step for step in action["runs"]["steps"] if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
+    assert rust["with"]["toolchain"] == _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["env"]["RUST_TOOLCHAIN"]
+
+
+@pytest.mark.parametrize(
+    "missing", [None, "python", "cc", "c++", "make", "auditwheel", "patchelf", "auditwheel-broken", "patchelf-broken"]
+)
+def test_manylinux_bootstrap_exports_working_python_or_fails_before_build(tmp_path: Path, missing: str | None) -> None:
+    action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
+    bootstrap = action["runs"]["steps"][0]["run"]
+    python_root = tmp_path / "bundled-python"
+    binaries = python_root / "bin"
+    binaries.mkdir(parents=True)
+    if missing != "python":
+        (binaries / "python").symlink_to(sys.executable)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    tool_log = tmp_path / "tool-log"
+    for name in ("cc", "c++", "make", "auditwheel", "patchelf"):
+        if name != missing:
+            binary = tools / name
+            if name in ("auditwheel", "patchelf"):
+                binary.write_text(
+                    f'#!/bin/bash\necho "{name} $*" >> "$AUDIT_TOOL_LOG"\n'
+                    + ("exit 1\n" if missing == f"{name}-broken" else 'test "$1" = --version\n')
+                )
+                binary.chmod(0o755)
+            else:
+                binary.symlink_to("/usr/bin/true")
+    env_file = tmp_path / "github-env"
+    path_file = tmp_path / "github-path"
+    env_file.touch()
+    path_file.touch()
+    runner_temp = tmp_path / "runner-temp"
+    result = subprocess.run(
+        ["/bin/bash", "-c", bootstrap],
+        env={
+            **os.environ,
+            "PATH": str(tools),
+            "MANYLINUX_PYTHON_ROOT": str(python_root),
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_ENV": str(env_file),
+            "GITHUB_PATH": str(path_file),
+            "AUDIT_TOOL_LOG": str(tool_log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if missing:
+        assert result.returncode != 0
+        assert env_file.read_text() == path_file.read_text() == ""
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert tool_log.read_text().splitlines() == ["auditwheel --version", "patchelf --version"]
+    exported = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    assert exported == {
+        "PYO3_PYTHON": str(binaries / "python"),
+        "LIBRARY_PATH": str(python_root / "lib"),
+        "CARGO_HOME": str(runner_temp / "cargo"),
+        "RUSTUP_HOME": str(runner_temp / "rustup"),
+    }
+    assert path_file.read_text().splitlines() == [str(binaries)]
+    subprocess.run(
+        ["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"],
+        env={**os.environ, **exported, "PATH": path_file.read_text().strip()},
+        check=True,
+        timeout=10,
     )
 
 

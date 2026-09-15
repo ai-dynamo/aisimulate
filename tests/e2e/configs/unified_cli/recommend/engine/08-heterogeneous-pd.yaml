@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Real op-level timing and inferred KV capacity on both hardware types.
+traffic:
+  source: {type: synthetic, input_tokens: 128, output_tokens: 8}
+  load: {type: concurrency, concurrency: 2}
+  stop: {requests: 6}
+engine:
+  mode: disaggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: h200_sxm
+  backend: vllm
+  backend_version: 0.24.0
+  context_length: 4096
+  kv_transfer: {bytes_per_token: auto, bandwidth_gb_per_second: 50}
+  workers:
+    prefill:
+      parallelism: {preset: [{replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}]}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 1}
+    decode:
+      hardware: gb200
+      parallelism: {preset: [{replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}]}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 8}
+evaluation:
+  sla: {ttft_ms: 800, itl_ms: 30}
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints: {max_candidate_gpus: 2}
+optimizer: {algorithm: random, max_trials: 1, parallelism: 1, seed: 14}

@@ -236,6 +236,7 @@ def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayRepor
         encoder_memory_gib=encoder.memory_gib,
         encoder_power_coverage=encoder.power_coverage,
     )
+    metrics.update(power_w=None, power_coverage=None)
     if encoder.power_w is not None:
         metrics["encoder_power_w"] = encoder.power_w
     return ReplayReport(

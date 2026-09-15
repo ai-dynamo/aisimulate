@@ -153,7 +153,9 @@ pub use handoff::{
 };
 pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
-pub use protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
+pub use protocol::{
+    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
@@ -176,3 +178,7 @@ pub use telemetry::{
     ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
     ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
+
+// Typed power diagnostics are exported by the native Replay/PyO3 engine path.
+// Dynamo's external Python report adapters require their own passthrough and
+// qualification; Rust type re-exports alone do not establish adapter parity.

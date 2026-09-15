@@ -176,7 +176,7 @@ def test_positive_power_is_encoder_only():
     report = apply_encoder_overlay(_report(), _spec(power_w=200.0, power_coverage=0.75))
     assert report.metrics["encoder_power_w"] == 200
     assert report.metrics["encoder_power_coverage"] == 0.75
-    assert "power_w" not in report.metrics
+    assert report.metrics["power_w"] is None
 
 
 @pytest.mark.parametrize(

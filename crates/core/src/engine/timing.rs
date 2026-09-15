@@ -182,6 +182,7 @@ impl TimingPhaseEvidence {
             && self.covered_latency_ms.is_finite()
             && self.covered_latency_ms >= 0.0
             && self.covered_latency_ms <= self.latency_ms
+            && self.operation_totals_match()
         {
             (self.covered_latency_ms / self.latency_ms).clamp(0.0, 1.0)
         } else {
@@ -251,7 +252,43 @@ impl TimingPhaseEvidence {
             .into_iter()
             .map(TimingOperationEvidence::canonicalized)
             .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            self.operation_totals_match(),
+            "timing phase totals disagree with operation evidence"
+        );
         Ok(self)
+    }
+
+    fn operation_totals_match(&self) -> bool {
+        if self.operations.is_empty() {
+            return true;
+        }
+        // Phase and name-folded operation sums can differ by rounding. This
+        // tolerance validates redundant totals; it never changes the power gate.
+        let matches = |left: f64, right: f64| {
+            left.is_finite()
+                && right.is_finite()
+                && (left - right).abs() <= 1e-9 * left.abs().max(right.abs())
+        };
+        let latency: f64 = self.operations.iter().map(|op| op.latency_ms).sum();
+        let energy: f64 = self.operations.iter().filter_map(|op| op.energy_wms).sum();
+        let covered: f64 = self
+            .operations
+            .iter()
+            .map(|op| {
+                if op
+                    .energy_wms
+                    .is_some_and(|energy| energy.is_finite() && energy > 0.0)
+                {
+                    op.covered_latency_ms
+                } else {
+                    0.0
+                }
+            })
+            .sum();
+        matches(self.latency_ms, latency)
+            && matches(self.energy_wms.unwrap_or(0.0), energy)
+            && matches(self.covered_latency_ms, covered)
     }
 
     fn accumulate_operation(&mut self, operation: TimingOperationEvidence) -> Result<()> {
@@ -613,6 +650,38 @@ mod tests {
 
         assert!(phase.try_accumulate(invalid).is_err());
         assert_eq!(phase, before);
+    }
+
+    #[test]
+    fn phase_totals_must_match_nonempty_operation_evidence() {
+        let phase = TimingPhaseEvidence::from_operations(vec![
+            TimingOperationEvidence::new(
+                "gemm",
+                10.0,
+                Some(4_000.0),
+                TimingEvidenceSource::Silicon,
+            )
+            .unwrap(),
+        ]);
+        for field in 0..3 {
+            let mut invalid = phase.clone();
+            match field {
+                0 => invalid.energy_wms = Some(5_000.0),
+                1 => invalid.latency_ms = 11.0,
+                _ => invalid.covered_latency_ms = 9.0,
+            }
+            let mut result = TimingPhaseEvidence::default();
+            assert!(result.try_accumulate(invalid.clone()).is_err());
+            assert_eq!(result, TimingPhaseEvidence::default());
+            assert_eq!(invalid.coverage(), 0.0);
+        }
+        let mut rounded = phase.clone();
+        rounded.energy_wms = Some(4_000.0 + 1e-10);
+        assert!(
+            TimingPhaseEvidence::default()
+                .try_accumulate(rounded)
+                .is_ok()
+        );
     }
 
     #[test]
