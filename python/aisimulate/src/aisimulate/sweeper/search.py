@@ -59,6 +59,7 @@ from .provider import (
     SearchSpaceFragment,
     SweepConfigProvider,
     SweepContext,
+    validate_router_prefill_hardware,
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
@@ -600,9 +601,26 @@ def _materialize_one(
                     runner_metadata={},
                     config_snapshot=epd_snapshot,
                 )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        backend_version = config.search_space.backend_version
+        if backend_version is None:
+            if sample["deployment_mode"] == "disagg":
+                role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
+                if len(set(role_hardware.values())) == 1:
+                    backend_version = resolve_backend_version(role_hardware["prefill"], selection["backend"])
+                else:
+                    role_versions = {
+                        role: resolve_backend_version(hardware, selection["backend"])
+                        for role, hardware in role_hardware.items()
+                    }
+                    if len(set(role_versions.values())) != 1:
+                        raise ValueError(
+                            "heterogeneous P/D hardware requires one common backend_version; "
+                            f"latest versions for backend={selection['backend']!r} are {role_versions}. "
+                            "Set search_space.backend_version to a version supported by both SKUs."
+                        )
+                    backend_version = role_versions["prefill"]
+            else:
+                backend_version = resolve_backend_version(config.search_space.hardware_sku, selection["backend"])
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
@@ -669,6 +687,8 @@ def _materialize_one(
                 candidate_context,
             )
             _validate_provider_replay_spec(name, adapter_spec)
+            if sample["deployment_mode"] == "disagg":
+                validate_router_prefill_hardware(adapter_spec, sample["prefill_hardware_sku"])
             # Frozen dataclasses do not freeze nested JSON containers. Snapshot
             # the return value so an adapter can safely reuse an output buffer
             # without mutating candidates already prepared in this round.

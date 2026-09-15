@@ -200,6 +200,64 @@ pub struct TrtllmConfig {
     pub capacity_scheduler_policy: TrtllmCapacityPolicy,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G3Scope {
+    WorkerLocal,
+    ClusterShared,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G3OffloadConfig {
+    pub scope: G3Scope,
+    pub num_g3_blocks: usize,
+    #[serde(default = "G3OffloadConfig::default_latency")]
+    pub latency_to_first_byte_ms: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub write_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_write_bandwidth_gbps: f64,
+}
+
+impl G3OffloadConfig {
+    fn default_latency() -> f64 {
+        0.1
+    }
+
+    fn default_worker_bandwidth() -> f64 {
+        10.0
+    }
+
+    fn default_shared_bandwidth() -> f64 {
+        80.0
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.num_g3_blocks > 0,
+            "g3_offload.num_g3_blocks must be positive"
+        );
+        for value in [
+            self.latency_to_first_byte_ms,
+            self.read_bandwidth_gbps,
+            self.write_bandwidth_gbps,
+            self.shared_read_bandwidth_gbps,
+            self.shared_write_bandwidth_gbps,
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "g3_offload timing must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Physical controls for framework-native G1-to-host offload.
 ///
 /// Framework policy remains selected by [`EngineConfig::backend`]. This
@@ -327,6 +385,8 @@ pub struct EngineConfig {
     /// Optional framework-native host-offload simulation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g3_offload: Option<crate::engine::G3OffloadConfig>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -385,6 +445,8 @@ struct EngineConfigWire {
     #[serde(default)]
     native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(default)]
+    g3_offload: Option<crate::engine::G3OffloadConfig>,
+    #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
     #[serde(default)]
     kv_transfer_timing_mode: TransferTimingMode,
@@ -426,6 +488,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
             native_host_offload: wire.native_host_offload,
+            g3_offload: wire.g3_offload,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
@@ -459,6 +522,7 @@ impl Default for EngineConfig {
             kv_transfer_bytes_per_token: None,
             kv_cache_bytes_per_token: None,
             native_host_offload: None,
+            g3_offload: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -529,10 +593,6 @@ impl EngineConfig {
         }
         if self.backend == Backend::Sglang {
             ensure!(
-                !self.emit_kv_token_ids,
-                "emit_kv_token_ids=true is not supported for backend=sglang"
-            );
-            ensure!(
                 self.enable_chunked_prefill,
                 "enable_chunked_prefill=false is not supported for backend=sglang"
             );
@@ -551,6 +611,13 @@ impl EngineConfig {
             self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
             "kv_cache_bytes_per_token must be positive"
         );
+        if let Some(g3) = &self.g3_offload {
+            g3.validate()?;
+            anyhow::ensure!(
+                self.native_host_offload.is_some(),
+                "g3_offload requires native_host_offload"
+            );
+        }
         if let Some(host_offload) = &self.native_host_offload {
             host_offload.validate()?;
             ensure!(
@@ -968,37 +1035,34 @@ mod tests {
     }
 
     #[test]
-    fn sglang_supports_disabled_prefix_caching() {
-        let config = EngineConfig {
-            enable_prefix_caching: false,
-            ..EngineConfig::for_backend(Backend::Sglang)
-        };
-        config.validate().unwrap();
-        crate::engine::EngineFactory::new(config).unwrap();
+    fn sglang_supports_prefix_caching_and_token_id_controls() {
+        for (enable_prefix_caching, emit_kv_token_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let config = EngineConfig {
+                enable_prefix_caching,
+                emit_kv_events: true,
+                emit_kv_token_ids,
+                ..EngineConfig::for_backend(Backend::Sglang)
+            };
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config).unwrap();
+        }
     }
 
     #[test]
-    fn sglang_rejects_remaining_unsupported_controls_at_validation_and_factory_boundaries() {
-        let cases = [
-            ("emit_kv_token_ids", true, true, true),
-            ("enable_chunked_prefill", false, true, false),
-        ];
-
-        for (field, emit_kv_token_ids, enable_prefix_caching, enable_chunked_prefill) in cases {
-            let config = EngineConfig {
-                emit_kv_events: emit_kv_token_ids,
-                emit_kv_token_ids,
-                enable_prefix_caching,
-                enable_chunked_prefill,
-                ..EngineConfig::for_backend(Backend::Sglang)
-            };
-            assert!(config.validate().unwrap_err().to_string().contains(field));
-            let error = match crate::engine::EngineFactory::new(config) {
-                Ok(_) => panic!("expected EngineFactory to reject {field}"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(field));
-        }
+    fn sglang_rejects_disabled_chunked_prefill_at_validation_and_factory_boundaries() {
+        let config = EngineConfig {
+            enable_chunked_prefill: false,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        let field = "enable_chunked_prefill";
+        assert!(config.validate().unwrap_err().to_string().contains(field));
+        let error = match crate::engine::EngineFactory::new(config) {
+            Ok(_) => panic!("expected EngineFactory to reject {field}"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(field));
     }
 
     #[test]

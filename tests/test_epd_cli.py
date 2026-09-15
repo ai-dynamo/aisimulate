@@ -84,10 +84,12 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
-@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
 def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
-    raw = _recommendation(mode)
+    raw = _recommendation("disaggregated" if mode == "heterogeneous" else mode)
+    if mode == "heterogeneous":
+        raw["engine"]["workers"]["decode"]["hardware"] = "gb200"
     if relative_stop:
         raw["traffic"]["stop"] = {"requests_per_load_unit": 2.0}
     # Exercise strict aggregate SLA and retention in the selected prediction.

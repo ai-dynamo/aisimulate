@@ -44,6 +44,14 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_g3_offload(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        self.core.set_g3_offload(registry, node);
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
     }
@@ -55,6 +63,10 @@ impl SchedulerRank {
         seed_offset: u64,
     ) -> Result<Self> {
         config.validate()?;
+        ensure!(
+            config.g3_offload.is_none(),
+            "g3_offload is Replay-owned; construct it through ReplaySpec"
+        );
         ensure!(
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
             "native_host_offload supports only dp_size=1 in the initial implementation"

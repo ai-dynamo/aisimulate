@@ -1,70 +1,352 @@
----
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-title: AISimulate CLI Design
-subtitle: Draft public command, configuration, and output contract for prediction and recommendation
----
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
 
-This document proposes one public command-line interface (CLI) for AISimulate prediction and
-configuration recommendation. It unifies the user-facing concepts currently split across Replay and
-Sweeper while keeping execution-stack details out of the configuration schema.
+# AISimulate CLI User Guide
 
-## Scope
+Predict serving behavior and search deployment configurations with `aisimulate`.
 
-The design covers:
+Use this guide for the unified CLI. For the six `aiconfigurator cli` commands still shipped
+with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). The
+[migration guide](migrate-from-aiconfigurator.md) explains which workflows have a unified replacement.
 
-- The `aisimulate predict` and `aisimulate recommend` commands.
-- Their command-line flags and precedence rules.
-- The shared YAML schema and recommendation-only extensions.
-- Search-domain syntax and validation.
-- User-visible files, standard output, errors, and exit codes.
-- The conceptual replacement of the existing Replay and Sweeper entry points.
+> [!WARNING]
+> **Experimental.** Recommendation schemas and search behavior may change between releases
+> without a standard deprecation period. Upgrading can require changes to your YAML or scripts.
 
-The design does not cover:
+## Start here
 
-- Python APIs, `ReplaySpec`, runner/factory implementation internals, or adapter internals beyond the
-  stack-discovery contract.
-- How the `engine` and `dynamo` stacks execute a prediction.
-- AIConfigurator (AIC), Planner, router, optimizer, worker-pool, caching, or timeout internals.
-- Compatibility shims, migration code, or implementation sequencing.
-- Online replay runtime internals. `predict` can request online execution from a capable optional
-  stack; `recommend` remains offline-only.
+1. [Install AISimulate](#install) and [predict one deployment](#predict-one-deployment) to see the results.
+2. [Try your own workload](#try-your-own-workload) by changing token lengths or load.
+3. [Recommend under a GPU budget](#recommend-under-a-gpu-budget), then [predict the selected configuration](#predict-a-recommended-configuration).
+
+For a specific task, jump to [Dynamo integration](#choose-an-execution-stack),
+[AgentX and other trace formats](#trace-format-compatibility), or [troubleshooting](#troubleshooting).
+Use the [configuration reference](#configuration-model) when you need individual fields.
 
 ## Commands
 
-### Predict
+| Command | Purpose | Example invocation | Result |
+|---|---|---|---|
+| `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
+| `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
-Predict the behavior of one concrete deployment configuration:
+The metric values in example results are hypothetical; they illustrate the output format and are
+not measurements from running these commands.
+
+## Install
+
+Check the [installation guide](../installation.md) for the selected wheel's
+platform requirements and publication status. Use its source-install workflow
+for features documented on `main` that are not yet in a published wheel.
+
+Use **Python 3.11–3.13**. The commands below use Bash or Zsh. Check that `python3` selects a
+supported version; substitute a versioned command such as `python3.13` if needed.
+
+When upgrading an existing AIConfigurator environment, follow the
+[package migration instructions](../../README.md#upgrade-from-standalone-aiconfigurator) before installing.
+
+Create a working directory and virtual environment, then install the built-in engine:
 
 ```bash
-aisimulate predict --config prediction.yaml
+python3 --version
+mkdir -p aisimulate-tutorial
+cd aisimulate-tutorial
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install aisimulate
+aisimulate --help
+aisimulate predict --help
+aisimulate recommend --help
 ```
 
-`predict` accepts only concrete configuration values. It rejects search domains and the
-recommendation-only `optimization` and `optimizer` sections.
+The help output should list `predict` and `recommend`. Save the YAML files below in this working
+directory and run the commands from there. Reactivate `.venv` when opening a new terminal.
 
-### Recommend
+The built-in engine predicts behavior offline without launching a GPU serving deployment.
+`engine.hardware: h200_sxm` names the hardware being modeled; you do not need an H200 to run the example.
 
-Search a configuration space and recommend concrete deployment configurations:
+## Predict one deployment
+
+Save this as `prediction.yaml`. It evaluates one Qwen3-32B-FP8 worker on an H200 with modeled
+vLLM serving behavior, four concurrent requests, and twelve requests in total. The vLLM examples
+explicitly select H200 performance-data version `0.24.0`:
+
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 12}
+
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  backend_version: "0.24.0"
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 1}
+```
+
+`input_tokens` and `output_tokens` set the prompt and response lengths. `replicas` counts worker
+copies; `tensor` counts GPUs used to split each worker's model. With the other parallelism settings
+at their defaults, the GPU count is `replicas × tensor`: this example models one GPU.
+
+Run it and retain the per-request records:
 
 ```bash
-aisimulate recommend --config recommendation.yaml
+aisimulate predict \
+  --config prediction.yaml \
+  --output-dir ./prediction-output \
+  --capture-per-request
 ```
 
-`recommend` accepts the complete prediction schema plus search domains, `optimization`, and
-`optimizer`. Every recommended YAML file is a concrete configuration that can be passed directly to
-`aisimulate predict`.
+To rerun a command, choose a new `--output-dir` or add `--overwrite` to replace its known output files.
 
-The `predict` verb is intentional: one pinned configuration predicts serving behavior, while
-`recommend` searches configurations. `simulate` is not a public version 1 command name.
+Example output (illustrative values):
 
-### Common Options
+This compact view shows `avg` and `p99`; expand the terminal output below for all statistics.
+
+| Metric | avg | p99 |
+|---|---:|---:|
+| Time to first token (ms) | 120.00 | 149.00 |
+| Time to second token (ms) | 130.00 | 159.00 |
+| Request latency (ms) | 1,390.00 | 1,419.00 |
+| Inter-token latency (ms) | 10.00 | 10.00 |
+| Output per user (tokens/s) | 100.00 | 100.00 |
+| Total output (tokens/s) | 320.00 | N/A |
+| Request throughput (requests/s) | 2.50 | N/A |
+| Request count | 12 | N/A |
+
+Wall time: **1,250 ms**. Saved report: `prediction-output/prediction.json`.
+
+<details>
+<summary>Full terminal output (all statistics)</summary>
+
+```text
+NVIDIA AIPerf | LLM Metrics
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
+┃ Metric                                             ┃      avg ┃      min ┃      max ┃      p99 ┃      p90 ┃      p75 ┃   std ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
+┃ Time to First Token (ms)                           ┃   120.00 ┃    90.00 ┃   150.00 ┃   149.00 ┃   144.00 ┃   135.00 ┃ 18.00 ┃
+┃ Time to Second Token (ms)                          ┃   130.00 ┃   100.00 ┃   160.00 ┃   159.00 ┃   154.00 ┃   145.00 ┃ 18.00 ┃
+┃ Request Latency (ms)                               ┃ 1,390.00 ┃ 1,360.00 ┃ 1,420.00 ┃ 1,419.00 ┃ 1,414.00 ┃ 1,405.00 ┃ 18.00 ┃
+┃ Inter Token Latency (ms)                           ┃    10.00 ┃    10.00 ┃    10.00 ┃    10.00 ┃    10.00 ┃    10.00 ┃  0.00 ┃
+┃ Output Token Throughput Per User (tokens/sec/user) ┃   100.00 ┃   100.00 ┃   100.00 ┃   100.00 ┃   100.00 ┃   100.00 ┃  0.00 ┃
+┃ Output Token Throughput (tokens/sec)               ┃   320.00 ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃   N/A ┃
+┃ Request Throughput (requests/sec)                  ┃     2.50 ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃   N/A ┃
+┃ Request Count (requests)                           ┃    12.00 ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃      N/A ┃   N/A ┃
+└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━━━━┴━━━━━━━┘
+Wall Time (ms): 1,250.00
+Saved full report to: prediction-output/prediction.json
+```
+
+</details>
+
+The `avg` column shows average latency or throughput. `p99` is the 99th percentile: about 99% of
+the corresponding measurements fall at or below that value. Time to First Token measures how long a request waits
+for its first output token. Inter Token Latency measures gaps between output tokens, and Request
+Latency measures the complete request. Output Token Throughput counts generated output tokens
+per second across the deployment. A short workload is useful for checking the
+workflow; choose a representative workload for performance comparisons. `Wall Time` measures the
+simulator's execution time on your machine; latency and throughput describe the modeled deployment.
+
+The command writes:
+
+```text
+prediction-output/
+├── prediction.json
+└── requests.jsonl
+```
+
+`prediction.json` contains the full runner report, including its `summary`. Add `--format json`
+to print the summary as one compact JSON object instead of the metrics table and saved-path line.
+`--capture-per-request` is optional and is unavailable for analytical EPD.
+
+`predict` accepts concrete values only. Search domains, `optimization`, and `optimizer` belong
+in a recommendation input.
+
+## Try your own workload
+
+Reuse `prediction.yaml` and change supported fields with `--set`. The file itself is unchanged.
+
+### Change token lengths and concurrency
+
+This run uses 4,096 input tokens, 512 output tokens, and up to 16 requests in flight.
+It submits 160 requests in total:
+
+```bash
+aisimulate predict \
+  --config prediction.yaml \
+  --set traffic.source.input_tokens=4096 \
+  --set traffic.source.output_tokens=512 \
+  --set traffic.load.concurrency=16 \
+  --set traffic.stop.requests=160 \
+  --output-dir ./prediction-c16
+```
+
+The result is the same metrics table and a report at `prediction-c16/prediction.json`.
+Concurrency is a limit on active requests; `traffic.stop.requests` is the total workload size.
+
+### Use an incoming request rate
+
+To model eight arrivals per second, replace the entire load mapping so its fields match the new type:
+
+```bash
+aisimulate predict \
+  --config prediction.yaml \
+  --set 'traffic.load={type: constant_rate, requests_per_second: 8}' \
+  --set traffic.stop.requests=200 \
+  --output-dir ./prediction-8rps
+```
+
+The report is saved to `prediction-8rps/prediction.json`. A request rate controls arrivals, so requests
+may queue if the deployment cannot keep up. Use `concurrency` to cap in-flight requests, or
+`constant_rate` / `poisson` to study an offered arrival rate. A request-rate input does not guarantee
+that the deployment meets that rate within a latency target.
+
+To evaluate a different model or system, update `engine.model`, `engine.hardware`, and
+`engine.backend` in the YAML. Choose a combination covered by the
+[support reference](../../README.md#support-and-accuracy). Keep the workload fixed when comparing
+deployments; changing both the deployment and the workload makes the scores harder to compare.
+
+## Recommend under a GPU budget
+
+Save this as `recommendation.yaml`. It searches one-GPU and four-GPU aggregated configurations,
+at concurrency four or eight, to maximize throughput per GPU within a four-GPU budget:
+
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: {choices: [4, 8]}}
+  stop: {requests: 32}
+
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  backend_version: "0.24.0"
+  workers:
+    aggregated:
+      parallelism:
+        preset:
+          - {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+          - {replicas: 2, tensor: 2, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 256}
+      kv_cache:
+        block_size: 64
+        capacity: {type: default, memory_fraction: 0.9}
+
+optimization:
+  target: throughput_per_gpu
+  constraints: {max_candidate_gpus: 4}
+
+optimizer:
+  algorithm: random
+  max_trials: 4
+  parallelism: 1
+  seed: 42
+```
+
+The two parallelism presets represent `1 replica × 1 GPU` and `2 replicas × 2 GPUs`.
+The GPU budget limits each candidate deployment. `optimizer.max_trials` limits search attempts,
+and `optimizer.parallelism` controls concurrent simulation trials on your machine.
+
+This example searches concurrency as well as deployment shape. To compare deployments at one
+fixed load, replace `{choices: [4, 8]}` with a concrete concurrency such as `8`.
+
+Run the bounded search:
+
+```bash
+aisimulate recommend \
+  --config recommendation.yaml \
+  --output-dir ./recommendation-output
+```
+
+Example output (illustrative values, four selected configurations):
+
+```text
+AISimulate recommendations
+1: score=400 used_gpus=4 config=recommendation-output/recommendations/0001.yaml
+2: score=360 used_gpus=1 config=recommendation-output/recommendations/0002.yaml
+3: score=320 used_gpus=4 config=recommendation-output/recommendations/0003.yaml
+4: score=280 used_gpus=1 config=recommendation-output/recommendations/0004.yaml
+Saved full result to: recommendation-output/recommendation.json
+```
+
+The first row identifies a selected configuration and its score. For `throughput_per_gpu`,
+`score=400` means output tokens per second per GPU; four GPUs would correspond to 1,600 output
+tokens per second in aggregate. Higher scores rank first. The selected count can be smaller than
+the trial budget because candidates may be infeasible, fail, or resolve to the same configuration.
+
+For this example result, the command writes:
+
+```text
+recommendation-output/
+├── recommendation.json
+└── recommendations/
+    ├── 0001.yaml
+    ├── 0002.yaml
+    ├── 0003.yaml
+    └── 0004.yaml
+```
+
+`recommendation.json` contains the complete result ledger, including candidate metrics, statuses,
+and selection views. The numbered YAML files contain the selected concrete prediction inputs in
+rank order. Add `--format json` to print the selected rows as a JSON array instead of the ranked
+text and saved-path line; the output files stay the same.
+
+A four-trial search is a small starting example. Increase `optimizer.max_trials` to explore more
+candidates; the trial budget does not guarantee an exhaustive search or a globally optimal result.
+Use `parallelism: {preset: default}` to let AISimulate generate the parallelism search space.
+
+### Choose a goal and add latency limits
+
+Use `throughput` to maximize total output within the GPU budget, or `throughput_per_gpu` to favor
+efficiency. Use a `goodput` target when only output meeting your service-level agreement (SLA)
+should count toward the score. The [optimization reference](#optimization-goal) lists all targets.
+
+For latency-constrained selection, add this `evaluation` section and replace `optimization` with:
+
+```yaml
+evaluation:
+  sla: {ttft_ms: 500, itl_ms: 50}
+optimization:
+  target: goodput_per_gpu
+  strict_sla: true
+  constraints: {max_candidate_gpus: 4}
+```
+
+`goodput_per_gpu` rewards SLA-compliant throughput per GPU. `strict_sla: true` additionally
+filters candidates by the configured aggregate mean latency bounds. This is an efficiency search;
+see the [minimum-GPU migration example](migrate-from-aiconfigurator.md#keep-minimum-gpu-sizing-on-the-compatibility-cli)
+for the legacy sizing workflow.
+
+### Predict a recommended configuration
+
+If the search found a feasible candidate, pass a saved YAML directly to `predict`:
+
+```bash
+aisimulate predict \
+  --config ./recommendation-output/recommendations/0001.yaml \
+  --output-dir ./best-prediction
+```
+
+The saved YAML contains concrete values with no search domains, `preset`, `optimization`, or
+`optimizer`. The command prints the prediction metrics table shown earlier and writes
+`best-prediction/prediction.json`. It is a prediction input; deployment
+manifests and launch scripts are covered in the [migration guide](migrate-from-aiconfigurator.md).
+
+## Common Options
 
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `-c`, `--config PATH` | path | Required | Input YAML file. |
 | `--stack NAME` | string | `engine` | Built-in or discovered execution stack. This selection is CLI-only and is never written into YAML. |
-| `--set PATH=YAML_VALUE` | repeatable assignment | None | Override an existing configuration path after loading YAML. |
+| `--set PATH=YAML_VALUE` | repeatable assignment | None | Set a supported configuration path after loading YAML. |
 | `--output-dir PATH` | path | `./aisimulate-output` | Directory for durable results. |
 | `--overwrite` | flag | `false` | Replace known AISimulate output files in an existing output directory. |
 | `--format table\|json` | enum | `table` | Standard-output presentation. It does not change durable output files. |
@@ -79,38 +361,99 @@ The `predict` verb is intentional: one pinned configuration predicts serving beh
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
 
-### Stack Discovery
+### Override Semantics
 
-The `engine` runner factory ships with AISimulate. Optional stacks are discovered through the
-`aisimulate.runner_factories` Python entry-point group; the `ai-dynamo` package registers `dynamo`.
-Entry-point names are the accepted `--stack` values and must be unique.
+`--set` uses a dot-separated path and parses its value as YAML:
 
-Runner factories advertise their supported execution modes. The built-in `engine` stack supports
-offline prediction. Optional stacks may additionally support `predict --online`. A stack that does
-not advertise online execution fails before runner creation instead of silently falling back to
-offline execution. The selected runner validates finer stack-specific combinations.
+```bash
+aisimulate predict \
+  --config prediction.yaml \
+  --set traffic.load.concurrency=8 \
+  --set engine.workers.aggregated.parallelism.replicas=2 \
+  --output-dir ./prediction-overrides
+```
 
-Optional component configuration is discovered separately through
-`aisimulate.config_adapters`. Adapter names are `<stack>.<section>`, such as `dynamo.router` and
-`dynamo.planner`. An adapter validates and materializes its section for `predict` and contributes
-search dimensions plus per-candidate runtime hooks for `recommend`; it never starts replay itself.
-The selected runner factory combines all hooks and invokes the underlying runtime exactly once.
+The following rules apply:
 
-Every section owner defines separate typed prediction and recommendation models. AISimulate owns
-`TrafficPredictionConfig` / `TrafficRecommendationConfig` and `EnginePredictionConfig` /
-`EngineRecommendationConfig`; optional packages own the corresponding models for their sections.
-Internal runtime config is a third, fully resolved layer and is never used as the CLI search schema.
-The config-adapter ABI has three operations: compile a concrete prediction section, compile a
-recommendation section into a search plan, and materialize one candidate. The legacy Sweeper
-provider ABI remains a separate SDK compatibility surface.
+- The path must be supported by the schema, but may be omitted from the input YAML. Unknown fields are rejected.
+- Overrides are applied from left to right. The last assignment to a path wins.
+- YAML scalar, sequence, and mapping syntax is accepted on the right-hand side.
+- Sequence-index paths are not supported. Override the complete sequence instead.
+- Normal schema and cross-field validation runs after all overrides are applied.
+- Overrides affect the run. Recommended YAML files contain the selected concrete values;
+  `predict` writes the runner report, not a separate resolved-input YAML.
 
-If a requested optional stack is not installed, the CLI exits with code `2` before loading the
-configuration and reports an actionable error:
+## Choose an execution stack
+
+`--stack engine` is the default and uses the built-in offline runner. To use Dynamo-owned
+routing and Planner behavior, install the optional integration and select it explicitly:
+
+```bash
+python3 -m pip install aisimulate ai-dynamo
+aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
+aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
+```
+
+A config containing `router` or `planner` requires the corresponding installed adapters; the
+Dynamo integration provides them. Use the same stack when predicting a configuration saved by
+that stack's recommendation run. See the complete [Dynamo prediction](#complete-dynamo-prediction-example)
+and [recommendation](#dynamo-scalar-recommendation-example) examples below.
+
+`predict --online` requests wall-clock-paced execution from a stack that supports it.
+The built-in `engine` stack supports offline execution only; `recommend` is always offline.
+Online execution paces the simulation and does not launch a real serving endpoint.
+
+If Dynamo is unavailable, the error includes the installed stack names. For example, when only
+the built-in engine is installed:
 
 ```text
-stack 'dynamo' is unavailable; install the matching packages with:
-uv pip install aisimulate ai-dynamo
+stack 'dynamo' is unavailable; installed stacks: engine. Install the distribution that provides the requested stack.
 ```
+
+Install the integration in the same Python environment as `aisimulate`. Implementation details
+for stack and adapter authors are in [Sweeper architecture](../sweeper/architecture.md#unified-cli-integration).
+
+## Configuration Model
+
+The sections below are a reference. Jump to [traffic](#traffic), [engine](#engine),
+[search domains](#recommendation-domains), [presets](#presets-and-default-ranges),
+[optimization goals](#optimization-goal), [search controls](#optimizer-controls), or [outputs](#outputs).
+
+These fragments show the available top-level sections; they are not complete runnable inputs.
+Use the prediction and recommendation examples above for complete configurations.
+
+Both commands use one strict YAML model:
+
+```yaml
+traffic: {}
+engine: {}
+router: {}
+planner: {}
+evaluation: {}
+```
+
+`recommend` extends that model with:
+
+```yaml
+optimization: {}
+optimizer: {}
+```
+
+The command determines the document type. There is no top-level `kind` or stack field.
+
+| Section | `predict` | `recommend` | Purpose |
+|---|---|---|---|
+| `traffic` | Optional | Optional | Request source, load shape, and stopping condition. Uses the default synthetic request traffic when omitted. |
+| `engine` | Required | Required | Model, hardware, backend, topology, and worker roles. |
+| `router` | Optional adapter | Optional adapter | Dynamo routing policy; round robin when omitted. Requires the integration when configured. |
+| `planner` | Optional adapter | Optional adapter | Dynamo runtime scaling; disabled when omitted. Requires the integration when configured. |
+| `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
+| `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
+| `optimizer` | Rejected | Optional | Public search controls. |
+
+Unknown fields are rejected everywhere. Every semantic configuration knob is an explicit, typed YAML
+field. The selected stack, backend, policy, timing model, or capacity model determines which
+conditional fields are legal; there is no generic configuration passthrough mapping.
 
 ## Presets and Default Ranges
 
@@ -179,60 +522,11 @@ parallelism:
   preset: default
 ```
 
-The built-in default follows the existing Sweeper projection algorithm below. It does not expose the
-six YAML leaves as six independent optimizer parameters.
-
-First, the Sweeper builds the legal configuration pool for each deployment-mode branch. It enumerates
-worker sizes from the current `1, 2, 4, 8, 16` GPU ladder, with pipeline parallelism fixed at `1`, then
-enumerates legal tensor, attention-data, MoE-tensor, and MoE-expert shapes. It applies model-width,
-backend, real-silicon, KV-capacity, GPU-budget, and runner-capability filters. For every surviving
-worker shape, it enumerates positive replica counts that fit the budget. A disaggregated pool contains
-prefill/decode pairs whose combined GPU count fits the same budget. Aggregated and disaggregated modes
-use separate optimizer studies; backend remains a categorical parameter within each study.
-
-Second, each complete mapping is encoded into a smaller latent search space:
-
-| Deployment | Latent Parameter | Optimizer Type | Encoding |
-|---|---|---|---|
-| Both | `used_gpu_ratio` | Continuous float | Total GPUs divided by the branch GPU budget; range is the minimum and maximum ratio in the legal pool, default clamped from `1.0`. |
-| Aggregated | `agg_num_gpus_per_engine_target` | Log-scale discrete | GPUs per worker, `tensor * pipeline * attention_data`; feasible values come from the legal pool and the default is the pool value nearest its geometric midpoint. |
-| Aggregated | `agg_attention_mode` | Categorical | `tp` when attention data parallelism is `1`, otherwise `dp`. |
-| Aggregated MoE | `agg_ffn_mode` | Categorical | `ep` when MoE expert parallelism is greater than `1`, otherwise `tp`. |
-| Disaggregated | `prefill_gpu_share` | Continuous float | Prefill-pool GPUs divided by total candidate GPUs; range comes from the legal pool, default clamped from `0.5`. |
-| Disaggregated | `prefill_num_gpus_per_engine_target` | Log-scale discrete | Prefill GPUs per worker. |
-| Disaggregated | `decode_num_gpus_per_engine_target` | Log-scale discrete | Decode GPUs per worker. |
-| Disaggregated | `prefill_attention_mode`, `decode_attention_mode` | Categorical | Per-role `tp` or `dp`. |
-| Disaggregated MoE | `prefill_ffn_mode`, `decode_ffn_mode` | Categorical | Per-role `ep` or `tp`. |
-
-The latent parameter names retain the existing Sweeper's `engine` wording; in this public schema,
-`num_gpus_per_engine_target` means GPUs per worker.
-
-Only `used_gpu_ratio` and, for disaggregated mode, `prefill_gpu_share` are continuous parallelism
-parameters. GPUs per worker are discrete values sampled on a log scale; attention and FFN modes are
-categorical. Replica count is not sampled directly: together, total GPU ratio and GPUs-per-worker
-targets express the desired replica footprint. Constant latent parameters are omitted from the study
-and injected at their defaults.
-
-Third, every optimizer suggestion is snapped back to one complete mapping from the legal pool:
-
-1. Remove mappings that do not support the suggested backend.
-2. Count categorical mismatches for attention and FFN modes, and retain only mappings with the minimum
-   mismatch count. An exact mode match wins whenever one exists.
-3. Compute normalized squared distance over the numeric latent parameters. Ratios use linear values;
-   each GPUs-per-worker target uses `log2`. Each dimension is normalized by its backend-compatible
-   minimum-to-maximum span, and a constant dimension contributes zero:
-
-   ```text
-   distance = sum(((transform(actual) - transform(requested)) / span) ^ 2)
-   ```
-
-4. Select the mapping with minimum distance. Ties are deterministic: compare
-   `(tensor, pipeline, attention_data, moe_tensor, moe_expert, replicas)` for aggregated mode, or the
-   concatenated prefill tuple followed by the decode tuple for disaggregated mode.
-
-The selected mapping supplies the concrete six YAML fields. Trial metadata records requested latent
-features, actual snapped features, projection distance, whether a categorical mode was projected, and
-the final complete parallel configuration.
+The default preset selects complete, feasible parallelism mappings within the GPU budget.
+It accounts for the model, backend, memory capacity, and supported worker shapes. Its current
+worker-size ladder is `1, 2, 4, 8, 16` GPUs with pipeline parallelism fixed at `1`; replica counts
+share the candidate budget. See the [projection algorithm](../sweeper/architecture.md#parallelism-search-projection)
+for the internal search representation.
 
 A user-provided preset is a list of complete parallelism mappings:
 
@@ -256,61 +550,6 @@ parallelism:
 
 Omitted parallelism knobs then use their table-defined default ranges, and the Sweeper evaluates the
 Cartesian product before feasibility filtering.
-
-### Override Semantics
-
-`--set` uses a dot-separated path and parses its value as YAML:
-
-```bash
-aisimulate predict \
-  --config prediction.yaml \
-  --set traffic.load.requests_per_second=16 \
-  --set engine.workers.aggregated.parallelism.replicas=4
-```
-
-The following rules apply:
-
-- The path must already exist in the input schema. An override cannot create a new or unknown field.
-- Overrides are applied from left to right. The last assignment to a path wins.
-- YAML scalar, sequence, and mapping syntax is accepted on the right-hand side.
-- Sequence-index paths are not supported in version 1. Override the complete sequence instead.
-- Normal schema and cross-field validation runs after all overrides are applied.
-- The resolved input written to the output directory includes the overrides.
-
-## Configuration Model
-
-Both commands use one strict YAML model:
-
-```yaml
-traffic: {}
-engine: {}
-router: {}
-planner: {}
-evaluation: {}
-```
-
-`recommend` extends that model with:
-
-```yaml
-optimization: {}
-optimizer: {}
-```
-
-The command determines the document type. There is no top-level `kind` or stack field.
-
-| Section | `predict` | `recommend` | Purpose |
-|---|---|---|---|
-| `traffic` | Optional | Optional | Request source, load shape, and stopping condition. Uses the default synthetic request traffic when omitted. |
-| `engine` | Required | Required | Model, hardware, backend, topology, and worker roles. |
-| `router` | Optional | Optional | Request routing policy. Defaults to round robin. |
-| `planner` | Optional | Optional | Runtime scaling policy. Defaults to disabled. |
-| `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
-| `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
-| `optimizer` | Rejected | Optional | Public search controls. |
-
-Unknown fields are rejected everywhere. Every semantic configuration knob is an explicit, typed YAML
-field. The selected stack, backend, policy, timing model, or capacity model determines which
-conditional fields are legal; there is no generic configuration passthrough mapping.
 
 ## Traffic
 
@@ -487,7 +726,7 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 
 ### Trace Format Compatibility
 
-| Format | JSONL Unit | Allowed Load | `speedup` | `max_virtual_time_seconds` | Other Version 1 Constraints |
+| Format | JSONL Unit | Allowed Load | `speedup` | `max_virtual_time_seconds` | Other Constraints |
 |---|---|---|---|---|---|
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
@@ -519,7 +758,7 @@ lower uniformly to root-absolute canonical timestamps. The selected basis and wh
 heuristically or configured are logged; the resolved value is reported as
 `weka_nested_timestamp_basis` and included in source identity.
 The neutral importer accepts mixed source models and preserves each request's model label in graph
-provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
+provenance and identity. Execution currently supports one target: before the graph enters
 the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
 `engine.model`. The report records the sorted source-model set, target model, and
 `project_to_configured_target` policy under `agentic_model_projection`; per-node heterogeneous timing
@@ -527,9 +766,13 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-An explicit `agentic_lanes: N` assigns plays round-robin to N lanes and starts the next play in a lane
-only after the current play becomes quiescent. Omitting the field preserves authored timestamp
-behavior; corpus wrapping and fixed-duration lane orchestration are outside the version 1 contract.
+An explicit `agentic_lanes: N` assigns plays round-robin to N client lanes. The next play starts when
+the current play's client work ends: all authored requests complete on success, or all dispatched
+requests become terminal after a failure skips undispatched work. Background requests remain part
+of their play even without a parent join. P/D source holds and other server cleanup may outlive this
+boundary; they still constrain engine admission and final drain, but do not delay client submission.
+Omitting the field preserves authored timestamp behavior; corpus wrapping and fixed-duration lane
+orchestration are outside the version 1 contract.
 
 ### Mooncake and Mooncake Delta JSONL
 
@@ -565,7 +808,7 @@ from session order. It adds these fields:
 | `delay` / `delay_ms` | `0` | Delay after the last dependency completes. |
 | `tool_wait_ms` | `0` | Additional tool wait after dependencies; scheduling delay is `delay + tool_wait_ms`. |
 | `timestamp` / `created_time` | `0` for roots | Ready time for a node with an empty `wait_for`; dependent-node timestamps do not control release. |
-| `request_kind`, `branches`, `prefix_reset`, `tool_events` | Empty | Producer metadata accepted by the format. Version 1 scheduling is controlled by `wait_for`, and cache identity is carried by `hash_ids`; these metadata fields do not independently change replay behavior. |
+| `request_kind`, `branches`, `prefix_reset`, `tool_events` | Empty | Producer metadata accepted by the format. Scheduling is controlled by `wait_for`, and cache identity is carried by `hash_ids`; these metadata fields do not independently change replay behavior. |
 
 A dependent node becomes ready after the latest request in `wait_for` completes, plus its `delay` and
 `tool_wait_ms`. `speedup` therefore scales both authored root arrivals and those post-dependency waits.
@@ -595,10 +838,10 @@ prefill-to-decode transfer behavior.
 ```yaml
 engine:
   mode: aggregated
-  model: meta-llama/Llama-3.1-8B-Instruct
-  hardware: H100-SXM-80GB
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
   backend: vllm
-  backend_version: null
+  backend_version: "0.24.0"
   context_length: max
   workers:
     aggregated:
@@ -636,11 +879,12 @@ engine:
 |---|---:|---|---|---|
 | `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
-| `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
+| `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
+| `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
 | `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
 | `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
 | `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../sweeper/epd.md#unified-cli). |
@@ -653,8 +897,8 @@ engine:
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
-| `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
-| `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. TODO: align with backend- and version-specific defaults. |
+| `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
+| `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
@@ -684,7 +928,17 @@ engine:
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
-identifier. All worker roles in aggregated or disaggregated mode use the same hardware.
+identifier. Language workers inherit that fallback unless a P/D role overrides it;
+an optional analytical encoder pool can also specify its own hardware.
+
+For heterogeneous P/D, set `engine.workers.prefill.hardware` and/or
+`engine.workers.decode.hardware`. An omitted role inherits `engine.hardware`. Both roles
+share the model, backend and backend version; when an override is present, an omitted
+version must resolve identically on both effective SKUs. Pin a common supported version
+if their latest versions differ. Prediction uses each role's hardware for timing and KV
+capacity. Recommendation checks each role against its own hardware within the shared GPU
+budget and saves the overrides in prediction YAML. See the
+[complete YAML and CLI example](migrate-from-aiconfigurator.md#48-migrate-heterogeneous-pd-hardware).
 
 An aggregated configuration uses `workers.aggregated`. A disaggregated configuration uses
 `workers.prefill` and `workers.decode`:
@@ -692,9 +946,10 @@ An aggregated configuration uses `workers.aggregated`. A disaggregated configura
 ```yaml
 engine:
   mode: disaggregated
-  model: meta-llama/Llama-3.1-8B-Instruct
-  hardware: H100-SXM-80GB
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   context_length: max
   kv_transfer:
     bandwidth_gb_per_second: 400
@@ -722,8 +977,10 @@ engine:
       startup_seconds: 0
 ```
 
-All worker roles share the top-level model, hardware, backend, backend version, and context length in
-version 1. Role-specific model, hardware, or backend selection is rejected. If `engine.mode` is a
+Language-worker roles share the top-level model, backend, backend version, and context length.
+Per-role overrides for those settings are rejected. P/D workers may override the hardware fallback.
+The optional analytical encoder pool has its own supported hardware and backend-version fields.
+If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
 
@@ -739,8 +996,7 @@ claim that the selected topology was physically served.
 `kv_cache.capacity.type: default` and `timing.type: default` replace the previous public name `aic`.
 They select the stack's default capacity estimator and timing provider. The initial default registry
 preserves current replay and Sweeper behavior, including the backend and role defaults in the table.
-Backend-version-specific defaults are deferred beyond version 1; adding them changes the registry, not
-the YAML shape.
+Backend-version-specific defaults are not selected automatically by this registry.
 
 `timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
 composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
@@ -785,9 +1041,10 @@ resolved for the worker role before lowering to the native rank.
 # host-offload-prediction.yaml
 engine:
   mode: aggregated
-  model: meta-llama/Llama-3.1-8B-Instruct
+  model: Qwen/Qwen3-32B-FP8
   hardware: h200_sxm
   backend: vllm
+  backend_version: "0.24.0"
   context_length: 4096
   workers:
     aggregated:
@@ -815,6 +1072,113 @@ Run it with:
 ```bash
 aisimulate predict --stack engine --config host-offload-prediction.yaml
 ```
+
+#### Optional G3 offload
+
+G3 is an optional extension to native vLLM host offload, not a standalone cache
+mode. It requires `host_offload` to be enabled. Add this mapping inside the
+existing `engine.workers.aggregated.kv_cache`, as a sibling of `host_offload`,
+and use the same `predict --stack engine` command above:
+
+```yaml
+g3_offload:
+  scope: cluster_shared
+  num_g3_blocks: 8192
+```
+
+Only `scope` and `num_g3_blocks` are required. `num_g3_blocks` is a positive integer,
+not a nested `capacity` object. Optional controls and defaults are:
+
+- `latency_to_first_byte_ms`: 0.1 ms per transfer.
+- `read_bandwidth_gbps` and `write_bandwidth_gbps`: 10 GB/s each per worker.
+- `shared_read_bandwidth_gbps` and `shared_write_bandwidth_gbps`: 80 GB/s each
+  across the deployment, applied only in `cluster_shared` scope.
+
+These are modeling defaults, not measured or GPU-calibrated values.
+Latency is in milliseconds; bandwidth is in decimal
+GB/s. Latency and bandwidth must be finite and non-negative. Zero bandwidth
+means unlimited, not disabled. Block bytes are `block_size * bytes_per_token`;
+`bytes_per_token: auto` uses the existing model/parallelism estimate. G3 stores
+complete prefix-block identities, not real tensors or files. In native
+ReplaySpec JSON, `g3_offload` and `native_host_offload` are sibling rank fields.
+
+The ownership and bandwidth unit is a replica worker, not a physical host or
+an individual TP rank. Set the initial worker count
+with `engine.workers.aggregated.parallelism.replicas`:
+
+- `worker_local`: each worker gets `num_g3_blocks` of independent capacity,
+  like G2's `num_host_blocks`. Workers cannot reuse each other's stored blocks.
+- `cluster_shared`: workers share one pool of `num_g3_blocks`. Duplicate prefix
+  blocks occupy capacity once, regardless of how many workers use them.
+
+Independent runs never share cached blocks. With N fixed workers, equal total
+capacity means local `num_g3_blocks: C` versus shared `num_g3_blocks: N*C`.
+Keep workload, G1/G2 settings, latency, and bandwidth identical for that comparison.
+To isolate cache sharing from backend contention, make both shared bandwidth
+caps non-binding (for example, set them to zero for unlimited bandwidth).
+During scaling, local total capacity changes with worker count; shared capacity
+does not. New workers start with cold G1/G2 and local G3, but can read existing
+shared G3 blocks. Scale-in drains that worker's accepted I/O and releases its
+pins before removing its local pool. Shared blocks survive their writer's exit.
+Worker IDs are not reused. Replay requires at least one initial worker; its
+existing scaling lifecycle permits scaling to zero and later adding new workers.
+
+Completed G2 stores asynchronously write through to G3. Reads restore a
+contiguous prefix through G3 → G2 → G1: G3 completion alone does not make GPU
+blocks ready. The adapter reserves G2 destinations one block at a time; a later
+miss or capacity failure keeps earlier accepted promotions. New promotions in
+one lookup form one read job, and pending promotions defer H2D until a retry.
+G3 writes retain the leading new blocks that fit while preserving blocks from
+the same write cohort already in G3. A cohort larger than the available capacity is
+partially stored; if no block fits, that optional insertion is skipped.
+Resident, unpinned G3 blocks use deterministic LRU eviction.
+
+Pending G2 destinations cannot be evicted. Completed promotions become ordinary
+evictable G2 entries; a lookup hit alone does not pin them. H2D takes its own
+source pins. Request termination detaches from accepted promotions, which may
+still finish into G2 without activating G1 for the terminated request.
+
+Transfers use the replay virtual clock and begin first-byte latency when
+accepted. Reads start at the current lookup time. First-byte waiters consume
+no bandwidth. Read and write budgets are independent; each moving job gets
+an equal share of its worker's bandwidth. In `cluster_shared` scope, this is
+also capped by its equal share of shared backend bandwidth. `worker_local`
+ignores shared bandwidth limits entirely: for example, 16 workers at 10 GB/s
+can reach 160 GB/s combined, while the default shared backend caps that at
+80 GB/s. Unused shares are not redistributed. This is a fluid bandwidth
+model, with no thread-pool or job-concurrency limit; finite backend execution
+concurrency can therefore make real transfers slower.
+
+For zero-duration I/O, a repeated request/key at the same timestamp falls back
+to cache-miss handling while the recoverable prefix cannot fit in G2. Capacity
+relief or time advancement permits retry. This simulator guard adds no pins or
+invented latency and does not model native CPU retry overhead.
+
+The prediction summary includes `g3_offload` only when enabled, alongside the
+existing TTFT, TPOT, and throughput metrics:
+
+For a reused runtime, G3 counters accumulate across reports and its cache remains warm.
+
+- `lookup_probes`, `lookup_hits`, `lookup_pending` count block probes, including
+  retries. Hit ratio is hits / probes; pending probes are not hits.
+- `read` and `write` report submitted, completed, and canceled jobs, completed
+  bytes, and summed transfer milliseconds including first-byte latency.
+  Canceled jobs add no completed bytes.
+- `evictions`, `resident_blocks`, `pending_blocks`, and
+  `cross_worker_read_blocks` describe tier state and reuse. Cross-worker reuse
+  counts completed reads of blocks first written by another worker, not lookup
+  hits. `--capture-per-request` retains the existing `requests.jsonl` output.
+
+G3 supports aggregated vLLM with fixed or dynamically scaled workers, prefix caching enabled,
+attention DP equal to one, and no native speculative decoding. It does not
+support `recommend`, disaggregated mode, or hardware integration.
+Replay owns the deployment-wide tier; direct scheduler construction cannot
+provide it. Omit `g3_offload` to keep existing G1/G2 behavior.
+
+These controls do not establish filesystem or real-GPU performance parity.
+The existing G2 full-external-hit boundary remains: Replay may recompute one
+full block where the reference vLLM external-receive path recomputes one token.
+G3 byte counters do not resolve that difference.
 
 ## Router (Dynamo Adapter)
 
@@ -978,7 +1342,7 @@ A field accepts at most one domain form. Domains are allowed only where **Defaul
 - Planner preset sub-items, policy, and supported Planner-specific fields.
 - Traffic load intensity and timing fields marked `-` in the table.
 
-The following stay concrete in version 1:
+The following stay concrete:
 
 - Model, concrete hardware values, backend version, and context length.
 - Traffic source, token lengths, session shape, trace contents, and stopping condition.
@@ -1008,7 +1372,7 @@ optimization:
 `pareto` is always the fixed `throughput_per_gpu` and `throughput_per_user` frontier. Goodput targets
 require at least one `evaluation.sla` bound. Strict SLA requires at least one bound and controls only
 the additional aggregate-mean filter. `optimization.hardware` never accepts a list or inventory
-mapping; every candidate uses its single hardware identifier.
+mapping; it supplies the fallback hardware identifier, which P/D workers may override.
 
 ## Optimizer Controls
 
@@ -1031,6 +1395,8 @@ optimizer:
 
 ## Complete Dynamo Prediction Example
 
+Save this as `dynamo-prediction.yaml`:
+
 ```yaml
 traffic:
   source:
@@ -1046,10 +1412,10 @@ traffic:
 
 engine:
   mode: aggregated
-  model: meta-llama/Llama-3.1-8B-Instruct
-  hardware: H100-SXM-80GB
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
   backend: vllm
-  backend_version: null
+  backend_version: "0.24.0"
   context_length: max
   workers:
     aggregated:
@@ -1086,7 +1452,17 @@ evaluation:
     itl_ms: 50
 ```
 
+Run it with the Dynamo integration installed:
+
+```bash
+aisimulate predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
+```
+
+The result is a metrics summary and `dynamo-full-prediction/prediction.json`.
+
 ## Dynamo Scalar Recommendation Example
+
+Save this as `dynamo-recommendation.yaml`:
 
 ```yaml
 traffic:
@@ -1104,7 +1480,7 @@ traffic:
 
 engine:
   mode: {choices: [aggregated, disaggregated]}
-  model: meta-llama/Llama-3.1-8B-Instruct
+  model: Qwen/Qwen3-32B-FP8
   hardware: auto
   backend: {choices: [vllm, sglang]}
   backend_version: null
@@ -1129,7 +1505,7 @@ evaluation:
 
 optimization:
   target: goodput_per_gpu
-  hardware: H100-SXM-80GB
+  hardware: h200_sxm
   constraints:
     min_candidate_gpus: 1
     max_candidate_gpus: 32
@@ -1141,6 +1517,15 @@ optimizer:
   candidate_timeout_seconds: 600
   seed: 42
 ```
+
+Run the search:
+
+```bash
+aisimulate recommend --stack dynamo --config dynamo-recommendation.yaml --output-dir ./dynamo-full-recommendation
+```
+
+The result contains `recommendation.json` and any selected prediction YAML files under
+`dynamo-full-recommendation/recommendations/`.
 
 Conditional validation applies after a domain is materialized. For example, a round-robin candidate
 must resolve the load model to `none`; a recommendation must not rely on an invalid combination being
@@ -1154,7 +1539,7 @@ is still required because that example uses `engine.hardware: auto`:
 ```yaml
 optimization:
   target: pareto
-  hardware: H100-SXM-80GB
+  hardware: h200_sxm
   constraints:
     min_candidate_gpus: 1
     max_candidate_gpus: 32
@@ -1166,6 +1551,9 @@ The durable result keeps the complete candidate ledger; its selected candidate-I
 after adapter canonicalization and deduplication so it maps one-to-one to the numbered YAML files.
 
 ## Outputs
+
+Read [Understand your prediction](understand-your-prediction.md) for an annotated
+report, ITL/TPOT definitions, incomplete-request handling, and SLA interpretation.
 
 Output controls are CLI-only. They never appear in an input or recommended YAML file.
 
@@ -1223,8 +1611,7 @@ recommendation succeeds with status `0`.
 ### Existing Output Directories
 
 Without `--overwrite`, the CLI rejects an existing nonempty output directory. With `--overwrite`, it
-may replace only the known files and directories listed above. It must preserve unrelated files and
-must not recursively clear an arbitrary directory.
+replaces only the known output files listed below and preserves unrelated files.
 
 Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`,
 `afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
@@ -1235,6 +1622,11 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
+Prediction JSON on standard output is a summary object. Recommendation JSON is an array of selected
+rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
+signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
+the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
+
 ## Errors and Exit Codes
 
 | Exit Code | Meaning |
@@ -1244,7 +1636,8 @@ one JSON value for shell automation. Durable artifact formats do not change with
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
 | `130` | Interrupted by the user. |
 
-Configuration errors identify the input file and full field path:
+Configuration errors identify the input file and validation details. These shortened examples
+illustrate the invalid field and cause; exact formatting can vary:
 
 ```text
 recommendation.yaml: traffic.load.sessions_per_second.range.min:
@@ -1258,26 +1651,30 @@ recommendation.yaml: router.prefill_load_model.type:
 'aic' is incompatible with router.policy='round_robin'; use policy='kv_router' or type='none'
 ```
 
-An unsupported stack/backend/policy option must fail explicitly. It must not be ignored or silently
-translated to a different behavior.
+Unsupported stack, backend, or policy combinations are reported as errors.
 
-## Legacy Command Mapping
+## Troubleshooting
 
-The new interface conceptually replaces the existing entry points:
+| Symptom | What to check | Example fix |
+|---|---|---|
+| `aisimulate: command not found` | The environment containing AISimulate must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
+| Installation reports an unsupported Python version | AISimulate requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
+| Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
+| Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
+| Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install `aisimulate ai-dynamo` in that environment and use `--stack dynamo`. |
+| `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
+| `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
+| No feasible candidate, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
+| A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../../python/aisimulate/docs/fpm/README.md). |
+| `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
-| Existing Surface | New Surface |
-|---|---|
-| `python -m aisimulate.replay` | `aisimulate predict --stack engine` |
-| `python -m dynamo.replay` | `aisimulate predict --stack dynamo` |
-| Engine-backed Sweeper wrapper | `aisimulate recommend --stack engine` |
-| Dynamo-backed Sweeper wrapper | `aisimulate recommend --stack dynamo` |
-| `python -m aisimulate.sweeper` validation entry point | `aisimulate recommend` validation before execution |
+For automation, check the exit code as well as standard output. `--format json` changes successful
+summary output; validation and execution errors are reported on standard error. A recommendation
+with no feasible result still saves its result ledger and does not provide a YAML to predict.
 
-This is a command and schema mapping only. Compatibility aliases, deprecation periods, config
-conversion, and code migration are outside this design.
+## Related documentation
 
-## Locked Version 1 Decisions
-
-- `planner.policy` is `disabled | enabled`.
-- The default output directory is `./aisimulate-output`.
-- Traffic semantics and supported formats are common to the `engine` and `dynamo` stacks.
+- [AIC migration guide](migrate-from-aiconfigurator.md)
+- [Legacy AIC CLI User Guide](legacy-aic-user-guide.md)
+- [Sweeper architecture](../sweeper/architecture.md)
+- [Sweeper result schema](../sweeper/results.md)
