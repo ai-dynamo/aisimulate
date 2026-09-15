@@ -25,6 +25,7 @@ pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -327,7 +328,10 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(70))?;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(g3) = &self.g3_offload {
+            map.serialize_entry("g3_offload", g3)?;
+        }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -857,6 +861,7 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     requests: FxHashMap<Uuid, TraceRequestStats>,
     /// Simulated timestamp at which this reporting epoch began. Request
     /// timestamps remain absolute; aggregate rates use elapsed epoch time.
@@ -1645,6 +1650,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            g3_offload: self.g3_offload,
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,

@@ -49,6 +49,7 @@ enum LoadState {
 
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
+    owner: Uuid,
     prompt_keys: Vec<HostBlockKey>,
     next_store_block: usize,
     latest_store: Option<TransferId>,
@@ -73,6 +74,7 @@ impl VllmHostRequestState {
             })
             .collect();
         Self {
+            owner: lease.owner(),
             prompt_keys,
             next_store_block: 0,
             latest_store: None,
@@ -142,6 +144,8 @@ pub(super) struct HostTransferProgress {
 
 pub(super) struct VllmHostOffloadAdapter {
     tier: HostTier,
+    g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
+    load_epoch: u64,
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
     compute_not_before_ms: f64,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
@@ -150,6 +154,18 @@ pub(super) struct VllmHostOffloadAdapter {
 }
 
 impl VllmHostOffloadAdapter {
+    pub(super) fn set_g3(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        self.g3 = Some(super::g3_offload::VllmG3OffloadAdapter::new(registry, node));
+    }
+
+    pub(super) fn g3_epoch(&self) -> Option<u64> {
+        self.g3.as_ref().map(|g3| g3.epoch + self.load_epoch)
+    }
+
     pub(super) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.tier.set_observer(Arc::clone(&observer));
         self.observer = Some(observer);
@@ -170,6 +186,8 @@ impl VllmHostOffloadAdapter {
                 d2h_bandwidth_gbps: config.d2h_bandwidth_gbps,
                 h2d_bandwidth_gbps: config.h2d_bandwidth_gbps,
             })?,
+            g3: None,
+            load_epoch: 0,
             load_by_key: FxHashMap::default(),
             compute_not_before_ms: 0.0,
             observer: None,
@@ -183,6 +201,7 @@ impl VllmHostOffloadAdapter {
         sequence: &RequestSequence,
         g1_cost: &PrefillCost,
         block_size: usize,
+        now_ms: f64,
     ) -> HostLookup {
         if request.activated().is_some() {
             return HostLookup::Miss;
@@ -197,18 +216,43 @@ impl VllmHostOffloadAdapter {
             request.latest_store = None;
         }
 
-        // Pinned vLLM 0.24 passes this ordered logical list to
+        let outcome = self.lookup_visited(request, sequence, g1_cost, block_size, now_ms);
+
+        // vLLM passes this ordered logical list after lookup to
         // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
         for key in request.prompt_keys.iter().rev().copied() {
             self.tier.touch(key);
         }
+        outcome
+    }
 
+    fn lookup_visited(
+        &mut self,
+        request: &mut VllmHostRequestState,
+        sequence: &RequestSequence,
+        g1_cost: &PrefillCost,
+        block_size: usize,
+        now_ms: f64,
+    ) -> HostLookup {
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
         let base_g1_blocks = g1_cost.cached_tokens / block_size;
         if base_g1_blocks >= request.prompt_keys.len() {
+            if let Some(g3) = &mut self.g3 {
+                g3.release(request.owner);
+            }
             return HostLookup::Miss;
         }
 
+        if let Some(g3) = &mut self.g3
+            && g3.stage(
+                &mut self.tier,
+                request.owner,
+                &request.prompt_keys[base_g1_blocks..],
+                now_ms,
+            )
+        {
+            return HostLookup::Deferred;
+        }
         let mut matched = 0usize;
         let mut deferred = false;
         for key in request.prompt_keys[base_g1_blocks..].iter().copied() {
@@ -282,22 +326,25 @@ impl VllmHostOffloadAdapter {
             not_before_ms = not_before_ms.max(deadline);
         }
 
-        let transfer_blocks = hit.keys.iter().rev().copied().collect::<Vec<_>>();
-        let transfer_id =
-            match self
-                .tier
-                .schedule_load(uuid, &transfer_blocks, now_ms, not_before_ms)
-            {
-                LoadOutcome::Queued(transfer_id) => transfer_id,
-                LoadOutcome::Miss => {
-                    kv_manager.cancel_destination(reservation);
-                    return StartLoad::Retry;
-                }
-            };
+        // Transfer bookkeeping follows the logical prefix, unlike LRU touches.
+        let transfer_id = match self
+            .tier
+            .schedule_load(uuid, &hit.keys, now_ms, not_before_ms)
+        {
+            LoadOutcome::Queued(transfer_id) => transfer_id,
+            LoadOutcome::Miss => {
+                kv_manager.cancel_destination(reservation);
+                return StartLoad::Retry;
+            }
+        };
 
         for key in &hit.keys {
             assert!(self.load_by_key.insert(*key, transfer_id).is_none());
         }
+        if let Some(g3) = &mut self.g3 {
+            g3.release(uuid);
+        }
+        self.load_epoch += 1;
         request.load = Some(LoadState::Loading(LoadingPrefix {
             transfer_id,
             keys: hit.keys,
@@ -317,19 +364,26 @@ impl VllmHostOffloadAdapter {
         now_ms: f64,
     ) -> HostTransferProgress {
         let completed = self.tier.tick(now_ms);
-        let completed_any = !completed.is_empty();
+        let mut completed_any = !completed.is_empty();
+        self.load_epoch += completed.len() as u64;
         for transfer in &completed {
             let CompletedTransfer::Store {
                 request_id: _,
                 transfer_id,
-                blocks: _,
+                blocks,
             } = transfer
             else {
                 continue;
             };
             assert!(kv_manager.satisfy_native_source_dependency(source_dependency(*transfer_id)));
+            if let Some(g3) = &mut self.g3 {
+                g3.store(&mut self.tier, blocks, now_ms);
+            }
         }
 
+        if let Some(g3) = &mut self.g3 {
+            completed_any |= g3.advance(&mut self.tier, now_ms);
+        }
         let mut loads = Vec::new();
         for transfer in completed {
             let CompletedTransfer::Load {
@@ -559,8 +613,9 @@ impl VllmHostOffloadAdapter {
         mutation_now_ms: f64,
         observed_at_ms: f64,
     ) -> bool {
+        let detached_g3 = self.g3.as_mut().is_some_and(|g3| g3.release(request.owner));
         let Some(load) = request.load.take() else {
-            return false;
+            return detached_g3;
         };
         let LoadState::Loading(load) = load else {
             return false;
@@ -581,7 +636,11 @@ impl VllmHostOffloadAdapter {
     }
 
     pub(super) fn next_deadline(&self) -> Option<f64> {
-        self.tier.next_deadline()
+        self.tier
+            .next_deadline()
+            .into_iter()
+            .chain(self.g3.as_ref().and_then(|g3| g3.next_deadline()))
+            .min_by(f64::total_cmp)
     }
 
     pub(super) fn current_time_ms(&self) -> f64 {
@@ -589,7 +648,7 @@ impl VllmHostOffloadAdapter {
     }
 
     pub(super) fn has_work(&self) -> bool {
-        self.tier.has_pending_work()
+        self.tier.has_pending_work() || self.g3.as_ref().is_some_and(|g3| g3.has_work())
     }
 
     #[cfg(test)]
@@ -820,6 +879,7 @@ mod tests {
             &destination_sequence,
             &raw_cost(&manager, &destination_sequence, &destination_lease),
             4,
+            adapter.current_time_ms(),
         ) else {
             panic!("seeded host block must hit")
         };
@@ -841,6 +901,7 @@ mod tests {
             &destination_sequence,
             &raw_cost(&manager, &destination_sequence, &destination_lease),
             4,
+            adapter.current_time_ms(),
         ) else {
             panic!("host block must remain resident")
         };
@@ -864,6 +925,7 @@ mod tests {
                 &follower_sequence,
                 &raw_cost(&manager, &follower_sequence, &follower_lease),
                 4,
+                adapter.current_time_ms(),
             ),
             HostLookup::Deferred
         ));
@@ -877,6 +939,7 @@ mod tests {
                 &follower_sequence,
                 &raw_cost(&manager, &follower_sequence, &follower_lease),
                 4,
+                adapter.current_time_ms(),
             ),
             HostLookup::Hit(_)
         ));
@@ -894,6 +957,7 @@ mod tests {
             &sequence,
             &raw_cost(&manager, &sequence, &lease),
             4,
+            adapter.current_time_ms(),
         ) else {
             panic!("seeded host block must hit")
         };
@@ -959,6 +1023,7 @@ mod tests {
                 &source_sequence,
                 &raw_cost(&manager, &source_sequence, &source_lease),
                 4,
+                adapter.current_time_ms(),
             ),
             HostLookup::Deferred
         ));
@@ -989,5 +1054,194 @@ mod tests {
         assert_eq!(adapter.compute_not_before_ms(0.0), 1.0);
         adapter.advance(&mut manager, 1.0);
         assert!(!manager.is_native_source_dependency_pending(source_dependency(store_id)));
+    }
+
+    #[test]
+    fn mixed_g2_g3_prefix_stages_then_acquires_and_activates_real_g1() {
+        use crate::engine::g3_offload::{Direction, G3Tier};
+        use crate::engine::{G3OffloadConfig, G3Scope};
+        let mut adapter = adapter(2);
+        let owner = Uuid::from_u128(900);
+        let (sequence, mut lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let first = host.prompt_keys[0];
+        let second = host.prompt_keys[1];
+        let now = seed_host(&mut adapter, first);
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::ClusterShared,
+                num_g3_blocks: 2,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 0.0,
+                shared_read_bandwidth_gbps: 1.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            2,
+            1_000_000,
+        )
+        .unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[second], now)
+            .unwrap();
+        registry.lock().unwrap().take_completed(0, now);
+        adapter.set_g3(registry.clone(), 1);
+        let mut manager = G1Manager::new_with_caching(2, 4, KvEventPublishers::default(), 0, true);
+        adapter.advance(&mut manager, now);
+        assert!(matches!(
+            adapter.lookup(
+                &mut host,
+                &sequence,
+                &raw_cost(&manager, &sequence, &lease),
+                4,
+                adapter.current_time_ms(),
+            ),
+            HostLookup::Deferred
+        ));
+        assert_eq!(manager.num_active_blocks(), 0, "G3 staging owns no G1");
+        let staged_at = adapter.next_deadline().unwrap();
+        assert!(adapter.advance(&mut manager, staged_at).completed_any);
+        let HostLookup::Hit(hit) = adapter.lookup(
+            &mut host,
+            &sequence,
+            &raw_cost(&manager, &sequence, &lease),
+            4,
+            adapter.current_time_ms(),
+        ) else {
+            panic!("mixed prefix must now hit G2");
+        };
+        assert_eq!(hit.keys, vec![first, second]);
+        assert!(matches!(
+            adapter.start_load(owner, &mut host, &lease, hit, &mut manager, staged_at),
+            StartLoad::Queued
+        ));
+        assert_eq!(
+            manager.num_active_blocks(),
+            2,
+            "H2D owns the real G1 reservation"
+        );
+        let completed_at = adapter.next_deadline().unwrap();
+        assert_eq!(
+            completed_at - staged_at,
+            2.0,
+            "H2D transfers both 1MB G2 blocks"
+        );
+        let completed = adapter.advance(&mut manager, completed_at).completed_loads;
+        assert_eq!(completed.len(), 1);
+        adapter.activate_completed_load(
+            owner,
+            completed[0].transfer_id,
+            &mut host,
+            &sequence,
+            &mut lease,
+            &mut manager,
+        );
+        assert_eq!(raw_cost(&manager, &sequence, &lease).cached_tokens, 8);
+        let stats = registry.lock().unwrap().snapshot();
+        assert_eq!(
+            stats.read.completed_bytes, 1_000_000,
+            "only the missing G2 block crosses G3"
+        );
+        assert_eq!(stats.cross_worker_read_blocks, 1);
+    }
+
+    #[test]
+    fn independent_review_external_reservation_publishes_real_eviction() {
+        let mut adapter = adapter(1);
+        let a = HostBlockKey::new(1);
+        let b = HostBlockKey::new(2);
+        let now = seed_host(&mut adapter, a);
+        let observed = Arc::new(EvictionCapture::default());
+        adapter.set_observer(observed.clone());
+        assert!(matches!(
+            adapter.tier.reserve_external(Uuid::nil(), &[b], now),
+            StoreOutcome::Prepared { .. }
+        ));
+        assert_eq!(adapter.tier.lookup(a), Lookup::Miss);
+        assert_eq!(
+            observed.take(),
+            vec![a],
+            "actual G2 eviction must remain observable"
+        );
+    }
+
+    #[test]
+    fn requester_termination_preserves_promotion_without_activating_g1() {
+        for observed_at_ms in [0.5, 1.0, 2.0] {
+            for foreign_watermark in [None, Some(0.75), Some(3.0)] {
+                check_g3_cancellation(observed_at_ms, foreign_watermark);
+            }
+        }
+    }
+
+    fn check_g3_cancellation(observed_at_ms: f64, foreign_watermark: Option<f64>) {
+        use crate::engine::g3_offload::{Direction, G3Tier};
+        use crate::engine::{G3OffloadConfig, G3Scope};
+        let mut adapter = adapter(2);
+        let owner = Uuid::from_u128(901);
+        let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5]);
+        let key = host.prompt_keys[0];
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::ClusterShared,
+                num_g3_blocks: 4,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 0.0,
+                shared_read_bandwidth_gbps: 1.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            2,
+            1_000_000,
+        )
+        .unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[key], 0.0)
+            .unwrap();
+        registry.lock().unwrap().take_completed(0, 0.0);
+        adapter.set_g3(registry.clone(), 1);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        adapter.advance(&mut manager, 0.0);
+        assert!(matches!(
+            adapter.lookup(
+                &mut host,
+                &sequence,
+                &raw_cost(&manager, &sequence, &lease),
+                4,
+                adapter.current_time_ms(),
+            ),
+            HostLookup::Deferred
+        ));
+        // Read completes at 1ms. The committed pass retains G2 mutation time
+        // 0ms, independently of observation time or a foreign watermark.
+        if let Some(now) = foreign_watermark {
+            registry.lock().unwrap().advance(now);
+        }
+        assert!(adapter.cancel_request(&mut host, &mut manager, 0.0, observed_at_ms));
+        assert_eq!(adapter.tier.current_time_ms(), 0.0);
+        assert!(matches!(adapter.tier.lookup(key), Lookup::Pending { .. }));
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert_eq!(host.reserved_blocks(), 0);
+        let completed = foreign_watermark.is_some_and(|t| t >= 1.0);
+        let stats = registry.lock().unwrap().snapshot();
+        assert_eq!(
+            stats.read.completed_bytes,
+            if completed { 1_000_000 } else { 0 }
+        );
+        assert_eq!(stats.read.completed_jobs, u64::from(completed));
+        assert_eq!(stats.read.cancelled_jobs, 0);
+        // The detached promotion may finish into G2, never into canceled G1.
+        assert!(
+            adapter
+                .advance(&mut manager, 4.0)
+                .completed_loads
+                .is_empty()
+        );
+        assert_eq!(adapter.tier.lookup(key), Lookup::Hit);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert!(adapter.next_deadline().is_none());
     }
 }
