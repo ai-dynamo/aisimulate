@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, diagnostics, and [power reports](#54-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, [detailed diagnostics](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -710,20 +710,57 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 ### 5.3 Static estimates and diagnostics
 
-Keep `estimate` for a fixed batch or single pass, including per-operation reports. For example,
-inspect one decode pass and its memory, timing, energy, and data sources:
+#### 5.3.1 Static estimates
+
+Keep `estimate` for a fixed batch or single pass. `aisimulate predict` models a serving workload;
+its concurrency and scheduling controls do not reproduce a fixed-batch estimate. For example,
+inspect one decode pass:
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,energy,source
+  --isl 1024 --osl 128
 ```
 
-**Result to inspect:** the terminal contains per-operation memory, timing, energy, and data-source
-breakdowns. See
+**Result to inspect:** the terminal summary describes the fixed batch and decode pass. See
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
+
+<a id="detailed-diagnostics"></a>
+
+#### 5.3.2 Detailed diagnostics
+
+The unified `aisimulate predict` and `aisimulate recommend` commands do not yet expose an
+equivalent of AIC's selectable `estimate --detail` reports. This is a separate migration gap
+from fixed-batch estimation. Keep the compatibility CLI when these breakdowns are required.
+
+`--detail` belongs to `aiconfigurator cli estimate`; `aiconfigurator cli default` does not accept
+it. With no `--detail`, `estimate` prints its normal summary without extra detail sections.
+
+| AIC `--detail` selector | Result to inspect |
+| --- | --- |
+| `summary` | Latency, throughput, phase totals, and memory status. |
+| `memory` | Memory components such as weights, KV cache, activations, and communication buffers, plus capacity. |
+| `time` | Phase and per-operation latency, with a speed-of-light (SOL) comparison when available. |
+| `energy` | Phase and per-operation energy when data is available. |
+| `source` | Per-operation data provenance and available fallback information. |
+| `all` | All five sections above. |
+
+Combine selectors with commas. The available sections depend on the estimate mode and data;
+for example, static-mode `--detail energy` can display `<no energy data>` when operation-energy
+data is absent. To inspect memory, timing, and data sources using the default aggregated mode:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,source
+```
+
+**Result to inspect:** memory component totals, per-operation timing, and data-source breakdowns
+in the terminal. These selectable reports have no direct unified-CLI replacement yet.
 
 <a id="power-and-energy-analysis"></a>
 
