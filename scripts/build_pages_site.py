@@ -75,20 +75,25 @@ def _copy_dataset(source: Path, destination: Path) -> None:
         _copy_file(csv_path, destination / filename)
 
 
-def _copy_fpe_branches(source: Path, destination: Path) -> None:
+def _copy_fpe_branches(source: Path, destination: Path, *, require_catalog: bool = False) -> None:
     """Copy only cataloged branch datasets, retaining the legacy main data path."""
     catalog_path = source / "branches.json"
+    if require_catalog and not catalog_path.is_file():
+        raise PagesBuildError("prepared FPE data requires branches.json")
     catalog = (
         json.loads(catalog_path.read_text())
         if catalog_path.is_file()
         else {
             "schema_version": 1,
             "default": "main",
+            "preview": True,
             "branches": [{"name": "main", "path": ".", "status": "available"}],
         }
     )
     if catalog.get("schema_version") != 1 or catalog.get("default") != "main":
         raise PagesBuildError("invalid FPE branch catalog")
+    if require_catalog and catalog.get("preview"):
+        raise PagesBuildError("prepared FPE data cannot be a repository preview")
     branches = catalog.get("branches")
     if not isinstance(branches, list) or not branches:
         raise PagesBuildError("empty FPE branch catalog")
@@ -157,6 +162,7 @@ def build_site(repo_root: Path, output_dir: Path, *, fpe_data_dir: Path | None =
                 _copy_fpe_branches(
                     fpe_data_dir if fpe_data_dir is not None else repo_root / SYSTEMS_ROOT / dataset_name,
                     output_dir / "data" / public_name,
+                    require_catalog=fpe_data_dir is not None,
                 )
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}

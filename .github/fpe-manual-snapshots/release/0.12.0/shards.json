@@ -1,0 +1,114 @@
+[
+  {
+    "system": "a100_sxm",
+    "backend": "sglang"
+  },
+  {
+    "system": "a100_sxm",
+    "backend": "trtllm"
+  },
+  {
+    "system": "a100_sxm",
+    "backend": "vllm"
+  },
+  {
+    "system": "b200_sxm",
+    "backend": "sglang"
+  },
+  {
+    "system": "b200_sxm",
+    "backend": "trtllm"
+  },
+  {
+    "system": "b200_sxm",
+    "backend": "vllm"
+  },
+  {
+    "system": "b300_sxm",
+    "backend": "sglang"
+  },
+  {
+    "system": "b300_sxm",
+    "backend": "trtllm"
+  },
+  {
+    "system": "b300_sxm",
+    "backend": "vllm"
+  },
+  {
+    "system": "b60",
+    "backend": "vllm"
+  },
+  {
+    "system": "gb200",
+    "backend": "sglang"
+  },
+  {
+    "system": "gb200",
+    "backend": "trtllm"
+  },
+  {
+    "system": "gb200",
+    "backend": "vllm"
+  },
+  {
+    "system": "gb300",
+    "backend": "sglang"
+  },
+  {
+    "system": "gb300",
+    "backend": "trtllm"
+  },
+  {
+    "system": "gb300",
+    "backend": "vllm"
+  },
+  {
+    "system": "h100_sxm",
+    "backend": "sglang"
+  },
+  {
+    "system": "h100_sxm",
+    "backend": "trtllm"
+  },
+  {
+    "system": "h100_sxm",
+    "backend": "vllm"
+  },
+  {
+    "system": "h200_sxm",
+    "backend": "sglang"
+  },
+  {
+    "system": "h200_sxm",
+    "backend": "trtllm"
+  },
+  {
+    "system": "h200_sxm",
+    "backend": "vllm"
+  },
+  {
+    "system": "l40s",
+    "backend": "sglang"
+  },
+  {
+    "system": "l40s",
+    "backend": "trtllm"
+  },
+  {
+    "system": "l40s",
+    "backend": "vllm"
+  },
+  {
+    "system": "rtx_pro_6000_server",
+    "backend": "sglang"
+  },
+  {
+    "system": "rtx_pro_6000_server",
+    "backend": "trtllm"
+  },
+  {
+    "system": "rtx_pro_6000_server",
+    "backend": "vllm"
+  }
+]

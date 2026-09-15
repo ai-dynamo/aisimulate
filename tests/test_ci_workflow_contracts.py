@@ -1393,6 +1393,6 @@ def test_pages_release_completion_still_executes_main_checkout():
     trigger = workflow.get("on", workflow.get(True))
     assert trigger["workflow_run"]["branches"] == ["main", "release/**"]
     checkout = workflow["jobs"]["build"]["steps"][0]
-    assert "|| 'main'" in checkout["with"]["ref"]
+    assert checkout["with"]["ref"] == "${{ github.event_name == 'pull_request' && github.ref || 'main' }}"
     assert checkout["with"]["fetch-depth"] == 0
     assert checkout["with"]["persist-credentials"] is False

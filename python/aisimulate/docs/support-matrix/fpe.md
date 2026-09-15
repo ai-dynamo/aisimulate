@@ -172,7 +172,7 @@ The published matrix's **Branch** selector defaults to `main` and lists the
 repository's `release/*` branches. Share a selection using
 `?branch=release%2F0.12.0`; the model search (`q`) is preserved when switching.
 Each selection loads a separate packaged dataset with its own tested source
-SHA, timestamp, and CI link. Release results never fall back to main's data.
+SHA, timestamp, and evidence link. Release results never fall back to main's data.
 
 Pages discovers release branches from the fetched `origin` refs. For each
 branch, it selects the newest retained qualified artifact produced by a
@@ -183,14 +183,28 @@ expired release artifact also removes its data from the next deployment.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
-To publish release coverage, the release branch must contain the exact-wheel
-FPE workflow, generator, qualifier, and required-probe manifest. Older releases
-with the pre-qualification workflow need those changes backported first. Run
+For automatic release coverage, the release branch must contain the exact-wheel
+FPE workflow, generator, qualifier, and required-probe manifest. Run
 **FPE Support Matrix** using that release as the workflow ref and its full
 commit SHA as `expected_sha`. A successful release run triggers the main Pages
-publisher, which rebuilds the whole catalog from trusted main code. This PR
-does not schedule release refreshes or backport the qualification pipeline.
+publisher, which rebuilds the whole catalog from trusted main code.
 Manual Pages dispatch on main also discovers newly created release branches.
+
+Older releases can be bootstrapped with a reviewed manual snapshot under
+`.github/fpe-manual-snapshots/release/<version>/`. Its manifest pins the source
+and tooling commits, archive SHA256, timestamp, and complete qualification
+report. The archive contains the same qualified web dataset used by CI; the
+publisher validates its digest, qualification, CSV identities, and membership
+in the release branch's history before publishing. The page labels it
+**Qualified manual snapshot** and links to the checked-in evidence at the
+publisher's exact commit. It is never described as a GitHub Actions run.
+
+Automatic and manual candidates are ordered by tested source history, with
+an automatic run winning at the same SHA. This lets a later qualified CI run
+replace the bootstrap while preventing an old rerun from restoring stale data.
+An expired newer CI artifact still makes that release unavailable, rather than
+restoring an older manual snapshot. This does not schedule release refreshes or
+change the release's source code or native estimator.
 
 The deployed `data/fpe-support-matrix/branches.json` catalog lists available
 and unavailable branches. Main retains the existing data path, and release

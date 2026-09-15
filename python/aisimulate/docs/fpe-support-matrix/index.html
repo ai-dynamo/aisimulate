@@ -656,14 +656,14 @@ function writeBranch(branch) {
 }
 
 async function fetchBranches() {
-  if (isSourceTreePreview()) return [{ name: 'main', path: '.', status: 'available' }];
+  if (isSourceTreePreview()) return [{ name: 'main', path: '.', status: 'available', preview: true }];
   const response = await fetch(`${DEPLOYED_SUPPORT_MATRIX_PATH}/branches.json`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Failed to load FPE branches (HTTP ${response.status})`);
   const catalog = await response.json();
   if (catalog.schema_version !== 1 || !Array.isArray(catalog.branches) || !catalog.branches.length) {
     throw new Error('Invalid FPE branch catalog');
   }
-  return catalog.branches;
+  return catalog.branches.map(branch => ({ ...branch, preview: catalog.preview === true }));
 }
 
 async function fetchCsv(branch) {
@@ -681,8 +681,8 @@ async function fetchCsv(branch) {
   const index = await indexRes.json();
   const files = Array.isArray(index.files) ? index.files : [];
   if (!files.length) throw new Error('FPE support matrix index is empty');
-  if (index.snapshot && index.snapshot.branch !== branch.name) {
-    throw new Error('FPE snapshot belongs to a different branch');
+  if ((!branch.preview && !index.snapshot) || (index.snapshot && index.snapshot.branch !== branch.name)) {
+    throw new Error('FPE snapshot is missing or belongs to a different branch');
   }
 
   const chunks = await Promise.all(
@@ -1601,7 +1601,8 @@ function App() {
           <div className="max-w-[1600px] mx-auto p-6">
             <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
               {snapshot ? <>
-                Qualified snapshot: <a href={snapshot.run_url} target="_blank" rel="noopener noreferrer" className="underline">
+                {snapshot.origin === 'manual' ? 'Qualified manual snapshot: ' : 'Qualified snapshot: '}
+                <a href={snapshot.evidence_url || snapshot.run_url} target="_blank" rel="noopener noreferrer" className="underline">
                   {snapshot.generated_at}
                 </a>{' · '}Source <code>{snapshot.source_sha.slice(0, 12)}</code>
               </> : 'Historical repository snapshot; refresh provenance is unavailable.'}

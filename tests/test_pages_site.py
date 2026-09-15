@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -116,12 +118,21 @@ class FpePagesTest(unittest.TestCase):
 
         with patch.object(FPE.subprocess, "check_output", return_value=f"{NEW_SHA}\n{OLD_SHA}\n"):
             snapshot = FPE.prepare(REPOSITORY, ROOT, output, api=api)
+        (output / "branches.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "default": "main",
+                    "branches": [{"name": "main", "path": ".", "status": "available"}],
+                }
+            )
+        )
         return snapshot, output
 
     def test_qualified_data_is_published_without_artifact_code(self):
         snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive()})
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
-        self.assertEqual({p.name for p in output.iterdir()}, {"index.json", "b200_sxm.csv"})
+        self.assertEqual({p.name for p in output.iterdir()}, {"index.json", "b200_sxm.csv", "branches.json"})
         self.assertEqual(json.loads((output / "index.json").read_text())["snapshot"], snapshot)
         with tempfile.TemporaryDirectory() as temporary:
             site = Path(temporary) / "site"
@@ -405,6 +416,84 @@ class FpeBranchesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
             self.prepare(self.release_sha, malformed=True)
 
+    def write_manual(self, sha, *, manifest_updates=None, archive=None):
+        archive = archive or qualified_archive(sha)
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            qualification = json.loads(bundle.read("fpe-qualification.json"))
+        manifest = {
+            "schema_version": 1,
+            "branch": "release/0.12.0",
+            "source_sha": sha,
+            "tooling_sha": NEW_SHA,
+            "generated_at": "2026-09-15T00:00:00Z",
+            "archive_sha256": hashlib.sha256(archive).hexdigest(),
+            "qualification": qualification,
+        }
+        manifest.update(manifest_updates or {})
+        directory = self.repository / FPE.MANUAL_SNAPSHOTS / "release/0.12.0"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        (directory / "snapshot.zip").write_bytes(archive)
+
+    def test_manual_release_bootstrap_is_published_with_explicit_provenance(self):
+        self.write_manual(self.release_sha)
+        catalog, data = self.prepare()
+        self.assertEqual(catalog["branches"][1]["status"], "available")
+        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
+        self.assertEqual(snapshot["origin"], "manual")
+        self.assertEqual(snapshot["source_sha"], self.release_sha)
+        self.assertNotIn("run_url", snapshot)
+        self.assertIn(f"/tree/{self.main_sha}/.github/fpe-manual-snapshots/release/0.12.0", snapshot["evidence_url"])
+
+    def test_newer_automatic_release_snapshot_supersedes_manual_bootstrap(self):
+        self.write_manual(self.common)
+        _, data = self.prepare(self.release_sha)
+        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
+        self.assertEqual(snapshot["source_sha"], self.release_sha)
+        self.assertIn("run_url", snapshot)
+
+    def test_older_automatic_run_cannot_displace_newer_manual_source(self):
+        self.write_manual(self.release_sha)
+        _, data = self.prepare(self.common)
+        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
+        self.assertEqual(snapshot["source_sha"], self.release_sha)
+        self.assertEqual(snapshot["origin"], "manual")
+
+    def test_same_source_prefers_automatic_qualification(self):
+        self.write_manual(self.release_sha)
+        _, data = self.prepare(self.release_sha)
+        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
+        self.assertIn("run_url", snapshot)
+
+    def test_expired_newer_auto_snapshot_does_not_restore_older_manual_source(self):
+        self.write_manual(self.common)
+        catalog, _ = self.prepare(self.release_sha, expired=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_manual_source_must_belong_to_release_history(self):
+        self.write_manual(self.main_sha)
+        with self.assertRaisesRegex(ValueError, "outside the release branch history"):
+            self.prepare()
+
+    def test_manual_snapshot_rejects_wrong_digest_branch_and_qualification(self):
+        for changes in [
+            {"archive_sha256": "0" * 64},
+            {"branch": "release/other"},
+            {"source_sha": self.common},
+            {"qualification": {}},
+            {"tooling_sha": "main"},
+        ]:
+            self.write_manual(self.release_sha, manifest_updates=changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                FPE.manual_snapshot(self.repository, "release/0.12.0")
+
+    def test_manual_snapshot_requires_qualified_data(self):
+        self.write_manual(
+            self.release_sha, archive=qualified_archive(self.release_sha, report_updates={"shard_count": 0})
+        )
+        with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
+            self.prepare()
+
     def test_unsafe_and_feature_branch_names_are_rejected(self):
         for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/"]:
             with self.subTest(name=name), self.assertRaises(ValueError):
@@ -427,6 +516,58 @@ class FpeBranchesTest(unittest.TestCase):
             )
             with self.subTest(entry=entry), self.assertRaises(PAGES.PagesBuildError):
                 PAGES._copy_fpe_branches(source, output)
+
+
+class ManualReleaseEvidenceTest(unittest.TestCase):
+    def test_checked_in_release_snapshot_matches_qualification_and_execution(self):
+        branch = "release/0.12.0"
+        directory = ROOT / FPE.MANUAL_SNAPSHOTS / branch
+        snapshot = FPE.manual_snapshot(ROOT, branch)
+        self.assertIsNotNone(snapshot)
+        manifest = snapshot["manifest"]
+        self.assertEqual(manifest["source_sha"], "1f728534910187ecb2f021ef5e4bd4949bd555d0")
+        report = manifest["qualification"]
+        expected_shards = {(s["system"], s["backend"]) for s in json.loads((directory / "shards.json").read_text())}
+        self.assertEqual(report["shard_count"], len(expected_shards))
+        self.assertEqual(report["required_probe_count"], 4)
+        rows = [
+            row
+            for name, data in snapshot["files"].items()
+            if name.endswith(".csv")
+            for row in csv.DictReader(io.StringIO(data.decode()))
+        ]
+        self.assertEqual({(r["System"], r["Backend"]) for r in rows}, expected_shards)
+        summary = manifest["summary"]
+        self.assertEqual(summary["capability_rows"], len(rows))
+        self.assertEqual(summary["models"], len({r["HuggingFaceID"] for r in rows}))
+        self.assertEqual(summary["systems"], len({r["System"] for r in rows}))
+        self.assertEqual(summary["web_status_counts"], dict(Counter(r["Status"] for r in rows)))
+        self.assertEqual(
+            summary["systems_summary"],
+            {
+                system: dict(Counter(r["Status"] for r in rows if r["System"] == system))
+                for system in {r["System"] for r in rows}
+            },
+        )
+        self.assertTrue(all(r["Command"].startswith("python run_shard.py --model ") for r in rows))
+        ledger_bytes = (directory / "raw-reports.json").read_bytes()
+        self.assertEqual(hashlib.sha256(ledger_bytes).hexdigest(), manifest["raw_report_ledger_sha256"])
+        self.assertEqual(len(json.loads(ledger_bytes)), len(expected_shards))
+        execution_bytes = (directory / "execution.json").read_bytes()
+        execution = json.loads(execution_bytes)
+        self.assertEqual(len(execution), manifest["execution"]["cpu_workers"])
+        completed = []
+        for worker in execution:
+            self.assertTrue(worker["completed_at"])
+            for shard in worker["shards"]:
+                self.assertEqual(shard["status"], "complete")
+                self.assertEqual(shard["returncode"], 0)
+                completed.append((shard["system"], shard["backend"]))
+        self.assertEqual(len(completed), len(expected_shards))
+        self.assertEqual(set(completed), expected_shards)
+        with zipfile.ZipFile(directory / "snapshot.zip") as bundle:
+            self.assertEqual(bundle.read("raw-reports.json"), ledger_bytes)
+            self.assertEqual(bundle.read("execution.json"), execution_bytes)
 
 
 class PagesSiteTest(unittest.TestCase):
@@ -479,6 +620,23 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn('href="../"', fpe_page)
             self.assertNotIn("raw.githubusercontent.com", fpe_page)
             self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
+
+    def test_prepared_input_requires_a_branch_catalog(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(PAGES.PagesBuildError, "requires branches.json"),
+        ):
+            PAGES.build_site(
+                ROOT, Path(temporary) / "site", fpe_data_dir=ROOT / PAGES.SYSTEMS_ROOT / "fpe_support_matrix"
+            )
+
+    def test_prepared_input_cannot_enable_preview_exemption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "data"
+            source.mkdir()
+            (source / "branches.json").write_text(json.dumps({"schema_version": 1, "default": "main", "preview": True}))
+            with self.assertRaisesRegex(PAGES.PagesBuildError, "cannot be a repository preview"):
+                PAGES._copy_fpe_branches(source, Path(temporary) / "site", require_catalog=True)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
