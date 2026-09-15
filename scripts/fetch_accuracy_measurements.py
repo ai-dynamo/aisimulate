@@ -44,6 +44,20 @@ def copy_value(value: str):
     return re.sub(r"\\(x[0-9a-fA-F]{1,2}|[0-7]{1,3}|.)", unescape, value)
 
 
+def copy_columns(value: str) -> list[str]:
+    # pg_restore quotes reserved identifiers such as "precision". Accept the
+    # pinned schema's simple names and reject unfamiliar identifier syntax.
+    columns = []
+    for name in value.split(", "):
+        match = re.fullmatch(r'(?:"([a-z_][a-z0-9_]*)"|([a-z_][a-z0-9_]*))', name)
+        if not match:
+            raise ValueError("unsupported COPY column identifier")
+        columns.append(match[1] or match[2])
+    if len(columns) != len(set(columns)):
+        raise ValueError("duplicate COPY column")
+    return columns
+
+
 def read_copy(stream):
     """Read only the three allowlisted tables, rejecting incomplete COPY data."""
     tables = {}
@@ -57,9 +71,7 @@ def read_copy(stream):
             current = match[1]
             if current not in TABLES or current in tables:
                 raise ValueError("unexpected or duplicate COPY table")
-            columns = match[2].split(", ")
-            if len(columns) != len(set(columns)):
-                raise ValueError("duplicate COPY column")
+            columns = copy_columns(match[2])
             tables[current] = []
         elif line.rstrip("\n") == r"\.":
             current = None

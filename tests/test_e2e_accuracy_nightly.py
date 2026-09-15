@@ -136,8 +136,8 @@ def copy_fixture():
     return "\n".join(
         [
             "SELECT malicious_function();",  # Parser never evaluates SQL.
-            "COPY public.configs (id, model, disagg) FROM stdin;",
-            "1\tname\\twith\\nwhitespace\\\\end\tf",
+            'COPY public.configs (id, model, disagg, "precision") FROM stdin;',
+            "1\tname\\twith\\nwhitespace\\\\end\tf\tfp8",
             r"\.",
             "COPY public.benchmark_results (id, metrics, error) FROM stdin;",
             '1\t{"mean_ttft": 0.1}\t\\N',
@@ -156,6 +156,7 @@ def test_copy_reader_decodes_data_without_executing_sql():
         "id": 1,
         "model": "name\twith\nwhitespace\\end",
         "disagg": False,
+        "precision": "fp8",
     }
     assert data["benchmark_results"][0]["error"] is None
     assert data["benchmark_results"][0]["metrics"] == {"mean_ttft": 0.1}
@@ -166,8 +167,10 @@ def test_copy_reader_decodes_data_without_executing_sql():
     [
         copy_fixture().rsplit(r"\.", 1)[0],
         copy_fixture().replace("model, disagg", "model, model"),
-        copy_fixture().replace("\tf\n", "\tunknown\n"),
+        copy_fixture().replace("\tf\tfp8", "\tunknown\tfp8"),
         copy_fixture().replace("public.configs", "public.private_table"),
+        copy_fixture().replace('"precision"', '"id"'),
+        copy_fixture().replace('"precision"', '"unsupported,column"'),
     ],
 )
 def test_copy_reader_rejects_incomplete_or_ambiguous_data(text):
