@@ -15,7 +15,9 @@ from typing import Any
 import pytest
 import yaml
 
+from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.sweeper import SweepResult
 
 pytestmark = [
     pytest.mark.integration,
@@ -48,6 +50,7 @@ _EXPECTED_RECOMMEND_CASES = (
     "05-kv-fraction-goodput.yaml",
     "06-override-parallel-mappings-agg-disagg.yaml",
     "07-afd-plus-pd.yaml",
+    "08-heterogeneous-pd.yaml",
 )
 _PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
 _RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
@@ -150,7 +153,7 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
     for index, recommendation_path in enumerate(recommendation_paths):
         raw = yaml.safe_load(recommendation_path.read_text(encoding="utf-8"))
         _assert_concrete(raw)
-        CorePredictionConfig.model_validate(raw)
+        concrete = CorePredictionConfig.model_validate(raw)
         generated_modes.add(raw["engine"]["mode"])
 
         prediction_output = tmp_path / f"{config_path.stem}-predict-{index}"
@@ -166,6 +169,20 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             "json",
         )
         assert json.loads(prediction.stdout)["completed_requests"] > 0
+        if config_path.name == "08-heterogeneous-pd.yaml":
+            candidate = SweepResult.from_json((output / "recommendation.json").read_text()).selected_candidates[index]
+            deployment = prediction_to_replay_spec(concrete).backend_deployment
+            assert raw["engine"]["hardware"] == "h200_sxm"
+            assert raw["engine"]["workers"]["decode"]["hardware"] == "gb200"
+            assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
+            assert deployment.decode_engine_args["aic_system"] == "gb200"
+            assert candidate.config["prefill_hardware_sku"] == "h200_sxm"
+            assert candidate.config["decode_hardware_sku"] == "gb200"
+            assert candidate.used_gpus == 2
+            metrics = json.loads(prediction.stdout)
+            assert metrics["completed_requests"] == 6
+            for key in ("mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
+                assert metrics[key] == pytest.approx(candidate.metrics[key])
         if config_path.name == "07-afd-plus-pd.yaml":
             qualification = json.loads((prediction_output / "afd-qualification.json").read_text(encoding="utf-8"))
             assert qualification["identity"]["deployment_mode"] == "afd+pd"

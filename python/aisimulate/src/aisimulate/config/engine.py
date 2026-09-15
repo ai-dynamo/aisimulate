@@ -150,6 +150,7 @@ class TimingConfig(StrictModel):
 
 
 class WorkerPredictionConfig(StrictModel):
+    hardware: str | None = Field(default=None, min_length=1)
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
     scheduler: SchedulerPredictionConfig = Field(default_factory=SchedulerPredictionConfig)
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
@@ -223,6 +224,7 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:
@@ -338,6 +340,7 @@ class KvCacheRecommendationConfig(StrictModel):
 
 
 class WorkerRecommendationConfig(StrictModel):
+    hardware: str | None = Field(default=None, min_length=1)
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
     scheduler: SchedulerRecommendationConfig = Field(default_factory=SchedulerRecommendationConfig)
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
@@ -389,6 +392,7 @@ class EngineRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
+        _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
             if modes != {"afd"}:
                 raise ValueError("AFD recommendation mode cannot be mixed with aggregated/disaggregated modes")
@@ -405,6 +409,18 @@ class EngineRecommendationConfig(StrictModel):
         _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_worker_hardware(*, modes: set[str], workers) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(workers, role)
+        if worker is None or worker.hardware is None:
+            continue
+        if role == "aggregated" or "disaggregated" not in modes or "afd" in modes:
+            raise ValueError("worker hardware overrides require prefill/decode workers in disaggregated mode")
+        hardware = worker.hardware.strip()
+        if not hardware or hardware == "auto" or hardware != worker.hardware:
+            raise ValueError(f"workers.{role}.hardware must be one concrete nonempty hardware identifier")
 
 
 def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:

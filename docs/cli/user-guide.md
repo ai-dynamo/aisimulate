@@ -871,11 +871,12 @@ engine:
 |---|---:|---|---|---|
 | `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
-| `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
+| `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
+| `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
 | `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
 | `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
 | `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../sweeper/epd.md#unified-cli). |
@@ -919,8 +920,17 @@ engine:
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
-identifier. Language-worker roles in aggregated or disaggregated mode use the same hardware;
-an optional analytical encoder pool can specify its own hardware.
+identifier. Language workers inherit that fallback unless a P/D role overrides it;
+an optional analytical encoder pool can also specify its own hardware.
+
+For heterogeneous P/D, set `engine.workers.prefill.hardware` and/or
+`engine.workers.decode.hardware`. An omitted role inherits `engine.hardware`. Both roles
+share the model, backend and backend version; when an override is present, an omitted
+version must resolve identically on both effective SKUs. Pin a common supported version
+if their latest versions differ. Prediction uses each role's hardware for timing and KV
+capacity. Recommendation checks each role against its own hardware within the shared GPU
+budget and saves the overrides in prediction YAML. See the
+[complete YAML and CLI example](migrate-from-aiconfigurator.md#48-migrate-heterogeneous-pd-hardware).
 
 An aggregated configuration uses `workers.aggregated`. A disaggregated configuration uses
 `workers.prefill` and `workers.decode`:
@@ -959,9 +969,10 @@ engine:
       startup_seconds: 0
 ```
 
-Language-worker roles share the top-level model, hardware, backend, backend version, and context
-length. Per-role overrides for those settings are rejected. The optional analytical encoder pool
-has its own supported hardware and backend-version fields. If `engine.mode` is a
+Language-worker roles share the top-level model, backend, backend version, and context length.
+Per-role overrides for those settings are rejected. P/D workers may override the hardware fallback.
+The optional analytical encoder pool has its own supported hardware and backend-version fields.
+If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
 
@@ -1351,7 +1362,7 @@ optimization:
 `pareto` is always the fixed `throughput_per_gpu` and `throughput_per_user` frontier. Goodput targets
 require at least one `evaluation.sla` bound. Strict SLA requires at least one bound and controls only
 the additional aggregate-mean filter. `optimization.hardware` never accepts a list or inventory
-mapping; every candidate uses its single hardware identifier.
+mapping; it supplies the fallback hardware identifier, which P/D workers may override.
 
 ## Optimizer Controls
 

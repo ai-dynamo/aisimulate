@@ -25,7 +25,7 @@ from .sweeper.afd_perfmodel import (
 from .sweeper.kv_estimate import resolve_backend_version
 from .sweeper.model_hw import resolve_model_hardware
 from .sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from .sweeper.provider import AdapterReplaySpec, JSONValue
+from .sweeper.provider import AdapterReplaySpec, JSONValue, validate_router_prefill_hardware
 from .sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
 
@@ -44,6 +44,10 @@ def prediction_to_replay_spec(
         workload=workload,
         afd_performance_model=afd_performance_model,
     )
+    if config.engine.mode == "disaggregated":
+        assert config.engine.workers.prefill is not None
+        for adapter in (adapter_specs or {}).values():
+            validate_router_prefill_hardware(adapter, config.engine.workers.prefill.hardware or config.engine.hardware)
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
             raise ValueError("analytical EPD requires the offline engine stack without adapters")
@@ -109,6 +113,30 @@ def _deployment(
             performance_model=afd_performance_model or AICAFDPerformanceModel(),
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
+    if mode == "disagg":
+        from aiconfigurator_core.sdk.perf_database import load_system_spec
+
+        workers = (engine.workers.prefill, engine.workers.decode)
+        for role, worker in zip(("prefill", "decode"), workers, strict=True):
+            if worker is not None and worker.hardware is not None and not load_system_spec(worker.hardware):
+                raise ValueError(f"unknown workers.{role}.hardware {worker.hardware!r}: no system configuration found")
+        if engine.backend_version is None and any(
+            worker is not None and worker.hardware is not None for worker in workers
+        ):
+            versions = {
+                worker.hardware or engine.hardware: resolve_backend_version(
+                    worker.hardware or engine.hardware, engine.backend
+                )
+                for worker in workers
+                if worker is not None
+            }
+            if len(set(versions.values())) != 1:
+                raise ValueError(
+                    "heterogeneous P/D hardware requires one common backend_version; "
+                    f"latest versions for backend={engine.backend!r} are {versions}. "
+                    "Set engine.backend_version to a version supported by both SKUs."
+                )
+            engine = engine.model_copy(update={"backend_version": next(iter(versions.values()))})
     common: dict[str, Any] = {
         "deployment_mode": mode,
         "backend": engine.backend,
@@ -277,7 +305,7 @@ def _worker_performance_model_metadata(
         "config": {
             "backend": engine.backend,
             "backend_version": engine.backend_version,
-            "system": engine.hardware,
+            "system": worker.hardware or engine.hardware,
             "model_path": engine.model,
             "tp_size": parallel.tensor,
             "attention_dp_size": parallel.attention_data,
@@ -310,7 +338,7 @@ def _worker_engine_args(
         "worker_type": role,
         "engine_type": backend,
         "aic_backend": backend,
-        "aic_system": engine.hardware,
+        "aic_system": worker.hardware or engine.hardware,
         "aic_model_path": engine.model,
         "aic_tp_size": parallel.tensor,
         "aic_attention_dp_size": parallel.attention_data,
