@@ -667,3 +667,50 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         "feasible": 0,
     }
     assert "saved full result" in capsys.readouterr().err
+
+
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    class SnapshotFactory(_Factory):
+        def capabilities(self):
+            return EngineReplayRunnerFactory().capabilities()
+
+    config_path = tmp_path / "snapshot.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {"aggregated": {}},
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+                    "load": {"type": "trace_timestamps", "agentic_lanes": 2},
+                },
+            }
+        )
+    )
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--set",
+                "traffic.load.agentic_snapshot.seed=42",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
+    assert runner.spec.workload["agentic_lanes"] == 2
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1

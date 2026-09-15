@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Qualify public AgentX M1 replay using one published Weka play or a local fixture.
+"""Qualify public AgentX replay using one published Weka play or a local fixture.
 
 Published rows and their materialized v2 derivative stay in a temporary directory.
 Fixed timing checks execution semantics, not prediction accuracy or benchmark fidelity.
@@ -73,27 +73,27 @@ def prediction_config(path: Path, trace_format: str, block_size: int, backend: s
 def evidence(report: dict[str, Any]) -> dict[str, Any]:
     """Compare workload and simulated-time evidence, excluding host wall-clock metrics."""
     if report.get("agentic_qualification") != "functional_only" or report.get("agentic_lanes") != 1:
-        raise RuntimeError("M1 report must identify functional-only execution with one lane")
+        raise RuntimeError("AgentX replay report must identify functional-only execution with one lane")
     graph = report["agentic_graph"]
     if report["completed_requests"] != graph["node_count"]:
-        raise RuntimeError("published M1 play did not complete every request")
+        raise RuntimeError("AgentX play did not complete every request")
     records = report["per_request"]
     if len(records) != graph["node_count"] or any(
         row["terminal_status"] != "completed" or row["output_length"] != row["requested_output_length"]
         for row in records
     ):
-        raise RuntimeError("M1 request artifact must contain every completed request and its full output")
+        raise RuntimeError("AgentX replay request artifact must contain every completed request and its full output")
     outcomes = report["agentic_play_outcomes"]
     if len(outcomes) != graph["play_count"] or any(
         row["status"] != "completed" or row["settled_at_ms"] is None for row in outcomes
     ):
-        raise RuntimeError("M1 play did not reach completed settlement")
+        raise RuntimeError("AgentX play did not reach completed settlement")
     # Every successful request dispatches, terminates, and quiesces; each play
     # then contributes one settlement event.
     if report["agentic_lifecycle_event_count"] != 3 * graph["node_count"] + graph["play_count"]:
-        raise RuntimeError("M1 lifecycle evidence is incomplete")
+        raise RuntimeError("AgentX replay lifecycle evidence is incomplete")
     if min(row["dispatched_at_ms"] for row in records) != 0:
-        raise RuntimeError("M1 replay must start at turn zero")
+        raise RuntimeError("AgentX replay qualification must start at turn zero")
     return {
         key: report[key]
         for key in (
@@ -248,10 +248,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="save the qualification summary as JSON")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    progress("AgentX M1 functional qualification | fixed timing; not a benchmark result.")
+    progress("AgentX replay functional qualification | fixed timing; not a benchmark result.")
     progress("4 groups: vLLM/SGLang x Weka/v2; 3 runs each (Python, Python repeat, CLI) = 12 replays.")
     progress("Each Python request-progress bar belongs to the labeled run immediately above it.")
-    with tempfile.TemporaryDirectory(prefix="aisimulate-agentx-m1-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="aisimulate-agentx-replay-") as temporary:
         directory = Path(temporary)
         if args.trace is None:
             with phase("Prepare: download 2 pinned published source rows"):
