@@ -181,6 +181,9 @@ successful FPE or Nightly run **on that branch**, with a source SHA in that
 branch's history. An old-commit rerun cannot displace a newer tested commit.
 A release without retained qualification is labeled **unavailable**; an
 expired release artifact also removes its data from the next deployment.
+The page shows a **Results not available yet** notice with a **Check again**
+button and a link to that branch's coverage runs. It does not promise an
+availability date because release refreshes are not automatically scheduled.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
