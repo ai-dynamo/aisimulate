@@ -842,7 +842,11 @@ function LegacySnapshot({ snapshot }) {
             <time dateTime={snapshot.data_updated_at} title={snapshot.data_updated_at}>
               {new Date(snapshot.data_updated_at).toLocaleString(undefined, { timeZoneName: 'short' })}
             </time>
-          </a>{' · '}Data commit <code>{snapshot.data_commit.slice(0, 12)}</code>
+          </a>{' · '}Data commit{' '}
+          <a href={`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.data_commit}`}
+             target="_blank" rel="noopener noreferrer" className="underline">
+            <code>{snapshot.data_commit.slice(0, 12)}</code>
+          </a>
         </> : 'Latest data change: not recorded'}
         {' · '}Qualification not recorded
       </p>
