@@ -860,6 +860,18 @@ search or SLA optimization. A separate shortcut is not needed in AISimulate's `p
 workflow. AIC's normal `default` and `exp` workflows also generate deployment files for supported
 configurations when `--save-dir` is supplied.
 
+For a quick basic deployment configuration with the AIC shortcut:
+
+```bash
+aiconfigurator cli generate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --total-gpus 8 \
+  --deployment-target dynamo-j2 --save-dir ./deployment
+```
+
+**Result to inspect:** `deployment/` contains a basic deployment configuration generated without
+search or SLA optimization.
+
 `aisimulate recommend` saves evaluated configurations as `recommendations/*.yaml` for use with
 `predict`. The unified CLI currently does not render launch scripts or deployment manifests from
 these files. For deployment artifacts, use the bundled AIC workflows or, programmatically, the
