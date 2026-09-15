@@ -99,6 +99,12 @@ def _write_manifest(root: Path, table: Path, *, upstream_rows: int = 2) -> Path:
             "zero_sentinel_rows": 1,
         },
     }
+    if retained_rows:
+        upstream_path = root / "power_upstream" / "source.parquet"
+        upstream_path.parent.mkdir(exist_ok=True)
+        pq.write_table(pq.read_table(table).slice(0, upstream_rows), upstream_path)
+        manifest["tables"][0]["upstream_evidence_path"] = upstream_path.relative_to(root).as_posix()
+        manifest["tables"][0]["upstream_sha256"] = _sha256(upstream_path)
     path = root / "power_data_provenance.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     return path
@@ -281,3 +287,45 @@ def test_shipped_power_manifests_are_current(power_data_module):
 
     assert manifests
     assert [issue for manifest in manifests for issue in power_data_module.validate_manifest(manifest)] == []
+
+
+@pytest.mark.parametrize("column_type, values", [(pa.string(), ["500", "0"]), (pa.bool_(), [True, False])])
+def test_manifest_reports_non_numeric_metrics_without_traceback(power_data_module, tmp_path, column_type, values):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    manifest = _write_manifest(tmp_path, table_path)
+    table = pq.read_table(table_path)
+    table = table.set_column(table.schema.get_field_index("power"), "power", pa.array(values, type=column_type))
+    pq.write_table(table, table_path)
+    issues = power_data_module.validate_manifest(manifest)
+    assert any("power must be double" in issue for issue in issues)
+    assert power_data_module.main([str(manifest)]) == 1
+
+
+@pytest.mark.parametrize("change", ["measurement", "identity", "local_power", "upstream_hash"])
+def test_identity_merge_checks_pinned_source_rows(power_data_module, tmp_path, change):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    manifest = _write_manifest(tmp_path, table_path, upstream_rows=1)
+    payload = json.loads(manifest.read_text())
+    table = pq.read_table(table_path)
+    if change == "measurement":
+        table = table.set_column(2, "power", pa.array([501.0, 0.0]))
+    elif change == "identity":
+        table = table.set_column(0, "shape", pa.array([3, 2]))
+    elif change == "local_power":
+        table = table.set_column(2, "power", pa.array([500.0, 500.0]))
+        table = table.set_column(3, "power_limit", pa.array([1000.0, 1000.0]))
+    else:
+        payload["tables"][0]["upstream_sha256"] = "0" * 64
+    pq.write_table(table, table_path)
+    payload["tables"][0]["packaged_sha256"] = _sha256(table_path)
+    manifest.write_text(json.dumps(payload))
+    issues = power_data_module.validate_manifest(manifest)
+    expected = {
+        "measurement": "changed 1 upstream measurement",
+        "identity": "dropped 1 upstream identities",
+        "local_power": "local-only identities must use",
+        "upstream_hash": "upstream evidence checksum mismatch",
+    }
+    assert any(expected[change] in issue for issue in issues)

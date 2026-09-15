@@ -128,6 +128,47 @@ def _packaged_power_paths(root: Path, *, context: str, issues: list[str]) -> set
     return paths
 
 
+def _identity_merge_issues(root: Path, entry: dict[str, Any], table: pa.Table) -> list[str]:
+    """Compare imported measurements against the pinned upstream artifact."""
+    relative = entry.get("upstream_evidence_path")
+    if not isinstance(relative, str) or not relative:
+        return ["identity-merge requires upstream_evidence_path"]
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return ["upstream_evidence_path must name a file within the manifest directory"]
+    if _sha256(path) != entry.get("upstream_sha256"):
+        return ["upstream evidence checksum mismatch"]
+    try:
+        upstream = pq.read_table(path)
+    except Exception as exc:
+        return [f"cannot read upstream evidence: {exc}"]
+    identities, _ = table_identity_evidence(table)
+    if not identities or upstream.column_names != table.column_names:
+        return ["upstream evidence columns do not match packaged table"]
+    issues = power_metric_issues(upstream)
+    if issues:
+        return [f"upstream evidence: {issue}" for issue in issues]
+    if upstream.num_rows != entry.get("upstream_rows"):
+        issues.append("upstream evidence row count mismatch")
+
+    def key(row: dict[str, Any]) -> tuple[Any, ...]:
+        return tuple(row[name] for name in identities)
+
+    imported = {key(row): row for row in upstream.to_pylist()}
+    packaged = {key(row): row for row in table.to_pylist()}
+    if len(imported) != upstream.num_rows:
+        issues.append("upstream evidence has duplicate identities")
+    if missing := imported.keys() - packaged.keys():
+        issues.append(f"packaged table dropped {len(missing)} upstream identities")
+    changed = sum(packaged[identity] != row for identity, row in imported.items() if identity in packaged)
+    if changed:
+        issues.append(f"packaged table changed {changed} upstream measurement rows")
+    local = [packaged[identity] for identity in packaged.keys() - imported.keys()]
+    if any(row["power"] != 0.0 or row["power_limit"] != 0.0 for row in local):
+        issues.append("local-only identities must use paired-zero sentinels")
+    return issues
+
+
 def validate_manifest(manifest_path: Path) -> list[str]:
     """Validate one adjacent power provenance manifest and its parquet files."""
     try:
@@ -233,8 +274,11 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         except Exception as exc:
             issues.append(f"{context}: cannot read {relative}: {exc}")
             continue
-        for problem in power_metric_issues(table):
+        metric_issues = power_metric_issues(table)
+        for problem in metric_issues:
             issues.append(f"{context}: {relative}: {problem}")
+        if metric_issues:
+            continue
         if not all(name in table.column_names for name in POWER_COLUMNS):
             issues.append(f"{context}: manifested table must include power and power_limit: {relative}")
             continue
@@ -248,6 +292,9 @@ def validate_manifest(manifest_path: Path) -> list[str]:
             issues.append(f"{context}: table has no identity columns: {relative}")
         elif table.select(identity_columns).group_by(identity_columns).aggregate([]).num_rows != table.num_rows:
             issues.append(f"{context}: identity_columns do not uniquely identify every row in {relative}")
+
+        if mode == "identity-merge":
+            issues.extend(f"{context}: {problem}" for problem in _identity_merge_issues(root, raw_entry, table))
 
         power = table.column("power").to_pylist()
         power_limit = table.column("power_limit").to_pylist()

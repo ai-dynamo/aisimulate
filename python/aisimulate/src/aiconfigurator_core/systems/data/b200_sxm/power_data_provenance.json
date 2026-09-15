@@ -106,7 +106,8 @@
           "min": 0,
           "max": 0
         }
-      }
+      },
+      "upstream_evidence_path": "power_upstream/context_attention.parquet.source"
     },
     {
       "path": "attention/trtllm/1.3.0rc20/generation_attention_perf.parquet",
@@ -167,7 +168,8 @@
           "min": 1,
           "max": 131071
         }
-      }
+      },
+      "upstream_evidence_path": "power_upstream/generation_attention.parquet.source"
     },
     {
       "path": "comm/trtllm/1.3.0rc20/custom_allreduce_perf.parquet",

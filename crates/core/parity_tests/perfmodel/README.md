@@ -133,3 +133,9 @@ Nemotron context all-reduce changes from 0 to 1241.060314309411 W-ms.
 Both cases now require a nonzero energy comparison in `_POWER_SUBSET_IDS`.
 These are regression expectations derived from imported operation measurements,
 not independent silicon-accuracy qualification.
+
+The two identity-merged B200 attention tables include pinned upstream artifacts
+in `power_upstream/*.parquet.source`. The provenance validator checks their
+upstream SHA-256, every imported identity and measurement, and the paired-zero
+sentinel on local-only identities. These evidence files are excluded from
+`*.parquet` runtime-table discovery.

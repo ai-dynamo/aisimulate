@@ -1,4 +1,10 @@
-# CLI User Guide
+# Legacy AIC CLI User Guide
+
+This guide documents the legacy `aiconfigurator cli` compatibility commands that still ship
+with AISimulate. For the unified `aisimulate` CLI, see the
+[AISimulate CLI User Guide](user-guide.md) and
+[AIC migration guide](migrate-from-aiconfigurator.md).
+
 ## Basic Command
 As mentioned in root Readme, CLI supports six modes: `default`, `recommend`, `exp`, `generate`, `estimate`, and `support`. We'll go through these modes one by one.
 
@@ -457,7 +463,7 @@ Beyond `--ttft`, `--tpot`, `--isl`, `--osl`, and `--prefix`, `default` mode acce
 > configurations compete in the same search. To restrict or force EP sizes, set
 > `*_moe_ep_candidates` in an exp YAML ([Exp mode](#exp-mode)); when a model's shape has
 > no coverage, a one-time INFO log names the collectors to run
-> (see [Advanced Tuning](advanced_tuning.md#large-ep-wideep-exploration)).
+> (see [Advanced Tuning](../../python/aisimulate/docs/advanced_tuning.md#large-ep-wideep-exploration)).
 
 **Vision-language inputs** (multimodal models such as Qwen3-VL and Qwen3.5):
 
@@ -485,7 +491,7 @@ Visual encoder workloads are not supported by AFD mode. Video estimates are supp
 - `--encoder-system`: System (GPU type) for the encode pool. Defaults to the LM-side system; backend and version always follow the P/agg side.
 - `--encoder-latency-correction`: Latency correction scale for encode workers. Default: `1.0`.
 
-Encode batch sizes are swept over `1 2 4 8`, capped at 8 (SGLang's `SGLANG_ENCODER_MAX_BATCH_SIZE` default); explicit candidates above the cap are rejected. Further knobs (`encoder_batch_candidates`, `max_encoder_workers`, `rate_match_encoder_degradation`) are Task fields for `exp`-mode YAML — see [Advanced Tuning](advanced_tuning.md). EPD rows are excluded from generator artifacts (see [Generator Overview](generator_overview.md)).
+Encode batch sizes are swept over `1 2 4 8`, capped at 8 (SGLang's `SGLANG_ENCODER_MAX_BATCH_SIZE` default); explicit candidates above the cap are rejected. Further knobs (`encoder_batch_candidates`, `max_encoder_workers`, `rate_match_encoder_degradation`) are Task fields for `exp`-mode YAML — see [Advanced Tuning](../../python/aisimulate/docs/advanced_tuning.md). EPD rows are excluded from generator artifacts (see [Generator Overview](../../python/aisimulate/docs/generator_overview.md)).
 
 The SLA, precision, and speculative-decoding flags (`--strict-sla`, `--request-latency`, `--inclusive-tpot`, `--nextn`, `--nextn-accepted`, `--database-mode`) have dedicated subsections below. Shared flags such as `--save-dir`, `--top-n`, and `--systems-paths` are described in [Common Arguments](#common-arguments-all-modes).
 
@@ -684,7 +690,7 @@ By default, we output the top 5 configs we have found. You can get the configs a
 - **llm-d**: `llm-d-values.yaml` for Helm deployment with the llm-d-modelservice chart
 - **FPM V1**: exactly `k8s_deploy.yaml` (a reusable keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet), `fpm_env.sh` (rank discovery plus the per-cell collection facts), and `run.sh` (the launch-only vLLM command)
 
-For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](dynamo_deployment_guide.md) for Dynamo deployments or the [README llm-d section](../README.md#deploying-to-llm-d-platform) for llm-d deployments.
+For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [README llm-d section](../../python/aisimulate/README.md#deploying-to-llm-d-platform) for llm-d deployments.
 
 `--save-dir DIR` allows you to specify more information such as generating the config for a different version of the backend, say estimating the performance using trtllm 1.0.0rc3 but generate config for 1.0.0rc6. This is allowed and feasible. By passing `--generated-config-version 1.0.0rc6` can give you the right result.
 
@@ -1061,7 +1067,7 @@ aiconfigurator cli exp --yaml-path example.yaml
 ```
 > **YAML format:** Experiment YAML uses the flat `Task` schema — every key maps
 > 1:1 to a `Task` field, with no `mode:` selector and no `config:` /
-> `worker_config:` nesting. See [`example.yaml`](../src/aiconfigurator/cli/example.yaml)
+> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example.yaml)
 > for the annotated template.
 >
 > The legacy V1 nested format (`mode` / `config` / `worker_config` /
@@ -1069,10 +1075,10 @@ aiconfigurator cli exp --yaml-path example.yaml
 > compatibility shim remains: V1 YAML still loads, but it is auto-converted to V2
 > with a `DeprecationWarning`, and any field with no V2 equivalent is rejected
 > (not silently dropped). See
-> [`example_v1_deprecated.yaml`](../src/aiconfigurator/cli/example_v1_deprecated.yaml)
+> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example_v1_deprecated.yaml)
 > for the old shape. Write all new configs in the flat V2 format below.
 
-An example YAML file looks like this; see the [annotated experiment template](../src/aiconfigurator/cli/example.yaml).  
+An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aiconfigurator/cli/example.yaml).
 Let's split the yaml file into several sections.  
 1. exps
 ```yaml
@@ -1159,7 +1165,7 @@ This is long; the basics:
     - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).  
     - Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
     - `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
-    - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](advanced_tuning.md). Typically the only thing you need to touch is the quantization.
+    - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](../../python/aisimulate/docs/advanced_tuning.md). Typically the only thing you need to touch is the quantization.
 
 Quantization override order: explicit `*_quant_mode` fields take precedence; any mode left unset is filled from the model's HF quantization metadata.
 
@@ -1179,7 +1185,7 @@ Everything omitted falls back to defaults / HF inference. With large-EP candidat
 
 Let's go through some pre-defined experiments for reference.
 1. homegeneous vs. heterogenous  
-The example [yaml](../src/aiconfigurator/cli/exps/hetero_disagg.yaml)
+The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/hetero_disagg.yaml)
 ```yaml
 exps:
   - exp_h200_h200
@@ -1218,7 +1224,7 @@ We defined two experiments. `exp_h200_h200` uses H200 for both prefill and decod
 **Note**: You can also compare different backends by setting different `backend_name` values (trtllm, vllm, sglang) in your experiments.
 
 2. use a specific quantization  
-The example [yaml](../src/aiconfigurator/cli/exps/qwen3_32b_pertensor.yaml)
+The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/qwen3_32b_pertensor.yaml)
 ```yaml
 exps:
   - exp_agg
@@ -1267,7 +1273,7 @@ exp_disagg:
 ```
 Here we override the quantization of Qwen/Qwen3-32B-FP8: the default is blockwise FP8 for GEMM, and we set per-tensor FP8 explicitly via the `*_quant_mode` fields. (The deprecated V1 way was `profiles: ["fp8"]`, which expanded to exactly these fields.)
 
-You can refer to [src/aiconfigurator/cli/exps](../src/aiconfigurator/cli/exps) to find more reference yaml files.
+You can refer to [src/aiconfigurator/cli/exps](../../python/aisimulate/src/aiconfigurator/cli/exps) to find more reference yaml files.
 
 Use `exp` mode for flexible experiments, `default` mode for convenient agg vs disagg comparison with SLA optimization, and `generate` mode for quick config generation without sweeping. All modes support generating configs for frameworks automatically by `--save-dir DIR`.
 
@@ -1344,7 +1350,7 @@ helm install my-model llm-d/llm-d-modelservice \
   --values results/.../disagg/top1/llm-d-values.yaml
 ```
 
-See the [Deployment Guide](dynamo_deployment_guide.md) for multi-node and K8s details.
+See the [Deployment Guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for multi-node and K8s details.
 
 ### Step 5: Benchmark
 
