@@ -83,6 +83,10 @@ def validate_snapshot(job_dir, spec, *, table_reader=None):
     for path in sorted(data.glob("*_perf.parquet")):
         rows = table_reader(path)
         entry = meta["tables"][path.stem]
+        if spec["mode"] == "full":
+            expected_ref = status.get("source_commit")
+            if not expected_ref or expected_ref == "unknown" or entry.get("collector_ref") != expected_ref:
+                raise ValueError("Full-data provenance does not match the recorded source commit")
         if entry.get("status") != "complete" or entry["rows"] != len(rows):
             raise ValueError("Parquet row count/status does not match its provenance")
         for row in rows:
@@ -155,7 +159,7 @@ def submission_environment():
 def submit(config, campaign, spec):
     root = Path(campaign["root"])
     args = campaign["slurm"]
-    qos = "interactive" if spec["mode"] == "smoke" else "short"
+    qos = args.get("smoke_qos", "interactive") if spec["mode"] == "smoke" else args.get("full_qos", "short")
     memory = args.get("memory", "128G")
     step = [
         "srun",

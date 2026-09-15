@@ -30,7 +30,14 @@ def fixture(tmp_path):
     }
     data = tmp_path / "data"
     (data / "checkpoint/vllm").mkdir(parents=True)
-    status = {"spec": spec, "status": "complete", "done": 1, "failed": 0, "collector_exit_code": 0}
+    status = {
+        "spec": spec,
+        "status": "complete",
+        "done": 1,
+        "failed": 0,
+        "collector_exit_code": 0,
+        "source_commit": "a" * 40,
+    }
     (tmp_path / "status.json").write_text(json.dumps(status))
     checkpoint = {
         "framework_version": "0.25.0",
@@ -41,7 +48,7 @@ def fixture(tmp_path):
     (data / "checkpoint/vllm/gemm.json").write_text(json.dumps(checkpoint))
     meta = {
         "runtime": {"framework": "vllm", "version": "0.25.0"},
-        "tables": {"gemm_perf": {"status": "complete", "rows": 1}},
+        "tables": {"gemm_perf": {"status": "complete", "rows": 1, "collector_ref": "a" * 40}},
     }
     (data / "collection_meta.yaml").write_text(yaml.safe_dump(meta))
     (data / "gemm_perf.parquet").write_bytes(b"fixture file; reader is injected")
@@ -92,9 +99,11 @@ def test_cpu_hook_memory_limit_cannot_leak_into_gpu_step(tmp_path, monkeypatch):
         "runner_revision": "test",
         "slurm": {"account": "test", "partition": "batch", "image": "/image.sqsh", "memory": "128G"},
     }
+    campaign["slurm"]["full_qos"] = "normal"
     spec = {"id": "gemm-00", "op": "gemm", "mode": "full", "planned_tasks": 1}
     hook.submit({}, campaign, spec)
     assert "--mem=128G" in captured["command"]
+    assert "--qos=normal" in captured["command"]
     wrapped = next(v for v in captured["command"] if v.startswith("--wrap="))
     assert "--mem=128G" in wrapped and "--cpus-per-task=32" in wrapped
     assert "SLURM_MEM_PER_NODE" not in captured["env"]
