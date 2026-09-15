@@ -37,9 +37,7 @@ def _passing_evidence(revision: str, artifact: str = TEST_ARTIFACT_REF) -> dict:
     return {
         "result": "pass",
         "artifact": artifact,
-        "sha256": hashlib.sha256(
-            (QUALIFICATION.ROOT / artifact).read_bytes()
-        ).hexdigest(),
+        "sha256": hashlib.sha256((QUALIFICATION.ROOT / artifact).read_bytes()).hexdigest(),
         "source_revision": revision,
         "recorded_at": "2026-09-08T12:00:00Z",
     }
@@ -57,9 +55,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     for gate in document["gates"]:
         if not gate["release_blocking"]:
             continue
@@ -76,8 +72,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
                 "source_revision": revision,
                 "matrix": copy.deepcopy(gate["matrix"]),
                 "assertion_results": [
-                    {**copy.deepcopy(assertion), "result": "pass"}
-                    for assertion in gate["assertions"]
+                    {**copy.deepcopy(assertion), "result": "pass"} for assertion in gate["assertions"]
                 ],
                 "units": QUALIFICATION._expected_units(gate),
                 "anomalies": [],
@@ -91,9 +86,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
     return document
 
 
-def _rewrite_evidence_report(
-    document: dict, gate_id: str, update: Callable[[dict], None]
-) -> None:
+def _rewrite_evidence_report(document: dict, gate_id: str, update: Callable[[dict], None]) -> None:
     evidence = _gate(document, gate_id)["execution"]["evidence"][0]
     artifact = QUALIFICATION.ROOT / evidence["artifact"]
     report = json.loads(artifact.read_text(encoding="utf-8"))
@@ -123,9 +116,7 @@ def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
 
 
 def _data_runner():
-    spec = importlib.util.spec_from_file_location(
-        "power_data_runner", ROOT / "scripts/power_qualification_data.py"
-    )
+    spec = importlib.util.spec_from_file_location("power_data_runner", ROOT / "scripts/power_qualification_data.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -139,9 +130,7 @@ def test_power_data_evidence_is_recomputed_from_the_checkout() -> None:
     assert details["total_discovered_parquet_count"] == len(paths)
     assert details["files_scanned"] > 0
     assert details["skipped_file_anomalies"] == []
-    assert details["rows_scanned"] == sum(
-        item["rows_scanned"] for item in details["files"]
-    )
+    assert details["rows_scanned"] == sum(item["rows_scanned"] for item in details["files"])
     for item in details["files"]:
         path = ROOT / runner.DATA_ROOT / item["path"]
         assert item["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -178,9 +167,7 @@ def _write_power_table(root: Path, powers: list, limits: list) -> Path:
         (1.0, 0.0),
     ],
 )
-def test_power_scan_rejects_corrupt_data(
-    tmp_path: Path, power: float, limit: float
-) -> None:
+def test_power_scan_rejects_corrupt_data(tmp_path: Path, power: float, limit: float) -> None:
     _write_power_table(tmp_path, [power], [limit])
     assert _data_runner().scan_details(tmp_path)["skipped_file_anomalies"]
 
@@ -201,9 +188,7 @@ def test_execution_verification_rejects_forged_report_and_dirty_source(
     path = _write_power_table(tmp_path, [400.0], [700.0])
 
     def git(*args: str) -> str:
-        return subprocess.check_output(
-            ["git", "-C", str(tmp_path), *args], text=True
-        ).strip()
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
 
     git("init")
     git("add", ".")
@@ -277,9 +262,7 @@ def test_schema_is_versioned_and_machine_readable() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["schema_version"]["const"] == "1.0"
     assert schema["properties"]["release_target"]["const"] == "0.13.0"
-    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(
-        schema["$defs"]
-    )
+    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(schema["$defs"])
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(_document())
@@ -292,10 +275,7 @@ def test_schema_rejects_unsupported_dimensions() -> None:
 
     errors = list(Draft202012Validator(schema).iter_errors(document))
 
-    assert any(
-        error.validator == "enum" and "bogus-runner" in error.message
-        for error in errors
-    )
+    assert any(error.validator == "enum" and "bogus-runner" in error.message for error in errors)
 
 
 def test_schema_rejects_passing_planned_or_evidence_free_gates() -> None:
@@ -363,9 +343,7 @@ def test_release_check_rejects_remote_artifacts_without_network_access(
 
     monkeypatch.setattr("socket.create_connection", unexpected_network_call)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="repository-relative path"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="repository-relative path"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -410,9 +388,9 @@ def test_release_check_binds_evidence_to_owning_gate(
     ("update", "message"),
     [
         (
-            lambda report: report["details"]["checks"]["finite_nonnegative_values"][
-                "power"
-            ].update(positive_infinity_count=1),
+            lambda report: report["details"]["checks"]["finite_nonnegative_values"]["power"].update(
+                positive_infinity_count=1
+            ),
             "positive_infinity_count",
         ),
         (
@@ -420,9 +398,7 @@ def test_release_check_binds_evidence_to_owning_gate(
             "discovery counts",
         ),
         (
-            lambda report: report["details"]["skipped_file_anomalies"].append(
-                "unreadable.parquet"
-            ),
+            lambda report: report["details"]["skipped_file_anomalies"].append("unreadable.parquet"),
             "skipped_file_anomalies",
         ),
     ],
@@ -452,9 +428,7 @@ def test_release_check_bounds_local_artifact_size(
     document = qualified_document(revision)
     monkeypatch.setattr(QUALIFICATION, "ARTIFACT_MAX_BYTES", 1)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="exceeds the 1-byte limit"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="exceeds the 1-byte limit"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -501,12 +475,7 @@ def test_cli_release_gate_fails_closed_and_checks_expected_revision(
     ledger = tmp_path / "qualification-matrix.json"
     ledger.write_text(json.dumps(qualified_document(revision)), encoding="utf-8")
 
-    assert (
-        QUALIFICATION.main(
-            [str(ledger), "--require-release-ready", "--expected-revision", revision]
-        )
-        == 1
-    )
+    assert QUALIFICATION.main([str(ledger), "--require-release-ready", "--expected-revision", revision]) == 1
     assert "power qualification failed" in capsys.readouterr().err
 
     assert (
@@ -529,18 +498,14 @@ def test_release_check_rejects_stale_or_mixed_candidate_evidence(
     revision = "a" * 40
     document = qualified_document(revision)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="does not match expected_revision"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="does not match expected_revision"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
             expected_revision="b" * 40,
         )
 
-    _gate(document, "application-wheel")["execution"]["evidence"][0][
-        "source_revision"
-    ] = "c" * 40
+    _gate(document, "application-wheel")["execution"]["evidence"][0]["source_revision"] = "c" * 40
     with pytest.raises(
         QUALIFICATION.QualificationError,
         match="evidence does not match candidate_revision",
@@ -567,9 +532,7 @@ def test_qualified_state_cannot_bypass_release_check() -> None:
     document = _document()
     document["release_state"] = "qualified"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="release-blocking gates"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="release-blocking gates"):
         QUALIFICATION.validate_document(document)
 
 
@@ -586,9 +549,7 @@ def test_unsupported_timing_backends_must_remain_unavailable() -> None:
     assertion = _gate(document, "unsupported-timing-no-fabrication")["assertions"][0]
     assertion["expectation"] = "modeled_power"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
 
@@ -599,9 +560,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     gate["execution"]["status"] = "passed"
     gate["execution"]["evidence"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="cannot be passed without evidence"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="cannot be passed without evidence"):
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"] = passing_evidence
@@ -612,9 +571,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"][0]["sha256"] = "1" * 64
-    gate["execution"]["evidence"][0]["artifact"] = (
-        "http://example.invalid/power-data-invariants.json"
-    )
+    gate["execution"]["evidence"][0]["artifact"] = "http://example.invalid/power-data-invariants.json"
     with pytest.raises(QUALIFICATION.QualificationError, match="repository-relative"):
         QUALIFICATION.validate_document(document)
 
@@ -654,9 +611,7 @@ def test_malformed_execution_accumulates_validation_errors(gate_id: str) -> None
     document = _document()
     _gate(document, gate_id)["execution"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="execution must be an object"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="execution must be an object"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -668,9 +623,7 @@ def test_malformed_accuracy_policy_accumulates_validation_errors() -> None:
     document = _document()
     document["policy"]["silicon_accuracy"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="silicon_accuracy must be an object"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="silicon_accuracy must be an object"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -692,9 +645,7 @@ def test_planned_command_cannot_be_presented_as_passing() -> None:
         }
     ]
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="command is only planned"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="command is only planned"):
         QUALIFICATION.validate_document(document)
 
 
@@ -709,14 +660,10 @@ def test_silicon_gate_and_policy_thresholds_cannot_drift() -> None:
         }
     )
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     QUALIFICATION.validate_document(document)
 
 
@@ -730,9 +677,7 @@ def test_silicon_approval_rejects_boolean_thresholds() -> None:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
 
     with pytest.raises(QUALIFICATION.QualificationError, match="silicon"):
         QUALIFICATION.validate_document(document)
@@ -819,9 +764,7 @@ def test_power_scan_rejects_non_numeric_sentinels(tmp_path, value):
     assert _data_runner().scan_details(tmp_path)["skipped_file_anomalies"]
 
 
-@pytest.mark.parametrize(
-    "destination", ["docs/power", "artifacts/power-qualification/../../docs/power"]
-)
+@pytest.mark.parametrize("destination", ["docs/power", "artifacts/power-qualification/../../docs/power"])
 def test_generator_cannot_overwrite_source(tmp_path, monkeypatch, destination):
     runner = _data_runner()
     source = tmp_path / "docs/power/qualification-matrix.json"
@@ -845,20 +788,14 @@ def test_generator_cannot_overwrite_source(tmp_path, monkeypatch, destination):
         (["0"], ["0"], False),
     ],
 )
-def test_generator_and_packaged_invariants_agree(
-    tmp_path, monkeypatch, powers, limits, valid
-):
-    path = (
-        ROOT / "python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py"
-    )
+def test_generator_and_packaged_invariants_agree(tmp_path, monkeypatch, powers, limits, valid):
+    path = ROOT / "python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py"
     spec = importlib.util.spec_from_file_location("packaged_power_invariants", path)
     invariant = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(invariant)
     _write_power_table(tmp_path, powers, limits)
     monkeypatch.setattr(invariant, "_DATA_ROOT", tmp_path / _data_runner().DATA_ROOT)
-    assert (
-        not _data_runner().scan_details(tmp_path)["skipped_file_anomalies"]
-    ) == valid
+    assert (not _data_runner().scan_details(tmp_path)["skipped_file_anomalies"]) == valid
     if valid:
         invariant.test_power_columns_satisfy_energy_model_input_contract()
     else:
