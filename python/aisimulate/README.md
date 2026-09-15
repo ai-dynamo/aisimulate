@@ -130,9 +130,6 @@ See [the AISimulate CLI User Guide](../../docs/cli/user-guide.md) for the comple
 traffic contract. The `aiconfigurator` command below remains available for its existing AIC
 estimation and deployment-generation workflows.
 
-Use [`aisimulate estimate`](../../docs/cli/user-guide.md#estimate-a-fixed-configuration)
-for fixed-batch estimates with the existing `--estimate-mode` and `--detail` flags.
-
 ### CLI
 
 ```bash

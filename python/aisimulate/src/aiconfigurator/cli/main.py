@@ -112,11 +112,6 @@ def _latest_support_matrix_version(
 
 def _build_common_cli_parser() -> argparse.ArgumentParser:
     common_parser = argparse.ArgumentParser(add_help=False)
-    _add_common_cli_arguments(common_parser)
-    return common_parser
-
-
-def _add_common_cli_arguments(common_parser: argparse.ArgumentParser) -> None:
     common_parser.add_argument(
         "--log-level",
         type=str.upper,
@@ -135,6 +130,8 @@ def _add_common_cli_arguments(common_parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Disable ANSI colors in output.",
     )
+    # TODO: maybe move --systems-path here?
+    return common_parser
 
 
 def _build_common_cli_experiments_parser() -> argparse.ArgumentParser:
@@ -150,21 +147,6 @@ def _build_common_cli_experiments_parser() -> argparse.ArgumentParser:
         "or for each mode (agg/disagg) in default mode. Default: 5.",
     )
     common_parser.add_argument(
-        "--deployment-target",
-        type=str,
-        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm"],
-        default="dynamo-j2",
-        help="Deployment target platform. Options: dynamo-j2 (default, typed Dynamo manifests), "
-        "dynamo-python (Dynamo Python config modifiers), llm-d-helm (llm-d Helm values), "
-        "llm-d-kustomize (llm-d Kustomize overlays), fpm (reusable resource Pod + run.sh).",
-    )
-    _add_estimator_runtime_arguments(common_parser)
-    add_generator_override_arguments(common_parser)
-    return common_parser
-
-
-def _add_estimator_runtime_arguments(common_parser: argparse.ArgumentParser) -> None:
-    common_parser.add_argument(
         "--systems-paths",
         type=str,
         default=None,
@@ -172,6 +154,15 @@ def _add_estimator_runtime_arguments(common_parser: argparse.ArgumentParser) -> 
             "Systems search paths (comma-separated). Use 'default' for the built-in systems path. "
             "Example: default,/opt/aic/systems,/data/aic/systems."
         ),
+    )
+    common_parser.add_argument(
+        "--deployment-target",
+        type=str,
+        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm"],
+        default="dynamo-j2",
+        help="Deployment target platform. Options: dynamo-j2 (default, typed Dynamo manifests), "
+        "dynamo-python (Dynamo Python config modifiers), llm-d-helm (llm-d Helm values), "
+        "llm-d-kustomize (llm-d Kustomize overlays), fpm (reusable resource Pod + run.sh).",
     )
     common_parser.add_argument(
         "--engine-step-backend",
@@ -189,6 +180,8 @@ def _add_estimator_runtime_arguments(common_parser: argparse.ArgumentParser) -> 
         "'fpm' predicts from collected whole-model forward-pass data (requires fpm_forward "
         "perf data for the exact model/system/backend/version).",
     )
+    add_generator_override_arguments(common_parser)
+    return common_parser
 
 
 def _parse_nextn(value: str) -> int | str:
@@ -1420,17 +1413,6 @@ def _add_estimate_mode_arguments(parser):
         "Set this to match your actual deployment to get an accurate KV cache capacity warning.",
     )
     _add_attention_backend_argument(parser)
-
-
-def configure_estimate_parser(parser: argparse.ArgumentParser) -> None:
-    """Configure fixed-configuration estimates without search or deployment-only options.
-
-    AISimulate and the compatibility CLI share the estimator options and runner.
-    The compatibility parser additionally retains its historical shared flags.
-    """
-    _add_common_cli_arguments(parser)
-    _add_estimator_runtime_arguments(parser)
-    _add_estimate_mode_arguments(parser)
 
 
 def _add_support_mode_arguments(parser):
@@ -3293,26 +3275,6 @@ def _validate_default_mode_inputs(args) -> None:
         )
 
 
-def run_estimate(args) -> None:
-    """Run an estimate with shared expected-error handling and terminal reports.
-
-    The caller configures logging and system search paths before invoking this.
-    """
-    # Expected user errors surface from the SDK as ValueError (invalid
-    # sizing/parameters, unsupported quant/compatibility) or as a perf-data
-    # coverage miss (PerfDataNotAvailableError / EmpiricalNotImplementedError).
-    # Convert them to a concise CLI error instead of a full traceback; keep
-    # the traceback at DEBUG (--log-level DEBUG) and let genuine bugs
-    # (KeyError, OOM RuntimeError, …) propagate unchanged.
-    try:
-        _run_estimate_mode(args)
-    except Exception as exc:
-        if is_expected_cli_error(exc):
-            logger.debug("Traceback for estimate mode", exc_info=True)
-            raise SystemExit("Error: " + str(exc)) from exc
-        raise
-
-
 def main(args):
     setup_logging(
         level=_resolve_cli_log_level(args),
@@ -3339,7 +3301,19 @@ def main(args):
 
     # Handle estimate mode separately (single-point estimation)
     if args.mode == "estimate":
-        run_estimate(args)
+        # Expected user errors surface from the SDK as ValueError (invalid
+        # sizing/parameters, unsupported quant/compatibility) or as a perf-data
+        # coverage miss (PerfDataNotAvailableError / EmpiricalNotImplementedError).
+        # Convert them to a concise CLI error instead of a full traceback; keep
+        # the traceback at DEBUG (--log-level DEBUG) and let genuine bugs
+        # (KeyError, OOM RuntimeError, …) propagate unchanged.
+        try:
+            _run_estimate_mode(args)
+        except Exception as exc:
+            if is_expected_cli_error(exc):
+                logger.debug("Traceback for estimate mode", exc_info=True)
+                raise SystemExit("Error: " + str(exc)) from exc
+            raise
         return
 
     if args.mode == "recommend":

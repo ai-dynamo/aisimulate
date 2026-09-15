@@ -16,7 +16,7 @@ for configuration search. The new commands use YAML inputs and different search 
 2. [AIC to AISimulate command mapping](#2-aic-to-aisimulate-command-mapping)
 3. [General migration examples](#3-general-migration-examples)
 4. [Advanced migration examples](#4-advanced-migration-examples)
-5. [Remaining gaps and estimator workflows](#5-remaining-feature-and-performance-gaps)
+5. [Remaining feature and performance gaps](#5-remaining-feature-and-performance-gaps)
 6. [Reference](#6-reference)
 
 ## 1. Install AISimulate
@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate estimate` preserves fixed-configuration estimates. [Example](#531-static-estimates). | Use `aisimulate predict` for serving workloads. [Example](#31-migrate-one-concrete-deployment). `estimate --detail` retains estimator diagnostics; `predict --detail` reports supported serving details. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). Use `predict --estimate-mode static\|static_ctx\|static_gen --batch-size N` for [static estimates](#531-static-estimates). | Use `predict --detail` for summary, memory, and timing; static modes include per-operation timing. Keep AIC for [remaining diagnostics and SOL](#detailed-diagnostics), [advanced estimator controls](#57-estimator-controls-and-speculative-decoding), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -107,8 +107,9 @@ inter-token latency, and output throughput. Recorded report excerpt (rounded):
 
 **What changed:** AIC's `--batch-size 64` fixes an estimator batch. AISimulate's `concurrency: 64`
 keeps up to 64 requests in flight while the scheduler forms batches. Here TP=2 and one replica
-use two GPUs, but the latency and throughput results describe serving traffic. Use AIC when you
-need its original batch-level result.
+use two GPUs, but the latency and throughput results describe serving traffic. For a fixed-batch
+static estimate, use the explicit [static prediction modes](#531-static-estimates). AIC's `agg`
+in-flight batching estimate remains a separate compatibility workflow.
 
 <a id="search-with-a-fixed-gpu-budget"></a>
 
@@ -679,12 +680,10 @@ See the [detail output contract](user-guide.md#prediction-details).
 
 **What changed:** AISimulate reports the configured serving workload, rather than reproducing
 AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
-per-operation timing and SOL comparisons use
-[`aisimulate estimate --detail`](#detailed-diagnostics) for a fixed configuration.
+per-operation timing, SOL comparisons, and other unsupported diagnostics remain
+[separate gaps](#detailed-diagnostics).
 
-<a id="5-remaining-feature-and-performance-gaps"></a>
-
-## 5. Remaining gaps and estimator workflows
+## 5. Remaining feature and performance gaps
 
 These gaps concern the unified `aisimulate predict` and `aisimulate recommend` commands. The
 AISimulate package still includes the compatibility AIC CLI and SDKs, so a feature can be available
@@ -783,57 +782,84 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 #### 5.3.1 Static estimates
 
-Use `aisimulate estimate` for a fixed batch or single pass. `aisimulate predict` models a serving workload;
-its concurrency and scheduling controls do not reproduce a fixed-batch estimate. For example,
-inspect one decode pass. Replace `aiconfigurator cli estimate` with `aisimulate estimate`
-and keep the estimator flags:
+Use `predict --estimate-mode` to request a fixed-batch static estimate with the existing
+prediction YAML. The default `serving` mode continues to simulate a serving workload.
+
+**Before — AIC decode-only estimate:**
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --batch-size 64 --tp-size 2 \
   --isl 1024 --osl 128
 ```
 
-**Result to inspect:** the terminal summary describes the fixed batch and decode pass. See
-[estimate modes and outputs](user-guide.md#estimate-a-fixed-configuration).
+**After — reuse `prediction.yaml` from [section 3.1](#31-migrate-one-concrete-deployment):**
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --estimate-mode static_gen --batch-size 64 --detail memory,time \
+  --output-dir ./static-prediction
+```
+
+**Result to inspect:** the terminal and `static-prediction/prediction.json` report the fixed
+batch's decode latency and memory estimate. `--format json` prints the complete static report.
+The same native estimator provides the values. Select `static_ctx` for prefill only or `static`
+for prefill plus decode. Decode operation timings cover all modeled decode tokens; TPOT is
+the per-token average.
+
+Captured summary for this H200/vLLM configuration (estimated, rounded):
+
+```text
+Static prediction (static_gen)
+  Fixed batch: 64; input/output tokens: 1024/128
+  memory_gib: 15.881
+  tpot_ms: 4.790
+  generation_latency_ms: 608.299
+```
+
+**What changed:** `--batch-size` explicitly sets the batch. The YAML supplies model, hardware,
+backend/version, token lengths, and worker parallelism. `traffic.load`, `traffic.stop`, scheduler,
+and SLA controls do not affect a static estimate. This path supports one aggregated worker with
+synthetic text and default KV settings; unsupported configurations fail explicitly. See the
+[supported inputs](user-guide.md#41-predict-a-fixed-batch) and
+[static output contract](user-guide.md#static-prediction-output).
 
 <a id="detailed-diagnostics"></a>
 <a id="532-detailed-diagnostics"></a>
-<a id="532-remaining-detailed-diagnostic-gaps"></a>
 
-#### 5.3.2 Estimator diagnostics
+#### 5.3.2 Remaining detailed-diagnostic gaps
 
-Serving `predict --detail` reports are covered in [section 4.10](#410-inspect-prediction-details).
-Use `aisimulate estimate --detail` for fixed-configuration diagnostics, including:
+The supported `summary`, `memory`, `time`, and `all` selectors are covered in
+[section 4.10](#410-inspect-prediction-details). Keep AIC `estimate --detail` when you need
+these additional diagnostic capabilities:
 
-| Estimator diagnostic | Selector and evidence |
+| Remaining gap | AIC selector and evidence |
 | --- | --- |
-| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
+| Serving per-operation timing and speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. Static prediction already exports native phase/operation timing via `predict --estimate-mode static\|static_ctx\|static_gen --detail time`. |
 | Per-operation data provenance and fallback information | `source`. |
 | Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#54-power-and-energy-analysis). |
 
-`aisimulate estimate --detail all`, like AIC, requests `summary,memory,time,energy,source`.
-`aisimulate predict --detail all` requests its three supported serving sections. Available
-estimate sections depend on the estimate mode and data;
+AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
+three supported sections. Available AIC sections depend on the estimate mode and data;
 static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For fixed-batch or single-pass semantics, keep the
+absent. For fixed-batch static semantics, use the
 [static-estimate workflow](#531-static-estimates).
 
 <a id="power-and-energy-analysis"></a>
 
 ### 5.4 Power and energy analysis
 
-AIC-style modeled power analysis is available through `aisimulate estimate`, the compatibility
-`aiconfigurator cli estimate` command, and the bundled estimator SDK. Unified
+AIC-style modeled power analysis remains available through the compatibility
+`aiconfigurator cli estimate` command and estimator SDK bundled with AISimulate. Unified
 `aisimulate predict` and `aisimulate recommend` do not provide an equivalent complete power report
 or power/energy optimization objective.
 
 For modeled power and per-operation energy of a decode pass, run:
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --batch-size 64 --tp-size 2 \
@@ -852,8 +878,8 @@ the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder 
 available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
 is omitted. The normal terminal summary does not display these power fields. Recommendation
 artifacts can also retain this metadata for each candidate. These fields do not provide a power
-report for the full encoder-plus-language deployment or replace AIC's power analysis. Use
-`aisimulate estimate` or the estimator SDK when power is a required analysis result.
+report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
+compatibility command or SDK when power is a required analysis result.
 
 <a id="deployment-artifacts"></a>
 
@@ -896,14 +922,14 @@ alone does not establish support for an entire CLI workflow.
 
 ### 5.7 Estimator controls and speculative decoding
 
-Backend version and op-level/FPM selection have serving-CLI mappings. The following controls
-are also available as explicit flags on `aisimulate estimate`; they retain AIC estimator semantics.
+Backend version and op-level/FPM selection have unified mappings. The following controls still
+require AIC or the estimator SDK.
 
 **Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
 the bundled system definitions:
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode agg --batch-size 64 --tp-size 2 \
@@ -922,7 +948,7 @@ custom system directories can be added to `--systems-paths`. See
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --batch-size 64 --tp-size 2 \
@@ -936,12 +962,11 @@ aisimulate estimate \
 settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
 selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
-**Specify an exact cached-prefix count.** `aisimulate estimate --prefix N` retains the fixed
-cached-token assumption; serving prediction has no direct mapping for this flag. This example
+**Specify an exact cached-prefix count.** `--prefix N` has no direct unified-CLI mapping. This
 assumes 256 of the 1,024 input tokens are already cached for each request:
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_ctx --batch-size 1 --tp-size 2 \
@@ -952,13 +977,13 @@ aisimulate estimate \
 **Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
 assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
 reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
-workload sharing. Use `aisimulate estimate` when you require an exact cached-token assumption.
+workload sharing. Keep AIC when you require its exact cached-token assumption.
 
 **Estimate speculative decoding.** For an n-gram example with three draft tokens and a caller-supplied
 average of 1.5 accepted tokens:
 
 ```bash
-aisimulate estimate \
+aiconfigurator cli estimate \
   --model-path Qwen/Qwen3-8B \
   --system h100_sxm --backend vllm --backend-version 0.24.0 \
   --estimate-mode static_gen --isl 64 --osl 128 --batch-size 8 \
@@ -971,7 +996,7 @@ aisimulate estimate \
 using the supplied acceptance. `1.5` is an illustrative assumption, not predicted acceptance. MTP,
 EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK cost models, subject
 to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
-`predict` and `recommend` have no equivalent speculative configuration.
+The unified CLI has no speculative configuration.
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
@@ -979,9 +1004,8 @@ to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconf
 
 #### 5.8.1 Pipeline parallelism (PP)
 
-**Use `aisimulate estimate --pp-size` for fixed PP estimates and keep PP-dependent search
-on the AIC compatibility CLI.** AIC supports PP estimation and search. AISimulate's default
-search fixes PP=1. Explicit
+**Keep PP-dependent workflows on the AIC compatibility CLI.**
+AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
 `engine.workers.<role>.parallelism.pipeline` inputs can reach analytical timing, KV-capacity
 estimation, and GPU accounting, but do not provide validated pipeline-stage scheduling,
 microbatch overlap, or pipeline-bubble simulation.
@@ -1039,7 +1063,7 @@ exact candidate domain; see the [default search projection](../sweeper/architect
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
 form batches from the workload: `traffic.load.concurrency` controls in-flight requests, while
 `scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
-Use `aisimulate estimate` for fixed-batch estimates; keep AIC for its original capacity sweeps.
+Keep AIC for fixed-batch estimates or its original capacity-sweep behavior.
 
 #### 5.8.5 Context and request-length sweeps
 

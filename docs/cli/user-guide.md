@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate CLI User Guide
 
-Predict serving behavior, search deployment configurations, and estimate fixed batches with `aisimulate`.
+Predict serving behavior and search deployment configurations with `aisimulate`.
 
 Use this guide for the unified CLI. For the six `aiconfigurator cli` commands still shipped
 with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). The
@@ -20,7 +20,6 @@ with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). 
 - **Getting started**
   - [1. Start here](#start-here)
   - [2. Commands](#commands)
-    - [2.1 Estimate a fixed configuration](#estimate-a-fixed-configuration)
   - [3. Install](#install)
   - [4. Predict one deployment](#predict-one-deployment)
   - [5. Try your own workload](#try-your-own-workload)
@@ -68,59 +67,9 @@ Use the [configuration reference](#configuration-model) when you need individual
 |---|---|---|---|
 | `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
-| `estimate` | Estimate one fixed batch or configuration. | `aisimulate estimate --model-path meta-llama/Meta-Llama-3.1-8B --system h200_sxm --estimate-mode static_gen` | A terminal estimate and optional diagnostic breakdowns. |
 
 Unless labeled as captured output, metric values in example results are hypothetical and
 illustrate the output format. Captured detail examples are simulation results, not hardware measurements.
-
-<a id="estimate-a-fixed-configuration"></a>
-
-### 2.1 Estimate a fixed configuration
-
-Use `aisimulate estimate` for the fixed-configuration calculations available through
-`aiconfigurator cli estimate`. Both commands call the same estimator and use the same model,
-workload, parallelism, timing, and diagnostic options. No GPU deployment is launched.
-
-For example, estimate a decode batch of 64 sequences with tensor parallelism across two H200s:
-
-```bash
-aisimulate estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,source
-```
-
-The terminal prints `Performance Estimate (static_gen)` with generation latency, time per output
-token, memory, and the requested breakdowns. Values depend on the selected performance data.
-
-| `--estimate-mode` | Calculation |
-|---|---|
-| `agg` (default) | Aggregated prefill/decode estimation with continuous batching. |
-| `disagg` | Separate prefill and decode workers with explicit batch sizes and worker counts. |
-| `afd` | Attention/feed-forward disaggregation with explicit topology settings. |
-| `static` | Fixed-batch prefill and decode timing without continuous batching. |
-| `static_ctx` | Prefill/context only. |
-| `static_gen` | Generation/decode only. |
-
-`--detail` accepts `summary`, `memory`, `time`, `energy`, `source`, or `all`; combine selectors
-with commas. Omitting it prints only the normal estimate. `time` includes a speed-of-light
-comparison when available; `energy` and `source` depend on estimator evidence. Missing energy
-is reported as unavailable, not inferred from latency. The estimator's `all` selects all five
-sections; [`predict --detail all`](#prediction-details) selects only serving summary, memory,
-and time.
-
-Use `aisimulate estimate --help` for the full flag reference, including per-role disaggregation,
-EPD, quantization, cached-prefix assumptions, speculative estimates, and data selection. Existing
-[estimate options and restrictions](legacy-aic-user-guide.md#estimate-mode) also apply here.
-`--systems-paths`, `--engine-step-backend`, `--forward-model`, and logging options are supported.
-
-This command takes explicit flags and prints terminal reports. It does not accept serving YAML,
-`--stack`, `--set`, `--format`, or `--output-dir`, and does not write prediction or recommendation
-artifacts. Search/generation-only options such as `--top-n`, `--save-dir`, and
-`--deployment-target` are not accepted. Redirect stdout to save a text report.
-`--estimate-mode` belongs only to `estimate`; use `predict` for scheduled serving traffic and
-`recommend` for configuration search. Static estimates do not measure traffic throughput or queueing.
 
 <a id="install"></a>
 
@@ -148,10 +97,9 @@ python -m pip install aisimulate
 aisimulate --help
 aisimulate predict --help
 aisimulate recommend --help
-aisimulate estimate --help
 ```
 
-The help output should list `predict`, `recommend`, and `estimate`. Save the YAML files below in this working
+The help output should list `predict` and `recommend`. Save the YAML files below in this working
 directory and run the commands from there. Reactivate `.venv` when opening a new terminal.
 
 The built-in engine predicts behavior offline without launching a GPU serving deployment.
@@ -259,6 +207,40 @@ to print the summary as one compact JSON object instead of the metrics table and
 
 `predict` accepts concrete values only. Search domains, `optimization`, and `optimizer` belong
 in a recommendation input.
+
+### 4.1 Predict a fixed batch
+
+Use the same `prediction.yaml` for an explicit static estimate:
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --estimate-mode static_gen --batch-size 4 --detail memory,time \
+  --output-dir ./static-prediction
+```
+
+| `--estimate-mode` | Behavior |
+| --- | --- |
+| `serving` (default) | Simulate request arrivals, queueing, and scheduling with the configured traffic. |
+| `static` | Estimate prefill and decode for a fixed batch. |
+| `static_ctx` | Estimate only prefill for a fixed batch. |
+| `static_gen` | Estimate only decode for a fixed batch. |
+
+Static modes require a positive `--batch-size`. This is independent of serving concurrency;
+`traffic.load`, `traffic.stop`, the worker scheduler, and `evaluation` are not modeled.
+Model, hardware, backend/version, token lengths, parallelism, and forward model come from
+the YAML after applying `--set`. The native static estimator supplies the results.
+
+Static prediction currently supports one aggregated worker with synthetic text, default
+KV-cache settings, and `timing.type: default` (`op_level` or `fpm`). The worker can span GPUs
+using the supported parallelism settings. It assumes zero cached prefix tokens and derives
+the context from input/output lengths; leave `engine.context_length` at its default `max`.
+Custom KV settings, replicas above one, nonzero startup time, traces, sessions, images,
+P/D or AFD topologies, adapters, `--online`, and `--capture-per-request` are rejected.
+
+The command writes `prediction.json`; `--format json` prints the same static report. See
+[static prediction output](#static-prediction-output) for metrics and details.
+`--estimate-mode` and `--batch-size` are prediction options; `recommend` continues to rank
+serving simulations.
 
 <a id="try-your-own-workload"></a>
 
@@ -448,9 +430,6 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 
 ## 7. Common Options
 
-These options apply to `predict` and `recommend`. For `estimate`, see
-[estimate options](#estimate-a-fixed-configuration).
-
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `-c`, `--config PATH` | path | Required | Input YAML file. |
@@ -465,11 +444,13 @@ These options apply to `predict` and `recommend`. For `estimate`, see
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--estimate-mode` | `serving`, `static`, `static_ctx`, `static_gen` | `serving` | Select serving simulation or a [fixed-batch estimate](#41-predict-a-fixed-batch). |
+| `--batch-size` | positive integer | required for static modes | Explicit static batch size; rejected in serving mode. |
 | `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, or `all`. See [prediction details](#prediction-details). |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
-The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
-`--num-workers`. YAML is the authoritative semantic configuration surface.
+Serving inputs such as request rate and worker count are configured in YAML. Static prediction
+adds the explicit `--batch-size` input because serving concurrency does not specify a fixed batch.
 
 <a id="override-semantics"></a>
 
@@ -1804,7 +1785,9 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
+Serving prediction JSON without `--detail` on standard output is a summary object.
+Static prediction JSON is the [complete static report](#static-prediction-output).
+Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
@@ -1818,7 +1801,9 @@ aisimulate predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
-`--detail` selects additional reports on `predict`. With no selector, stdout and durable
+In the default `serving` mode, `--detail` selects additional reports on `predict` as described
+below. Static modes use the [static prediction output contract](#static-prediction-output).
+With no selector, stdout and durable
 reports retain their existing shape. With a selector, JSON stdout contains `summary` and
 `details`; the same versioned `details` object is added to `prediction.json` and follows the
 [prediction-details schema](prediction-details.schema.json). Table output appends selected
@@ -1843,9 +1828,8 @@ sections and skipped-section reasons to the normal prediction summary.
 Sections without evidence are omitted from `details.sections` and listed with reasons in
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
 why other roles are unavailable. Missing values are never filled with zero. `energy` and
-`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
-SOL, and power are available for fixed configurations through
-[`estimate --detail`](#estimate-a-fixed-configuration); they are not serving-replay reports.
+`source` are unsupported selectors; `all` does not include them. Serving per-operation timings,
+SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -1992,21 +1976,52 @@ For this run, `details.sections` is empty and `details.skipped.memory` contains 
 above. `--detail all` would still include summary and time while skipping memory. Power and
 energy are absent from all these examples.
 
+<a id="static-prediction-output"></a>
+
+### 22.6 Static prediction output
+
+Static modes write a report with `schema_version: "1.0"` and
+`prediction_kind: "static_estimate"`. Both JSON stdout and `prediction.json` contain:
+
+| Field | Meaning |
+| --- | --- |
+| `estimate_mode` | `static`, `static_ctx`, or `static_gen`. |
+| `inputs` | Estimator inputs, including the explicit batch size and resolved backend version. |
+| `summary` | Per-rank `memory_gib` and the latency metrics modeled by the selected phase. |
+| `assumptions` | One-worker scope, zero cached prefix, and serving controls not modeled. |
+| `warnings` | Estimator warnings, including an over-capacity batch. |
+| `details` | Optional selected sections and skipped-section reasons. |
+
+`static_ctx` reports `ttft_ms`; `static_gen` reports `tpot_ms` and, when exported,
+`generation_latency_ms`. `static` reports both and `request_latency_ms`. Decode latency covers
+the generated tokens after the first token; TPOT is their average. An unmodeled phase is omitted.
+These are fixed-batch estimates, with no serving request counts, queueing, throughput, or SLA results.
+An OOM warning means the batch does not fit, even though diagnostic estimates are retained.
+
+The existing `--detail` selectors have static-specific meanings:
+
+- `summary`: the static summary metrics.
+- `memory`: per-rank estimated components in GiB and GPU capacity in bytes.
+- `time`: native operation latencies in milliseconds, grouped into `prefill` and/or `decode`.
+  `scope: phase_total` means values cover the whole phase, including all modeled decode tokens;
+  they are not per-token latencies or SOL comparisons.
+- `all`: the three sections above. Missing evidence is listed in `details.skipped`.
+
+Energy, power, data-source diagnostics, and SOL comparisons remain on the
+[compatibility CLI](migrate-from-aiconfigurator.md#detailed-diagnostics).
+
 <a id="errors-and-exit-codes"></a>
 
 ## 23. Errors and Exit Codes
 
 | Exit Code | Meaning |
 |---:|---|
-| `0` | Successful prediction, recommendation, or estimate. |
+| `0` | Successful prediction or recommendation. |
 | `1` | Execution failure or a completed recommendation with no feasible candidate. |
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
 | `130` | Interrupted by the user. |
 
-`estimate` retains the estimator's exit code `1` for invalid configurations or missing performance
-data, with a concise error message. Malformed command-line arguments return `2`.
-
-Configuration errors in `predict` and `recommend` identify the input file and validation details. These shortened examples
+Configuration errors identify the input file and validation details. These shortened examples
 illustrate the invalid field and cause; exact formatting can vary:
 
 ```text
