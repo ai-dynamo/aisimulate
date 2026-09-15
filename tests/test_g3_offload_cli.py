@@ -214,9 +214,9 @@ def test_documented_g3_extension_validates_and_lowers_with_host_example(monkeypa
     from pathlib import Path
 
     text = (Path(__file__).resolve().parents[1] / "docs/cli/user-guide.md").read_text()
-    host = text.split("### Native vLLM host-offload prediction\n", 1)[1]
-    host, optional = host.split("#### Optional G3 offload\n", 1)
-    optional = optional.split("## Router (Dynamo Adapter)", 1)[0]
+    host = text.split('<a id="native-vllm-host-offload-prediction"></a>', 1)[1]
+    host, optional = host.split('<a id="optional-g3-offload"></a>', 1)
+    optional = optional.split('<a id="router-dynamo-adapter"></a>', 1)[0]
     config = yaml.safe_load(host.split("```yaml\n", 1)[1].split("```", 1)[0])
     extension = yaml.safe_load(optional.split("```yaml\n", 1)[1].split("```", 1)[0])
     assert list(extension) == ["g3_offload"]
