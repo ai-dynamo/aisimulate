@@ -1100,7 +1100,8 @@ def _materialize_engine_role(
     role_memory: dict[str, Any] | None = None
     if memory_diagnostics is not None:
         role_memory = {
-            "scope": "configured_capacity_per_rank",
+            "scope": "capacity_estimate_per_rank",
+            "stage": "before_native_capacity_adjustments",
             "status": "unavailable",
             "unavailable_reason": (
                 "explicit KV blocks, nested rank input, or a non-AIC capacity provider; "
@@ -1118,6 +1119,7 @@ def _materialize_engine_role(
         )
         if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
             role_memory["status"] = "available"
+            role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
             role_memory.pop("unavailable_reason", None)
         capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):

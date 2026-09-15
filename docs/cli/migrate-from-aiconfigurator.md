@@ -685,8 +685,8 @@ only the number of operations printed per phase in table output. Inspect a saved
 by passing its YAML to this same `predict` command.
 
 These commands inspect different workloads: AIC reports the requested fixed batch, while AISimulate
-reports the configured serving replay. Memory describes each role's configured rank-local capacity
-calculation; timing, energy, and source describe native replay operation evidence when available.
+reports the configured serving replay. Memory describes each role's initial rank-local capacity estimate before native
+adjustments such as FPM coverage limits; timing, energy, and source describe native replay operation evidence when available.
 Requested sections explicitly identify missing evidence. SOL comparisons and fixed-pass equivalence
 remain [separate diagnostic differences](#detailed-diagnostics). See the
 [section contracts](user-guide.md#detailed-prediction-reports) for supported evidence and units.

@@ -1136,9 +1136,9 @@ def test_memory_detail_reuses_capacity_calculation_without_changing_execution(mo
     assert plain.metrics == detailed.metrics
     data = detailed.metadata["native_report"]["memory_diagnostics"]["aggregated"]
     assert data["status"] == "available"
-    assert data["scope"] == "configured_capacity_per_rank"
+    assert data["scope"] == "capacity_estimate_per_rank"
     assert data["memory_breakdown"] == estimate["memory_breakdown"]
-    assert data["num_gpu_blocks"] == detail_runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 32
+    assert data["estimated_num_gpu_blocks"] == detail_runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 32
 
 
 def test_memory_detail_with_explicit_blocks_does_not_guess_components():

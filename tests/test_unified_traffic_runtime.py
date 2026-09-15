@@ -528,8 +528,10 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert sections["energy"] == saved["power_diagnostics"]
     memory = sections["memory"]["roles"]["aggregated"]
     assert memory["status"] == "available"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert "num_gpu_blocks" not in memory
     assert memory["memory_breakdown"]["weights_bytes"] > 0
-    assert memory["num_gpu_blocks"] == memory["total_kv_size_tokens"] // 64
+    assert memory["estimated_num_gpu_blocks"] == memory["total_kv_size_tokens"] // 64
     assert memory["total_gpu_capacity_bytes"] > memory["total_kv_size_bytes"] > 0
     assert sections["time"]["phases"]
     for timing, energy, source in zip(
@@ -545,3 +547,27 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     for key, value in stdout["summary"].items():
         if key not in {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}:
             assert plain[key] == value, key
+
+
+def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
+    import yaml
+
+    from aisimulate.main import main
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = tmp_path / "fpm.yaml"
+    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
+    assert (
+        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
+        == 0
+    )
+    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["scope"] == "capacity_estimate_per_rank"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert memory["estimated_num_gpu_blocks"] > 0
+    assert "num_gpu_blocks" not in memory
+    assert sections["energy"]["publication_status"] == "unsupported"
+    assert "power_w" not in sections["energy"]
+    assert sections["time"]["phases"] == []
+    assert sections["time"]["sol"]["status"] == "unavailable"

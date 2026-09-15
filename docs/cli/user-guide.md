@@ -378,7 +378,7 @@ its existing output contract.
 | Section | Evidence and scope |
 | --- | --- |
 | `summary` | Serving-workload summary metrics. |
-| `memory` | The rank-local capacity estimate actually used to configure each role: weights, activations, runtime/communication overhead, CUDA graph reservation, KV budget, and block count. Byte fields end in `_bytes`. This is configured capacity, not observed peak allocation. |
+| `memory` | The initial rank-local memory capacity estimate for each role: weights, activations, runtime/communication overhead, CUDA graph reservation, KV budget, and estimated block count before native capacity adjustments. Byte fields end in `_bytes`. FPM can further limit usable blocks to its covered decode domain; this report is neither final runtime capacity nor observed peak allocation. |
 | `time` | Serving latency metrics plus native replay phase/operation active latency in milliseconds. These accumulated active times do not equal request latency or wall-clock duration. SOL is explicitly unavailable because replay does not export matched SOL evidence. |
 | `energy` | The native `power_diagnostics` object, preserving per-GPU scope, source tags, coverage, and the 90% publication gate. |
 | `source` | Native phase/operation source tags, normalized source kinds, and available coverage explanations. |

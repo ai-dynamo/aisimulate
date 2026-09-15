@@ -3,8 +3,8 @@
 
 """Views of execution-owned evidence for the unified prediction CLI.
 
-No estimate is recomputed here. Memory describes the capacity calculation used
-to configure a rank; operation timings and energy describe the replay itself.
+No estimate is recomputed here. Memory describes the initial rank capacity estimate before
+native adjustments; operation timings and energy describe the replay itself.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
                     "status": "available"
                     if statuses == {"available"}
                     else ("partial" if "available" in statuses else "unavailable"),
-                    "scope": "configured_capacity_per_rank",
+                    "scope": "capacity_estimate_per_rank",
                     "roles": deepcopy(memory),
                 }
             else:
@@ -86,7 +86,7 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
         elif section == "time":
             result[section] = {
                 "status": "available" if phases else "partial",
-                "scope": "active_forward_pass_per_gpu",
+                "scope": (power or {}).get("scope", "unspecified"),
                 "latency_unit": "ms",
                 "serving_metrics": {
                     key: value for key, value in summary.items() if key.endswith("_ms") and key != "wall_time_ms"
@@ -108,7 +108,7 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
         elif section == "source":
             result[section] = {
                 "status": "available" if phases else "unavailable",
-                "scope": "active_forward_pass_per_gpu",
+                "scope": (power or {}).get("scope", "unspecified"),
                 "phases": [
                     {
                         **{key: phase[key] for key in ("name", "source", "source_kind") if key in phase},
@@ -136,6 +136,12 @@ def format_prediction_details(details: dict[str, Any], *, top_n: int) -> str:
     for name, section in details["sections"].items():
         lines.append(f"Detail: {name}")
         if name == "energy" and "publication_status" in section:
+            if section.get("scope") != "active_forward_pass_per_gpu":
+                lines.append(f"  scope: {section.get('scope', 'unspecified')}")
+                lines.append(
+                    "  This provider scope has no energy table renderer; inspect prediction.json for full evidence."
+                )
+                continue
             lines.append(format_power_diagnostics(section, top_n=top_n))
             continue
         if "scope" in section:
@@ -154,7 +160,7 @@ def format_prediction_details(details: dict[str, Any], *, top_n: int) -> str:
             if "unavailable_reason" in memory:
                 lines.append(f"    {memory['unavailable_reason']}")
             for key, value in memory.items():
-                if key.endswith(("_bytes", "_tokens")) or key in {"source", "num_gpu_blocks"}:
+                if key.endswith(("_bytes", "_tokens")) or key in {"source", "stage", "estimated_num_gpu_blocks"}:
                     lines.append(f"    {key}: {value}")
             for key, value in (memory.get("memory_breakdown") or {}).items():
                 lines.append(f"    {key}: {value}")

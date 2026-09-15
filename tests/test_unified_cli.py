@@ -1026,3 +1026,36 @@ def test_detail_cannot_be_combined_with_legacy_diagnostics():
     with pytest.raises(SystemExit) as exc:
         cli.build_parser().parse_args(["predict", "-c", "x", "--detail", "all", "--diagnostics", "power"])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("scope", ["deployment_total", None])
+def test_detail_preserves_external_runner_scope(tmp_path, monkeypatch, capsys, scope):
+    class ScopedRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            data = report.metadata["native_report"]["power_diagnostics"]
+            if scope is None:
+                data.pop("scope")
+            else:
+                data["scope"] = scope
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(ScopedRunner()))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(_detail_config(tmp_path)),
+                "--detail",
+                "time,source",
+                "--format",
+                "json",
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+        == 0
+    )
+    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
+    assert sections["time"]["scope"] == sections["source"]["scope"] == (scope or "unspecified")
