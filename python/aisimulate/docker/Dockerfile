@@ -22,7 +22,7 @@ ENV MPLCONFIGDIR=/tmp/matplotlib
 # One `aisimulate` wheel owns the application, compatibility namespaces,
 # SDK/data payload, Replay runtime, and unified Rust extension. It is built in
 # the PyPA manylinux_2_28 image so the native PyO3 `.so` links glibc 2.28 and
-# maturin's auditwheel stamps the portable
+# standalone auditwheel repairs and stamps the portable
 # `manylinux_2_28_<arch>` tag. We add `uv` and a rustup toolchain so cargo can
 # fetch crates over TLS.
 #
@@ -61,12 +61,26 @@ RUN set -e; \
         echo "Run 'git lfs install && git lfs pull' in the source tree before building." >&2; \
         exit 1; \
     fi
-# `uv build` runs maturin's PEP517 backend, which defaults to `--compatibility
-# off`; MATURIN_PEP517_ARGS overrides it to stamp the manylinux_2_28 tag (maturin
-# appends it last, so it wins). `python` isn't on PATH here -> verify via UV_PYTHON.
+# Match Dynamo's release-wheel boundary: Maturin emits an unaudited wheel,
+# then the standalone auditwheel tool repairs and retags that exact wheel.
+# Compiling in this manylinux_2_28 image ensures repair never tries to claim a
+# policy older than the glibc symbols in the native extension.
 RUN cd /workspace/python/aisimulate && \
-    MATURIN_PEP517_ARGS="--compatibility manylinux_2_28" \
-        uv build --wheel --out-dir /workspace/dist && \
+    mkdir -p /workspace/unrepaired-dist && \
+    MATURIN_PEP517_ARGS="--auditwheel skip" \
+        uv build --wheel --out-dir /workspace/unrepaired-dist && \
+    set -- /workspace/unrepaired-dist/aisimulate-*.whl && \
+    [ "$#" -eq 1 ] && [ -f "$1" ] && \
+    case "$(uname -m)" in \
+        x86_64) manylinux_policy=manylinux_2_28_x86_64 ;; \
+        aarch64|arm64) manylinux_policy=manylinux_2_28_aarch64 ;; \
+        *) echo "unsupported wheel architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    auditwheel repair \
+        --plat "${manylinux_policy}" \
+        --wheel-dir /workspace/dist \
+        "$1" && \
+    auditwheel show /workspace/dist/aisimulate-*.whl && \
     "${UV_PYTHON}" tools/verify_release_wheels.py /workspace/dist
 
 # Exercise the one-wheel boundary outside the checkout, including all
