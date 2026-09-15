@@ -112,10 +112,14 @@ python -m pytest -c pytest.ini tests
 # Run Python package tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests
 
-# GitHub PR / build subset (unit + a small stable E2E subset)
+# Quick local subset (Full CI also runs unmarked and integration tests)
 python -m pytest -c python/aisimulate/pytest.ini \
   python/aisimulate/tests -m "unit or build"
 ```
+
+The [CI guide](docs/ci.md) explains the Fast/Full/Nightly workflows, code review,
+the complete application test inventory, and manual coverage exceptions. The
+local marker subset above does not reproduce all Full CI validation.
 
 ## Data Collection (Advanced)
 
