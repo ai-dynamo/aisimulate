@@ -101,6 +101,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     source.parent.mkdir(parents=True)
     main_summary = json.loads((ROOT / relative).read_text())
     main_summary["snapshot"].pop("evaluated_revision", None)
+    main_summary["snapshot"].pop("aic_source", None)
     release_summary = json.loads(json.dumps(main_summary))
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
     source.write_text(json.dumps(release_summary))
@@ -182,3 +183,24 @@ def test_generated_topology_summary_satisfies_publication_contract() -> None:
     summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]["measured"]["ttft_relative"] = None
     with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
         PAGES._accuracy_summary(json.dumps(summary))
+
+
+def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
+    from copy import deepcopy
+
+    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["snapshot"].update(
+        evaluated_revision={"branch": "main", "commit_sha": "d" * 40},
+        aic_commit_sha="d" * 40,
+        aic_source={"repository": "https://github.com/ai-dynamo/aisimulate", "branch": "main", "commit_sha": "d" * 40},
+    )
+    assert PAGES._accuracy_summary(json.dumps(summary)) == summary
+    for change in (
+        {"repository": "https://github.com/ai-dynamo/aiconfigurator"},
+        {"branch": "release/0.12.0"},
+        {"commit_sha": "e" * 40},
+    ):
+        invalid = deepcopy(summary)
+        invalid["snapshot"]["aic_source"].update(change)
+        with unittest.TestCase().assertRaises(PAGES.PagesBuildError):
+            PAGES._accuracy_summary(json.dumps(invalid))

@@ -135,6 +135,9 @@ function renderSnapshot() {
     <p>Evaluated revision: ${snapshot.evaluated_revision
       ? `<a href="https://github.com/ai-dynamo/aisimulate/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
       : "Not recorded in this historical snapshot"}</p>
+    <p>Legacy AIC CLI source: ${snapshot.aic_source
+      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (bundled aiconfigurator CLI)`
+      : "Repository provenance was not recorded in this historical snapshot"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
     <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
@@ -481,6 +484,14 @@ function validateSummary(data) {
   const revision = data.snapshot.evaluated_revision;
   if (revision && (!/^[0-9a-f]{40}$/.test(revision.commit_sha) || typeof revision.branch !== "string")) {
     throw new Error("invalid evaluated revision");
+  }
+  const aicSource = data.snapshot.aic_source;
+  if (aicSource !== undefined && (!aicSource ||
+    aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
+    !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
+    aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
+    (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
+    throw new Error("invalid legacy AIC CLI source");
   }
   return data;
 }

@@ -10,6 +10,7 @@ const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.
 const historical = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
 // Exercise the legacy contract even after the published snapshot is refreshed.
 delete historical.snapshot.evaluated_revision;
+delete historical.snapshot.aic_source;
 for (const model of historical.models) for (const workload of model.workloads) {
   for (const gpu of workload.gpus) delete gpu.topologies;
 }
@@ -80,6 +81,29 @@ test("legacy summary loads with historical provenance and branch-specific downlo
   assert.equal(app.element("download-json").href, `./${pathFor("b")}`);
   assert.match(app.element("summary-grid").innerHTML, /AISim CLI \(new\)/);
   assert.match(app.element("summary-grid").innerHTML, /AIC CLI \(legacy\)/);
+  assert.match(app.element("provenance-content").innerHTML, /Repository provenance was not recorded/);
+});
+
+test("bundled AIC CLI provenance links to AISimulate and rejects another repository or revision", async () => {
+  const data = structuredClone(historical);
+  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.aic_commit_sha = "d".repeat(40);
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  const app = setup(async () => response(data));
+  await app.run('loadBranch("main")');
+  assert.match(app.element("provenance-content").innerHTML, /Legacy AIC CLI source:.*aisimulate\/commit\/d{40}/);
+  assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
+  for (const change of [
+    { repository: "https://github.com/ai-dynamo/aiconfigurator" },
+    { repository: 'javascript:alert(1)' },
+    { branch: "release/0.12.0" },
+    { commit_sha: "e".repeat(40) },
+  ]) {
+    const invalid = structuredClone(data);
+    Object.assign(invalid.snapshot.aic_source, change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+  }
 });
 
 test("branch switching clears the old snapshot immediately and ignores late responses", async () => {

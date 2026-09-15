@@ -157,6 +157,24 @@ def _summary() -> dict[str, object]:
     )
 
 
+def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
+    predictions, metadata, coverage = _inputs()
+    source = {"branch": branch, "commit_sha": "d" * 40, "clean": True}
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = source
+    predictions["aisimulate_run"] = deepcopy(metadata["aisimulate_run"])
+    run = {
+        "status": "complete",
+        "runtime": {
+            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
+            "cli_entry_point": "aiconfigurator.main:main",
+        },
+    }
+    for document in (predictions, metadata, coverage):
+        document["aic_commit_sha"] = source["commit_sha"]
+        document["aic_run"] = deepcopy(run)
+    return predictions, metadata, coverage
+
+
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
     summary = _summary()
 
@@ -376,13 +394,7 @@ def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
 
 @pytest.mark.parametrize("branch", ["main", "release/0.12.0", "release/0.13.0/rc1"])
 def test_branch_publication_records_evaluated_revision(branch: str) -> None:
-    predictions, metadata, coverage = _inputs()
-    metadata["aisimulate_run"]["runtime"]["source_checkout"] = {
-        "branch": branch,
-        "commit_sha": "d" * 40,
-        "clean": True,
-    }
-    predictions["aisimulate_run"] = metadata["aisimulate_run"]
+    predictions, metadata, coverage = _qualified_inputs(branch)
     result = OVERVIEW.build_summary(
         predictions,
         metadata,
@@ -392,6 +404,43 @@ def test_branch_publication_records_evaluated_revision(branch: str) -> None:
         source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
     )
     assert result["snapshot"]["evaluated_revision"] == {"branch": branch, "commit_sha": "d" * 40}
+    assert result["snapshot"]["aic_source"] == {
+        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "branch": branch,
+        "commit_sha": "d" * 40,
+    }
+
+
+@pytest.mark.parametrize("defect", ["missing", "repository", "revision", "dirty", "incomplete", "metadata"])
+def test_branch_publication_rejects_wrong_legacy_cli_source(defect: str) -> None:
+    predictions, metadata, coverage = _qualified_inputs()
+    run = predictions["aic_run"]
+    source = run["runtime"]["source_checkout"]
+    if defect == "repository":
+        source["repository"] = "https://github.com/ai-dynamo/aiconfigurator"
+    elif defect == "revision":
+        source["commit_sha"] = "e" * 40
+        for document in (predictions, metadata, coverage):
+            document["aic_commit_sha"] = "e" * 40
+    elif defect == "dirty":
+        source["clean"] = False
+    elif defect == "incomplete":
+        run["status"] = "running"
+    for document in (predictions, metadata, coverage):
+        document["aic_run"] = deepcopy(run)
+        if defect == "missing":
+            del document["aic_run"]
+    if defect == "metadata":
+        metadata["aic_run"]["runtime"]["source_checkout"]["commit_sha"] = "e" * 40
+    with pytest.raises(OVERVIEW.SnapshotError, match="AIC"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
 
 
 @pytest.mark.parametrize(

@@ -35,8 +35,9 @@ are separate identities:
 The refreshed `summary.json` evaluates AISimulate main at
 [`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
 against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
-Its legacy AIC baseline is regenerated from
-[`f254959eb89e2f206b8f9a77051644d7c1cbdb89`](https://github.com/ai-dynamo/aiconfigurator/commit/f254959eb89e2f206b8f9a77051644d7c1cbdb89).
+Its legacy AIC baseline uses the `aiconfigurator` CLI bundled in the **same
+AISimulate wheel and revision**. The page records the baseline's AISimulate
+repository, branch, and commit alongside the replay provenance.
 The measurement release is shown separately from the AISimulate branch selector.
 Release branches continue to display the evidence committed on those branches.
 
@@ -54,8 +55,6 @@ estimate. AISimulate attempts every point in that cohort; the published view
 excludes multi-node points. A lower error on a refreshed snapshot does not by
 itself prove an improvement on the previous snapshot, because the measurement
 release, included points, and successful replay coverage can change.
-This refresh publishes 807 single-node points across 193 topologies: 771
-successful AISimulate replays, 18 unsupported points, and 18 failures.
 
 Main-branch changes and manual Pages builds publish immediately after a
 successful workflow. A daily main-branch Pages build also picks up release-branch
@@ -103,6 +102,14 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
   "clean": true
 }
 ```
+
+All three producer documents must also carry the same completed `aic_run`.
+Its `runtime.source_checkout` records the same branch, full commit SHA, and
+`clean: true`, plus `repository: "https://github.com/ai-dynamo/aisimulate"`.
+Its `runtime.cli_entry_point` is `"aiconfigurator.main:main"`, and its `status`
+is `"complete"`. The producer's `aic_commit_sha` identifies that AISimulate
+commit. Branch publication rejects a baseline from another repository or
+revision, an incomplete baseline, or inconsistent producer documents.
 
 ```bash
 python scripts/build_e2e_accuracy_overview.py \

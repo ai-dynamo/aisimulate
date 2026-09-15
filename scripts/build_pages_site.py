@@ -177,6 +177,18 @@ def _accuracy_summary(text: str) -> dict:
                 and isinstance(revision.get("branch"), str),
                 "evaluated revision",
             )
+        if "aic_source" in snapshot:
+            aic_source = snapshot["aic_source"]
+            require(
+                isinstance(aic_source, dict)
+                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and isinstance(aic_source.get("branch"), str)
+                and isinstance(aic_source.get("commit_sha"), str)
+                and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
+                and aic_source["commit_sha"] == snapshot.get("aic_commit_sha")
+                and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
+                "legacy AIC CLI source",
+            )
         scope = summary.get("scope")
         require(isinstance(scope, dict) and scope.get("multinode") in ("included", "excluded"), "scope")
         require(

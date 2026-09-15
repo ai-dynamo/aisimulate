@@ -346,6 +346,36 @@ def _evaluated_revision(runtime: dict[str, Any], branch: str | None) -> dict[str
     return {"branch": branch, "commit_sha": source["commit_sha"]}
 
 
+def _aic_source(
+    predictions: dict[str, Any],
+    metadata: dict[str, Any],
+    coverage: dict[str, Any],
+    revision: dict[str, str] | None,
+) -> dict[str, str] | None:
+    run = predictions.get("aic_run")
+    if run is None and revision is None:
+        return None  # Historical unqualified exports remain readable.
+    if not isinstance(run, dict) or run.get("status") != "complete":
+        raise SnapshotError("branch publication requires a completed AIC CLI run")
+    if any(document.get("aic_run") != run for document in (metadata, coverage)):
+        raise SnapshotError("predictions, metadata, and coverage AIC provenance disagree")
+    runtime = run.get("runtime")
+    source = runtime.get("source_checkout") if isinstance(runtime, dict) else None
+    if (
+        not isinstance(source, dict)
+        or source.get("repository") != "https://github.com/ai-dynamo/aisimulate"
+        or source.get("clean") is not True
+        or not isinstance(source.get("branch"), str)
+        or not isinstance(source.get("commit_sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
+        or source["commit_sha"] != predictions.get("aic_commit_sha")
+        or runtime.get("cli_entry_point") != "aiconfigurator.main:main"
+    ):
+        raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISimulate checkout")
+    if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
+        raise SnapshotError("AIC baseline and AISimulate replay must evaluate the same branch and commit")
+    return {key: source[key] for key in ("repository", "branch", "commit_sha")}
+
 
 def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     identities = _identity_summary(rows)
@@ -610,6 +640,9 @@ def build_summary(
         if aisimulate_run.get("incremental_refreshes"):
             raise SnapshotError("branch publication requires one complete run, not mixed incremental refreshes")
         result["snapshot"]["evaluated_revision"] = revision
+    aic_source = _aic_source(predictions, metadata, coverage, revision)
+    if aic_source is not None:
+        result["snapshot"]["aic_source"] = aic_source
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
         if fragment in serialized:
