@@ -7,7 +7,7 @@ Policy (2026-08): power/energy tests pin no values and bind to no specific
 backend version. They assert query-surface invariants over WHATEVER power
 data is currently shipped: every parquet that carries power columns must
 satisfy the energy model's input contract (finite, non-negative power;
-positive power limit). The energy MATH is anchored by the rust synthetic
+positive power limit, or a typed paired 0.0/0.0 unavailable sentinel). The energy MATH is anchored by the rust synthetic
 oracles on power-carrying fixtures (``energy_test_fixtures`` tests in
 ``operators/{gemm,attention}.rs``); this test guards the shipped data plane
 those models consume. If no power-carrying parquet is shipped at all, the
@@ -16,6 +16,7 @@ suite records that state explicitly instead of passing vacuously.
 
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -46,8 +47,16 @@ def test_power_columns_satisfy_energy_model_input_contract():
         missing = [column for column in _POWER_COLUMNS if column not in schema.names]
         if missing:
             problems.append(f"{rel}: power columns must be paired; present={present}, missing={missing}")
+            continue
+        if any(not pa.types.is_float64(schema.field(name).type) for name in present):
+            problems.append(f"{rel}: power and power_limit must be double")
+            continue
         table = pq.read_table(path, columns=present)
         frame = table.to_pandas()
+        sentinel = (frame["power"] == 0.0) & (frame["power_limit"] == 0.0)
+        mismatched = (frame["power"] == 0.0) != (frame["power_limit"] == 0.0)
+        if mismatched.any():
+            problems.append(f"{rel}: unpaired zero power sentinel")
         if "power" in frame:
             bad = (
                 frame["power"].isna()
@@ -62,7 +71,7 @@ def test_power_columns_satisfy_energy_model_input_contract():
                 frame["power_limit"].isna()
                 | (frame["power_limit"] == float("inf"))
                 | (frame["power_limit"] == float("-inf"))
-                | (frame["power_limit"] <= 0)
+                | ((frame["power_limit"] <= 0) & ~sentinel)
             )
             if bad.any():
                 problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/non-positive power_limit")

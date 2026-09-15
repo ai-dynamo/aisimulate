@@ -567,8 +567,10 @@ path works. Accuracy requires independent measurements under matched conditions.
 **Expected:** a reproducible comparison with explicit conditions, coverage,
 errors, and pass/fail criteria. FPM forward error alone does not establish
 TTFT/TPOT or throughput accuracy. The
-[E2E Accuracy Overview](../e2e-accuracy/README.md) describes existing accuracy
-results and report generation; it is not a substitute for validating a new cell.
+[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) reports existing
+accuracy results; it is not a substitute for validating a new cell. See the
+[snapshot and regeneration details](../e2e-accuracy/README.md) for how that evidence
+is produced.
 
 ## FPM data and prediction troubleshooting
 

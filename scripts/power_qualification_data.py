@@ -48,6 +48,7 @@ def checkout_revision(root: Path, expected: str) -> str:
 
 def scan_details(root: Path) -> dict:
     # Resolve from the repository, never from an importable installed package.
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     data_root = root / DATA_ROOT
@@ -99,6 +100,9 @@ def scan_details(root: Path) -> dict:
             continue
         if len(present) != 2:
             missing.append(relative)
+            continue
+        if any(not pa.types.is_float64(schema.field(name).type) for name in present):
+            anomalies.append(f"{relative}: power and power_limit must be double")
             continue
         frame = pq.read_table(path, columns=present).to_pandas()
         sentinel = (frame.power == 0) & (frame.power_limit == 0)
@@ -208,6 +212,26 @@ def verify_automated_evidence(root: Path, document: dict, expected: str) -> None
                 )
 
 
+def output_directory(root: Path, requested: Path) -> Path:
+    """Only create new evidence files in the dedicated artifacts subtree."""
+    if requested.is_absolute() or ".." in requested.parts:
+        raise ValueError("output must stay under artifacts/power-qualification")
+    allowed = root / "artifacts/power-qualification"
+    output = root / requested
+    if not output.resolve().is_relative_to(allowed.resolve()):
+        raise ValueError("output must stay under artifacts/power-qualification")
+    for component in (output, *output.parents):
+        if component == root:
+            break
+        if component.is_symlink():
+            raise ValueError("output must not traverse symlinks")
+    for name in ("power-data-invariants.json", "qualification-matrix.json"):
+        target = output / name
+        if target.exists() or target.is_symlink():
+            raise ValueError(f"output already exists: {target}")
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-revision", required=True)
@@ -216,9 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     revision = checkout_revision(ROOT, args.expected_revision)
-    output = (ROOT / args.output_dir).resolve()
-    if not output.is_relative_to(ROOT):
-        raise ValueError("output must be repository-relative")
+    output = output_directory(ROOT, args.output_dir)
     document = json.loads((ROOT / "docs/power/qualification-matrix.json").read_text())
     gate = next(
         item for item in document["gates"] if item["id"] == "power-data-invariants"
@@ -228,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     checkout_revision(ROOT, revision)
     output.mkdir(parents=True, exist_ok=True)
     artifact = output / "power-data-invariants.json"
-    artifact.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    with artifact.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
     gate["execution"].update(
         {
             "status": "failed" if report["anomalies"] else "passed",
@@ -245,9 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     document["candidate_revision"] = revision
-    (output / "qualification-matrix.json").write_text(
-        json.dumps(document, indent=2) + "\n"
-    )
+    with (output / "qualification-matrix.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(document, indent=2) + "\n")
     print(f"power-data-invariants: {gate['execution']['status']} at {revision}")
     return int(bool(report["anomalies"]))
 

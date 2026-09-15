@@ -51,7 +51,7 @@ Collector (collector/)
 | 3. CLI | `src/aiconfigurator/cli/main.py` or CLI arg group | Expose via `--generator-set` (auto if in schema) |
 | 4. Bridge | `src/aiconfigurator/generator/module_bridge.py` | Pass from SDK search results if profiler-sourced |
 | 5. Validator | `tools/generator_validator/` | Add to expected flags if new CLI flag |
-| 6. Docs | `docs/cli_user_guide.md` | Document the new parameter |
+| 6. Docs | `docs/cli/legacy-aic-user-guide.md` (repository root) | Document the new parameter |
 
 ### Renaming a Parameter
 

@@ -149,3 +149,18 @@ The user-facing migration guide remains conservative until the fail-closed
 release check passes. See
 [`../cli/migrate-from-aiconfigurator.md`](../cli/migrate-from-aiconfigurator.md)
 for the currently supported migration boundary.
+
+## Summary availability and evidence output
+
+Every valid power summary must include both `power_w` and `power_coverage`.
+Undercoverage uses null watts and numeric coverage; unsupported providers use
+two nulls. Default CLI output and `--detail energy` must preserve identical
+summary values, with both labels visible. The detail option only adds evidence.
+These are required qualification assertions, not a claim that pending runtime
+or downstream Dynamo integration gates have passed. See migration section 4.11;
+section 4.10 continues to describe prediction details.
+
+The data producer accepts only new output files under
+`artifacts/power-qualification`. Use a new run subdirectory when retaining prior
+evidence; existing outputs, traversal, and symlinks are rejected. Paired
+float64 `0.0`/`0.0` values mean unavailable data; booleans and strings are invalid.

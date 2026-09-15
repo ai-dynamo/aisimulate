@@ -60,7 +60,7 @@ EVIDENCE_REPORT_SCHEMA_VERSION = "1.0"
 
 UNIT_REQUIREMENTS = {
     "modeled_power": {"power_w": "W", "power_coverage": "ratio"},
-    "unavailable_power": {"power_coverage": "ratio"},
+    "unavailable_power": {"power_w": "W", "power_coverage": "ratio"},
     "operation_energy_evidence": {
         "latency_ms": "ms",
         "energy_w_ms": "W*ms",
@@ -931,17 +931,22 @@ def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> 
             {
                 "when": {"coverage_states": ["undercovered"]},
                 "expectation": "unavailable_power",
-                "thresholds": {"power_coverage_ratio_maximum_exclusive": 0.9},
+                "thresholds": {
+                    "power_coverage_ratio_maximum_exclusive": 0.9,
+                    "required_fields": ["power_w", "power_coverage"],
+                    "null_fields": ["power_w"],
+                },
             },
             {
                 "when": {"runners": ["standard", "dynamo"]},
                 "expectation": "runner_output",
                 "thresholds": {
+                    "summary_independent_of_energy_detail": True,
                     "required_fields": [
                         "power_w",
                         "power_coverage",
                         "power_provenance",
-                    ]
+                    ],
                 },
             },
         ],
@@ -966,6 +971,8 @@ def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> 
                 "thresholds": {
                     "forbid_numeric_power_w": True,
                     "forbid_measured_provenance": True,
+                    "required_fields": ["power_w", "power_coverage"],
+                    "null_fields": ["power_w", "power_coverage"],
                 },
             }
         ],

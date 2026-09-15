@@ -37,12 +37,12 @@
         {
           "when": {"coverage_states": ["undercovered"]},
           "expectation": "unavailable_power",
-          "thresholds": {"power_coverage_ratio_maximum_exclusive": 0.9}
+          "thresholds": {"power_coverage_ratio_maximum_exclusive": 0.9, "required_fields": ["power_w", "power_coverage"], "null_fields": ["power_w"]}
         },
         {
           "when": {"runners": ["standard", "dynamo"]},
           "expectation": "runner_output",
-          "thresholds": {"required_fields": ["power_w", "power_coverage", "power_provenance"]}
+          "thresholds": {"required_fields": ["power_w", "power_coverage", "power_provenance"], "summary_independent_of_energy_detail": true}
         }
       ],
       "execution": {
@@ -72,7 +72,7 @@
         {
           "when": {"timing_backends": ["default_fpm", "fixed", "polynomial"]},
           "expectation": "unavailable_power",
-          "thresholds": {"forbid_numeric_power_w": true, "forbid_measured_provenance": true}
+          "thresholds": {"forbid_numeric_power_w": true, "forbid_measured_provenance": true, "required_fields": ["power_w", "power_coverage"], "null_fields": ["power_w", "power_coverage"]}
         }
       ],
       "execution": {
