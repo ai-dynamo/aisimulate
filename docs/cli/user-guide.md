@@ -15,6 +15,38 @@ with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). 
 > **Experimental.** Recommendation schemas and search behavior may change between releases
 > without a standard deprecation period. Upgrading can require changes to your YAML or scripts.
 
+**Contents**
+
+- **Getting started**
+  - [1. Start here](#start-here)
+  - [2. Commands](#commands)
+  - [3. Install](#install)
+  - [4. Predict one deployment](#predict-one-deployment)
+  - [5. Try your own workload](#try-your-own-workload)
+  - [6. Recommend under a GPU budget](#recommend-under-a-gpu-budget)
+- **Configuration and CLI reference**
+  - [7. Common Options](#common-options)
+  - [8. Choose an execution stack](#choose-an-execution-stack)
+  - [9. Configuration Model](#configuration-model)
+  - [10. Presets and Default Ranges](#presets-and-default-ranges)
+  - [11. Traffic](#traffic)
+  - [12. Engine](#engine)
+  - [13. Router (Dynamo Adapter)](#router-dynamo-adapter)
+  - [14. Planner (Dynamo Adapter)](#planner-dynamo-adapter)
+  - [15. Evaluation](#evaluation)
+  - [16. Recommendation Domains](#recommendation-domains)
+  - [17. Optimization Goal](#optimization-goal)
+  - [18. Optimizer Controls](#optimizer-controls)
+- **Examples**
+  - [19. Complete Dynamo Prediction Example](#complete-dynamo-prediction-example)
+  - [20. Dynamo Scalar Recommendation Example](#dynamo-scalar-recommendation-example)
+  - [21. Pareto Recommendation Example](#pareto-recommendation-example)
+- **Outputs and troubleshooting**
+  - [22. Outputs](#outputs)
+  - [23. Errors and Exit Codes](#errors-and-exit-codes)
+  - [24. Troubleshooting](#troubleshooting)
+  - [25. Related documentation](#related-documentation)
+
 <a id="start-here"></a>
 
 ## 1. Start here
