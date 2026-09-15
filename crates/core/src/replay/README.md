@@ -88,6 +88,28 @@ rebuild the simulation. Agentic requests carry a stable identity envelope
 the workload-to-runtime boundary. The driver can emit a canonical lifecycle
 JSONL transcript and domain-separated digest for conformance tests.
 
+AgentX timing preserves authored starts while completion-triggered dependency
+delays use recorded end-to-start gaps: `max(0, target_start - source_end)`. A request without
+`api_time` has a zero-width recorded interval; this does not synthesize source
+duration or change engine-modeled completion. An overlapping child is released
+from its parent's dispatch using the recorded start-to-start gap, a
+post-completion child from the parent's causal
+terminal, and a blocking parent resumes only after every join predecessor.
+Background children add no implicit join. Zero-output requests remain valid
+prefill-only/KV-warmup work.
+
+Every play reports exactly one `completed`, `failed`, or `incomplete` outcome.
+The outcome remains `incomplete` until server cleanup finishes, even if the
+client lane has advanced to another play. `settled_at_ms` records that cleanup
+time; outcomes remain in authored play order when plays settle out of order.
+Rejected, canceled, and failed request terminals all fail the play, skip work
+that has not dispatched, and let already-dispatched siblings settle. The
+canonical failure is the minimum `(causal_terminal_ms, graph_node_ordinal)`;
+status severity is deliberately not a tie-breaker. This rule keeps the failure
+reason independent of engine callback order.
+For a failed play, `causal_terminal_ms` records this primary failure, which may
+precede client lane release while already-dispatched siblings finish.
+
 ## File Map
 
 - `src/replay/replayer.rs`

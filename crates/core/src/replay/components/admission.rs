@@ -542,6 +542,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         };
         driver.agentic_lifecycle_transcript()
     }
+
+    pub(crate) fn agentic_play_outcomes(
+        &self,
+    ) -> Option<Vec<crate::replay::loadgen::AgenticPlayOutcome>> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_play_outcomes()
+    }
 }
 
 impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<Metadata> {

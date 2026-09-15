@@ -1402,6 +1402,9 @@ where
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
         }
+        if let Some(outcomes) = self.admission.agentic_play_outcomes() {
+            self.collector.set_agentic_play_outcomes(outcomes);
+        }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))
     }
