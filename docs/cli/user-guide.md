@@ -1444,6 +1444,15 @@ Recommendation output uses the schema-versioned `SweepResult` contract documente
 ledger, stable status and reason categories, counts, provenance, and candidate-ID selection views.
 Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j`.
 
+The optional names `power_w` and `power_coverage` are reserved by the
+[modeled-power contract](../power-model.md). That contract defines active-forward-pass per-GPU
+scope, energy-over-active-latency aggregation, omission semantics, and provenance requirements.
+`power_coverage` is the share of modeled active time with operation-energy evidence; `power_w`
+may be published at or above 90% coverage, so `0.90` passes while `0.899` does not. This formalizes
+existing AIC semantics; it neither adds a new power calculation nor implies that every runner or
+timing provider implements these fields. Consult the
+[AIC migration guide](migrate-from-aiconfigurator.md) for the current release boundary.
+
 ### Prediction Directory
 
 ```text
