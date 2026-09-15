@@ -360,3 +360,100 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps() -> None:
     assert native["weka_nested_timestamp_basis"] == "relative"
     assert native["agentic_input_format"] == "weka"
     assert report.metrics["completed_requests"] == 4
+
+
+def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.main import main
+
+    config = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "engine": {
+            "model": "Qwen/Qwen3-30B-A3B",
+            "hardware": "b200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"tensor": 4, "moe_tensor": 1, "moe_expert": 4},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
+                    "kv_cache": {"block_size": 64},
+                }
+            },
+        },
+    }
+    path = tmp_path / "native-detail.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = tmp_path / "out"
+    assert (
+        main(
+            [
+                "predict",
+                "-c",
+                str(path),
+                "--detail",
+                "all",
+                "--format",
+                "json",
+                "--output-dir",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((out / "prediction.json").read_text())
+    assert stdout["details"] == saved["details"]
+    from jsonschema import validate
+
+    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    validate(stdout["details"], schema)
+    sections = stdout["details"]["sections"]
+    assert set(sections) == {"summary", "memory", "time"}
+    assert "power_diagnostics" not in saved
+    assert "power_w" not in stdout["summary"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["status"] == "available"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert "num_gpu_blocks" not in memory
+    assert memory["memory_breakdown"]["weights_bytes"] > 0
+    assert memory["estimated_num_gpu_blocks"] == memory["total_kv_size_tokens"] // 64
+    assert memory["total_gpu_capacity_bytes"] > memory["total_kv_size_bytes"] > 0
+    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] == stdout["summary"]["mean_ttft_ms"]
+    assert "wall_time_ms" not in sections["time"]["serving_metrics"]
+    assert "phases" not in sections["time"]
+    # Repeating the same prediction without diagnostics keeps modeled metrics identical.
+    plain_out = tmp_path / "plain"
+    assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    for key, value in stdout["summary"].items():
+        if key not in {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}:
+            assert plain[key] == value, key
+
+
+def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
+    import yaml
+
+    from aisimulate.main import main
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = tmp_path / "fpm.yaml"
+    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
+    assert (
+        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
+        == 0
+    )
+    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["scope"] == "capacity_estimate_per_rank"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert memory["estimated_num_gpu_blocks"] > 0
+    assert "num_gpu_blocks" not in memory
+    assert set(sections) == {"summary", "memory", "time"}
+    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0

@@ -356,6 +356,7 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, or `all`. See [prediction details](#prediction-details). |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
@@ -1622,7 +1623,42 @@ Other files, including non-numbered files inside `recommendations/`, are preserv
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON on standard output is a summary object. Recommendation JSON is an array of selected
+<a id="prediction-details"></a>
+
+### Prediction details
+
+```bash
+aisimulate predict -c prediction.yaml --detail summary,memory,time \
+  --format json --output-dir ./prediction-details
+```
+
+`--detail` selects additional reports on `predict`. With no selector, stdout and durable
+reports retain their existing shape. With a selector, JSON stdout contains `summary` and
+`details`; the same versioned `details` object is added to `prediction.json` and follows the
+[prediction-details schema](prediction-details.schema.json). Table output appends selected
+sections and skipped-section reasons to the normal prediction summary.
+
+- `summary`: existing serving metrics.
+- `memory`: the existing initial per-rank memory capacity estimate, including components when
+  available, with sizes in bytes and token counts in tokens. `estimated_num_gpu_blocks` is
+  captured before native adjustments, including FPM profile-domain limits. It is neither a
+  final runtime capacity nor observed memory usage. Explicit KV blocks, nested rank input,
+  and unsupported providers/topologies may have no exported estimate.
+- `time`: existing serving timing metrics in milliseconds, excluding simulator wall time.
+  This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
+  approximation labels in the summary.
+- `all`: the three supported sections above, when evidence exists.
+
+Sections without evidence are omitted from `details.sections` and listed with reasons in
+`details.skipped`. A memory section with only some estimated roles is `partial` and records
+why other roles are unavailable. Missing values are never filled with zero. `energy` and
+`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
+SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+
+Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
+are CLI-only; this change adds no YAML configuration fields.
+
+Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.

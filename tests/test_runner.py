@@ -1055,3 +1055,64 @@ def test_runner_rejects_unknown_forward_model(value):
 
     with pytest.raises(ValueError, match="forward_model"):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
+def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
+    from aiconfigurator_core.sdk import memory
+
+    calls = []
+    estimate = {
+        "source": "native",
+        "total_gpu_capacity_bytes": 4096,
+        "total_kv_size_bytes": 1024,
+        "total_kv_size_tokens": 128,
+        "kv_size_per_token_bytes": 8,
+        "tolerance_adjusted": None,
+        "memory_breakdown": {"weights_bytes": 2048, "activations_bytes": 512},
+    }
+
+    def estimate_kv(*args, **kwargs):
+        calls.append((args, kwargs))
+        return dict(estimate)
+
+    monkeypatch.setattr(memory, "estimate_kv_cache", estimate_kv)
+    args = _engine_args()
+    args.pop("num_gpu_blocks")
+    args["aic_backend_version"] = "test"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    plain_runtime, detail_runtime = RecordingRuntime(), RecordingRuntime()
+    plain = EngineReplayRunnerFactory(runtime=plain_runtime).create(0).run(_spec(deployment=deployment))
+    detailed = (
+        EngineReplayRunnerFactory(runtime=detail_runtime)
+        .create(0)
+        .run(
+            _spec(deployment=deployment),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_memory_diagnostics=True),
+        )
+    )
+    assert len(calls) == 2  # One estimate per replay, with identical estimator arguments.
+    assert calls[0] == calls[1]
+    assert plain_runtime.execution_spec == detail_runtime.execution_spec
+    assert plain.metrics == detailed.metrics
+    data = detailed.metadata["native_report"]["memory_diagnostics"]["aggregated"]
+    assert data["status"] == "available"
+    assert data["scope"] == "capacity_estimate_per_rank"
+    assert data["memory_breakdown"] == estimate["memory_breakdown"]
+    assert data["estimated_num_gpu_blocks"] == detail_runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 32
+
+
+def test_memory_detail_with_explicit_blocks_does_not_guess_components():
+    runtime = RecordingRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_memory_diagnostics=True),
+        )
+    )
+    data = report.metadata["native_report"]["memory_diagnostics"]["aggregated"]
+    assert data["status"] == "unavailable"
+    assert "memory_breakdown" not in data

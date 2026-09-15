@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, [detailed diagnostics](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -731,9 +731,10 @@ aiconfigurator cli estimate \
 
 #### 5.3.2 Detailed diagnostics
 
-The unified `aisimulate predict` and `aisimulate recommend` commands do not yet expose an
-equivalent of AIC's selectable `estimate --detail` reports. This is a separate migration gap
-from fixed-batch estimation. Keep the compatibility CLI when these breakdowns are required.
+`aisimulate predict --detail summary,memory,time` exposes existing serving metrics and memory
+capacity estimates. Per-operation timing, SOL, energy, and operation-source diagnostics
+remain migration gaps, separate from fixed-batch estimation. Keep the compatibility CLI
+when those breakdowns are required.
 
 `--detail` belongs to `aiconfigurator cli estimate`; `aiconfigurator cli default` does not accept
 it. With no `--detail`, `estimate` prints its normal summary without extra detail sections.
@@ -760,7 +761,30 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** memory component totals, per-operation timing, and data-source breakdowns
-in the terminal. These selectable reports have no direct unified-CLI replacement yet.
+in the terminal. The unified CLI covers only part of this reporting workflow.
+
+**After — inspect supported serving details** using `prediction.yaml` from
+[the concrete-deployment example](#31-migrate-one-concrete-deployment):
+
+```bash
+aisimulate predict --config prediction.yaml --detail summary,memory,time \
+  --output-dir ./prediction-details
+```
+
+| AISimulate selector | Supported evidence |
+| --- | --- |
+| `summary` | Existing serving prediction metrics. |
+| `memory` | Initial per-rank capacity estimate and available memory components, before native capacity adjustments. |
+| `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
+| `all` | The three supported sections above, when evidence exists. |
+
+The terminal identifies skipped sections with reasons. `prediction.json` stores the selected
+`details.sections` and `details.skipped`; `--format json` prints the same `details` object beside
+`summary`. Memory may be skipped for explicit KV blocks or providers/topologies without an
+exported estimate. Its block count is an initial estimate, not a final runtime allocation.
+`energy` and `source` are unsupported selectors and are rejected; `all` does not request them.
+For recommendation details, run `predict --detail` on a saved recommendation YAML.
+See the [detail output contract](user-guide.md#prediction-details).
 
 <a id="power-and-energy-analysis"></a>
 
