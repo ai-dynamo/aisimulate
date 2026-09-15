@@ -7,6 +7,9 @@ import csv
 import importlib.util
 import io
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -519,6 +522,110 @@ class FpePagesTest(unittest.TestCase):
         for files in [["../../secret.csv"], ["b200_sxm.csv", "b200_sxm.csv"]]:
             with self.subTest(files=files), self.assertRaises(ValueError):
                 FPE.qualified_files(qualified_archive(index_files=files), NEW_SHA)
+
+
+class LegacySnapshotTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repository = self.root / "repo"
+        self.repository.mkdir()
+        self.git("init", "-b", "main")
+        docs = self.repository / PAGES.DOCS_ROOT
+        docs.mkdir(parents=True)
+        (docs / "index.html").write_text("landing page")
+        for page in PAGES.PUBLIC_PAGE_DIRECTORIES:
+            (docs / page).mkdir()
+            (docs / page / "index.html").write_text(page)
+        for name in PAGES.PUBLIC_DATASETS.values():
+            dataset = self.repository / PAGES.SYSTEMS_ROOT / name
+            dataset.mkdir(parents=True)
+            (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
+            (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
+        self.dataset = self.repository / PAGES.SYSTEMS_ROOT / "support_matrix"
+        self.data_sha = self.commit("2026-09-04T11:42:50-07:00", "legacy data")
+        (docs / "support-matrix/index.html").write_text("new website, same data")
+        self.commit("2026-09-15T12:00:00-07:00", "website only")
+
+    def git(self, *args, **kwargs):
+        return subprocess.check_output(
+            ["git", *args], cwd=self.repository, text=True, stderr=subprocess.DEVNULL, **kwargs
+        ).strip()
+
+    def commit(self, date, message):
+        self.git("add", ".")
+        self.git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            message,
+            env={**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date},
+        )
+        return self.git("rev-parse", "HEAD")
+
+    def snapshot(self, repository=None):
+        with tempfile.TemporaryDirectory(dir=self.root) as output:
+            site = Path(output) / "site"
+            PAGES.build_site(repository or self.repository, site)
+            return json.loads((site / "data/support-matrix/index.json").read_text())["snapshot"]
+
+    def test_website_rebuild_keeps_data_commit_and_date(self):
+        self.assertEqual(
+            self.snapshot(),
+            {
+                "kind": "historical",
+                "qualification": "not_recorded",
+                "data_commit": self.data_sha,
+                "data_updated_at": "2026-09-04T18:42:50Z",
+            },
+        )
+
+    def test_data_change_advances_snapshot(self):
+        (self.dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,FAIL\n")
+        changed = self.commit("2026-09-16T09:00:00Z", "changed data")
+        self.assertEqual(self.snapshot()["data_commit"], changed)
+        self.assertEqual(self.snapshot()["data_updated_at"], "2026-09-16T09:00:00Z")
+
+    def test_unindexed_file_does_not_advance_snapshot(self):
+        (self.dataset / "unpublished.csv").write_text("unused data")
+        self.commit("2026-09-16T09:00:00Z", "unpublished data")
+        self.assertEqual(self.snapshot()["data_commit"], self.data_sha)
+
+    def test_dirty_and_staged_data_have_no_committed_date(self):
+        (self.dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,FAIL\n")
+        unknown = {"kind": "historical", "qualification": "not_recorded"}
+        self.assertEqual(self.snapshot(), unknown)
+        self.git("add", ".")
+        self.assertEqual(self.snapshot(), unknown)
+
+    def test_untracked_indexed_file_has_no_committed_date(self):
+        (self.dataset / "index.json").write_text(json.dumps({"files": ["new.csv"]}))
+        self.commit("2026-09-16T09:00:00Z", "new index")
+        (self.dataset / "new.csv").write_text("Model,Status\nexample/model,PASS\n")
+        self.assertNotIn("data_commit", self.snapshot())
+
+    def test_source_archive_does_not_preserve_unverified_snapshot(self):
+        index = self.dataset / "index.json"
+        index.write_text(
+            json.dumps(
+                {
+                    "files": ["b200_sxm.csv"],
+                    "snapshot": {"qualification": "qualified", "data_updated_at": "2026-09-15T12:00:00Z"},
+                }
+            )
+        )
+        archive = self.root / "archive"
+        shutil.copytree(self.repository, archive, ignore=shutil.ignore_patterns(".git"))
+        self.assertEqual(self.snapshot(archive), {"kind": "historical", "qualification": "not_recorded"})
+
+    def test_shallow_clone_does_not_claim_tip_date_as_data_date(self):
+        shallow = self.root / "shallow"
+        self.git("clone", "--depth=1", self.repository.as_uri(), str(shallow))
+        self.assertEqual(self.snapshot(shallow), {"kind": "historical", "qualification": "not_recorded"})
 
 
 class PagesSiteTest(unittest.TestCase):
