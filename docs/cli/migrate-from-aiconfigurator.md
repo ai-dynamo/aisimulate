@@ -41,8 +41,8 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | Keep AIC `generate`. | [Deployment files](#54-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, diagnostics, and [power reports](#410-power-and-energy-analysis). |
+| `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for [batch/static estimates](#static-estimates-and-diagnostics), [detailed diagnostics](#detailed-diagnostics), and [power reports](#410-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -753,10 +753,49 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 <a id="static-estimates-and-diagnostics"></a>
 
-### 5.3 Static estimates and diagnostics
+<a id="53-static-estimates-and-diagnostics"></a>
 
-Keep `estimate` for a fixed batch or single pass, including per-operation reports. For example,
-inspect one decode pass and its memory, timing, energy, and data sources:
+### 5.3 Static estimates
+
+Keep `estimate` for a fixed batch or single pass. `aisimulate predict` models a serving workload;
+its concurrency and scheduling controls do not reproduce a fixed-batch estimate. For example,
+inspect one decode pass:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128
+```
+
+**Result to inspect:** the terminal summary describes the fixed batch and decode pass. See
+[estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
+
+<a id="detailed-diagnostics"></a>
+
+### 5.4 Detailed diagnostics
+
+The unified CLI does not yet expose AIC's general `estimate --detail` reporting interface.
+This is a separate migration gap from fixed-batch estimation and
+[power and energy reporting](#410-power-and-energy-analysis). A summary power value or a
+power-specific diagnostic report does not supply all of the following breakdowns:
+
+| AIC `--detail` selector | Result to inspect |
+| --- | --- |
+| `summary` | Latency, throughput, phase totals, and memory status. |
+| `memory` | Memory components such as weights, KV cache, activations, and communication buffers, plus capacity. |
+| `time` | Phase and per-operation latency, with a speed-of-light (SOL) comparison when available. |
+| `energy` | Phase and per-operation energy, plus phase-average power. |
+| `source` | Per-operation data provenance and available fallback information. |
+| `all` | All five sections above. |
+
+Combine selectors with commas. The actual sections depend on the estimate mode and available
+evidence. With no `--detail`, AIC prints its normal summary; this includes per-GPU power when
+coverage permits, or an explicit unavailable result. `--detail energy` requests the additional
+breakdown, not permission to publish summary power.
+
+Keep the compatibility command when these reports are required:
 
 ```bash
 aiconfigurator cli estimate \
@@ -766,13 +805,17 @@ aiconfigurator cli estimate \
   --isl 1024 --osl 128 --detail memory,time,energy,source
 ```
 
-**Result to inspect:** the terminal contains per-operation memory, timing, energy, and data-source
-breakdowns. See
-[estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
+**Result to inspect:** memory component totals, per-operation timing and energy, and data-source
+breakdowns in the terminal. A unified replacement needs selectable sections, durable structured
+output, and explicit unavailable results for evidence the selected timing model or topology
+cannot provide. Detailed replay reports must identify their workload and aggregation scope;
+they must not imply fixed-batch or SOL equivalence from serving metrics alone.
 
 <a id="deployment-artifacts"></a>
 
-### 5.4 Deployment artifacts
+<a id="54-deployment-artifacts"></a>
+
+### 5.5 Deployment artifacts
 
 Keep `generate` when you need deployment files:
 
@@ -791,10 +834,12 @@ analytical EPD/AFD or heterogeneous P/D hardware.
 
 <a id="experiment-files-and-support-queries"></a>
 
-### 5.5 Experiment files and support queries
+<a id="55-experiment-files-and-support-queries"></a>
+
+### 5.6 Experiment files and support queries
 
 Existing named experiments still run with AIC. For a complete runnable input, save
-`legacy-search.yaml` from the [legacy search example](#57-legacy-search-domains-and-topology-coverage)
+`legacy-search.yaml` from the [legacy search example](#58-legacy-search-domains-and-topology-coverage)
 below, then run it and query model support:
 
 ```bash
@@ -809,7 +854,9 @@ alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
 
-### 5.6 Estimator controls and speculative decoding
+<a id="56-estimator-controls-and-speculative-decoding"></a>
+
+### 5.7 Estimator controls and speculative decoding
 
 Backend version and op-level/FPM selection have unified mappings. The following controls still
 require AIC or the estimator SDK.
@@ -889,9 +936,13 @@ The unified CLI has no speculative configuration.
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
-### 5.7 Legacy search domains and topology coverage
+<a id="57-legacy-search-domains-and-topology-coverage"></a>
 
-#### 5.7.1 Pipeline parallelism (PP)
+### 5.8 Legacy search domains and topology coverage
+
+<a id="571-pipeline-parallelism-pp"></a>
+
+#### 5.8.1 Pipeline parallelism (PP)
 
 **Keep PP-dependent workflows on the AIC compatibility CLI.**
 AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
@@ -930,7 +981,9 @@ aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./legacy-search
 including feasible TP/PP configurations and their latency/throughput. This example requests PP=1/2
 and pins CP=1.
 
-#### 5.7.2 Context parallelism (CP)
+<a id="572-context-parallelism-cp"></a>
+
+#### 5.8.2 Context parallelism (CP)
 
 **The unified AISimulate CLI has no CP configuration field.** AIC exposes per-role
 `agg_cp_candidates`, `prefill_cp_candidates`, and `decode_cp_candidates`. CP>1 support depends on
@@ -938,7 +991,9 @@ the model family and backend; the dense-model PP example above does not establis
 Keep supported CP workflows on AIC. See
 [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
 
-#### 5.7.3 GPUs per worker and parallelism search domains
+<a id="573-gpus-per-worker-and-parallelism-search-domains"></a>
+
+#### 5.8.3 GPUs per worker and parallelism search domains
 
 **AISimulate's default preset does not reproduce every AIC parallelism domain.** AIC's
 `*_num_gpu_candidates` lists explicit GPU counts per worker. AISimulate's default preset uses
@@ -946,7 +1001,9 @@ Keep supported CP workflows on AIC. See
 Explicit supported parallelism configurations are a separate path. Keep AIC when you need its
 exact candidate domain; see the [default search projection](../sweeper/architecture.md#parallelism-search-projection).
 
-#### 5.7.4 Fixed batch sizes and capacity sweeps
+<a id="574-fixed-batch-sizes-and-capacity-sweeps"></a>
+
+#### 5.8.4 Fixed batch sizes and capacity sweeps
 
 **AIC batch size has no direct mapping to regular AISimulate serving batches.** AIC can estimate
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
@@ -954,21 +1011,27 @@ form batches from the workload: `traffic.load.concurrency` controls in-flight re
 `scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
 Keep AIC for fixed-batch estimates or its original capacity-sweep behavior.
 
-#### 5.7.5 Context and request-length sweeps
+<a id="575-context-and-request-length-sweeps"></a>
+
+#### 5.8.5 Context and request-length sweeps
 
 **Context length and synthetic request lengths stay fixed within one unified-CLI search.**
 `engine.context_length`, `traffic.source.input_tokens`, and `traffic.source.output_tokens` do not
 accept recommendation domains. Use separate AISimulate configurations to compare lengths, or
 keep AIC `exp` for existing named experiments with different ISL, OSL, and context limits.
 
-#### 5.7.6 Exhaustive search and legacy ranking
+<a id="576-exhaustive-search-and-legacy-ranking"></a>
+
+#### 5.8.6 Exhaustive search and legacy ranking
 
 **AISimulate recommendation does not guarantee exhaustive coverage of a search domain.**
 Its Bayesian and random optimizers sample within `optimizer.max_trials`; increasing the budget
 does not guarantee every valid configuration is evaluated. Keep AIC when you need its enumerated
 capacity sweep and ranking semantics.
 
-#### 5.7.7 Model, backend, and topology combinations
+<a id="577-model-backend-and-topology-combinations"></a>
+
+#### 5.8.7 Model, backend, and topology combinations
 
 **Support for one model/backend does not imply support for every topology.** Check the specific
 feature's restrictions before migrating:
