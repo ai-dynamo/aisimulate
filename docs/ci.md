@@ -40,11 +40,9 @@ The executable definitions live in the root
 flowchart TD
     PR[PR admitted for review] --> Fast[Fast CI]
     PR --> Review[CodeRabbit and required code reviews]
-    Full[Full CI] --> Prerequisite[Require standalone Fast CI for this branch and SHA]
-    Fast --> Prerequisite
+    Fast -->|Pass for the same branch and SHA| Full[Full CI]
     Full --> Scope[Select components]
-    Prerequisite --> Checks[Selected compiled tests and package checks]
-    Scope --> Checks
+    Scope --> Checks[Selected Full CI tests and package checks]
     Checks --> Success[Full CI Success]
     Success --> Stage[Main or release push: protected staging]
     Nightly[Nightly CI] --> Build[Build nightly wheels and crate]
@@ -54,8 +52,12 @@ flowchart TD
     FPE --> Publish
 ```
 
-The diagram shows workflow dependencies. Review policy controls admission;
-the YAML does not automatically dispatch Full CI when a review finishes.
+The diagram shows the high-level validation flow. Full CI verifies the
+standalone Fast CI result at its entry check. In the actual workflow, this
+check and component selection run in parallel; selected tests wait for both
+to succeed. The arrows describe prerequisites, not automatic dispatch.
+Review policy controls admission; the YAML does not automatically dispatch
+Full CI when a review finishes.
 
 | Workflow | When it runs | Role |
 | --- | --- | --- |
