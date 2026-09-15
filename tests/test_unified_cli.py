@@ -640,7 +640,6 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_summary["power_coverage"] is None
 
 
-
 def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
     concrete = {
         "traffic": {
