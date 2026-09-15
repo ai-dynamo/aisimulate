@@ -749,13 +749,13 @@ it. With no `--detail`, `estimate` prints its normal summary without extra detai
 
 Combine selectors with commas. The available sections depend on the estimate mode and data;
 for example, static-mode `--detail energy` can display `<no energy data>` when operation-energy
-data is absent. To inspect memory, timing, and data sources for one decode pass:
+data is absent. To inspect memory, timing, and data sources using the default aggregated mode:
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
+  --batch-size 64 --tp-size 2 \
   --isl 1024 --osl 128 --detail memory,time,source
 ```
 
