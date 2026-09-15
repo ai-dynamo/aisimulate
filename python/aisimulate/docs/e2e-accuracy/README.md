@@ -104,7 +104,8 @@ fails without replacing its published evidence.
   Raw data and child logs
   remain on the runner; they are not uploaded as Actions or Pages artifacts.
 - Policy `latest-complete-config-run-v1` selects single-turn, single-node,
-  non-offloaded points with positive mean TTFT/TPOT, at most 30 days older than the
+  non-offloaded points from completed successful measurement runs, with positive
+  mean TTFT/TPOT, at most 30 days older than the
   latest measurement for that model/GPU/framework/precision/serving/speculation/
   workload family. Families without recent measurements retain historical evidence.
   Each topology/workload/recipe uses one latest run and

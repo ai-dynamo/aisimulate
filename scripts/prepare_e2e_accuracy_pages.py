@@ -37,6 +37,7 @@ CAMPAIGN_KEYS = {
     "run_id",
     "run_attempt",
     "selection_policy",
+    "measurement_filter_counts",
     "selected",
     "published",
     "outcomes",
@@ -48,7 +49,13 @@ CAMPAIGN_KEYS = {
     "status",
     "advisory",
 }
-METRICS = {"points", "ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"}
+METRICS = {
+    "points",
+    "ttft_mape_pct",
+    "tpot_mape_pct",
+    "ttft_shape_error_pct",
+    "tpot_shape_error_pct",
+}
 
 
 def strict_json(text):
@@ -119,7 +126,10 @@ def public_contract(summary):
         keys(item, {"rows", "aic", "aisimulate"} | extra)
         keys(item["aic"], METRICS)
         keys(item["aisimulate"], METRICS | {"status_counts", "coverage_pct"})
-        keys(item["aisimulate"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
+        keys(
+            item["aisimulate"]["status_counts"],
+            {"success", "failed", "unsupported", "unknown"},
+        )
 
     dimensions = {"gpu_skus", "frameworks", "precisions", "workloads"}
     aggregate(summary["totals"], dimensions | {"models"})
@@ -131,14 +141,32 @@ def public_contract(summary):
                 aggregate(gpu, {"gpu", "precisions", "topologies"})
                 for topology in gpu["topologies"]:
                     aggregate(
-                        topology, {"id", "framework", "precision", "serving", "spec_method", "parallelism", "points"}
+                        topology,
+                        {
+                            "id",
+                            "framework",
+                            "precision",
+                            "serving",
+                            "spec_method",
+                            "parallelism",
+                            "points",
+                        },
                     )
                     keys(
                         topology["parallelism"],
-                        {"tp_size", "pp_size", "attention_dp_size", "moe_tp_size", "moe_ep_size"},
+                        {
+                            "tp_size",
+                            "pp_size",
+                            "attention_dp_size",
+                            "moe_tp_size",
+                            "moe_ep_size",
+                        },
                     )
                     for point in topology["points"]:
-                        keys(point, {"concurrency", "status", "measured", "aic", "aisimulate"})
+                        keys(
+                            point,
+                            {"concurrency", "status", "measured", "aic", "aisimulate"},
+                        )
                         for name in ("measured", "aic", "aisimulate"):
                             keys(
                                 point[name],
@@ -188,7 +216,13 @@ def validate_artifact(archive: bytes, run: dict) -> dict:
         or q["run_attempt"] != str(run["run_attempt"])
     ):
         raise ValueError("campaign does not belong to this completed run attempt")
-    for field in ("wheel_sha256", "dataset_sha256", "measurement_sha256", "cohort_sha256", "driver_sha256"):
+    for field in (
+        "wheel_sha256",
+        "dataset_sha256",
+        "measurement_sha256",
+        "cohort_sha256",
+        "driver_sha256",
+    ):
         if not isinstance(q[field], str) or not re.fullmatch(r"[0-9a-f]{64}", q[field]):
             raise ValueError("invalid campaign digest")
     if q["branch"] != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", q["branch"]):
@@ -202,7 +236,23 @@ def validate_artifact(archive: bytes, run: dict) -> dict:
         raise ValueError("invalid evaluated revision or dataset")
     outcomes = q["outcomes"]
     keys(outcomes, {"evaluated", "unsupported", "baseline_failed"})
-    keys(q["exclusion_reasons"], {"recipe_required", "adapter_unsupported", "baseline_failed"})
+    keys(
+        q["exclusion_reasons"],
+        {"recipe_required", "adapter_unsupported", "baseline_failed"},
+    )
+    keys(
+        q["measurement_filter_counts"],
+        {
+            "incomplete_measurement_run",
+            "nonstandard_or_error",
+            "multinode",
+            "stale",
+            "missing_mean_latency",
+            "mixed_image_curve",
+        },
+    )
+    if any(type(count) is not int or count < 0 for count in q["measurement_filter_counts"].values()):
+        raise ValueError("invalid measurement filter counts")
     if (
         type(q["selected"]) is not int
         or q["selected"] <= 0
@@ -249,7 +299,10 @@ def api(path: str, *, binary=False):
 
 
 def ancestor(repo: Path, commit: str, ref: str) -> bool:
-    result = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, ref], capture_output=True)
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, ref],
+        capture_output=True,
+    )
     if result.returncode not in (0, 1):
         raise ValueError("cannot establish accuracy source ancestry")
     return result.returncode == 0
@@ -258,7 +311,14 @@ def ancestor(repo: Path, commit: str, ref: str) -> bool:
 def prepare(repo: Path, output: Path) -> None:
     branches = {"main"}
     refs = subprocess.check_output(
-        ["git", "-C", str(repo), "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin/release/"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "for-each-ref",
+            "--format=%(refname:strip=3)",
+            "refs/remotes/origin/release/",
+        ],
         text=True,
     ).splitlines()
     branches.update(refs)
@@ -305,7 +365,13 @@ def prepare(repo: Path, output: Path) -> None:
         raise ValueError("accuracy output must be empty")
     for branch, summary in selected.items():
         committed = subprocess.run(
-            ["git", "-C", str(repo), "show", "origin/" + branch + ":python/aisimulate/docs/e2e-accuracy/summary.json"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "show",
+                "origin/" + branch + ":python/aisimulate/docs/e2e-accuracy/summary.json",
+            ],
             capture_output=True,
             text=True,
         )

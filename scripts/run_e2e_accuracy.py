@@ -60,12 +60,26 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
     def family(bench):
         config = configs[bench["config_id"]]
         return tuple(
-            config.get(key) for key in ("model", "hardware", "framework", "precision", "disagg", "spec_method")
+            config.get(key)
+            for key in (
+                "model",
+                "hardware",
+                "framework",
+                "precision",
+                "disagg",
+                "spec_method",
+            )
         ) + (bench["isl"], bench["osl"])
 
     latest_by_family = {}
     for bench in tables["benchmark_results"]:
-        if bench["benchmark_type"] == "single_turn" and bench.get("error") is None:
+        run = runs[bench["workflow_run_id"]]
+        if (
+            bench["benchmark_type"] == "single_turn"
+            and bench.get("error") is None
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+        ):
             key = family(bench)
             latest_by_family[key] = max(latest_by_family.get(key, date.min), date.fromisoformat(bench["date"]))
     groups = {}
@@ -76,6 +90,9 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             raise ValueError("duplicate benchmark ID")
         ids.add(bench["id"])
         config, run = configs[bench["config_id"]], runs[bench["workflow_run_id"]]
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            excluded["incomplete_measurement_run"] += 1
+            continue
         metrics = bench["metrics"]
         if (
             bench["benchmark_type"] != "single_turn"
@@ -99,7 +116,12 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             raise ValueError("invalid benchmark workload")
         # Select one complete run for each topology/workload, retaining all its
         # concurrency points. Never splice curves from different images/runs.
-        key = (bench["config_id"], bench["isl"], bench["osl"], bench.get("recipe_fingerprint"))
+        key = (
+            bench["config_id"],
+            bench["isl"],
+            bench["osl"],
+            bench.get("recipe_fingerprint"),
+        )
         rank = (bench["date"], run.get("run_started_at") or "", run["id"])
         previous = groups.get(key)
         if previous is None or rank > previous[0]:
@@ -190,7 +212,8 @@ def replay_spec(request, backend_version: str):
     kwargs = {}
     if topology.kind == "agg":
         kwargs.update(
-            agg_engine_args=engine(topology.worker, request.systems.prefill), num_workers=topology.worker.replicas
+            agg_engine_args=engine(topology.worker, request.systems.prefill),
+            num_workers=topology.worker.replicas,
         )
     else:
         kwargs.update(
@@ -201,7 +224,10 @@ def replay_spec(request, backend_version: str):
         )
     return ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
-            deployment_mode=topology.kind, backend=request.backend.name, backend_version=backend_version, **kwargs
+            deployment_mode=topology.kind,
+            backend=request.backend.name,
+            backend_version=backend_version,
+            **kwargs,
         ),
         workload={
             "isl": request.workload.isl,
@@ -217,7 +243,11 @@ def replay_spec(request, backend_version: str):
 
 def predict_point(point: dict) -> dict:
     from aiconfigurator.cli.api import cli_estimate
-    from aiconfigurator.sdk.config_adapter import InferenceXSource, adapt_config, to_cli_estimate_kwargs
+    from aiconfigurator.sdk.config_adapter import (
+        InferenceXSource,
+        adapt_config,
+        to_cli_estimate_kwargs,
+    )
     from aisimulate.runner import EngineReplayRunnerFactory
 
     config, bench = point["config"], point["benchmark"]
@@ -225,17 +255,29 @@ def predict_point(point: dict) -> dict:
     # Keep those points visible in campaign exclusions until a reviewed recipe
     # adapter can resolve them; speculative acceptance is never guessed.
     if bench.get("recipe_fingerprint"):
-        return {"id": point["id"], "outcome": "unsupported", "reason": "recipe_required"}
+        return {
+            "id": point["id"],
+            "outcome": "unsupported",
+            "reason": "recipe_required",
+        }
     adaptation = adapt_config(InferenceXSource(config=config, benchmark=bench))
     if len(adaptation.requests) != 1:
-        return {"id": point["id"], "outcome": "unsupported", "reason": "adapter_unsupported"}
+        return {
+            "id": point["id"],
+            "outcome": "unsupported",
+            "reason": "adapter_unsupported",
+        }
     request = adaptation.requests[0]
     try:
         baseline = cli_estimate(**to_cli_estimate_kwargs(request))
         if not all(positive(value) for value in (baseline.ttft, baseline.tpot)):
             raise ValueError("invalid baseline latency")
     except Exception:
-        return {"id": point["id"], "outcome": "baseline_failed", "reason": "baseline_failed"}
+        return {
+            "id": point["id"],
+            "outcome": "baseline_failed",
+            "reason": "baseline_failed",
+        }
     worker = request.topology.worker if request.topology.kind == "agg" else request.topology.decode
     row = {
         "silicon_model": config["model"],
@@ -258,7 +300,13 @@ def predict_point(point: dict) -> dict:
         "aisimulate_total_gpus": config["num_decode_gpu"] + (config["num_prefill_gpu"] if config["disagg"] else 0),
         **{
             name: getattr(worker, name)
-            for name in ("tp_size", "pp_size", "attention_dp_size", "moe_tp_size", "moe_ep_size")
+            for name in (
+                "tp_size",
+                "pp_size",
+                "attention_dp_size",
+                "moe_tp_size",
+                "moe_ep_size",
+            )
         },
     }
     try:
@@ -277,7 +325,12 @@ def predict_point(point: dict) -> dict:
         )
     except Exception:
         row.update(aisimulate_status="failed")
-    return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": baseline.backend_version}
+    return {
+        "id": point["id"],
+        "outcome": "evaluated",
+        "row": row,
+        "backend_version": baseline.backend_version,
+    }
 
 
 def run_child(point: dict, timeout: int) -> dict:
@@ -296,7 +349,11 @@ def run_child(point: dict, timeout: int) -> dict:
             raise ValueError("child returned a different point")
         return value
     except (subprocess.SubprocessError, ValueError):
-        return {"id": point["id"], "outcome": "worker_failed", "reason": "worker_failed"}
+        return {
+            "id": point["id"],
+            "outcome": "worker_failed",
+            "reason": "worker_failed",
+        }
 
 
 def qualify_results(points: list[dict], results: list[dict]) -> list[dict]:
@@ -363,7 +420,11 @@ def campaign(args) -> None:
     summary = build_summary(
         predictions,
         {**common, "point_count": len(rows), "sha256": sha(results)},
-        {**common, "final_unique_groups": len(rows), "dump_max_date": selection["measurement_date_through"]},
+        {
+            **common,
+            "final_unique_groups": len(rows),
+            "dump_max_date": selection["measurement_date_through"],
+        },
         predictions_sha256=sha(predictions),
         source_url=REPOSITORY.replace("ai-dynamo/aisimulate", "SemiAnalysisAI/InferenceX-app")
         + "/releases/tag/"
@@ -382,6 +443,7 @@ def campaign(args) -> None:
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
         "selection_policy": POLICY,
+        "measurement_filter_counts": selection["excluded"],
         "selected": len(points),
         "published": summary["totals"]["rows"],
         "outcomes": dict(sorted(Counter(result["outcome"] for result in results).items())),

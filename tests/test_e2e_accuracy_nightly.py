@@ -28,8 +28,18 @@ def tables():
     return {
         "configs": [{"id": 1, "is_multinode": False}],
         "workflow_runs": [
-            {"id": 1, "run_started_at": "2026-09-12T12:00:00Z"},
-            {"id": 2, "run_started_at": "2026-09-13T12:00:00Z"},
+            {
+                "id": 1,
+                "run_started_at": "2026-09-12T12:00:00Z",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "id": 2,
+                "run_started_at": "2026-09-13T12:00:00Z",
+                "status": "completed",
+                "conclusion": "success",
+            },
         ],
         "benchmark_results": [
             {
@@ -89,7 +99,22 @@ def test_family_without_recent_measurements_retains_its_latest_evidence():
     assert {point["benchmark"]["id"] for point in points} == {2, 3, 4}
 
 
-@pytest.mark.parametrize("change", ["duplicate_id", "duplicate_concurrency", "mixed_image", "multinode", "nonfinite"])
+@pytest.mark.parametrize(
+    "status,conclusion",
+    [("completed", "failure"), ("completed", "cancelled"), ("in_progress", None)],
+)
+def test_incomplete_new_source_run_preserves_the_previous_successful_curve(status, conclusion):
+    data = tables()
+    data["workflow_runs"][1].update(status=status, conclusion=conclusion)
+    points, stats = campaign.select_points(data, 30)
+    assert {point["benchmark"]["id"] for point in points} == {1}
+    assert stats["excluded"]["incomplete_measurement_run"] == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["duplicate_id", "duplicate_concurrency", "mixed_image", "multinode", "nonfinite"],
+)
 def test_bad_or_out_of_scope_measurements_cannot_be_published(change):
     data = tables()
     if change == "duplicate_id":
@@ -127,7 +152,11 @@ def copy_fixture():
 
 def test_copy_reader_decodes_data_without_executing_sql():
     data = fetch.read_copy(io.StringIO(copy_fixture()))
-    assert data["configs"][0] == {"id": 1, "model": "name\twith\nwhitespace\\end", "disagg": False}
+    assert data["configs"][0] == {
+        "id": 1,
+        "model": "name\twith\nwhitespace\\end",
+        "disagg": False,
+    }
     assert data["benchmark_results"][0]["error"] is None
     assert data["benchmark_results"][0]["metrics"] == {"mean_ttft": 0.1}
 
@@ -148,14 +177,21 @@ def test_copy_reader_rejects_incomplete_or_ambiguous_data(text):
 
 def test_missing_overlapping_and_crashed_points_fail_qualification():
     points = [{"id": "a"}, {"id": "b"}]
-    success = {"id": "a", "outcome": "evaluated", "row": {"aisimulate_status": "success"}}
+    success = {
+        "id": "a",
+        "outcome": "evaluated",
+        "row": {"aisimulate_status": "success"},
+    }
     failed = {"id": "b", "outcome": "evaluated", "row": {"aisimulate_status": "failed"}}
     assert len(campaign.qualify_results(points, [success, failed])) == 2
     for outcomes in (
         [success],
         [success, success],
         [success, {"id": "b", "outcome": "worker_failed"}],
-        [{"id": "a", "outcome": "unsupported"}, {"id": "b", "outcome": "baseline_failed"}],
+        [
+            {"id": "a", "outcome": "unsupported"},
+            {"id": "b", "outcome": "baseline_failed"},
+        ],
     ):
         with pytest.raises(ValueError):
             campaign.qualify_results(points, outcomes)
@@ -166,7 +202,11 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
         raise subprocess.TimeoutExpired("point", 5)
 
     monkeypatch.setattr(campaign.subprocess, "run", timed_out)
-    assert campaign.run_child({"id": "a"}, 5) == {"id": "a", "outcome": "worker_failed", "reason": "worker_failed"}
+    assert campaign.run_child({"id": "a"}, 5) == {
+        "id": "a",
+        "outcome": "worker_failed",
+        "reason": "worker_failed",
+    }
 
 
 @pytest.fixture
@@ -175,10 +215,18 @@ def artifact(tmp_path, monkeypatch):
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
-        json.dumps({"release_tag": "db-dump/2026-09-14", "selection_policy": campaign.POLICY, "max_age_days": 30})
+        json.dumps(
+            {
+                "release_tag": "db-dump/2026-09-14",
+                "selection_policy": campaign.POLICY,
+                "max_age_days": 30,
+            }
+        )
     )
     monkeypatch.setattr(
-        campaign, "wheel_identity", lambda path: {"wheel_sha256": "a" * 64, "packages": {"aisimulate": "0.12.0"}}
+        campaign,
+        "wheel_identity",
+        lambda path: {"wheel_sha256": "a" * 64, "packages": {"aisimulate": "0.12.0"}},
     )
 
     def predictor(point, timeout):
@@ -210,7 +258,12 @@ def artifact(tmp_path, monkeypatch):
             "aisimulate_status": "success",
             "aisimulate_runner": "aisimulate.engine_replay",
         }
-        return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": "0.10.0"}
+        return {
+            "id": point["id"],
+            "outcome": "evaluated",
+            "row": row,
+            "backend_version": "0.10.0",
+        }
 
     monkeypatch.setattr(campaign, "run_child", predictor)
     out = tmp_path / "public"
@@ -244,7 +297,10 @@ def artifact(tmp_path, monkeypatch):
 
 def archive(summary, *, qualification=None, extra=None):
     data = campaign.encoded(summary)
-    q = qualification or {**summary["snapshot"]["campaign"], "summary_sha256": hashlib.sha256(data).hexdigest()}
+    q = qualification or {
+        **summary["snapshot"]["campaign"],
+        "summary_sha256": hashlib.sha256(data).hexdigest(),
+    }
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as z:
         z.writestr("summary.json", data)
@@ -283,7 +339,16 @@ def test_untrusted_wrong_attempt_or_failed_producer_rejected(artifact, field, va
 
 
 @pytest.mark.parametrize(
-    "change", ["raw", "raw_nested", "incomplete", "mixed_revision", "unknown_outcome", "digest", "extra_file"]
+    "change",
+    [
+        "raw",
+        "raw_nested",
+        "incomplete",
+        "mixed_revision",
+        "unknown_outcome",
+        "digest",
+        "extra_file",
+    ],
 )
 def test_unqualified_or_unsanitized_artifact_rejected(artifact, change):
     summary, run = artifact
@@ -329,12 +394,22 @@ def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, t
 
 
 def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_raw_artifacts():
-    workflow = yaml.load((ROOT / ".github/workflows/e2e-accuracy.yml").read_text(), Loader=yaml.BaseLoader)
-    assert workflow["on"]["workflow_run"] == {"workflows": ["Nightly CI"], "types": ["completed"], "branches": ["main"]}
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/e2e-accuracy.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert workflow["on"]["workflow_run"] == {
+        "workflows": ["Nightly CI"],
+        "types": ["completed"],
+        "branches": ["main"],
+    }
     assert "pull_request" not in workflow["on"]
     assert "continue-on-error" not in workflow["jobs"]["campaign"]
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
     assert len(uploads) == 1 and "if" not in uploads[0]
+    assert uploads[0]["with"]["overwrite"] == "true"
+    wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
+    assert wheel_upload["with"]["overwrite"] == "true"
     assert set(uploads[0]["with"]["path"].splitlines()) == {
         "${{ runner.temp }}/accuracy-public/summary.json",
         "${{ runner.temp }}/accuracy-public/qualification.json",
