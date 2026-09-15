@@ -661,21 +661,21 @@ compatibility command or SDK when power is a required analysis result.
 ### 4.11 Detailed serving reports
 
 Use `--detail` to select diagnostics for a concrete AISimulate prediction. For example, the AIC
-fixed-pass inspection from [section 5.3.2](#detailed-diagnostics) uses:
+aggregated estimate from [section 5.3.2](#detailed-diagnostics) uses:
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,energy,source
+  --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,source
 ```
 
 To inspect the serving workload in `prediction.yaml` from section 3.1, run:
 
 ```bash
 aisimulate predict -c prediction.yaml \
-  --detail memory,time,energy,source --output-dir ./prediction-detail
+  --detail memory,time,source --output-dir ./prediction-detail
 ```
 
 **Result to inspect:** the terminal contains bounded detail tables; `prediction-detail/prediction.json`
@@ -684,7 +684,7 @@ or select `--detail all` to include the additional summary section. `--detail-to
 only the number of operations printed per phase in table output. Inspect a saved recommendation
 by passing its YAML to this same `predict` command.
 
-These commands inspect different workloads: AIC reports the requested fixed batch, while AISimulate
+These commands inspect different workloads: AIC estimates the specified operating point, while AISimulate
 reports the configured serving replay. Memory describes each role's initial rank-local capacity estimate before native
 adjustments such as FPM coverage limits; timing, energy, and source describe native replay operation evidence when available.
 Requested sections explicitly identify missing evidence. SOL comparisons and fixed-pass equivalence
@@ -835,17 +835,18 @@ Summary power and energy detail have separate absence messages. In static modes,
 can print `Energy Breakdown` followed by `<no energy data>` when operation-energy data is absent;
 the summary's `Power (per GPU): unavailable` describes the gated wattage value.
 
-Keep the compatibility command when these reports are required:
+Use the compatibility command to inspect memory, timing, and data sources in the default
+aggregated estimate mode:
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,energy,source
+  --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail memory,time,source
 ```
 
-**Result to inspect:** memory component totals, per-operation timing and energy, and data-source
+**Result to inspect:** memory component totals, per-operation timing, and data-source
 breakdowns in the terminal. AISimulate supplies selectable sections, durable structured output,
 and explicit unavailable results. Its replay reports identify their workload and aggregation scope;
 serving metrics do not establish fixed-batch or SOL equivalence.
