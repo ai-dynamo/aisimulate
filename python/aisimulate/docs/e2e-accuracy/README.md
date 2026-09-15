@@ -62,17 +62,18 @@ snapshot updates and newly created release branches. It imports **only JSON**
 from release branches, never their HTML or JavaScript. Deleted branches disappear
 from the next catalog built with freshly fetched refs.
 Pages also consumes validated artifacts from the **E2E Accuracy Matrix** workflow.
-That workflow runs after Nightly CI completes and reuses its exact amd64 wheel
-for both predictors. A successful accuracy campaign triggers Pages publication.
+That workflow runs daily and uses one exact amd64 wheel for both predictors.
+A successful accuracy campaign triggers Pages publication.
 The daily Pages build itself only republishes available evidence.
 
 ## Automated accuracy campaigns
 
-The workflow is `.github/workflows/e2e-accuracy.yml`. It has its own success/failure
-status and does not gate Nightly CI or release staging. Because it starts on
-Nightly CI completion, a nightly waiting for staging approval also delays this
-automatic campaign. A nightly without a successful amd64 artifact produces no
-new accuracy snapshot. The previous validated snapshot remains available.
+The workflow is `.github/workflows/e2e-accuracy.yml`, scheduled at **10:17 UTC
+daily**. It evaluates that run's main SHA with its own success/failure status.
+It reuses an available amd64 artifact from a successful build job at the same SHA,
+even if Nightly CI is still waiting for staging approval. Otherwise, it builds
+one wheel for that revision. Accuracy runs independently of release staging;
+failed campaigns preserve the previous validated snapshot.
 
 Manual execution uses the workflow on **main**, with an explicit evaluated
 branch and full source SHA:
@@ -84,7 +85,7 @@ gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
 ```
 
 The SHA must belong to `main` or the selected `release/*` branch. Manual runs build
-one wheel from that revision; nightly runs verify the existing wheel's checksums
+one wheel from that revision. Reused nightly wheels require matching checksums
 and producer provenance. The main-branch campaign code checks both the installed
 legacy CLI and native runtime against that wheel. Historical release revisions
 must support these public APIs and the manylinux builder; an incompatible revision

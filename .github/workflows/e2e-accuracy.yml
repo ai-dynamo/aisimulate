@@ -3,10 +3,9 @@
 name: E2E Accuracy Matrix
 
 on:
-  workflow_run:
-    workflows: [Nightly CI]
-    types: [completed]
-    branches: [main]
+  schedule:
+    # After the 08:00 UTC release build, without waiting for staging approval.
+    - cron: "17 10 * * *"
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -23,7 +22,7 @@ permissions:
   contents: read
 
 # Every completed campaign keeps its own provenance; never cancel a release
-# evaluation merely because a main nightly completes.
+# evaluation merely because a scheduled main campaign starts.
 concurrency:
   group: e2e-accuracy-${{ github.run_id }}
   cancel-in-progress: false
@@ -53,25 +52,36 @@ jobs:
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
-            if (context.eventName === 'workflow_run') {
-              const run = context.payload.workflow_run;
-              if (run.repository.full_name !== context.repo.owner + '/' + context.repo.repo ||
-                  run.head_repository.full_name !== run.repository.full_name ||
-                  run.event !== 'schedule' || run.head_branch !== 'main' ||
-                  run.path !== '.github/workflows/nightly-ci.yml') {
-                throw new Error('Untrusted nightly producer');
-              }
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-                ...context.repo, run_id: run.id, filter: 'latest', per_page: 100,
-              });
-              if (!jobs.some(job => job.name === 'Build artifacts (amd64)' && job.conclusion === 'success')) {
-                core.notice('Nightly has no completed amd64 wheel; retain the prior accuracy snapshot.');
-                core.setOutput('run', 'false');
-                return;
-              }
-              sha = run.head_sha;
+            if (context.eventName === 'schedule') {
+              sha = context.sha;
               branch = 'main';
-              nightlyRun = String(run.id);
+              const {data} = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'nightly-ci.yml', head_sha: sha,
+                branch: 'main', event: 'schedule', per_page: 10,
+              });
+              for (const run of data.workflow_runs) {
+                if (run.head_sha !== sha || run.head_branch !== 'main' || run.event !== 'schedule' ||
+                    run.path !== '.github/workflows/nightly-ci.yml' ||
+                    run.repository.full_name !== context.repo.owner + '/' + context.repo.repo ||
+                    run.head_repository.full_name !== run.repository.full_name) {
+                  throw new Error('Untrusted nightly producer');
+                }
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                  ...context.repo, run_id: run.id, filter: 'latest', per_page: 100,
+                });
+                if (!jobs.some(job => job.name === 'Build artifacts (amd64)' && job.conclusion === 'success')) {
+                  continue;
+                }
+                const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64' && !artifact.expired)) {
+                  nightlyRun = String(run.id);
+                  break;
+                }
+              }
+              core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
+                'No reusable wheel for this main SHA; build the exact revision.');
             }
             if (!/^[0-9a-f]{40}$/.test(sha || '') ||
                 !(branch === 'main' || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch || ''))) {
@@ -117,7 +127,7 @@ jobs:
           test -z "$(git -C source status --porcelain)"
       - uses: ./.github/actions/setup-manylinux-python-rust
         if: needs.resolve.outputs.nightly-run == ''
-      - name: Build a manual revision's wheel
+      - name: Build the exact revision when no reusable wheel exists
         if: needs.resolve.outputs.nightly-run == ''
         run: |
           python -m pip install 'maturin>=1.12,<2'

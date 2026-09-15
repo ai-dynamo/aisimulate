@@ -21,6 +21,7 @@ on:
       - "tests/test_e2e_accuracy_nightly.py"
       - "tests/test_e2e_accuracy_overview.py"
       - "tests/test_e2e_accuracy_ui.mjs"
+      - "tests/test_e2e_accuracy_workflow.mjs"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -85,7 +86,7 @@ jobs:
         with:
           node-version: "22"
       - name: Test accuracy interactions
-        run: node --test tests/test_e2e_accuracy_ui.mjs
+        run: node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

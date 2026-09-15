@@ -178,7 +178,7 @@ def public_contract(summary):
 
 def validate_artifact(archive: bytes, run: dict) -> dict:
     if (
-        run.get("event") not in {"workflow_run", "workflow_dispatch"}
+        run.get("event") not in {"schedule", "workflow_dispatch"}
         or run.get("head_branch") != "main"
         or run.get("path") != WORKFLOW
         or run.get("conclusion") != "success"
@@ -335,7 +335,7 @@ def prepare(repo: Path, output: Path) -> None:
     for listed in runs:
         run = api(f"actions/runs/{listed['id']}")
         if (
-            run["event"] not in {"workflow_run", "workflow_dispatch"}
+            run["event"] not in {"schedule", "workflow_dispatch"}
             or run["path"] != WORKFLOW
             or run["head_repository"]["full_name"] != REPO
             or not ancestor(repo, run["head_sha"], "origin/main")

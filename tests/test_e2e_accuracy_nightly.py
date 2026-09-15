@@ -285,7 +285,7 @@ def artifact(tmp_path, monkeypatch):
     run = {
         "id": 123,
         "run_attempt": 1,
-        "event": "workflow_run",
+        "event": "schedule",
         "head_branch": "main",
         "path": publish.WORKFLOW,
         "conclusion": "success",
@@ -398,11 +398,8 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
         (ROOT / ".github/workflows/e2e-accuracy.yml").read_text(),
         Loader=yaml.BaseLoader,
     )
-    assert workflow["on"]["workflow_run"] == {
-        "workflows": ["Nightly CI"],
-        "types": ["completed"],
-        "branches": ["main"],
-    }
+    assert workflow["on"]["schedule"] == [{"cron": "17 10 * * *"}]
+    assert "workflow_run" not in workflow["on"]
     assert "pull_request" not in workflow["on"]
     assert "continue-on-error" not in workflow["jobs"]["campaign"]
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
