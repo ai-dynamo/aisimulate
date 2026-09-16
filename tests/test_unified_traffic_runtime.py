@@ -105,6 +105,82 @@ def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     assert [row["input_length"] for row in records[:3]] == [8, 18, 28]
 
 
+@pytest.mark.parametrize("interval", [None, 0, 2], ids=["default", "disabled", "two_rounds"])
+def test_sglang_prefill_decode_interval_reaches_native_scheduler(tmp_path, interval) -> None:
+    trace = tmp_path / "interval.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {"request_id": "running", "timestamp": 0, "input_length": 8, "output_length": 6, "hash_ids": [1]},
+                {"request_id": "waiting", "timestamp": 0.5, "input_length": 8, "output_length": 2, "hash_ids": [2]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    engine = _engine()
+    engine["backend"] = "sglang"
+    if interval is not None:
+        engine["workers"]["aggregated"]["scheduler"] = {"prefill_decode_interval": interval}
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake", "block_size": 8},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    running, waiting = sorted(report.metadata["native_report"]["per_request"], key=lambda row: row["arrival_time_ms"])
+
+    # Both forward types take exactly 1 ms. The second request arrives during
+    # the first EXTEND. With N=2, decode rounds occupy [1,2] and [2,3] before
+    # the waiting request's EXTEND at [3,4]. With N=0, it extends at [1,2]
+    # and the existing request's first decode instead occupies [2,3].
+    assert running["first_token_ms"] == pytest.approx(1.0)
+    assert waiting["arrival_time_ms"] == pytest.approx(0.5)
+    assert waiting["first_admit_ms"] == pytest.approx(3.0 if interval else 1.0)
+    assert waiting["first_token_ms"] == pytest.approx(4.0 if interval else 2.0)
+    assert running["ttst_ms"] == pytest.approx(1.0 if interval else 2.0)
+    assert (running["output_length"], waiting["output_length"]) == (6, 2)
+
+
+@pytest.mark.parametrize("seeded", [False, True], ids=["fresh", "completed_prior_wave"])
+def test_sglang_interval_idle_tail_does_not_relax_later_kv_admission(tmp_path, seeded) -> None:
+    rows = [{"timestamp": 0, "input_length": 4, "output_length": 1, "hash_ids": [1] * 4}] if seeded else []
+    rows += [
+        {"timestamp": 100, "input_length": 4, "output_length": 200, "hash_ids": [2] * 4},
+        {"timestamp": 100.5, "input_length": 4, "output_length": 106, "hash_ids": [3] * 4},
+    ]
+    trace = tmp_path / "interval-idle-pressure.jsonl"
+    trace.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    engine = _engine()
+    engine["backend"] = "sglang"
+    worker = engine["workers"]["aggregated"]
+    worker["scheduler"] = {"max_sequences": 2, "prefill_decode_interval": 20}
+    worker["kv_cache"] = {
+        "block_size": 1,
+        "prefix_caching": False,
+        "capacity": {"type": "fixed", "blocks": 256},
+    }
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake", "block_size": 1},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    waiting = max(report.metadata["native_report"]["per_request"], key=lambda row: row["arrival_time_ms"])
+    # With the normal reservation ratio the first request holds enough KV budget
+    # to keep the second waiting until t=300. The trace reader normalizes its
+    # origin, so compare delays. A completed earlier wave and its idle cooldown
+    # must not lower that reservation and admit the second request at t=121.
+    assert waiting["first_admit_ms"] - waiting["arrival_time_ms"] == pytest.approx(199.5)
+    assert report.metrics["completed_requests"] == len(rows)
+
+
 def test_engine_stack_runs_mooncake_delta() -> None:
     report = _run(
         {

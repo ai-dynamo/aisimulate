@@ -166,6 +166,10 @@ pub enum SameTimestampRetry {
     NotApplicable,
     /// Internal scheduler state changed and another pass may expose work.
     Retry,
+    /// A finite scheduler countdown advanced, with this many blocked rounds
+    /// left after the pass. Drivers can validate strict decrease instead of
+    /// imposing the generic convergence retry limit on a configured interval.
+    Countdown { remaining: usize },
     /// The rank's internal state no longer changes at this timestamp.
     Exhausted,
 }
@@ -295,6 +299,26 @@ pub trait RankEngine: Sized {
     /// `wave_step` starts at zero and resets after every rank drains. The
     /// default is a no-op for rank engines without group-step scheduling.
     fn prepare_group_pass(&mut self, _wave_step: u64, _dp_size: NonZeroU32) {}
+
+    /// Whether this rank scheduled an EXTEND/prefill in the prepared pass.
+    /// Reset the observation in `prepare_group_pass`, including for idle ranks.
+    /// Only backends that consume synchronized prefill feedback need report it.
+    fn prefill_in_pass(&self) -> bool {
+        false
+    }
+
+    /// Whether this rank had a model forward, even with zero modeled duration.
+    /// Backends consuming group idle feedback override this for decode work too.
+    fn model_work_in_pass(&self) -> bool {
+        self.prefill_in_pass()
+    }
+
+    /// Receive the group-wide prefill observation after all ranks have selected
+    /// their work. Called once on every rank, including non-executing siblings,
+    /// so the observation affects the next round without rank-order dependence.
+    /// `any_rank_ran_model` distinguishes an entirely idle group from a local
+    /// idle rank participating in a peer's forward, independent of modeled time.
+    fn finish_group_pass(&mut self, _any_rank_prefilled: bool, _any_rank_ran_model: bool) {}
 
     /// Eagerly commit one non-preemptive pass.
     fn execute_pass(
