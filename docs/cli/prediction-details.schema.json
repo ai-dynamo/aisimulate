@@ -739,7 +739,6 @@
           "enum": [
             "available",
             "withheld",
-            "unsupported",
             "not_observed",
             "missing"
           ]
@@ -843,25 +842,6 @@
           "if": {
             "properties": {
               "publication_status": {
-                "const": "unsupported"
-              }
-            },
-            "required": [
-              "publication_status"
-            ]
-          },
-          "then": {
-            "properties": {
-              "power_coverage": {
-                "type": "null"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "publication_status": {
                 "const": "not_observed"
               }
             },
@@ -872,10 +852,7 @@
           "then": {
             "properties": {
               "power_coverage": {
-                "enum": [
-                  0,
-                  null
-                ]
+                "const": 0
               }
             }
           }
