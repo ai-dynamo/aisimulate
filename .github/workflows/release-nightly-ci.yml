@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: Release Nightly CI
+name: Release branch nightly CI
 
 on:
   schedule:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   discover:
-    name: Discover and pin release branches
+    name: Discover release branches and record their commit SHAs
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10

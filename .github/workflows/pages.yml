@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   workflow_run:
     # Retain the old main workflow name for runs started before the rename.
-    workflows: ["FPE Support Matrix", "Main Nightly CI", "Release Nightly CI", "Nightly CI"]
+    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]
     types: [completed]
     branches: [main, 'release/**']
   pull_request:
