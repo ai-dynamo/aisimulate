@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 # Every completed campaign keeps its own provenance; never cancel a release
-# evaluation merely because a scheduled main campaign starts.
+# evaluation merely because a scheduled campaign starts.
 concurrency:
   group: e2e-accuracy-${{ github.run_id }}
   cancel-in-progress: false
@@ -37,10 +37,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      run: ${{ steps.source.outputs.run }}
-      sha: ${{ steps.source.outputs.sha }}
-      branch: ${{ steps.source.outputs.branch }}
-      nightly-run: ${{ steps.source.outputs.nightly-run }}
+      matrix: ${{ steps.source.outputs.matrix }}
     steps:
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         id: source
@@ -49,6 +46,7 @@ jobs:
           EVALUATED_BRANCH: ${{ inputs.branch }}
         with:
           script: |
+            const {createHash} = require('node:crypto');
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
@@ -83,171 +81,42 @@ jobs:
               core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
                 'No reusable wheel for this main SHA; build the exact revision.');
             }
-            if (!/^[0-9a-f]{40}$/.test(sha || '') ||
-                !(branch === 'main' || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch || ''))) {
-              throw new Error('Specify a full source SHA and main or release/* branch');
+            const entries = [{branch, sha, nightly_run: nightlyRun}];
+            if (context.eventName === 'schedule') {
+              const branches = await github.paginate(github.rest.repos.listBranches, {
+                ...context.repo, per_page: 100,
+              });
+              for (const release of branches.filter(item => item.name.startsWith('release/'))
+                .sort((a, b) => a.name.localeCompare(b.name))) {
+                entries.push({branch: release.name, sha: release.commit.sha, nightly_run: ''});
+              }
             }
-            core.setOutput('run', 'true');
-            core.setOutput('sha', sha);
-            core.setOutput('branch', branch);
-            core.setOutput('nightly-run', nightlyRun);
+            if (entries.length > 256) throw new Error('Accuracy matrix exceeds the 256-job limit');
+            const keys = new Set();
+            for (const entry of entries) {
+              if (!/^[0-9a-f]{40}$/.test(entry.sha || '') ||
+                  !(entry.branch === 'main' || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(entry.branch || ''))) {
+                throw new Error('Specify a full source SHA and main or release/* branch');
+              }
+              entry.artifact_key = createHash('sha256').update(entry.branch).digest('hex').slice(0, 16);
+              if (keys.has(entry.artifact_key)) throw new Error('Duplicate accuracy branch artifact key');
+              keys.add(entry.artifact_key);
+            }
+            core.setOutput('matrix', JSON.stringify({include: entries}));
 
-  wheel:
-    name: Prepare exact accuracy wheel
+  branches:
+    name: E2E accuracy (${{ matrix.branch }})
     needs: resolve
-    if: needs.resolve.outputs.run == 'true'
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/e2e-accuracy-branch.yml
     permissions:
       contents: read
       actions: read
-    container:
-      # Same manylinux builder as the FPE matrix.
-      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
-    outputs:
-      sha256: ${{ steps.verify.outputs.sha256 }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-          path: source
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Verify source belongs to the evaluated branch
-        env:
-          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
-          EVALUATED_BRANCH: ${{ needs.resolve.outputs.branch }}
-        run: |
-          test "$(git -C source rev-parse HEAD)" = "${EXPECTED_SHA}"
-          git -C source merge-base --is-ancestor "${EXPECTED_SHA}" "refs/remotes/origin/${EVALUATED_BRANCH}"
-          test -z "$(git -C source status --porcelain)"
-      - uses: ./.github/actions/setup-manylinux-python-rust
-        if: needs.resolve.outputs.nightly-run == ''
-      - name: Build the exact revision when no reusable wheel exists
-        if: needs.resolve.outputs.nightly-run == ''
-        run: |
-          python -m pip install 'maturin>=1.12,<2'
-          python source/scripts/build_manylinux_wheel.py --output-dir "${RUNNER_TEMP}/accuracy-wheel"
-          test -z "$(git -C source status --porcelain)"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: needs.resolve.outputs.nightly-run != ''
-        with:
-          name: nightly-dist-amd64
-          path: ${{ runner.temp }}/accuracy-wheel
-          run-id: ${{ needs.resolve.outputs.nightly-run }}
-          github-token: ${{ github.token }}
-      - name: Verify wheel checksum and nightly producer revision
-        id: verify
-        env:
-          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
-          NIGHTLY_RUN: ${{ needs.resolve.outputs.nightly-run }}
-        run: |
-          /opt/python/cp312-cp312/bin/python - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          directory = Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel'
-          wheels = list(directory.glob('aisimulate-*.whl'))
-          if len(wheels) != 1:
-              raise SystemExit('expected one unified wheel')
-          wheel = wheels[0]
-          digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-          if os.environ['NIGHTLY_RUN']:
-              provenance = json.loads((directory / 'provenance.json').read_text())
-              if (provenance['commit'] != os.environ['EXPECTED_SHA'] or
-                  provenance['repository'] != 'ai-dynamo/aisimulate' or
-                  provenance['event'] != 'schedule' or provenance['ref'] != 'refs/heads/main' or
-                  provenance['arch'] != 'amd64' or provenance['artifacts'][wheel.name] != digest):
-                  raise SystemExit('nightly wheel provenance mismatch')
-              checksums = dict(line.split(maxsplit=1)[::-1] for line in (directory / 'SHA256SUMS.txt').read_text().splitlines())
-              for name in (wheel.name, 'provenance.json'):
-                  if hashlib.sha256((directory / name).read_bytes()).hexdigest() != checksums[name]:
-                      raise SystemExit('nightly artifact checksum mismatch')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              stream.write(f'sha256={digest}\n')
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: e2e-accuracy-wheel
-          path: ${{ runner.temp }}/accuracy-wheel/aisimulate-*.whl
-          overwrite: true
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
-  campaign:
-    name: Run and qualify E2E accuracy
-    needs: [resolve, wheel]
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 360
-    container:
-      # PostgreSQL 18 client reads the upstream custom dump without a server.
-      image: postgres:18-bookworm@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af
-    env:
-      OPENBLAS_NUM_THREADS: '1'
-      OMP_NUM_THREADS: '1'
-      RAYON_NUM_THREADS: '1'
-      TOKENIZERS_PARALLELISM: 'false'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Install the CPU campaign environment
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv zstd libgomp1
-          python3 -m venv "${RUNNER_TEMP}/accuracy-venv"
-          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: e2e-accuracy-wheel
-          path: ${{ runner.temp }}/accuracy-wheel
-      - name: Install the exact wheel shared by both predictors
-        env:
-          WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
-        run: |
-          echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
-          python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
-          python -m pip check
-      - name: Fetch checksum-pinned public measurements
-        run: |
-          python scripts/fetch_accuracy_measurements.py \
-            --manifest .github/e2e-accuracy-dataset.json --output "${RUNNER_TEMP}/accuracy-measurements"
-      - name: Run both predictors with bounded CPU workers and qualify the complete cohort
-        env:
-          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
-          EVALUATED_BRANCH: ${{ needs.resolve.outputs.branch }}
-        run: |
-          python scripts/run_e2e_accuracy.py \
-            --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
-            --manifest .github/e2e-accuracy-dataset.json \
-            --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
-            --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
-            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public"
-      - name: Report advisory accuracy and coverage
-        run: |
-          python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
-          import json, os
-          from pathlib import Path
-          summary = json.loads((Path(os.environ['RUNNER_TEMP']) / 'accuracy-public/summary.json').read_text())
-          print('## E2E accuracy (advisory)\n')
-          print('Evaluated revision:', summary['snapshot']['evaluated_revision'])
-          print('Measurements:', summary['snapshot']['release_tag'])
-          print('\n```json\n' + json.dumps(summary['totals'], indent=2) + '\n```')
-          print('\nCampaign outcomes:', summary['snapshot']['campaign']['outcomes'])
-          print('\nAccuracy values do not gate release staging. Incomplete campaigns cannot publish.')
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: e2e-accuracy-web
-          overwrite: true
-          path: |
-            ${{ runner.temp }}/accuracy-public/summary.json
-            ${{ runner.temp }}/accuracy-public/qualification.json
-          if-no-files-found: error
-          retention-days: 90
+    with:
+      sha: ${{ matrix.sha }}
+      branch: ${{ matrix.branch }}
+      artifact_key: ${{ matrix.artifact_key }}
+      nightly_run: ${{ matrix.nightly_run }}

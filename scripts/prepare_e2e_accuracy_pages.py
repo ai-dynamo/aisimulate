@@ -177,16 +177,8 @@ def public_contract(summary):
     return _accuracy_summary(json.dumps(summary, allow_nan=False))
 
 
-def validate_artifact(archive: bytes, run: dict) -> dict:
-    if (
-        run.get("event") not in {"schedule", "workflow_dispatch"}
-        or run.get("head_branch") != "main"
-        or run.get("path") != WORKFLOW
-        or run.get("conclusion") != "success"
-        or run.get("repository", {}).get("full_name") != REPO
-        or run.get("head_repository", {}).get("full_name") != REPO
-    ):
-        raise ValueError("untrusted accuracy workflow run")
+def unpack_artifact(archive: bytes) -> dict:
+    """Validate the public payload before using any of its provenance."""
     with zipfile.ZipFile(io.BytesIO(archive)) as z:
         infos = z.infolist()
         if (
@@ -213,10 +205,8 @@ def validate_artifact(archive: bytes, run: dict) -> dict:
         or q["status"] != "complete"
         or q["advisory"] is not True
         or q["selection_policy"] != "latest-complete-config-run-v1"
-        or q["run_id"] != str(run["id"])
-        or q["run_attempt"] != str(run["run_attempt"])
     ):
-        raise ValueError("campaign does not belong to this completed run attempt")
+        raise ValueError("campaign is not complete")
     for field in (
         "wheel_sha256",
         "dataset_sha256",
@@ -268,6 +258,54 @@ def validate_artifact(archive: bytes, run: dict) -> dict:
     return summary
 
 
+def artifact_key(branch: str) -> str:
+    return hashlib.sha256(branch.encode()).hexdigest()[:16]
+
+
+class UnqualifiedBranch(ValueError):
+    """A branch without a successful qualification job cannot publish."""
+
+
+def trusted_run(run: dict) -> bool:
+    return (
+        run.get("event") in {"schedule", "workflow_dispatch"}
+        and run.get("head_branch") == "main"
+        and run.get("path") == WORKFLOW
+        and run.get("conclusion") in {"success", "failure"}
+        and run.get("repository", {}).get("full_name") == REPO
+        and run.get("head_repository", {}).get("full_name") == REPO
+    )
+
+
+def validate_artifact(archive: bytes, run: dict, *, artifact_name="e2e-accuracy-web", jobs=None) -> dict:
+    if not trusted_run(run):
+        raise ValueError("untrusted accuracy workflow run")
+    summary = unpack_artifact(archive)
+    q = summary["snapshot"]["campaign"]
+    if q["run_id"] != str(run["id"]) or q["run_attempt"] != str(run["run_attempt"]):
+        raise ValueError("campaign does not belong to this completed run attempt")
+    if artifact_name == "e2e-accuracy-web":
+        # Legacy single-branch producers qualified the entire run.
+        if run["conclusion"] != "success":
+            raise UnqualifiedBranch("legacy accuracy workflow did not succeed")
+    else:
+        key = artifact_key(q["branch"])
+        if artifact_name != "e2e-accuracy-web-" + key:
+            raise ValueError("accuracy artifact name does not match its branch")
+        expected = f"Qualify E2E accuracy ({key})"
+        matches = [job for job in (jobs or []) if job["name"] == expected or job["name"].endswith(" / " + expected)]
+        if (
+            run.get("status") != "completed"
+            or len(matches) != 1
+            or matches[0].get("status") != "completed"
+            or matches[0].get("conclusion") != "success"
+            or matches[0].get("run_id") != run["id"]
+            or matches[0].get("head_sha") != run["head_sha"]
+        ):
+            raise UnqualifiedBranch("branch qualification job did not succeed in this attempt")
+    return summary
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -299,6 +337,17 @@ def api(path: str, *, binary=False):
     return body if binary else strict_json(body)
 
 
+def api_items(path: str, key: str) -> list:
+    items = []
+    page = 1
+    while True:
+        batch = api(f"{path}?per_page=100&page={page}")[key]
+        items.extend(batch)
+        if len(batch) < 100:
+            return items
+        page += 1
+
+
 def ancestor(repo: Path, commit: str, ref: str) -> bool:
     result = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, ref],
@@ -325,9 +374,9 @@ def prepare(repo: Path, output: Path) -> None:
     branches.update(refs)
     selected = {}
     # Ninety-day artifacts outlive ordinary docs pushes. Inspect up to 100
-    # successful campaigns; absent/expired artifacts retain committed evidence.
+    # completed campaigns; absent/expired artifacts retain committed evidence.
     try:
-        runs = api("actions/workflows/e2e-accuracy.yml/runs?status=success&branch=main&per_page=100")["workflow_runs"]
+        runs = api("actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100")["workflow_runs"]
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
@@ -335,35 +384,69 @@ def prepare(repo: Path, output: Path) -> None:
         runs = []
     for listed in runs:
         run = api(f"actions/runs/{listed['id']}")
-        if (
-            run["event"] not in {"schedule", "workflow_dispatch"}
-            or run["path"] != WORKFLOW
-            or run["head_repository"]["full_name"] != REPO
-            or not ancestor(repo, run["head_sha"], "origin/main")
-        ):
+        if not trusted_run(run) or not ancestor(repo, run["head_sha"], "origin/main"):
             continue
-        artifacts = api(f"actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
-        matches = [a for a in artifacts if a["name"] == "e2e-accuracy-web" and not a["expired"]]
-        if not matches:
-            continue
-        if len(matches) != 1:
-            raise ValueError("ambiguous accuracy artifact")
-        summary = validate_artifact(api(f"actions/artifacts/{matches[0]['id']}/zip", binary=True), run)
-        q = summary["snapshot"]["campaign"]
-        branch, commit = q["branch"], q["commit_sha"]
-        if branch not in branches or not ancestor(repo, commit, "origin/" + branch):
-            continue
-        prior = selected.get(branch)
-        if prior:
-            old = prior["snapshot"]["campaign"]
-            if commit == old["commit_sha"] or ancestor(repo, commit, old["commit_sha"]):
+        artifacts = api_items(f"actions/runs/{run['id']}/artifacts", "artifacts")
+        matches = [
+            a
+            for a in artifacts
+            if (a["name"] == "e2e-accuracy-web" or re.fullmatch(r"e2e-accuracy-web-[0-9a-f]{16}", a["name"]))
+            and not a["expired"]
+        ]
+        seen = set()
+        attempts = {}
+        for artifact in matches:
+            data = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
+            q = unpack_artifact(data)["snapshot"]["campaign"]
+            branch, commit = q["branch"], q["commit_sha"]
+            if branch in seen:
+                raise ValueError("ambiguous accuracy branch artifact")
+            seen.add(branch)
+            if artifact["name"] == "e2e-accuracy-web":
+                attempt, jobs = run, None
+            else:
+                number = q["run_attempt"]
+                if (
+                    q["run_id"] != str(run["id"])
+                    or not isinstance(number, str)
+                    or not re.fullmatch(r"[1-9][0-9]*", number)
+                    or int(number) > run["run_attempt"]
+                ):
+                    raise ValueError("invalid campaign run attempt")
+                if number not in attempts:
+                    path = f"actions/runs/{run['id']}/attempts/{number}"
+                    attempt = run if int(number) == run["run_attempt"] else api(path)
+                    if (
+                        attempt["id"] != run["id"]
+                        or attempt["run_attempt"] != int(number)
+                        or attempt["head_sha"] != run["head_sha"]
+                        or not trusted_run(attempt)
+                    ):
+                        raise ValueError("untrusted campaign attempt")
+                    attempts[number] = attempt, api_items(path + "/jobs", "jobs")
+                attempt, jobs = attempts[number]
+            try:
+                summary = validate_artifact(data, attempt, artifact_name=artifact["name"], jobs=jobs)
+            except UnqualifiedBranch as exc:
+                print(f"Skipping {artifact['name']}: {exc}")
                 continue
-            if not ancestor(repo, old["commit_sha"], commit):
-                raise ValueError("incomparable accuracy revisions")
-        selected[branch] = summary
+            if branch not in branches or not ancestor(repo, commit, "origin/" + branch):
+                continue
+            prior = selected.get(branch)
+            if prior:
+                old = prior["snapshot"]["campaign"]
+                if commit == old["commit_sha"]:
+                    if datetime.fromisoformat(q["completed_at"]) <= datetime.fromisoformat(old["completed_at"]):
+                        continue
+                elif ancestor(repo, commit, old["commit_sha"]):
+                    continue
+                elif not ancestor(repo, old["commit_sha"], commit):
+                    raise ValueError("incomparable accuracy revisions")
+            selected[branch] = summary
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ValueError("accuracy output must be empty")
+    written = 0
     for branch, summary in selected.items():
         committed = subprocess.run(
             [
@@ -392,10 +475,11 @@ def prepare(repo: Path, output: Path) -> None:
                     >= datetime.fromisoformat(current["completed_at"])
                 ):
                     continue
-        (output / (hashlib.sha256(branch.encode()).hexdigest()[:16] + ".json")).write_text(
+        (output / (artifact_key(branch) + ".json")).write_text(
             json.dumps(summary, sort_keys=True, allow_nan=False) + "\n"
         )
-    print(f"Prepared {len(selected)} qualified branch accuracy snapshots")
+        written += 1
+    print(f"Prepared {written} qualified branch accuracy snapshots")
 
 
 if __name__ == "__main__":

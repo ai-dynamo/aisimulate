@@ -318,6 +318,8 @@ def artifact(tmp_path, monkeypatch):
     run = {
         "id": 123,
         "run_attempt": 1,
+        "status": "completed",
+        "head_sha": "a" * 40,
         "event": "schedule",
         "head_branch": "main",
         "path": publish.WORKFLOW,
@@ -444,12 +446,23 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     assert workflow["on"]["schedule"] == [{"cron": "17 10 * * *"}]
     assert "workflow_run" not in workflow["on"]
     assert "pull_request" not in workflow["on"]
+    matrix = workflow["jobs"]["branches"]
+    assert matrix["strategy"]["fail-fast"] == "false"
+    assert matrix["strategy"]["max-parallel"] == "2"
+    assert matrix["strategy"]["matrix"] == "${{ fromJSON(needs.resolve.outputs.matrix) }}"
+    assert matrix["uses"] == "./.github/workflows/e2e-accuracy-branch.yml"
+    workflow = yaml.load((ROOT / matrix["uses"]).read_text(), Loader=yaml.BaseLoader)
+    assert set(workflow["on"]) == {"workflow_call"}
     assert "continue-on-error" not in workflow["jobs"]["campaign"]
+    assert workflow["jobs"]["campaign"]["needs"] == "wheel"
+    assert workflow["jobs"]["campaign"]["name"] == "Qualify E2E accuracy (${{ inputs.artifact_key }})"
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
     assert len(uploads) == 1 and "if" not in uploads[0]
     assert uploads[0]["with"]["overwrite"] == "true"
+    assert uploads[0]["with"]["name"] == "e2e-accuracy-web-${{ inputs.artifact_key }}"
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
+    assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
     assert set(uploads[0]["with"]["path"].splitlines()) == {
         "${{ runner.temp }}/accuracy-public/summary.json",
         "${{ runner.temp }}/accuracy-public/qualification.json",
@@ -493,9 +506,9 @@ def test_same_commit_publication_compares_completion_times(
     previous = deepcopy(summary)
     previous["snapshot"]["aisimulate_completed_at"] = previous_time
     responses = {
-        "actions/workflows/e2e-accuracy.yml/runs?status=success&branch=main&per_page=100": {"workflow_runs": [run]},
+        "actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100": {"workflow_runs": [run]},
         "actions/runs/123": run,
-        "actions/runs/123/artifacts?per_page=100": {
+        "actions/runs/123/artifacts?per_page=100&page=1": {
             "artifacts": [{"id": 7, "name": "e2e-accuracy-web", "expired": False}]
         },
         "actions/artifacts/7/zip": archive(summary),
@@ -512,3 +525,222 @@ def test_same_commit_publication_compares_completion_times(
     assert bool(files) == should_publish
     if should_publish:
         assert json.loads(files[0].read_text()) == summary
+
+
+def branch_snapshot(summary, branch, commit, *, attempt=1):
+    result = deepcopy(summary)
+    snapshot = result["snapshot"]
+    revision = {"branch": branch, "commit_sha": commit}
+    snapshot["evaluated_revision"] = revision
+    snapshot["aic_source"].update(revision)
+    snapshot["aic_commit_sha"] = commit
+    snapshot["campaign"].update(revision, run_attempt=str(attempt))
+    return result
+
+
+def qualification_job(run, branch, **changes):
+    return {
+        "name": f"E2E accuracy ({branch}) / Qualify E2E accuracy ({publish.artifact_key(branch)})",
+        "run_id": run["id"],
+        "head_sha": run["head_sha"],
+        "status": "completed",
+        "conclusion": "success",
+        **changes,
+    }
+
+
+def publication_api(monkeypatch, run, snapshots, *, jobs=None, earlier=None):
+    artifacts = [
+        {
+            "id": index,
+            "name": "e2e-accuracy-web-" + publish.artifact_key(s["snapshot"]["campaign"]["branch"]),
+            "expired": False,
+        }
+        for index, s in enumerate(snapshots, 1)
+    ]
+    responses = {
+        "actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100": {"workflow_runs": [run]},
+        f"actions/runs/{run['id']}": run,
+        f"actions/runs/{run['id']}/artifacts?per_page=100&page=1": {"artifacts": artifacts},
+    }
+    responses.update({f"actions/artifacts/{index}/zip": archive(s) for index, s in enumerate(snapshots, 1)})
+    attempts = {str(run["run_attempt"]): run, **(earlier or {})}
+    for number, attempt in attempts.items():
+        path = f"actions/runs/{run['id']}/attempts/{number}"
+        responses[path] = attempt
+        responses[path + "/jobs?per_page=100&page=1"] = {
+            "jobs": (
+                jobs[number]
+                if jobs is not None
+                else [
+                    qualification_job(run, s["snapshot"]["campaign"]["branch"])
+                    for s in snapshots
+                    if s["snapshot"]["campaign"]["run_attempt"] == number
+                ]
+            )
+        }
+    monkeypatch.setattr(publish, "api", lambda path, **kwargs: responses[path])
+    monkeypatch.setattr(publish, "ancestor", lambda *args: True)
+    monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "release/0.12.0\n")
+    monkeypatch.setattr(publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    return responses
+
+
+def prepared_snapshots(tmp_path):
+    return {s["snapshot"]["campaign"]["branch"]: s for p in tmp_path.glob("*.json") if (s := json.loads(p.read_text()))}
+
+
+def test_one_run_publishes_main_and_release_independently(artifact, tmp_path, monkeypatch):
+    summary, run = artifact
+    release = branch_snapshot(summary, "release/0.12.0", "e" * 40)
+    output = tmp_path / "prepared"
+    with monkeypatch.context() as scoped:
+        publication_api(scoped, run, [summary, release])
+        publish.prepare(ROOT, output)
+    expected = {"main": summary, "release/0.12.0": release}
+    assert prepared_snapshots(output) == expected
+    original_git = pages._git
+    monkeypatch.setattr(
+        pages,
+        "_git",
+        lambda repo, *args: "refs/remotes/origin/release/0.12.0"
+        if args[0] == "for-each-ref"
+        else original_git(repo, *args),
+    )
+    site = tmp_path / "site"
+    pages.build_site(ROOT, site, accuracy_refs=True, accuracy_artifacts=output)
+    catalog = json.loads((site / "e2e-accuracy/branches.json").read_text())
+    assert {entry["branch"] for entry in catalog["branches"]} == set(expected)
+    for entry in catalog["branches"]:
+        assert entry["status"] == "evaluated"
+        assert entry["published_from_commit"] is None
+        published = json.loads((site / "e2e-accuracy" / entry["summary_path"]).read_text())
+        assert published == expected[entry["branch"]]
+    assert json.loads((site / "e2e-accuracy/summary.json").read_text()) == summary
+
+
+def test_failed_release_does_not_block_successful_main_publication(artifact, tmp_path, monkeypatch):
+    summary, run = artifact
+    run["conclusion"] = "failure"
+    jobs = {"1": [qualification_job(run, "main"), qualification_job(run, "release/0.12.0", conclusion="failure")]}
+    publication_api(monkeypatch, run, [summary], jobs=jobs)
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {"main": summary}
+
+
+def test_failed_job_retry_preserves_successful_prior_attempt_with_exact_provenance(artifact, tmp_path, monkeypatch):
+    summary, run = artifact
+    earlier = {**run, "conclusion": "failure"}
+    run["run_attempt"] = 2
+    release = branch_snapshot(summary, "release/0.12.0", "e" * 40, attempt=2)
+    publication_api(monkeypatch, run, [summary, release], earlier={"1": earlier})
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {"main": summary, "release/0.12.0": release}
+    assert prepared_snapshots(output)["main"]["snapshot"]["campaign"]["run_attempt"] == "1"
+
+
+@pytest.mark.parametrize("change", ["failed", "missing", "duplicate", "wrong_run", "wrong_sha", "in_progress"])
+def test_artifact_requires_its_own_successful_qualification_job(artifact, tmp_path, monkeypatch, change):
+    summary, run = artifact
+    job = qualification_job(run, "main")
+    jobs = [job]
+    if change == "failed":
+        job["conclusion"] = "failure"
+    elif change == "missing":
+        jobs = [qualification_job(run, "release/0.12.0")]
+    elif change == "duplicate":
+        jobs.append(deepcopy(job))
+    elif change == "wrong_run":
+        job["run_id"] = 999
+    elif change == "wrong_sha":
+        job["head_sha"] = "f" * 40
+    else:
+        job["status"] = "in_progress"
+    publication_api(monkeypatch, run, [summary], jobs={"1": jobs})
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {}
+
+
+@pytest.mark.parametrize(
+    "change", ["branch_name", "duplicate_branch", "future_attempt", "wrong_run", "wrong_attempt_source"]
+)
+def test_matrix_artifacts_reject_ambiguous_or_misattributed_provenance(artifact, tmp_path, monkeypatch, change):
+    summary, run = artifact
+    if change == "future_attempt":
+        summary["snapshot"]["campaign"]["run_attempt"] = "2"
+    elif change == "wrong_run":
+        summary["snapshot"]["campaign"]["run_id"] = "999"
+    elif change == "wrong_attempt_source":
+        run["run_attempt"] = 2
+    responses = publication_api(
+        monkeypatch, run, [summary], earlier={"1": {**run, "run_attempt": 1, "head_sha": "f" * 40}}
+    )
+    artifacts = responses["actions/runs/123/artifacts?per_page=100&page=1"]["artifacts"]
+    if change == "branch_name":
+        artifacts[0]["name"] = "e2e-accuracy-web-" + publish.artifact_key("release/0.12.0")
+    elif change == "duplicate_branch":
+        artifacts.append(deepcopy(artifacts[0]))
+    with pytest.raises(ValueError):
+        publish.prepare(ROOT, tmp_path / "prepared")
+
+
+def test_matrix_publication_paginates_artifacts_and_attempt_jobs(artifact, tmp_path, monkeypatch):
+    summary, run = artifact
+    responses = publication_api(monkeypatch, run, [summary])
+    artifacts = "actions/runs/123/artifacts?per_page=100&page="
+    jobs = "actions/runs/123/attempts/1/jobs?per_page=100&page="
+    responses[artifacts + "2"] = responses[artifacts + "1"]
+    responses[artifacts + "1"] = {"artifacts": [{"name": "unrelated", "expired": False}] * 100}
+    responses[jobs + "2"] = responses[jobs + "1"]
+    responses[jobs + "1"] = {"jobs": [{"name": "unrelated"}] * 100}
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {"main": summary}
+
+
+def test_failed_prior_attempt_requires_that_attempts_successful_branch_job(artifact, tmp_path, monkeypatch):
+    summary, run = artifact
+    earlier = {**run, "conclusion": "failure"}
+    run["run_attempt"] = 2
+    publication_api(
+        monkeypatch,
+        run,
+        [summary],
+        earlier={"1": earlier},
+        jobs={"1": [qualification_job(run, "main", conclusion="failure")], "2": [qualification_job(run, "main")]},
+    )
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_commit_campaign_selection_uses_completion_time_not_run_order(artifact, tmp_path, monkeypatch, reverse):
+    summary, run = artifact
+    summary["snapshot"]["campaign"]["completed_at"] = "2026-09-15T09:00:00Z"
+    summary["snapshot"]["aisimulate_completed_at"] = "2026-09-15T09:00:00Z"
+    newer = deepcopy(summary)
+    newer["snapshot"]["campaign"].update(run_id="124", completed_at="2026-09-15T11:00:00.500000+02:00")
+    newer["snapshot"]["aisimulate_completed_at"] = newer["snapshot"]["campaign"]["completed_at"]
+    newer_run = {**run, "id": 124}
+    responses = publication_api(monkeypatch, run, [summary])
+    runs = [run, newer_run]
+    responses["actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100"]["workflow_runs"] = (
+        runs[::-1] if reverse else runs
+    )
+    responses.update(
+        {
+            "actions/runs/124": newer_run,
+            "actions/runs/124/artifacts?per_page=100&page=1": {
+                "artifacts": [{"id": 2, "name": "e2e-accuracy-web-" + publish.artifact_key("main"), "expired": False}],
+            },
+            "actions/artifacts/2/zip": archive(newer),
+            "actions/runs/124/attempts/1/jobs?per_page=100&page=1": {"jobs": [qualification_job(newer_run, "main")]},
+        }
+    )
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {"main": newer}

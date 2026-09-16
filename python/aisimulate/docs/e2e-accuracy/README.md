@@ -86,18 +86,25 @@ snapshot updates and newly created release branches. It imports **only JSON**
 from release branches, never their HTML or JavaScript. Deleted branches disappear
 from the next catalog built with freshly fetched refs.
 Pages also consumes validated artifacts from the **E2E Accuracy Matrix** workflow.
-That workflow runs daily and uses one exact amd64 wheel for both predictors.
-A successful accuracy campaign triggers Pages publication.
+That workflow runs daily for `main` and every `release/*` branch, using one exact
+amd64 wheel per branch for both predictors. Completed matrix runs trigger Pages,
+which publishes only successfully qualified branch campaigns.
 The daily Pages build itself only republishes available evidence.
 
 ## Automated accuracy campaigns
 
 The workflow is `.github/workflows/e2e-accuracy.yml`, scheduled at **10:17 UTC
-daily**. It evaluates that run's main SHA with its own success/failure status.
-It reuses an available amd64 artifact from a successful build job at the same SHA,
-even if Nightly CI is still waiting for staging approval. Otherwise, it builds
-one wheel for that revision. Accuracy runs independently of release staging;
-failed campaigns preserve the previous validated snapshot.
+daily**. It evaluates the scheduled main SHA and the current head of every
+`release/*` branch discovered at the start of the run. Each matrix entry pins its
+own branch/SHA and runs the reusable `.github/workflows/e2e-accuracy-branch.yml`
+campaign, with at most **two branches at once**. A failed branch does not cancel
+other campaigns; its failure remains visible in the matrix run.
+
+Main reuses an available amd64 artifact from a successful build job at the same
+SHA, even if Nightly CI is still waiting for staging approval. Otherwise, it builds
+one wheel for that revision. Release campaigns build their own exact wheels.
+Accuracy runs independently of release staging. Each successful branch can
+publish while failed branches retain their previous validated evidence.
 
 Manual execution uses the workflow on **main**, with an explicit evaluated
 branch and full source SHA:
@@ -157,13 +164,21 @@ fails without replacing its published evidence.
 
 ### Artifact and publication contract
 
-Only `summary.json` and `qualification.json` are uploaded in `e2e-accuracy-web`,
-retained for 90 days. They record the evaluated branch/commit, wheel/dataset/input/
+Only `summary.json` and `qualification.json` are uploaded in each
+`e2e-accuracy-web-<branch-key>` artifact, retained for 90 days. The branch key is
+the first 16 hexadecimal characters of SHA-256 of the branch name; wheel artifacts
+use the same key to keep branches isolated. They record the evaluated branch/commit, wheel/dataset/input/
 cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
 completion time. Public data contains derived errors and normalized curves.
 
-Pages runs trusted main code and reads only successful main-workflow campaigns.
-It checks the producer event/repository/workflow, run attempt, ZIP members,
+Pages runs trusted main code and accepts a branch artifact only when that branch's
+qualification job succeeded in the artifact's exact run attempt. The matrix run
+may have failed because another branch failed. Rerunning failed jobs can retain
+artifacts from already successful branches; Pages verifies each artifact against
+its original attempt's metadata and jobs. Legacy `e2e-accuracy-web` artifacts still
+require a successful whole workflow run.
+
+Pages checks the producer event/repository/workflow, branch artifact name, ZIP members,
 summary checksum, exact source ancestry, complete coverage, and recursive public
 field allowlist. Branch HTML and JavaScript never come from artifacts. Newer
 evaluated commits supersede older ones; rerunning an older release commit cannot
