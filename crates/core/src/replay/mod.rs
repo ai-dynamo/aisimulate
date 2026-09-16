@@ -163,7 +163,8 @@ pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
 pub use report::TraceCollector;
 pub use report::{
     POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
-    PerRequestRoutingRecord, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
+    PerRequestRoutingRecord, ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics,
+    ReplayPowerDiagnostics, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
     ReplayTerminalStatus, ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds,
     TraceDistributionStats, TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats,
     TracePowerStats, TraceRequestCounts, TraceThroughputStats, TraceTrajectoryStats,
@@ -177,3 +178,7 @@ pub use telemetry::{
     ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
     ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
+
+// Typed power diagnostics are exported by the native Replay/PyO3 engine path.
+// Dynamo's external Python report adapters require their own passthrough and
+// qualification; Rust type re-exports alone do not establish adapter parity.

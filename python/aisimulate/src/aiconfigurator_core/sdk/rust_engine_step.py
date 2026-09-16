@@ -27,6 +27,7 @@ from typing import Any
 
 from aiconfigurator_core.sdk.config import RuntimeConfig
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
+from aiconfigurator_core.sdk.step_estimate import StepEstimate
 
 logger = logging.getLogger(__name__)
 ENGINE_STEP_BACKEND_ENV = "AICONFIGURATOR_ENGINE_STEP_BACKEND"
@@ -656,13 +657,14 @@ def estimate_mixed_step_breakdown_with_rust(
         "context_attention": "context_attention (scaled)",
         "fpm_forward_decode": "generation_attention",
     }
-    per_op_latency_ms, _, per_op_source, fallbacks = _fold_per_op(
+    per_op_latency_ms, per_op_energy_wms, per_op_source, fallbacks = _fold_per_op(
         (public_names.get(entry[0], entry[0]), *entry[1:])
         for group in (shared_ops, ctx_attn_ops, decode_attn_ops)
         for entry in group
     )
     for name in ("context_attention (scaled)", "generation_attention"):
         per_op_latency_ms.setdefault(name, 0.0)
+        per_op_energy_wms.setdefault(name, 0.0)
         per_op_source.setdefault(name, "silicon")
 
     ctx_attention_latency = sum(ctx_latency.values())
@@ -685,6 +687,10 @@ def estimate_mixed_step_breakdown_with_rust(
         "component_latency_ms": component_latency_ms,
         "component_energy_wms": component_energy_wms,
         "per_op_latency_ms": per_op_latency_ms,
+        "per_op_energy_wms": per_op_energy_wms,
+        "covered_latency_ms": sum(
+            entry[1] for group in (shared_ops, ctx_attn_ops, decode_attn_ops) for entry in group if entry[2] > 0
+        ),
         "per_op_source": per_op_source,
         "moe_comm_fallbacks": fallbacks,
     }
@@ -738,16 +744,49 @@ def estimate_decode_step_breakdown_with_rust(
     Python step, with real op names and per-op energies folded from the
     compiled engine's per-op results.
     """
-    handle = _cached_engine_handle(model, database)
-    entries = handle._decode_step_per_op_with_metadata(
-        int(gen_tokens),
-        int(isl),
-        int(osl),
-        gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+    estimate = _estimate_decode_step_with_rust(
+        model,
+        database,
+        gen_tokens=gen_tokens,
+        isl=isl,
+        osl=osl,
+        gen_seq_imbalance_correction_scale=gen_seq_imbalance_correction_scale,
     )
+    return (*estimate.legacy_tuple(), estimate.moe_comm_fallbacks)
+
+
+def _estimate_decode_step_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    gen_tokens: int,
+    isl: int,
+    osl: int,
+    gen_seq_imbalance_correction_scale: float = 1.0,
+) -> StepEstimate:
+    """Retain native decode energy and covered latency for aggregate reporting."""
+    handle = _cached_engine_handle(model, database)
+    try:
+        entries = handle._decode_step_per_op_with_metadata(
+            int(gen_tokens),
+            int(isl),
+            int(osl),
+            gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+        )
+    except ValueError as exc:
+        _reraise_engine_error(exc)
     _note_rust_provenance(handle)
     latency, energy, source, fallbacks = _fold_per_op(entries)
-    return sum(latency.values()), sum(energy.values()), latency, source, fallbacks
+    return StepEstimate(
+        latency_ms=sum(latency.values()),
+        energy_wms=sum(energy.values()),
+        per_op_latency_ms=latency,
+        per_op_energy_wms=energy,
+        per_op_source=source,
+        moe_comm_fallbacks=fallbacks,
+        covered_latency_ms=sum(entry[1] for entry in entries if entry[2] > 0),
+        num_decode_requests=gen_tokens,
+    )
 
 
 def evaluate_context_ops_with_rust(

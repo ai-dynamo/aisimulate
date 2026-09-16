@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -647,7 +647,7 @@ aisimulate predict --config prediction.yaml --detail summary,memory,time \
 | `summary` | Existing serving prediction metrics. |
 | `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
 | `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
-| `all` | The three supported sections above, when evidence exists. |
+| `all` | The three sections above plus the [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
 
 **Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
 implementation, 2026-09-15; simulation results, latency/throughput rounded):
@@ -664,7 +664,8 @@ implementation, 2026-09-15; simulation results, latency/throughput rounded):
 | `memory` | Estimated GPU blocks per rank | 29,486 |
 
 Memory has `stage: before_native_capacity_adjustments`. Both ranks use the same estimate;
-the table does not sum capacity across TP=2. No power/energy or per-operation report is emitted.
+the table does not sum capacity across TP=2. The command selects summary, memory, and time;
+an energy breakdown is requested separately as shown in [section 4.11](#411-power-and-energy-analysis).
 For terminal and JSON examples, including a skipped memory section, see
 [Captured detail output](user-guide.md#captured-detail-output).
 
@@ -674,7 +675,8 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
 Analytical EPD retains available language-worker estimates and identifies the missing encoder
 component breakdown; it does not claim a complete EPD memory report.
-`energy` and `source` are unsupported selectors and are rejected; `all` does not request them.
+`source` remains unsupported and is rejected. `energy` is supported, and `all` includes it;
+see [section 4.11](#411-power-and-energy-analysis) for energy evidence and availability.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).
 
@@ -688,14 +690,17 @@ per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 
 ### 4.11 Power and energy analysis
 
-**Migration status: summary power implemented; energy detail follows separately.** Normal
-`predict` and `recommend` expose power and coverage through the engine stack. Numeric watts
-require qualifying operation-energy data; the B200/TRT-LLM example below requires both the
-[CLI implementation (#142)](https://github.com/ai-dynamo/aisimulate/pull/142) and
-[power dataset (#212)](https://github.com/ai-dynamo/aisimulate/pull/212).
-`predict --detail energy` is added by [#144](https://github.com/ai-dynamo/aisimulate/pull/144).
-The existing `summary`, `memory`, and `time` details remain documented in
-[section 4.10](#410-inspect-prediction-details).
+**Migration status: implemented by the power stack.** Normal engine prediction and
+recommendation summaries always show both power fields; `--detail energy` adds a breakdown.
+Section 4.10 retains the captured output from the initial three-section detail implementation.
+This extension adds `energy` and includes it in `--detail all`; `source` remains unsupported.
+The native engine runner exports phase and operation evidence with op-level timing on supported
+topologies. The external Dynamo Python adapter's diagnostics export is not qualified by this
+stack; missing exports receive an explicit unavailable reason.
+
+Numeric watts require qualifying operation-energy data. The B200/TRT-LLM example below
+requires the [power dataset from #212](https://github.com/ai-dynamo/aisimulate/pull/212)
+alongside the summary implementation from #142.
 
 #### 4.11.1 Summary power without energy details
 
@@ -708,8 +713,10 @@ aiconfigurator cli estimate \
   --batch-size 64 --tp-size 2 --isl 1024 --osl 128
 ```
 
-**Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
-modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
+**Recorded result:** `Power (per GPU): 660.4 W`, without a detail flag. Omitting
+`--estimate-mode` uses AIC's default `agg` estimator, corresponding to the aggregated
+serving configuration below. The bundled AIC reporting fix in #144 preserves energy
+evidence through this default path and supports the breakdown in 4.11.2.
 
 **After — AISimulate summary with modeled power from operation-energy evidence.** Save as
 `power-prediction.yaml`. This uses the same traffic shape as section 3.1, with the
@@ -735,8 +742,8 @@ engine:
 aisimulate predict --stack engine --config power-prediction.yaml --output-dir ./power-summary
 ```
 
-**Recorded result:** a local integration of #142 at `7fdd1193` and #212 at `3db3863a`
-on September 15, 2026 produced the following excerpt from `power-summary/prediction.json`
+**Recorded result:** the verified CLI/data integration described in
+[4.11.3](#4113-captured-result) produced this excerpt from `power-summary/prediction.json`
 (values rounded):
 
 ```json
@@ -759,7 +766,7 @@ requires #212's data and can change with the workload or profile revision.
 aisimulate predict --stack engine --config prediction.yaml --output-dir ./power-unavailable
 ```
 
-At the same source revision, this completed 100 requests and returned:
+A recorded run of this H200/vLLM configuration completed 100 requests and returned:
 
 ```json
 {"power_w": null, "power_coverage": 0.0}
@@ -781,6 +788,8 @@ running a search. No `--detail` selector is required to calculate or display eit
 value. JSON includes both keys in prediction summaries and recommendation metrics for valid
 replay reports, using `null` for unavailable values under the publication gate below.
 
+[Example: captured summary and energy output](#4113-captured-result).
+
 #### 4.11.2 Summary power with an energy breakdown
 
 **Before — add energy detail to the same AIC estimate:**
@@ -792,23 +801,25 @@ aiconfigurator cli estimate \
   --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
 ```
 
-**Result to inspect:** the normal power summary remains visible, followed by available phase
-and per-operation energy detail. Missing energy profiles can leave the detail section without
-measurable data.
+**Recorded result:** the normal summary still prints **660.4 W/GPU**, followed by positive
+mixed-step and decode-only energy totals and per-operation contributions. See the
+[captured output](#4113-captured-result).
 
-**After — AISimulate energy detail once #144 is included**, using the same `power-prediction.yaml`:
+**After — AISimulate energy detail**, using the same `power-prediction.yaml`:
 
 ```bash
 aisimulate predict --stack engine --config power-prediction.yaml --detail energy \
   --output-dir ./power-details
 ```
 
-**Expected result after energy-detail integration:** the same summary power and coverage as the
+**Result to inspect:** the same summary power and coverage as the
 normal prediction, plus phase and per-operation energy evidence when available. The selector
 controls only the additional breakdown; it must not enable summary power or relax its coverage
 gate. Missing breakdown evidence must be identified as unavailable with a reason. For a selected
 recommendation, use its saved prediction YAML with `predict --detail energy`; this does not add
 a `--detail` flag to `recommend`.
+
+[Example: captured summary and energy output](#4113-captured-result).
 
 **Availability in both workflows.** The [modeled-power contract](../power-model.md) defines
 `power_w` as active forward-pass average watts per GPU and `power_coverage` as latency-weighted
@@ -829,10 +840,10 @@ path must not fabricate `0%`. JSON always returns both keys, with numbers when a
 `null` otherwise, never placeholder strings, `NaN`, or zero watts. These synthetic values do not guarantee
 power coverage for another hardware/model/backend combination.
 
-**What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
-forward passes. Their power values share the same meaning and coverage rule but need not be
-numerically equal for these different workloads. Both workflows must expose summary power
-independently of detail selection. This summary implementation does not
+**What changed:** AIC uses its default aggregated estimator at batch size 64; AISimulate
+simulates serving traffic at concurrency 64. Both model aggregated serving, but their
+scheduling calculations differ, so their power estimates need not be numerically equal.
+Both workflows must expose summary power independently of detail selection. This implementation does not
 qualify hardware accuracy or add a power/energy optimization objective. Modeled GPU power is
 not whole-node or datacenter consumption.
 
@@ -843,6 +854,85 @@ is omitted. The normal terminal summary does not display these power fields. Rec
 artifacts can also retain this metadata for each candidate. These fields do not provide a power
 report for the full encoder-plus-language deployment or replace AIC's power analysis for that
 topology. Use the compatibility command or SDK when full-deployment EPD power is required.
+
+#### 4.11.3 Captured result
+
+The B200 AIC and AISimulate commands above, each with and without `--detail energy`, were
+run on 2026-09-15 (Pacific) from a freshly built application wheel combining
+[#144 at `01744c7e`](https://github.com/ai-dynamo/aisimulate/commit/01744c7efee7c0767ec2d27a72e2749528bdde34)
+and [#212 at `a83ad4f1`](https://github.com/ai-dynamo/aisimulate/commit/a83ad4f162669b318786cc279f320650ec09d5b1).
+Both bundled CLIs used Llama 3.1 8B, two B200 GPUs, TRT-LLM `1.3.0rc20`, 1,024 input tokens,
+and 128 output tokens. AIC uses its default `agg` mode with batch size 64; AISimulate
+runs 100 requests at concurrency 64 in `aggregated` mode. These are modeled results from
+operation profiles, and can change with code or data revisions.
+
+**Positive power in both CLIs, with and without energy detail:**
+
+| Captured output | No `--detail` | `--detail energy` |
+| --- | ---: | ---: |
+| AIC `Power (per GPU)` | 660.4 W | 660.4 W |
+| AISimulate `power_w` | 655.94 W | 655.94 W |
+| AISimulate `power_coverage` | 90.70% | 90.70% |
+| AISimulate completed requests | 100 | 100 |
+| AISimulate output throughput (tokens/s) | 8,215.67 | 8,215.67 |
+
+Both AISimulate `prediction.json` files contain identical power fields:
+
+```json
+{
+  "power_w": 655.9411158961085,
+  "power_coverage": 0.9070317503277922
+}
+```
+
+**Additional AIC energy output** (selected lines; per-operation rows omitted):
+
+```text
+  Detailed Breakdown (energy)
+Energy Breakdown (scheduled active work per GPU)
+Mixed steps energy (total = 468748.423 W·ms, coverage = 91.6%, avg P = 680.5 W)
+Decode-only steps energy (total = 131716.846 W·ms, coverage = 90.5%, avg P = 597.4 W)
+```
+
+The AIC breakdown also reports positive operation energy, including
+`context_gate_ffn1_gemm = 184423.039 W·ms` in mixed steps and
+`generation_gate_ffn1_gemm = 43419.182 W·ms` in decode-only steps. These totals use
+the same scheduling weights as the AIC summary. Mixed steps contain both prefill and
+decode work; their shared operation names retain AIC's `context_` prefix.
+
+**Additional AISimulate energy output:**
+
+```text
+Detail: energy
+AISimulate active forward-pass energy diagnostics (per GPU)
+Aggregate: power=655.94 W coverage=90.70% gate=90.00% status=available
+```
+
+Captured phase rows, rounded for readability:
+
+| Phase | Energy (W-ms/GPU) | Active latency (ms) | Covered latency (ms) | Coverage | Power (W/GPU) | Status/source |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| prefill | 503,271.17 | 724.71 | 662.76 | 91.45% | 694.44 | available mixed:mixed |
+| decode | 518,684.44 | 833.29 | 750.39 | 90.05% | 622.46 | available mixed:mixed |
+
+Selected captured operation rows:
+
+| Phase | Operation | Energy (W-ms/GPU) | Active latency (ms) | Coverage | Status/source |
+| --- | --- | ---: | ---: | ---: | --- |
+| prefill | `context_gate_ffn1_gemm` | 216,887.63 | 248.23 | 100.00% | available measured:silicon |
+| prefill | `context_attention` | 41,980.72 | 49.94 | 100.00% | available mixed:mixed |
+| decode | `generation_gate_ffn1_gemm` | 179,868.69 | 191.46 | 100.00% | available measured:silicon |
+| decode | `generation_attention` | 81,958.47 | 214.80 | 100.00% | available measured:silicon |
+
+Each phase has 14 operation rows. The default terminal table shows 12 and identifies the
+omitted rows; `details.sections.energy.diagnostics.phases` in the saved report retains all 14.
+Operations without energy evidence, such as activation and normalization, still show
+unavailable energy and its reason; they account for the uncovered latency.
+
+The two CLIs both publish positive power using their aggregated serving paths. AIC
+approximates mixed/decode step counts; AISimulate schedules individual requests, so the
+executed forward passes and power estimates differ. Within each CLI,
+adding `--detail energy` preserves summary power and adds the breakdown.
 
 ## 5. Remaining feature and performance gaps
 
@@ -981,18 +1071,20 @@ aiconfigurator cli estimate \
 
 #### 5.3.2 Remaining detailed-diagnostic gaps
 
-The supported `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.10](#410-inspect-prediction-details). Keep AIC `estimate --detail` when you need
-these additional diagnostic capabilities:
+The initial `summary`, `memory`, `time`, and `all` selectors are covered in
+[section 4.10](#410-inspect-prediction-details). The power stack adds `energy` and includes it in
+`all`, as shown in [section 4.11](#411-power-and-energy-analysis). Keep AIC `estimate --detail`
+when you need these additional diagnostic capabilities:
 
 | Remaining gap | AIC selector and evidence |
 | --- | --- |
 | Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
 | Per-operation data provenance and fallback information | `source`. |
-| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#411-power-and-energy-analysis). |
 
-AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
-three supported sections. Available AIC sections depend on the estimate mode and data;
+AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests
+`summary,memory,time,energy`. AISimulate energy evidence requires a supported engine path;
+the external Dynamo Python adapter's diagnostics export remains unqualified. Available AIC
+sections depend on the estimate mode and data;
 static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
 absent. For specialized fixed-batch diagnostics, use the compatibility
 [static-estimate workflow](#531-static-estimates).

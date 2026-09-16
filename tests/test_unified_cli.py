@@ -99,6 +99,71 @@ class _Runner:
         if power_is_publishable:
             metrics["power_w"] = self.power_w
             summary["power_w"] = self.power_w
+        power_diagnostics = {
+            "schema_version": "1.0",
+            "scope": "active_forward_pass_per_gpu",
+            "power_w_unit": "W",
+            "energy_unit": "W-ms",
+            "latency_unit": "ms",
+            "publication_status": ("available" if power_is_publishable else "withheld"),
+            "coverage_gate": 0.9,
+            "power_coverage": self.power_coverage,
+            "energy_wms": 121.875,
+            "latency_ms": 0.25,
+            "covered_latency_ms": 0.25 * (self.power_coverage or 0.0),
+            "phases": [
+                {
+                    "name": "prefill",
+                    "energy_wms": 121.875,
+                    "latency_ms": 0.25,
+                    "covered_latency_ms": 0.25 * (self.power_coverage or 0.0),
+                    "power_coverage": self.power_coverage,
+                    "publication_status": ("available" if power_is_publishable else "withheld"),
+                    "source": "silicon",
+                    "source_kind": "measured",
+                    "operations": [
+                        {
+                            "name": "gemm",
+                            "energy_wms": 121.875,
+                            "latency_ms": 0.25,
+                            "covered_latency_ms": 0.25 * (self.power_coverage or 0.0),
+                            "power_coverage": self.power_coverage,
+                            "energy_contribution": 1.0,
+                            "source": "silicon",
+                            "source_kind": "measured",
+                            "status": ("available" if self.power_coverage == 1.0 else "partial"),
+                        }
+                    ],
+                }
+            ],
+        }
+        power_diagnostics["power_w"] = self.power_w if power_is_publishable else None
+        phase = power_diagnostics["phases"][0]
+        phase["power_w"] = self.power_w if power_is_publishable else None
+        first = phase["operations"][0]
+        second = {**first, "name": "attention"}
+        for op, scale in ((first, 0.8), (second, 0.2)):
+            for field in ("energy_wms", "latency_ms", "covered_latency_ms", "energy_contribution"):
+                op[field] *= scale
+        phase["operations"].append(second)
+        if power_is_publishable:
+            power_diagnostics["power_w"] = self.power_w
+            power_diagnostics["phases"][0]["power_w"] = self.power_w
+        if self.power_coverage is not None and self.power_coverage < 1.0:
+            power_diagnostics["phases"][0]["operations"][0]["uncovered_reason"] = (
+                "some accumulated operation latency lacks positive energy evidence"
+            )
+        if self.power_coverage is None:
+            power_diagnostics = {
+                "schema_version": "1.0",
+                "scope": "active_forward_pass_per_gpu",
+                "publication_status": "unsupported",
+                "power_w": None,
+                "power_coverage": None,
+                "coverage_gate": 0.9,
+                "phases": [],
+                "unavailable_reason": "test provider unsupported",
+            }
         return ReplayReport(
             metrics=metrics,
             metadata={
@@ -111,6 +176,7 @@ class _Runner:
                 },
                 "native_report": {
                     "summary": summary,
+                    "power_diagnostics": power_diagnostics,
                     "per_request": [{"request_id": "synthetic-0"}],
                 },
             },
@@ -242,6 +308,94 @@ def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, 
 
     assert runner.spec.execution_mode == "online"
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_power_diagnostics_json_preserves_complete_export(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--diagnostics",
+                "power",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["summary"]["power_w"] == 487.5
+    diagnostics = stdout["power_diagnostics"]
+    assert diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
+    phase = diagnostics["phases"][0]
+    assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
+    assert phase["operations"][0]["name"] == "gemm"
+    saved = json.loads((output / "prediction.json").read_text())
+    assert saved["power_diagnostics"] == diagnostics
+
+
+def test_predict_power_diagnostics_table_applies_top_n(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--diagnostics",
+                "power",
+                "--diagnostics-top-n",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    stdout = capsys.readouterr().out
+    assert "active forward-pass energy diagnostics (per GPU)" in stdout
+    assert "gemm" in stdout
+
+    assert "attention" not in stdout
+    assert "... 1 more in prediction.json" in stdout
+    saved = json.loads((tmp_path / "out" / "prediction.json").read_text())
+    assert len(saved["power_diagnostics"]["phases"][0]["operations"]) == 2
 
 
 def test_predict_online_rejects_runner_without_online_capability(tmp_path, monkeypatch, capsys) -> None:
@@ -531,19 +685,32 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
                 str(recommendation),
                 "--output-dir",
                 str(prediction_output),
+                "--diagnostics",
+                "power",
                 "--format",
                 "json",
             ]
         )
         == 0
     )
-    prediction_summary = json.loads(capsys.readouterr().out)
+    prediction_stdout = json.loads(capsys.readouterr().out)
+    prediction_summary = prediction_stdout["summary"]
     assert prediction_summary["completed_requests"] == 1
     assert prediction_summary["power_w"] == 487.5
     assert prediction_summary["power_coverage"] == 0.9
     prediction_report = json.loads((prediction_output / "prediction.json").read_text())
     assert prediction_report["summary"]["power_w"] == 487.5
     assert prediction_report["summary"]["power_coverage"] == 0.9
+    diagnostics = prediction_report["power_diagnostics"]
+    assert diagnostics == prediction_stdout["power_diagnostics"]
+    assert diagnostics["schema_version"] == "1.0"
+    assert diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert diagnostics["publication_status"] == "available"
+    assert diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
+    phase = diagnostics["phases"][0]
+    assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
+    assert phase["operations"][0]["name"] == "gemm"
+    assert phase["operations"][0]["source"] == "silicon"
     assert runner.spec.goal["sla"] == {sla_field: bound}
 
     withheld_output = tmp_path / "withheld-recommend-output"
@@ -592,18 +759,29 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
                 str(recommendation),
                 "--output-dir",
                 str(withheld_prediction_output),
+                "--diagnostics",
+                "power",
                 "--format",
                 "json",
             ]
         )
         == 0
     )
-    withheld_prediction_summary = json.loads(capsys.readouterr().out)
+    withheld_prediction_stdout = json.loads(capsys.readouterr().out)
+    withheld_prediction_summary = withheld_prediction_stdout["summary"]
     assert withheld_prediction_summary["power_w"] is None
     assert withheld_prediction_summary["power_coverage"] == 0.42
     withheld_prediction_report = json.loads((withheld_prediction_output / "prediction.json").read_text())
     assert withheld_prediction_report["summary"]["power_w"] is None
     assert withheld_prediction_report["summary"]["power_coverage"] == 0.42
+    withheld_diagnostics = withheld_prediction_report["power_diagnostics"]
+    assert withheld_diagnostics == withheld_prediction_stdout["power_diagnostics"]
+    assert withheld_diagnostics["schema_version"] == "1.0"
+    assert withheld_diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert withheld_diagnostics["publication_status"] == "withheld"
+    assert withheld_diagnostics["power_w"] is None
+    assert withheld_diagnostics["phases"][0]["operations"][0]["name"] == "gemm"
+    assert withheld_diagnostics["phases"][0]["operations"][0]["source"] == "silicon"
 
     withheld_runner.power_w = None
     withheld_runner.power_coverage = None
@@ -868,7 +1046,7 @@ def test_predict_uses_validated_power_metrics_over_raw_metadata(
         assert summary["power_coverage"] == coverage
 
 
-@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "energy", "source", "power"])
+@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "source", "power"])
 def test_detail_rejects_unsupported_sections_before_loading_config(selector, monkeypatch):
     monkeypatch.setattr(cli, "_load_mapping", lambda *_: pytest.fail("must validate selector first"))
     with pytest.raises(SystemExit) as exc:
@@ -880,6 +1058,69 @@ def _detail_schema():
     from pathlib import Path
 
     return json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+
+
+@pytest.mark.parametrize(
+    "watts,coverage,status,valid",
+    [
+        (450, 0.9, "available", True),
+        (450, 1.0, "available", True),
+        (None, 0.0, "withheld", True),
+        (None, 0.89, "withheld", True),
+        (None, 1.0, "missing", True),
+        (None, None, "unsupported", True),
+        (None, 0.0, "not_observed", True),
+        (450, 0.8999999999999999, "available", False),
+        (450, None, "available", False),
+        (450, True, "available", False),
+        (0, 1.0, "available", False),
+        (-1, 1.0, "available", False),
+        (None, 1.01, "missing", False),
+    ],
+)
+def test_energy_detail_schema_enforces_power_publication(watts, coverage, status, valid):
+    from jsonschema import Draft202012Validator
+
+    details = {
+        "schema_version": "1.0",
+        "sections": {
+            "energy": {
+                "status": status,
+                "scope": "active_forward_pass_per_gpu",
+                "diagnostics": {
+                    "power_w": watts,
+                    "power_coverage": coverage,
+                    "publication_status": status,
+                    "phases": [],
+                },
+            }
+        },
+        "skipped": {},
+    }
+    assert Draft202012Validator(_detail_schema()).is_valid(details) is valid
+
+
+@pytest.mark.parametrize("status", ["available", "withheld", "unsupported", "not_observed", "missing", "invented"])
+@pytest.mark.parametrize(
+    "publication_status", ["available", "withheld", "unsupported", "not_observed", "missing", "invented"]
+)
+def test_energy_detail_schema_constrains_publication_status(status, publication_status):
+    from jsonschema import Draft202012Validator
+
+    schema = _detail_schema()["properties"]["sections"]["properties"]["energy"]
+    section = {
+        "status": status,
+        "scope": "active_forward_pass_per_gpu",
+        "diagnostics": {
+            "power_w": 400.0 if publication_status == "available" else None,
+            "power_coverage": {"available": 1.0, "withheld": 0.8, "missing": 1.0, "not_observed": 0.0}.get(
+                publication_status
+            ),
+            "publication_status": publication_status,
+            "phases": [],
+        },
+    }
+    assert Draft202012Validator(schema).is_valid(section) is (status == publication_status and status != "invented")
 
 
 @pytest.mark.parametrize("selector", ["all", "time,time", "memory"])
@@ -927,7 +1168,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     assert stdout["summary"]["duration_ms"] == 100.0
     details = stdout["details"]
     validate(details, _detail_schema())
-    expected = {"all": {"summary", "time"}, "time,time": {"time"}, "memory": set()}[selector]
+    expected = {"all": {"summary", "time", "energy"}, "time,time": {"time"}, "memory": set()}[selector]
     assert set(details["sections"]) == expected
     assert ("memory" in details["skipped"]) == (selector != "time,time")
     assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
@@ -977,7 +1218,7 @@ def test_detail_table_skips_missing_evidence(tmp_path, monkeypatch, capsys):
     stdout = capsys.readouterr().out
     assert "Skipped memory:" in stdout
     assert "Skipped time:" in stdout
-    assert "Detail: energy" not in stdout
+    assert "Detail: energy" in stdout
     assert "Detail: source" not in stdout
 
 
@@ -1040,3 +1281,72 @@ def test_detail_partial_memory_preserves_unavailable_role_reason():
     result["sections"]["memory"]["status"] = "available"
     with pytest.raises(ValidationError):
         validate(result, _detail_schema())
+
+
+@pytest.mark.parametrize("watts,coverage", [(487.5, 0.95), (None, 0.42), (None, None)])
+def test_energy_detail_preserves_default_summary_and_all_evidence(tmp_path, monkeypatch, capsys, watts, coverage):
+    from jsonschema import validate
+
+    config = _detail_config(tmp_path)
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner(power_w=watts, power_coverage=coverage))
+    )
+    plain_dir, detail_dir = tmp_path / "plain", tmp_path / "detail"
+    assert cli.main(["predict", "-c", str(config), "--format", "json", "--output-dir", str(plain_dir)]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    assert (
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(config),
+                "--detail",
+                "energy",
+                "--format",
+                "json",
+                "--diagnostics-top-n",
+                "1",
+                "--output-dir",
+                str(detail_dir),
+            ]
+        )
+        == 0
+    )
+    detailed = json.loads(capsys.readouterr().out)
+    assert detailed["summary"] == plain
+    assert plain["power_w"] == watts and plain["power_coverage"] == coverage
+    validate(detailed["details"], _detail_schema())
+    evidence = detailed["details"]["sections"]["energy"]["diagnostics"]
+    assert evidence["power_w"] == watts and evidence["power_coverage"] == coverage
+    assert "power_diagnostics" not in plain
+    if coverage is not None:
+        assert len(evidence["phases"][0]["operations"]) == 2
+    saved = json.loads((detail_dir / "prediction.json").read_text())
+    assert saved["details"] == detailed["details"]
+
+
+def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, capsys):
+    class AdapterWithoutDiagnostics(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"].pop("power_diagnostics")
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(AdapterWithoutDiagnostics()))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(_detail_config(tmp_path)),
+                "--detail",
+                "energy",
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+        == 0
+    )
+    text = capsys.readouterr().out
+    assert "did not export typed timing-energy evidence" in text
+    assert "downstream Dynamo adapter export is not qualified" in text

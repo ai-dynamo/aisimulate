@@ -121,8 +121,41 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         }
     )
 
-    assert report.metrics["power_coverage"] == 0.0
+    coverage = report.metrics["power_coverage"]
+    assert coverage == 0.0
     assert report.metrics["power_w"] is None
+    diagnostics = report.metadata["native_report"]["power_diagnostics"]
+    assert diagnostics["schema_version"] == "1.0"
+    assert diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert diagnostics["power_coverage"] == pytest.approx(coverage)
+    assert [phase["name"] for phase in diagnostics["phases"]] == [
+        "prefill",
+        "decode",
+    ]
+    phase_energies = [phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase]
+    if phase_energies:
+        assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
+    else:
+        assert "energy_wms" not in diagnostics
+    assert diagnostics["latency_ms"] == pytest.approx(sum(phase["latency_ms"] for phase in diagnostics["phases"]))
+    assert diagnostics["covered_latency_ms"] == pytest.approx(
+        sum(phase["covered_latency_ms"] for phase in diagnostics["phases"])
+    )
+    for phase in diagnostics["phases"]:
+        operations = phase["operations"]
+        assert [operation["name"] for operation in operations] == sorted(operation["name"] for operation in operations)
+        for operation in operations:
+            assert operation["source_kind"] in {
+                "measured",
+                "transferred",
+                "modeled",
+                "mixed",
+                "other",
+                "missing",
+            }
+            if operation["status"] == "missing":
+                assert "energy_wms" not in operation
+                assert operation["uncovered_reason"]
 
 
 def test_power_report_table_surfaces_available_power_and_coverage() -> None:
@@ -678,8 +711,8 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
-    assert set(sections) == {"summary", "memory", "time"}
-    assert "power_diagnostics" not in saved
+    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert saved["power_diagnostics"]["power_w"] is None
     assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
     assert memory["status"] == "available"
@@ -720,5 +753,5 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
     assert memory["stage"] == "before_native_capacity_adjustments"
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time"}
+    assert set(sections) == {"summary", "memory", "time", "energy"}
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0

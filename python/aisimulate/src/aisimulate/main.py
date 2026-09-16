@@ -29,7 +29,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, parse_detail_sections, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics, parse_detail_sections, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -52,6 +52,13 @@ class _CliConfigError(ValueError):
 
 class _CliExecutionError(RuntimeError):
     pass
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,7 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_detail_sections,
         default=(),
         metavar="SECTIONS",
-        help="comma-separated summary,memory,time, or all; unavailable evidence is skipped",
+        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics-top-n",
+        type=_positive_int,
+        default=12,
+        metavar="N",
+        help="maximum operations per phase in energy detail tables (default: 12)",
     )
     subparsers.choices["predict"].add_argument(
         "--online",
@@ -221,6 +238,10 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         native = {**native, "summary": summary}
     else:
         native = {**native, **summary}
+    power_diagnostics = None
+    if args.diagnostics == "power":
+        power_diagnostics = energy_diagnostics(native)
+        native = {**native, "power_diagnostics": power_diagnostics}
     resolved_basis = native.get("weka_nested_timestamp_basis")
     if isinstance(resolved_basis, str):
         source = config.traffic.source
@@ -247,7 +268,15 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    sys.stdout.write(format_prediction_stdout(summary, args.format, details=details))
+    sys.stdout.write(
+        format_prediction_stdout(
+            summary,
+            args.format,
+            details=details,
+            power_diagnostics=power_diagnostics,
+            diagnostics_top_n=args.diagnostics_top_n,
+        )
+    )
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
