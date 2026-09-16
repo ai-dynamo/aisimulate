@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
 from tools.forward_perf_gate import run as gate_run
 from tools.prediction_regression_gate import grid
@@ -40,13 +43,54 @@ def _request() -> dict:
 
 def test_matrix_contains_unique_grid_points() -> None:
     expanded = cases.expand_cases()
-    expected_context = len(cases.MODELS) * len(cases.DATABASE_MODES) * len(grid.PREFILL_POINTS)
-    expected_generation = len(cases.MODELS) * len(cases.DATABASE_MODES) * len(grid.DECODE_POINTS)
-    assert len(expanded) == expected_context + expected_generation
+    assert len(expanded) == 64
     assert len({case["case_id"] for case in expanded}) == len(expanded)
-    assert sum(case["phase"] == "context" for case in expanded) == expected_context
-    assert sum(case["phase"] == "generation" for case in expanded) == expected_generation
+    assert sum(case["phase"] == "context" for case in expanded) == 31
+    assert sum(case["phase"] == "generation" for case in expanded) == 33
     assert {case["database_mode"] for case in expanded} == {"SILICON", "EMPIRICAL"}
+    assert all(case["database_mode"] == "SILICON" for case in expanded[36:])
+    # Freeze the original 36 requests, including their IDs, values, and order.
+    legacy = json.dumps(expanded[:36], sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(legacy).hexdigest() == "17b8247fc587711a5e7b00b9cb3dba86e093b9e210e8272112eb33ddea39eca2"
+
+
+def test_additional_profiles_preserve_original_cache_groups() -> None:
+    expanded = cases.expand_cases()
+    original_groups = {worker._group_key(case) for case in expanded[:36]}
+    additional_groups = {worker._group_key(case) for case in expanded[36:]}
+    assert original_groups.isdisjoint(additional_groups)
+    assert len(additional_groups) == 9
+    for case in expanded[36:]:
+        assert case["system_name"] in case["model_id"]
+        assert f"{case['backend_name']}-{case['backend_version']}" in case["model_id"]
+        assert f"-tp{case['tp_size']}-pp{case['pp_size']}-adp{case['attention_dp_size']}" in case["model_id"]
+        assert f"-mtp{case['moe_tp_size']}-ep{case['moe_ep_size']}" in case["model_id"]
+    assert [case["prefix"] for case in expanded if case["prefix"]] == [4096, 7168, 4096, 7168]
+    dp_cases = [case for case in expanded if case["attention_dp_size"] == 8]
+    assert [(case["batch_size"], case["isl"], case["tp_size"], case["moe_ep_size"]) for case in dp_cases] == [
+        (32, 1024, 1, 8),
+        (8, 32768, 1, 8),
+    ]
+
+
+def test_workflow_filters_cover_matrix_dependencies() -> None:
+    repo_root = Path(__file__).resolve().parents[5]
+    workflow = yaml.load((repo_root / ".github/workflows/performance.yml").read_text(), Loader=yaml.BaseLoader)
+    patterns = workflow["on"]["push"]["paths"]
+    dependencies = set()
+    for case in cases.expand_cases():
+        root = "python/aisimulate/src/aiconfigurator_core"
+        model_config = f"{root}/model_configs/{case['model_path'].replace('/', '--')}_config.json"
+        assert (repo_root / model_config).is_file()
+        dependencies.add(model_config)
+        dependencies.add(f"{root}/systems/data/{case['system_name']}/gemm/{case['backend_name']}/data.parquet")
+    assert all(any(fnmatchcase(path, pattern) for pattern in patterns) for path in dependencies)
+    for unrelated in (
+        "docs/cli/user-guide.md",
+        "python/aisimulate/src/aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+        "python/aisimulate/src/aiconfigurator_core/systems/data/a100_sxm/gemm/vllm/data.parquet",
+    ):
+        assert not any(fnmatchcase(unrelated, pattern) for pattern in patterns)
 
 
 def test_case_hash_is_stable_across_key_order() -> None:
@@ -76,9 +120,9 @@ def test_batch_request_validation_requires_unique_cases() -> None:
         "revision": "abc123",
         "warmup": 10,
         "iterations": 100,
-        "cases": expanded[:2],
+        "cases": expanded,
     }
-    assert worker.validate_batch_request(request)[0] == expanded[:2]
+    assert worker.validate_batch_request(request)[0] == expanded
 
     with pytest.raises(ValueError, match="non-empty array"):
         worker.validate_batch_request({**request, "cases": []})

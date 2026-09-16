@@ -39,10 +39,52 @@ array. Run one request with:
 python tools/forward_perf_gate/worker.py --request request.json --pretty
 ```
 
-The initial matrix uses Qwen3-32B and Qwen3-235B-A22B on B200/vLLM 0.24.0,
-with SILICON and EMPIRICAL database modes and the nine points from the existing
-prediction regression grid. The isolated worker opts into this pinned raw data
-version instead of resolving a moving backend-version alias.
+The matrix has 64 cases and reports 128 cold/warm comparisons. The first 36
+requests retain the original Qwen3-32B and Qwen3-235B-A22B matrix on
+B200/vLLM 0.24.0: SILICON and EMPIRICAL modes, each with the nine points from
+the prediction regression grid. Their IDs, values, and relative order are unchanged.
+
+The next 20 cases use SILICON mode and vLLM 0.24.0:
+
+| Model | System | TP | Attention DP | MoE TP | EP |
+|---|---|---:|---:|---:|---:|
+| `deepseek-ai/DeepSeek-V3.2` | B200 | 8 | 1 | 1 | 8 |
+| `deepseek-ai/DeepSeek-V4-Flash` | B200 | 8 | 1 | 1 | 8 |
+| `Qwen/Qwen3.5-397B-A17B` | B200 | 8 | 1 | 1 | 8 |
+| `openai/gpt-oss-120b` | B200 | 8 | 1 | 1 | 8 |
+| `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8` | H100 | 8 | 1 | 1 | 8 |
+
+Each model has two context cases (batch 1, ISL 1,024 and 32,768) and two
+generation cases (batch 1 and 128, ISL 1,024). PP is 1 throughout the matrix.
+
+The final eight cases also use SILICON mode:
+
+- Both original Qwen models on B200/vLLM 0.24.0 retain their original parallel
+  layouts, with context batch 1, ISL 8,192, and cached prefixes 4,096 and 7,168.
+- DeepSeek V3.2 on B200/vLLM 0.24.0 uses attention DP=8, TP=1, MoE TP=1,
+  and EP=8 for generation at batch 32/ISL 1,024 and batch 8/ISL 32,768.
+- Qwen3.5 on B200/SGLang 0.5.14 uses TP=8, attention DP=1, MoE TP=1, and
+  EP=8 for context batch 1/ISL 8,192 and generation batch 32/ISL 1,024.
+
+SGLang is pinned to 0.5.14 because 0.5.16 lacks the B200 custom-all-reduce
+data required when shared-layer reuse is disabled.
+
+Context OSL is 8, generation OSL is 256, and stride is 32. New profile labels
+include the system, backend/version, and parallel layout. Prefix profiles are
+separate from the original profiles so their cases do not change the original
+worker cache-preparation groups. The worker loads pinned raw data versions.
+
+Before rollout, validate all 64 cases against two separate installations of
+the same revision for three five-round comparisons. Require no missing data
+or invalid comparisons, investigate any case flagged in at least two runs,
+and compare runtime with the original matrix. Missing data or more than five
+additional benchmark minutes blocks rollout; do not remove cases or change
+thresholds to hide a blocker.
+
+CI uses the base revision's controller and matrix. An expanded matrix becomes
+active when the PR's merge base includes it. The PR that adds cases must
+therefore validate the expanded controller explicitly before merge; its normal
+advisory job still measures the base revision's matrix.
 
 The default comparison requires four of five paired rounds to exceed both a
 10% relative threshold and a 2 us absolute threshold. Other round counts use
