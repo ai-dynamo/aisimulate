@@ -716,7 +716,7 @@ aiconfigurator cli estimate \
 serving configuration below. The bundled AIC reporting fix in #144 preserves energy
 evidence through this default path and supports the breakdown in 4.11.2.
 
-**After — AISimulate summary with measured operation-power data.** Save as
+**After — AISimulate summary with modeled power from operation-energy evidence.** Save as
 `power-prediction.yaml`. This uses the same traffic shape as section 3.1, with the
 B200/TRT-LLM dataset supplied by #212:
 

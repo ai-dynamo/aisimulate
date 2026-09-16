@@ -295,3 +295,17 @@ def test_replay_report_rejects_invalid_power_pairs(metrics):
 )
 def test_replay_report_preserves_valid_power_availability(metrics):
     assert ReplayReport(metrics=metrics).metrics == metrics
+
+
+@pytest.mark.parametrize("power_fields", [{}, {"power_coverage": 0.42}, {"power_w": None}])
+def test_replay_report_materializes_power_fields_without_mutating_input(power_fields):
+    metrics = {"output_throughput_tok_s": 10.0, **power_fields}
+    original = metrics.copy()
+    report = ReplayReport(metrics=metrics)
+    assert report.metrics == {
+        "output_throughput_tok_s": 10.0,
+        "power_w": None,
+        "power_coverage": power_fields.get("power_coverage"),
+    }
+    assert metrics == original
+    assert json.loads(canonical_json(report))["metrics"] == report.metrics
