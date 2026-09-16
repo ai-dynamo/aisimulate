@@ -274,7 +274,7 @@ def test_prediction_callback_cannot_drop_or_change_epd(change):
             ("disaggregated", "prefill"),
             ("disaggregated", "decode"),
         )
-        for change in ("scheduler", "prefill_interval", "cache", "prefix")
+        for change in ("scheduler", "prefill_interval", "prefill_decode_interval", "cache", "prefix")
     ],
 )
 def test_epd_sweeper_rejects_changed_language_prediction(mode, role, change):
@@ -300,6 +300,8 @@ def test_epd_sweeper_rejects_changed_language_prediction(mode, role, change):
             worker["scheduler"]["max_sequences"] = 1
         elif change == "prefill_interval":
             worker["scheduler"]["prefill_schedule_interval"] = 2
+        elif change == "prefill_decode_interval":
+            worker["scheduler"]["prefill_decode_interval"] = 2
         elif change == "cache":
             worker["kv_cache"]["capacity"]["blocks"] = 8192
         elif change == "prefix":
@@ -359,6 +361,7 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
             if role == "encoder":
                 continue
             worker["scheduler"].pop("prefill_schedule_interval", None)
+            worker["scheduler"].pop("prefill_decode_interval", None)
             worker["kv_cache"].pop("block_size", None)
             worker.pop("startup_seconds", None)
         return value

@@ -160,6 +160,7 @@ impl TimingPhaseEvidence {
         for operation in operations {
             phase.accumulate_operation(operation.canonicalized()?)?;
         }
+        phase.reconcile_operation_totals();
         phase.canonicalized()
     }
 
@@ -195,6 +196,11 @@ impl TimingPhaseEvidence {
     pub fn try_accumulate(&mut self, other: Self) -> Result<()> {
         let mut combined = self.clone().canonicalized()?;
         let other = other.canonicalized()?;
+        let has_phase_only_totals = |phase: &Self| {
+            phase.operations.is_empty() && (phase.latency_ms != 0.0 || phase.energy_wms.is_some())
+        };
+        let complete_operations =
+            !has_phase_only_totals(&combined) && !has_phase_only_totals(&other);
         combined.latency_ms += other.latency_ms;
         combined.covered_latency_ms += other.covered_latency_ms;
         combined.energy_wms = match (combined.energy_wms, other.energy_wms) {
@@ -209,6 +215,9 @@ impl TimingPhaseEvidence {
         };
         for operation in other.operations {
             combined.merge_operation(operation)?;
+        }
+        if complete_operations {
+            combined.reconcile_operation_totals();
         }
         *self = combined.canonicalized()?;
         Ok(())
@@ -289,6 +298,22 @@ impl TimingPhaseEvidence {
         matches(self.latency_ms, latency)
             && matches(self.energy_wms.unwrap_or(0.0), energy)
             && matches(self.covered_latency_ms, covered)
+    }
+
+    fn reconcile_operation_totals(&mut self) {
+        if self.operations.is_empty() {
+            return;
+        }
+        // Inputs are validated before merging. Derive redundant totals in the
+        // same order as the merged operations so replay length cannot amplify
+        // a rounding difference between per-step and per-operation sums.
+        self.latency_ms = self.operations.iter().map(|op| op.latency_ms).sum();
+        self.energy_wms = self
+            .operations
+            .iter()
+            .filter_map(|op| op.energy_wms)
+            .reduce(|left, right| left + right);
+        self.covered_latency_ms = self.operations.iter().map(|op| op.covered_latency_ms).sum();
     }
 
     fn accumulate_operation(&mut self, operation: TimingOperationEvidence) -> Result<()> {
@@ -682,6 +707,75 @@ mod tests {
                 .try_accumulate(rounded)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn phase_accumulation_reconciles_rounding_in_operation_totals() {
+        // This is a valid accumulator at the rounding-tolerance boundary:
+        // tiny per-step additions can be lost in the phase total while they
+        // remain representable in the independently accumulated small op.
+        let mut phase = TimingPhaseEvidence {
+            latency_ms: 1e16,
+            energy_wms: Some(1e16),
+            covered_latency_ms: 1e16,
+            source: Some(TimingEvidenceSource::Silicon),
+            operations: vec![
+                TimingOperationEvidence::new(
+                    "large",
+                    1e16,
+                    Some(1e16),
+                    TimingEvidenceSource::Silicon,
+                )
+                .unwrap(),
+                TimingOperationEvidence::new(
+                    "small",
+                    1e7,
+                    Some(1e7),
+                    TimingEvidenceSource::Silicon,
+                )
+                .unwrap(),
+            ],
+        };
+        assert!(phase.clone().canonicalized().is_ok());
+        let step = TimingPhaseEvidence::from_operations(vec![
+            TimingOperationEvidence::new("small", 1.0, Some(1.0), TimingEvidenceSource::Silicon)
+                .unwrap(),
+        ]);
+        for _ in 0..4 {
+            phase.try_accumulate(step.clone()).unwrap();
+        }
+        assert_eq!(phase.latency_ms, 1e16 + 1e7 + 4.0);
+        assert_eq!(phase.energy_wms, Some(phase.latency_ms));
+        assert_eq!(phase.covered_latency_ms, phase.latency_ms);
+        assert_eq!(phase.coverage(), 1.0);
+    }
+
+    #[test]
+    fn phase_only_accumulation_preserves_totals_and_rejects_incomplete_operations() {
+        let phase_only = TimingPhaseEvidence {
+            latency_ms: 2.0,
+            energy_wms: Some(800.0),
+            covered_latency_ms: 2.0,
+            source: Some(TimingEvidenceSource::Silicon),
+            operations: Vec::new(),
+        };
+        let mut accumulated = TimingPhaseEvidence::default();
+        accumulated.try_accumulate(phase_only.clone()).unwrap();
+        accumulated.try_accumulate(phase_only.clone()).unwrap();
+        assert_eq!(accumulated.latency_ms, 4.0);
+        assert_eq!(accumulated.energy_wms, Some(1600.0));
+        assert_eq!(accumulated.covered_latency_ms, 4.0);
+
+        let operation_phase = TimingPhaseEvidence::from_operations(vec![
+            TimingOperationEvidence::new("gemm", 2.0, Some(800.0), TimingEvidenceSource::Silicon)
+                .unwrap(),
+        ]);
+        let before = accumulated.clone();
+        assert!(accumulated.try_accumulate(operation_phase.clone()).is_err());
+        assert_eq!(accumulated, before);
+        let mut accumulated = operation_phase.clone();
+        assert!(accumulated.try_accumulate(phase_only).is_err());
+        assert_eq!(accumulated, operation_phase);
     }
 
     #[test]

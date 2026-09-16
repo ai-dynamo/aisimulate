@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -74,7 +75,16 @@ class ParallelismPredictionConfig(StrictModel):
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
-    prefill_schedule_interval: PositiveInt = 1
+    prefill_schedule_interval: PositiveInt = Field(
+        default=1, description="vLLM only: admit prefill once every N attention-DP group passes."
+    )
+    prefill_decode_interval: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "SGLang only: block new prefill and chunk continuation for N scheduler rounds after each EXTEND. "
+            "Rounds may be idle and do not count output tokens; zero disables the interval."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
@@ -237,6 +247,7 @@ class EnginePredictionConfig(StrictModel):
             )
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
+        _validate_prediction_scheduler_backend(self)
         return self
 
 
@@ -433,6 +444,19 @@ def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
 
 def _configured_worker_roles(workers) -> set[str]:
     return {role for role in ("aggregated", "prefill", "decode") if getattr(workers, role) is not None}
+
+
+def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        for field, backend, default in (
+            ("prefill_schedule_interval", "vllm", 1),
+            ("prefill_decode_interval", "sglang", 0),
+        ):
+            if engine.backend != backend and getattr(worker.scheduler, field) != default:
+                raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
