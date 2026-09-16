@@ -1,7 +1,12 @@
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exercise the shipped FPE page against a local, branch-specific fixture site."""
+"""Exercise the shipped FPE page against a local, branch-specific fixture site.
+
+Executed by Pages CI with Playwright and Chromium installed.
+Run directly with ``python scripts/check_fpe_support_matrix_browser.py``.
+"""
 
 from __future__ import annotations
 
@@ -182,3 +187,7 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         await expect(self.page.get_by_text("FPE snapshot is missing or belongs to a different branch")).to_be_visible()
         await expect(self.page.locator("tbody tr")).to_have_count(0)
         self.assertFalse(any(urlsplit(url).path.endswith(".csv") for url in self.requests))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
