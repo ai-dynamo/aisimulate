@@ -261,7 +261,10 @@ unsafe fn backend_mut(handle: ReplayHandleV1) -> Result<&'static mut BackendRepl
 }
 
 unsafe fn borrowed_tokens(slice: U32SliceV1) -> Result<&'static [u32], StatusV1> {
-    if slice.len > usize::MAX as u64 || (slice.data.is_null() && slice.len != 0) {
+    if slice.len > usize::MAX as u64
+        || (slice.data.is_null() && slice.len != 0)
+        || (!slice.data.is_null() && !slice.data.is_aligned())
+    {
         return Err(StatusV1::INVALID_ARGUMENT);
     }
     if slice.len == 0 {
@@ -529,6 +532,7 @@ unsafe extern "C" fn register_hash_buffer(
         || hash_ids.len == 0
         || hash_ids.len > usize::MAX as u64
         || hash_ids.data.is_null()
+        || !hash_ids.data.is_aligned()
     {
         return StatusV1::INVALID_ARGUMENT;
     }
@@ -608,6 +612,15 @@ unsafe extern "C" fn submit_compact_hash_buffer_range(
     };
     match replay.engine.submit_compact(request) {
         Ok(uuid) => {
+            // An accepted range consumes its registration. The host may free
+            // or recycle the backing storage as soon as the one release
+            // callback arrives, so a stale buffer ID must never form another
+            // lease for this replay lifetime.
+            let removed = replay.hash_buffers.remove(&range.buffer_id);
+            debug_assert!(
+                removed.is_some(),
+                "validated buffer registration disappeared"
+            );
             // Safety: validated non-null output pointer.
             unsafe { *request_id = *uuid.as_bytes() };
             StatusV1::OK

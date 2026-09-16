@@ -26,3 +26,15 @@
   blocked by 94 existing unrelated `aisimulate-core` lint errors (mostly
   perfmodel and replay files outside this change); no change was made to hide
   or alter those baseline failures.
+
+## Review remediation
+
+- An accepted range now consumes its registered buffer ID immediately. The ID
+  is removed before its release callback can let the host recycle the backing
+  storage, so a later submission with that stale ID fails closed rather than
+  creating a second lease or aliasing reused memory.
+- Registration and all ABI `u32` slice borrowing reject misaligned host
+  pointers before any `from_raw_parts` call.
+- The focused cancellation regression covers both safeguards: a deliberately
+  misaligned registration is rejected, and a released buffer ID cannot be
+  resubmitted or trigger a second callback.

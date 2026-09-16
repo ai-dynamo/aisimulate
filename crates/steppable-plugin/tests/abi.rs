@@ -111,6 +111,21 @@ fn leased_compact_range_releases_once_when_cancelled() {
         },
         StatusV1::OK
     );
+    let misaligned = [0_u8; 12];
+    let mut rejected_buffer_id = HashBufferIdV1::INVALID;
+    assert_eq!(
+        unsafe {
+            tail.register_hash_buffer.unwrap()(
+                handle,
+                U32SliceV1 {
+                    data: misaligned.as_ptr().add(1).cast(),
+                    len: 1,
+                },
+                &raw mut rejected_buffer_id,
+            )
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
     let mut request_id = [0; 16];
     assert_eq!(
         unsafe {
@@ -149,6 +164,25 @@ fn leased_compact_range_releases_once_when_cancelled() {
         StatusV1::OK
     );
     assert_eq!(canceled, 1);
+    assert_eq!(releases.load(Ordering::SeqCst), 1);
+
+    let mut reused_request = compact_request();
+    reused_request.request.uuid = [32; 16];
+    assert_eq!(
+        unsafe {
+            tail.submit_compact_hash_buffer_range.unwrap()(
+                handle,
+                reused_request,
+                HashBufferRangeV1 {
+                    buffer_id,
+                    offset: 0,
+                    len: hashes.len() as u64,
+                },
+                &raw mut request_id,
+            )
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
     assert_eq!(releases.load(Ordering::SeqCst), 1);
 
     unsafe { vtable.destroy.unwrap()(handle) };
