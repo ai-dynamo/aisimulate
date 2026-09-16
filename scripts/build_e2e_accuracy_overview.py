@@ -332,7 +332,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _evaluated_revision(runtime: dict[str, Any], branch: str | None) -> dict[str, str] | None:
     if branch is None:
         return None
-    if branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", branch):
+    if branch.endswith("/") or (branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", branch)):
         raise SnapshotError("branch must be main or release/<name>")
     source = runtime.get("source_checkout")
     if (

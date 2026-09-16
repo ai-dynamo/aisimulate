@@ -396,7 +396,7 @@ def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
     assert all(len(item["points"]) == 1 for item in topologies)
 
 
-@pytest.mark.parametrize("branch", ["main", "release/0.12.0", "release/0.13.0/rc1"])
+@pytest.mark.parametrize("branch", ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"])
 def test_branch_publication_records_evaluated_revision(branch: str) -> None:
     predictions, metadata, coverage = _qualified_inputs(branch)
     result = OVERVIEW.build_summary(
@@ -413,6 +413,20 @@ def test_branch_publication_records_evaluated_revision(branch: str) -> None:
         "branch": branch,
         "commit_sha": "d" * 40,
     }
+
+
+@pytest.mark.parametrize("branch", ["release/a/", "release/0.12.0/", "release/0.13.0/rc1/"])
+def test_branch_publication_rejects_trailing_slash(branch: str) -> None:
+    predictions, metadata, coverage = _qualified_inputs(branch)
+    with pytest.raises(OVERVIEW.SnapshotError, match="branch must be"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch=branch,
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
 
 
 @pytest.mark.parametrize("defect", ["missing", "repository", "revision", "dirty", "incomplete", "metadata"])

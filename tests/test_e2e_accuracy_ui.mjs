@@ -77,7 +77,9 @@ function withTopology() {
     aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
-  gpu.topologies = [{ ...gpu, id: "0123456789abcdef", rows: 3, framework: "vllm", precision: "fp8", serving: "aggregated",
+  gpu.topologies = [{ ...gpu, aic: { ...gpu.aic, points: 3 }, aisimulate: { ...gpu.aisimulate, points: 2,
+    status_counts: { success: 2, unsupported: 0, failed: 1, unknown: 0 } },
+    id: "0123456789abcdef", rows: 3, framework: "vllm", precision: "fp8", serving: "aggregated",
     spec_method: "none", parallelism: { tp_size: 8, pp_size: 1 }, points: [point(1, true), point(2, false), point(4, true)] }];
   return data;
 }
@@ -236,6 +238,44 @@ test("invalid topology values and unsafe provenance fail before rendering", () =
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
 });
 
+test("aggregate replay counts must match rows and successful points at every level", () => {
+  const app = setup();
+  for (const select of [
+    (data) => data.totals,
+    (data) => data.models[0],
+    (data) => data.models[0].workloads[0],
+    (data) => data.models[0].workloads[0].gpus[0],
+    (data) => data.models[0].workloads[0].gpus[0].topologies[0],
+  ]) {
+    for (const corrupt of [
+      (item) => { item.aisimulate.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
+      (item) => { item.aisimulate.points = item.aisimulate.status_counts.success + 1; },
+      (item) => { item.aisimulate.status_counts.failed += 1; },
+    ]) {
+      const data = withTopology();
+      corrupt(select(data));
+      app.set("invalid", data);
+      assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+    }
+  }
+});
+
+test("topology point statuses must match otherwise consistent aggregate counts", async () => {
+  const data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  // Keep points, successes, and rows consistent, but misclassify the failed point.
+  topology.aisimulate.status_counts.failed = 0;
+  topology.aisimulate.status_counts.unsupported = 1;
+  const app = setup(async () => response(data));
+  app.set("invalid", data);
+  assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+  await app.run('loadBranch("main")');
+  assert.equal(app.run("state.data"), null);
+  assert.equal(app.element("error-banner").hidden, false);
+  assert.match(app.element("error-banner").textContent, /schema/);
+  assert.doesNotMatch(app.element("summary-grid").innerHTML, /successful replay points/);
+});
+
 test("shared links restore branch, GPU and topology; stale links fail explicitly", async () => {
   const data = withTopology();
   const model = data.models[0]; const workload = model.workloads[0]; const gpu = workload.gpus[0];
@@ -326,9 +366,11 @@ test("catalog metadata rejects malformed revisions and contradictory status", ()
 
 test("summary rejects evaluated branches outside the exporter contract", () => {
   const app = setup();
-  for (const branch of ["", "feature/private", "release/", "release/with space", 42, null]) {
-    const invalid = structuredClone(historical);
-    invalid.snapshot.evaluated_revision = { branch, commit_sha: "d".repeat(40) };
+  for (const branch of ["", "feature/private", "release/", "release/with space",
+    "release/a/", "release/0.12.0/", "release/0.13.0/rc1/", 42, null]) {
+    const invalid = withEvaluation();
+    invalid.snapshot.evaluated_revision.branch = branch;
+    invalid.snapshot.aic_source.branch = branch;
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
   }
@@ -336,6 +378,39 @@ test("summary rejects evaluated branches outside the exporter contract", () => {
     const invalid = structuredClone(historical); invalid.snapshot.evaluated_revision = revision;
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
+  }
+});
+
+test("catalog rejects trailing slashes in branch names and evaluated revisions", () => {
+  const app = setup();
+  for (const branch of ["release/a/", "release/0.12.0/", "release/0.13.0/rc1/"]) {
+    const invalidBranch = structuredClone(catalog);
+    invalidBranch.branches[1].branch = branch;
+    const invalidRevision = structuredClone(catalog);
+    Object.assign(invalidRevision.branches[1], {
+      status: "inherited", evaluated_revision: { branch, commit_sha: "d".repeat(40) },
+    });
+    for (const invalid of [invalidBranch, invalidRevision]) {
+      app.set("invalid", invalid);
+      assert.throws(() => app.run("validateCatalog(invalid)"), /invalid accuracy branch catalog/);
+    }
+  }
+});
+
+test("catalog and summary retain valid release names including nested branches", () => {
+  const app = setup();
+  for (const branch of ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"]) {
+    const data = withEvaluation();
+    data.snapshot.evaluated_revision.branch = branch;
+    data.snapshot.aic_source.branch = branch;
+    const valid = structuredClone(catalog);
+    Object.assign(valid.branches[0], { status: branch === "main" ? "evaluated" : "inherited",
+      evaluated_revision: data.snapshot.evaluated_revision });
+    if (branch !== "main") valid.branches[1].branch = branch;
+    app.set("valid", valid);
+    app.set("data", data);
+    assert.doesNotThrow(() => app.run("validateCatalog(valid)"));
+    assert.doesNotThrow(() => app.run("validateSummary(data)"));
   }
 });
 

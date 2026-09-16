@@ -462,7 +462,7 @@ function renderDrilldown() {
 }
 
 function validBranchName(branch) {
-  return typeof branch === "string" &&
+  return typeof branch === "string" && !branch.endsWith("/") &&
     (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
 }
 
@@ -484,21 +484,28 @@ function branchOption(entry) {
 }
 
 function validateSummary(data) {
+  const statuses = ["success", "unsupported", "failed", "unknown"];
   const metrics = (item) => item && Number.isInteger(item.points) && item.points >= 0 &&
     ["ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"]
       .every((key) => item[key] === null || (Number.isFinite(item[key]) && item[key] >= 0));
-  const aggregate = (item) => item && metrics(item.aic) && metrics(item.aisimulate) &&
-    Number.isInteger(item.rows) && item.rows > 0 && item.aisimulate.status_counts &&
-    ["success", "unsupported", "failed", "unknown"].every((key) => Number.isInteger(item.aisimulate.status_counts[key]) && item.aisimulate.status_counts[key] >= 0);
+  const aggregate = (item) => {
+    if (!item || !metrics(item.aic) || !metrics(item.aisimulate) ||
+      !Number.isInteger(item.rows) || item.rows <= 0 || !item.aisimulate.status_counts) return false;
+    const counts = item.aisimulate.status_counts;
+    return statuses.every((key) => Number.isInteger(counts[key]) && counts[key] >= 0) &&
+      counts.success === item.aisimulate.points && Object.values(counts).reduce((sum, count) => sum + count, 0) === item.rows;
+  };
   const topologyValid = (topology) => {
     if (!topology || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
       !topology.parallelism || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
     let previous = 0;
+    const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
       if (!Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
         !["success", "unsupported", "failed"].includes(point.status)) return false;
       previous = point.concurrency;
+      counts[point.status] += 1;
       return ["measured", "aic", "aisimulate"].every((name) => ["ttft", "tpot"].every((metric) => {
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
@@ -506,7 +513,7 @@ function validateSummary(data) {
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
-    });
+    }) && statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
   };
   if (!data || data.schema_version !== 1 || !data.snapshot || !data.scope || !data.totals ||
     !isSafeHttpsUrl(data.snapshot.measurement_source_url) || !aggregate(data.totals) ||
