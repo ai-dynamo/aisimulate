@@ -315,6 +315,29 @@ jobs:
           echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
           echo "wheel OK: ${wheel} (version ${version})"
 
+      # Same dependency-license gate as ci.yml's python-compliance job, run
+      # here so a disallowed license blocks staging. Findings are not
+      # printed (logs may become public).
+      - name: Check dependency licenses
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/venv-build/bin/python" - <<'EOF'
+          import os, tomllib
+          deps = tomllib.load(open('python/aisimulate/pyproject.toml', 'rb'))
+          deps = deps['project']['dependencies']
+          deps = [d for d in deps if not d.lower().startswith('aisimulate-core')]
+          with open(os.environ['TOOLS_DIR'] + '/runtime-deps.txt', 'w') as f:
+              f.write('\n'.join(deps))
+          EOF
+          uv venv --python "${PYTHON_SERIES}" "${TOOLS_DIR}/venv-licenses"
+          uv pip install --quiet --python "${TOOLS_DIR}/venv-licenses/bin/python" \
+            --requirements "${TOOLS_DIR}/runtime-deps.txt" pip-licenses==5.5.5
+          if ! "${TOOLS_DIR}/venv-licenses/bin/pip-licenses" --with-system --allow-only "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;Apache Software License;Apache-2.0 OR BSD-2-Clause;Apache Software License; BSD License;BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;MPL-2.0 AND MIT;PSF-2.0;Python Software Foundation License" >/dev/null 2>&1; then
+            echo "::error::a Python dependency license is outside the allow list — run pip-licenses locally for details"
+            exit 1
+          fi
+          echo "dependency licenses OK"
+
       # This leg's wheel; the amd64 leg also uploads the crate (it is
       # arch-independent source, one canonical copy).
       - name: Stage to Artifactory
@@ -384,10 +407,10 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      # Installs the wheel fetched back from Artifactory, not the local
-      # build, so a corrupted or wrong upload fails here instead of at the
-      # consumer. The fetched bytes must match the local build exactly.
-      - name: Smoke-test the staged wheel on every supported Python
+      # The deploy token is scoped to this download-only step; the smoke
+      # test below installs unpinned dependencies and runs their code, so it
+      # must not inherit the credential.
+      - name: Fetch the staged wheel back from Artifactory
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
@@ -407,6 +430,17 @@ jobs:
             echo "::error::staged wheel differs from the built wheel: ${wheel}"
             exit 1
           }
+          echo "fetched ${wheel} (checksum matches the build)"
+
+      # Installs the wheel fetched back from Artifactory, not the local
+      # build, so a corrupted or wrong upload fails here instead of at the
+      # consumer. No secrets: dependency build hooks and imported code run
+      # in this step.
+      - name: Smoke-test the staged wheel on every supported Python
+        run: |
+          set -euo pipefail
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          fetch_dir="${TOOLS_DIR}/staged-dist"
           cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
           import os
