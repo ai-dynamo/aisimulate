@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from .detail import format_prediction_details
+from .power import format_power_summary
 from .replay.reporting import format_report_table
 from .sweeper.result import SweepResult
 
@@ -33,6 +34,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         for name in (
             "prediction.json",
             "recommendation.json",
+            "recommendation.csv",
             "requests.jsonl",
             "afd-replay-spec.json",
             "afd-qualification.json",
@@ -68,6 +70,14 @@ def write_recommendation_result(root: Path, result: SweepResult) -> Path:
 
     path = root / "recommendation.json"
     path.write_text(result.to_json() + "\n", encoding="utf-8")
+    return path
+
+
+def write_recommendation_csv(root: Path, result: SweepResult) -> Path:
+    """Write the complete candidate ledger as an analysis-friendly CSV."""
+
+    path = root / "recommendation.csv"
+    path.write_text(result.to_csv(), encoding="utf-8")
     return path
 
 
@@ -111,6 +121,7 @@ def format_prediction_stdout(
             "total_gpus",
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append(format_power_summary(summary))
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return "\n".join(lines)
     table = format_report_table(summary)
@@ -128,5 +139,6 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())
-        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']} config={row['config_path']}")
+        power = " " + format_power_summary(row)
+        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}{power} config={row['config_path']}")
     return "\n".join(lines)

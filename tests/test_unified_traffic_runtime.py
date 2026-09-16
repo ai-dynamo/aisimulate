@@ -14,6 +14,7 @@ import pytest
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
+from aisimulate.replay.reporting import format_report_table
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 
@@ -121,7 +122,28 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
     )
 
     assert report.metrics["power_coverage"] == 0.0
-    assert "power_w" not in report.metrics
+    assert report.metrics["power_w"] is None
+
+
+def test_power_report_table_surfaces_available_power_and_coverage() -> None:
+    table = format_report_table({"power_w": 487.5, "power_coverage": 0.95})
+    active_power_row = next(line for line in table.splitlines() if "Active Power per GPU (W)" in line)
+    coverage_row = next(line for line in table.splitlines() if "Power Data Coverage (%)" in line)
+
+    assert "487.50" in active_power_row
+    assert "95.00" not in active_power_row
+    assert "95.00" in coverage_row
+    assert "487.50" not in coverage_row
+
+
+def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
+    table = format_report_table({"power_coverage": 0.42})
+    active_power_row = next(line for line in table.splitlines() if "Active Power per GPU (W)" in line)
+    coverage_row = next(line for line in table.splitlines() if "Power Data Coverage (%)" in line)
+
+    assert "unavailable (insufficient energy coverage)" in active_power_row
+    assert "42.00" in coverage_row
+    assert "42.00" not in active_power_row
 
 
 def test_b200_power_survives_native_json_and_runner_normalization() -> None:
@@ -437,13 +459,19 @@ def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> N
     assert report.metrics["completed_requests"] == 8
 
 
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(monkeypatch) -> None:
+def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
+    monkeypatch,
+) -> None:
     # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
     # back to op_level; the same shape still replays under op_level timing. This is a wiring
     # check for the data path, not an accuracy statement about either model.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {"tensor": 2, "moe_tensor": 2, "moe_expert": 1}
+    engine["workers"]["aggregated"]["parallelism"] = {
+        "tensor": 2,
+        "moe_tensor": 2,
+        "moe_expert": 1,
+    }
 
     with pytest.raises(RuntimeError, match="FPM"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})

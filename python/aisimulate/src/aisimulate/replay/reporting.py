@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..power import normalize_power_summary, power_unavailable_reason
+
 TITLE = "NVIDIA AIPerf | LLM Metrics"
 STAT_COLUMNS = ("avg", "min", "max", "p99", "p90", "p75", "std")
 
@@ -75,6 +77,22 @@ def format_report_table(report: dict[str, Any]) -> str:
             [
                 "Request Count (requests)",
                 _format_value(report.get("completed_requests", report.get("num_requests"))),
+                *["N/A"] * (len(STAT_COLUMNS) - 1),
+            ],
+        ]
+    )
+    power = normalize_power_summary(report)
+    unavailable = f"unavailable ({power_unavailable_reason(power)})"
+    rows.extend(
+        [
+            [
+                "Active Power per GPU (W) [power_w]",
+                _format_value(power["power_w"]) if power["power_w"] is not None else unavailable,
+                *["N/A"] * (len(STAT_COLUMNS) - 1),
+            ],
+            [
+                "Power Data Coverage (%) [power_coverage]",
+                _format_value(power["power_coverage"] * 100.0) if power["power_coverage"] is not None else unavailable,
                 *["N/A"] * (len(STAT_COLUMNS) - 1),
             ],
         ]

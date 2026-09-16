@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from copy import deepcopy
 from types import SimpleNamespace
@@ -61,35 +62,57 @@ class _RecommendationResult:
             sort_keys=True,
         )
 
+    def to_csv(self) -> str:
+        return "schema_version\n1.0\n"
+
 
 class _Runner:
-    def __init__(self) -> None:
+    def __init__(self, *, power_w: float | None = 487.5, power_coverage: float | None = 0.95) -> None:
         self.spec = None
         self.output_requirements = None
         self.closed = False
+        self.power_w = power_w
+        self.power_coverage = power_coverage
 
     def run(self, spec, *, output_requirements=None):
         self.spec = spec
         self.output_requirements = output_requirements
+        metrics = {
+            "completed_requests": 1.0,
+            "num_ttft_samples": 1.0,
+            "num_tpot_samples": 1.0,
+            "num_e2e_latency_samples": 1.0,
+            "output_throughput_tok_s": 8.0,
+            "mean_ttft_ms": 2.0,
+            "mean_tpot_ms": 1.0,
+            "mean_e2e_latency_ms": 4.0,
+            "power_coverage": self.power_coverage,
+        }
+        summary = {
+            "completed_requests": 1,
+            "output_throughput_tok_s": 8.0,
+            "power_coverage": self.power_coverage,
+        }
+        power_is_publishable = (
+            self.power_w is not None and self.power_coverage is not None and self.power_coverage >= 0.9
+        )
+        if power_is_publishable:
+            metrics["power_w"] = self.power_w
+            summary["power_w"] = self.power_w
         return ReplayReport(
-            metrics={
-                "completed_requests": 1.0,
-                "num_ttft_samples": 1.0,
-                "num_tpot_samples": 1.0,
-                "num_e2e_latency_samples": 1.0,
-                "output_throughput_tok_s": 8.0,
-                "mean_ttft_ms": 2.0,
-                "mean_tpot_ms": 1.0,
-                "mean_e2e_latency_ms": 4.0,
-            },
+            metrics=metrics,
             metadata={
+                "power": {
+                    "source": "modeled",
+                    "scope": "active_forward_pass_per_gpu",
+                    "power_w_unit": "W",
+                    "coverage_gate": 0.9,
+                    "publication_status": ("available" if power_is_publishable else "withheld"),
+                },
                 "native_report": {
-                    "summary": {
-                        "completed_requests": 1,
-                        "output_throughput_tok_s": 8.0,
-                    },
+                    "summary": summary,
                     "per_request": [{"request_id": "synthetic-0"}],
-                }
+                },
             },
         )
 
@@ -469,6 +492,8 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     rows = json.loads(capsys.readouterr().out)
     recommendation = recommendation_output / "recommendations" / "0001.yaml"
     assert rows[0]["config_path"] == str(recommendation)
+    assert rows[0]["power_w"] == 487.5
+    assert rows[0]["power_coverage"] == 0.95
     generated = yaml.safe_load(recommendation.read_text())
     assert "router" not in generated
     assert "planner" not in generated
@@ -479,7 +504,24 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert result["counts"]["feasible"] == 1
     assert result["views"]["top_n"] == ["candidate-000001"]
     assert result["candidates"][0]["prediction_config"] == generated
+    assert result["candidates"][0]["metrics"]["power_w"] == 487.5
+    assert result["candidates"][0]["metrics"]["power_coverage"] == 0.95
+    assert result["candidates"][0]["provenance"]["power"] == {
+        "coverage_gate": 0.9,
+        "power_coverage": 0.95,
+        "power_w": 487.5,
+        "power_w_unit": "W",
+        "publication_status": "available",
+        "scope": "active_forward_pass_per_gpu",
+        "source": "modeled",
+    }
+    with (recommendation_output / "recommendation.csv").open() as csv_file:
+        csv_rows = list(csv.DictReader(csv_file))
+    assert csv_rows[0]["power_w"] == "487.5"
+    assert csv_rows[0]["power_coverage"] == "0.95"
+    assert csv_rows[0]["power_source"] == "modeled"
 
+    runner.power_coverage = 0.9
     prediction_output = tmp_path / "predict-output"
     assert (
         cli.main(
@@ -495,8 +537,114 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+    prediction_summary = json.loads(capsys.readouterr().out)
+    assert prediction_summary["completed_requests"] == 1
+    assert prediction_summary["power_w"] == 487.5
+    assert prediction_summary["power_coverage"] == 0.9
+    prediction_report = json.loads((prediction_output / "prediction.json").read_text())
+    assert prediction_report["summary"]["power_w"] == 487.5
+    assert prediction_report["summary"]["power_coverage"] == 0.9
     assert runner.spec.goal["sla"] == {sla_field: bound}
+
+    withheld_output = tmp_path / "withheld-recommend-output"
+    withheld_runner = _Runner(power_w=487.5, power_coverage=0.42)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(withheld_runner))
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(withheld_output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    withheld_rows = json.loads(capsys.readouterr().out)
+    assert withheld_rows[0]["power_w"] is None
+    assert withheld_rows[0]["power_coverage"] == 0.42
+    withheld_result = json.loads((withheld_output / "recommendation.json").read_text())
+    withheld_candidate = withheld_result["candidates"][0]
+    assert withheld_candidate["metrics"]["power_w"] is None
+    assert withheld_candidate["metrics"]["power_coverage"] == 0.42
+    assert withheld_candidate["provenance"]["power"]["publication_status"] == "withheld"
+    assert withheld_candidate["provenance"]["power"]["scope"] == "active_forward_pass_per_gpu"
+    assert withheld_candidate["provenance"]["power"]["power_w_unit"] == "W"
+    assert withheld_candidate["provenance"]["power"]["coverage_gate"] == 0.9
+    assert withheld_candidate["provenance"]["power"]["source"] == "modeled"
+    assert withheld_candidate["provenance"]["power"]["power_coverage"] == 0.42
+    assert withheld_candidate["provenance"]["power"]["power_w"] is None
+    with (withheld_output / "recommendation.csv").open() as csv_file:
+        withheld_csv = list(csv.DictReader(csv_file))[0]
+    assert withheld_csv["power_w"] == ""
+    assert withheld_csv["power_coverage"] == "0.42"
+    assert withheld_csv["power_source"] == "modeled"
+
+    withheld_prediction_output = tmp_path / "withheld-predict-output"
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(recommendation),
+                "--output-dir",
+                str(withheld_prediction_output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    withheld_prediction_summary = json.loads(capsys.readouterr().out)
+    assert withheld_prediction_summary["power_w"] is None
+    assert withheld_prediction_summary["power_coverage"] == 0.42
+    withheld_prediction_report = json.loads((withheld_prediction_output / "prediction.json").read_text())
+    assert withheld_prediction_report["summary"]["power_w"] is None
+    assert withheld_prediction_report["summary"]["power_coverage"] == 0.42
+
+    withheld_runner.power_w = None
+    withheld_runner.power_coverage = None
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(withheld_output),
+                "--overwrite",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    unsupported_rows = json.loads(capsys.readouterr().out)
+    assert unsupported_rows[0]["power_w"] is None
+    assert unsupported_rows[0]["power_coverage"] is None
+    unsupported_candidate = json.loads((withheld_output / "recommendation.json").read_text())["candidates"][0]
+    assert unsupported_candidate["provenance"]["power"]["publication_status"] == "unavailable"
+    for key in ("power_w", "power_coverage"):
+        assert key in unsupported_candidate["metrics"] and unsupported_candidate["metrics"][key] is None
+        assert (
+            key in unsupported_candidate["provenance"]["power"]
+            and unsupported_candidate["provenance"]["power"][key] is None
+        )
+    assert (
+        cli.main(
+            ["predict", "--config", str(recommendation), "--output-dir", str(withheld_prediction_output), "--overwrite"]
+        )
+        == 0
+    )
+    table = capsys.readouterr().out
+    assert "power_w" in table and "power_coverage" in table
+    assert "unavailable (energy provider or topology unsupported)" in table
+    unsupported_summary = json.loads((withheld_prediction_output / "prediction.json").read_text())["summary"]
+    assert unsupported_summary["power_w"] is None
+    assert unsupported_summary["power_coverage"] is None
 
 
 def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
@@ -615,6 +763,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
     (root / "recommendation.json").write_text("old")
+    (root / "recommendation.csv").write_text("old")
     (root / "afd-replay-spec.json").write_text("old")
     (root / "afd-qualification.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
@@ -629,6 +778,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
     assert not (root / "recommendation.json").exists()
+    assert not (root / "recommendation.csv").exists()
     assert not (root / "afd-replay-spec.json").exists()
     assert not (root / "afd-qualification.json").exists()
     assert not (recommendations / "0001.yaml").exists()
@@ -684,6 +834,38 @@ def _detail_config(tmp_path):
         )
     )
     return path
+
+
+@pytest.mark.parametrize("nested", [True, False], ids=["nested-native", "flat-native"])
+@pytest.mark.parametrize("native_power", [{}, {"power_w": 999.0, "power_coverage": 1.0}], ids=["missing", "stale"])
+@pytest.mark.parametrize("watts,coverage", [(487.5, 0.95), (None, 0.42), (None, None)])
+def test_predict_uses_validated_power_metrics_over_raw_metadata(
+    tmp_path, monkeypatch, capsys, nested, native_power, watts, coverage
+):
+    class RawMetadataRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            native = report.metadata["native_report"]
+            summary = native["summary"]
+            summary.pop("power_w", None)
+            summary.pop("power_coverage", None)
+            summary.update(native_power)
+            if not nested:
+                report.metadata["native_report"] = summary
+            return report
+
+    runner = RawMetadataRunner(power_w=watts, power_coverage=coverage)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    output = tmp_path / "out"
+    assert (
+        cli.main(["predict", "-c", str(_detail_config(tmp_path)), "--output-dir", str(output), "--format", "json"]) == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((output / "prediction.json").read_text())
+    saved_summary = saved["summary"] if nested else saved
+    for summary in (stdout, saved_summary):
+        assert summary["power_w"] == watts
+        assert summary["power_coverage"] == coverage
 
 
 @pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "energy", "source", "power"])
