@@ -271,7 +271,79 @@
             "scope",
             "diagnostics"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "available"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "withheld"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "withheld"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "unsupported"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "unsupported"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "not_observed"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "not_observed"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "missing"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "missing"
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       "required": [],

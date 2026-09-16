@@ -1062,21 +1062,24 @@ def test_energy_detail_schema_enforces_power_publication(watts, coverage, valid)
 
 
 @pytest.mark.parametrize("status", ["available", "withheld", "unsupported", "not_observed", "missing", "invented"])
-def test_energy_detail_schema_constrains_publication_status(status):
+@pytest.mark.parametrize(
+    "publication_status", ["available", "withheld", "unsupported", "not_observed", "missing", "invented"]
+)
+def test_energy_detail_schema_constrains_publication_status(status, publication_status):
     from jsonschema import Draft202012Validator
 
     schema = _detail_schema()["properties"]["sections"]["properties"]["energy"]
     section = {
-        "status": "unsupported",
+        "status": status,
         "scope": "active_forward_pass_per_gpu",
         "diagnostics": {
             "power_w": None,
             "power_coverage": None,
-            "publication_status": status,
+            "publication_status": publication_status,
             "phases": [],
         },
     }
-    assert Draft202012Validator(schema).is_valid(section) is (status != "invented")
+    assert Draft202012Validator(schema).is_valid(section) is (status == publication_status and status != "invented")
 
 
 @pytest.mark.parametrize("selector", ["all", "time,time", "memory"])
