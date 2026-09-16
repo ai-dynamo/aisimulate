@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use aiperf_steppable_abi::{
-    ByteSliceV1, CreateRequestV1, DirectRequestV1, PLUGIN_ABI_MAJOR_V1, ReplayContextV1,
-    ReplayHandleV1, ReplayStateV1, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
-    StepResultV1, U32SliceV1, validate_descriptor_v1,
+    ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventV1,
+    PLUGIN_ABI_MAJOR_V1, ReplayContextV1, ReplayHandleV1, ReplayStateV1, RequestIdMutSliceV1,
+    SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
+    validate_descriptor_v1,
 };
 
 #[test]
@@ -128,6 +129,67 @@ fn backend_creates_and_destroys_a_default_replay() {
         StatusV1::OK
     );
     assert_eq!(state.in_flight, 1);
+
+    let batch = [DirectRequestV1 {
+        struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+        flags: 0,
+        tokens: U32SliceV1 {
+            data: tokens.as_ptr(),
+            len: tokens.len() as u64,
+        },
+        output_token_ids: U32SliceV1::EMPTY,
+        max_output_tokens: 1,
+        uuid: [0; 16],
+        dp_rank: 0,
+        preferred_dp_rank: 0,
+        preferred_prefill_dp_rank: 0,
+        arrival_timestamp_ms: 0.0,
+        priority: 0,
+        strict_priority: 0,
+        policy_class: ByteSliceV1::EMPTY,
+        replay_context: ReplayContextV1::EMPTY,
+    }; 2];
+    let mut batch_ids = [[0; 16]; 2];
+    assert_eq!(
+        unsafe {
+            vtable.submit_batch.unwrap()(
+                handle,
+                DirectRequestSliceV1 {
+                    data: batch.as_ptr(),
+                    len: batch.len() as u64,
+                },
+                RequestIdMutSliceV1 {
+                    data: batch_ids.as_mut_ptr(),
+                    len: batch_ids.len() as u64,
+                },
+            )
+        },
+        StatusV1::OK
+    );
+    assert!(batch_ids.iter().all(|id| *id != [0; 16]));
+
+    let mut cancellation = EngineEventV1 {
+        request_id: [0; 16],
+        flags: 0,
+        token_id: 0,
+        terminal_status: 0,
+        reserved: 0,
+    };
+    let mut canceled = 0;
+    assert_eq!(
+        unsafe {
+            vtable.cancel.unwrap()(
+                handle,
+                &raw const batch_ids[0],
+                &raw mut cancellation,
+                &raw mut canceled,
+            )
+        },
+        StatusV1::OK
+    );
+    assert_eq!(canceled, 1);
+    assert_eq!(cancellation.request_id, batch_ids[0]);
+    assert_ne!(cancellation.flags & (1 << 1), 0);
 
     let mut stepped = StepResultV1::EMPTY;
     assert_eq!(

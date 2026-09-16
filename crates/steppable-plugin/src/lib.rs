@@ -24,6 +24,7 @@ use aisimulate_core::replay::{
     DirectRequest, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 /// Topology built by the backend for one steppable replay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -229,20 +230,104 @@ unsafe extern "C" fn submit(
 }
 
 unsafe extern "C" fn submit_batch(
-    _handle: ReplayHandleV1,
-    _requests: DirectRequestSliceV1,
-    _request_ids: RequestIdMutSliceV1,
+    handle: ReplayHandleV1,
+    requests: DirectRequestSliceV1,
+    request_ids: RequestIdMutSliceV1,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    if requests.len > usize::MAX as u64
+        || request_ids.len != requests.len
+        || request_ids.len > usize::MAX as u64
+        || (requests.data.is_null() && requests.len != 0)
+        || (request_ids.data.is_null() && request_ids.len != 0)
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let requests = if requests.len == 0 {
+        &[]
+    } else {
+        // Safety: non-empty input batch is valid for this FFI call.
+        unsafe { std::slice::from_raw_parts(requests.data, requests.len as usize) }
+    };
+    let converted = match requests
+        .iter()
+        .map(|request| {
+            // Safety: each record's borrowed fields are valid for this call.
+            unsafe { direct_request(*request) }
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(requests) => requests,
+        Err(status) => return status,
+    };
+    let output = if request_ids.len == 0 {
+        &mut []
+    } else {
+        // Safety: caller supplies a writable output batch matching input size.
+        unsafe { std::slice::from_raw_parts_mut(request_ids.data, request_ids.len as usize) }
+    };
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    for (request, output) in converted.into_iter().zip(output.iter_mut()) {
+        match replay.engine.submit(request) {
+            Ok(uuid) => *output = *uuid.as_bytes(),
+            Err(error) => {
+                replay.last_error = error.to_string();
+                return StatusV1::REJECTED;
+            }
+        }
+    }
+    StatusV1::OK
 }
 
 unsafe extern "C" fn cancel(
-    _handle: ReplayHandleV1,
-    _request_id: *const RequestIdV1,
-    _event: *mut EngineEventV1,
-    _canceled: *mut u8,
+    handle: ReplayHandleV1,
+    request_id: *const RequestIdV1,
+    event: *mut EngineEventV1,
+    canceled: *mut u8,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    if request_id.is_null() || event.is_null() || canceled.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Safety: validated non-null input pointer.
+    let request_id = Uuid::from_bytes(unsafe { *request_id });
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    match replay.engine.cancel(request_id) {
+        Ok(Some(terminal)) => {
+            let terminal_status = match terminal.terminal_status {
+                Some(ReplayTerminalStatus::Completed) => 1,
+                Some(ReplayTerminalStatus::Rejected) => 2,
+                Some(ReplayTerminalStatus::Canceled) => 3,
+                Some(ReplayTerminalStatus::Failed) => 4,
+                None => 0,
+            };
+            // Safety: validated output pointers.
+            unsafe {
+                *event = EngineEventV1 {
+                    request_id: *terminal.uuid.as_bytes(),
+                    flags: 1 << 1,
+                    token_id: terminal.token_id.unwrap_or_default(),
+                    terminal_status,
+                    reserved: 0,
+                };
+                *canceled = 1;
+            }
+            StatusV1::OK
+        }
+        Ok(None) => {
+            // Safety: validated output pointer.
+            unsafe { *canceled = 0 };
+            StatusV1::OK
+        }
+        Err(error) => {
+            replay.last_error = error.to_string();
+            StatusV1::REJECTED
+        }
+    }
 }
 
 unsafe extern "C" fn cancel_batch(
