@@ -4,10 +4,12 @@
 use std::ffi::c_void;
 
 use aisimulate_placement_abi::{
-    AdmissionDecisionV1, ByteSliceV1, PlacementBatchResultV1, PlacementCacheSampleV1,
-    PlacementDiagnosticV1, PlacementMutationKindV1, PlacementMutationV1, PlacementResultV1,
-    PlacementV1, PluginDescriptorV1, PluginVTableV1, StatusV1, WorkerCapacityV1, WorkerTopologyV1,
-    validate_descriptor_v1,
+    AdmissionDecisionV1, AdmissionMetadataFormatV1, ByteSliceV1, DescriptorValidationError,
+    MAX_ADMISSION_METADATA_BYTES_V1, PlacementAdmissionV1, PlacementBatchResultV1,
+    PlacementCacheSampleV1, PlacementDiagnosticV1, PlacementMetadataV1, PlacementMutationKindV1,
+    PlacementMutationPayloadV1, PlacementMutationSliceV1, PlacementMutationV1, PlacementResultV1,
+    PlacementV1, PluginDescriptorV1, PluginVTableV1, PromptIdentityV1, StatusV1, TokenIdSliceV1,
+    WorkerCapacityV1, WorkerTopologyV1, validate_descriptor_v1, validate_mutation_batch_v1,
 };
 
 #[test]
@@ -86,7 +88,7 @@ fn descriptor_validator_rejects_a_missing_lifecycle_batch_operation() {
     };
     let descriptor = PluginDescriptorV1 {
         abi_major: PluginDescriptorV1::ABI_MAJOR,
-        abi_minor: 0,
+        abi_minor: PluginDescriptorV1::ABI_MINOR,
         struct_size: std::mem::size_of::<PluginDescriptorV1>() as u32,
         flags: 0,
         capabilities: 0,
@@ -96,4 +98,147 @@ fn descriptor_validator_rejects_a_missing_lifecycle_batch_operation() {
 
     assert!(unsafe { validate_descriptor_v1(&descriptor) }.is_err());
     assert!(unsafe { validate_descriptor_v1(std::ptr::null::<c_void>().cast()) }.is_err());
+}
+
+#[test]
+fn descriptor_validator_rejects_a_provider_before_the_identity_minor() {
+    let table = PluginVTableV1 {
+        struct_size: std::mem::size_of::<PluginVTableV1>() as u32,
+        flags: 0,
+        create: None,
+        apply_batch: None,
+        release_results: None,
+        release_bytes: None,
+        last_error: None,
+        destroy: None,
+    };
+    let descriptor = PluginDescriptorV1 {
+        abi_major: PluginDescriptorV1::ABI_MAJOR,
+        abi_minor: 0,
+        struct_size: std::mem::size_of::<PluginDescriptorV1>() as u32,
+        flags: 0,
+        capabilities: 0,
+        provider_id: c"fixture".as_ptr(),
+        vtable: &table,
+    };
+
+    assert_eq!(
+        unsafe { validate_descriptor_v1(&descriptor) },
+        Err(DescriptorValidationError::IncompatibleMinor)
+    );
+}
+
+#[test]
+fn admission_prompt_identity_flags_distinguish_omitted_from_explicit_empty() {
+    let omitted = admission_with_identity(PromptIdentityV1::OMITTED);
+    assert!(valid_admission(omitted));
+
+    let explicitly_empty = admission_with_identity(PromptIdentityV1 {
+        flags: PromptIdentityV1::MATERIALIZED_TOKEN_IDS_PRESENT,
+        reserved: 0,
+        materialized_token_ids: TokenIdSliceV1::default(),
+        local_block_hashes: Default::default(),
+        sequence_block_hashes: Default::default(),
+    });
+    assert!(valid_admission(explicitly_empty));
+
+    let tokens = [42_u32];
+    let invalid_unflagged_tokens = admission_with_identity(PromptIdentityV1 {
+        flags: 0,
+        reserved: 0,
+        materialized_token_ids: TokenIdSliceV1 {
+            data: tokens.as_ptr(),
+            len: 1,
+        },
+        local_block_hashes: Default::default(),
+        sequence_block_hashes: Default::default(),
+    });
+    assert!(!valid_admission(invalid_unflagged_tokens));
+}
+
+#[test]
+fn admission_metadata_is_tagged_and_bounded() {
+    let json = br#"{"tenant":"demo"}"#;
+    let valid = PlacementAdmissionV1 {
+        metadata: PlacementMetadataV1 {
+            format: AdmissionMetadataFormatV1::JSON_UTF8,
+            flags: 0,
+            bytes: ByteSliceV1 {
+                data: json.as_ptr(),
+                len: json.len() as u64,
+            },
+        },
+        ..admission_with_identity(PromptIdentityV1::OMITTED)
+    };
+    assert!(valid_admission(valid));
+
+    let malformed_json = b"not json";
+    let malformed = PlacementAdmissionV1 {
+        metadata: PlacementMetadataV1 {
+            format: AdmissionMetadataFormatV1::JSON_UTF8,
+            flags: 0,
+            bytes: ByteSliceV1 {
+                data: malformed_json.as_ptr(),
+                len: malformed_json.len() as u64,
+            },
+        },
+        ..admission_with_identity(PromptIdentityV1::OMITTED)
+    };
+    assert!(!valid_admission(malformed));
+
+    let oversized_json = vec![b' '; MAX_ADMISSION_METADATA_BYTES_V1 as usize + 1];
+    let oversized = PlacementAdmissionV1 {
+        metadata: PlacementMetadataV1 {
+            format: AdmissionMetadataFormatV1::JSON_UTF8,
+            flags: 0,
+            bytes: ByteSliceV1 {
+                data: oversized_json.as_ptr(),
+                len: oversized_json.len() as u64,
+            },
+        },
+        ..admission_with_identity(PromptIdentityV1::OMITTED)
+    };
+    assert!(!valid_admission(oversized));
+
+    let unknown_format = PlacementAdmissionV1 {
+        metadata: PlacementMetadataV1 {
+            format: AdmissionMetadataFormatV1(99),
+            flags: 0,
+            bytes: ByteSliceV1::EMPTY,
+        },
+        ..admission_with_identity(PromptIdentityV1::OMITTED)
+    };
+    assert!(!valid_admission(unknown_format));
+}
+
+fn admission_with_identity(prompt_identity: PromptIdentityV1) -> PlacementAdmissionV1 {
+    PlacementAdmissionV1 {
+        request_id: [7; 16],
+        flags: 0,
+        priority: 0,
+        prompt_tokens: 0,
+        max_output_tokens: 1,
+        prompt_identity,
+        metadata: PlacementMetadataV1::EMPTY,
+        session_id: ByteSliceV1::EMPTY,
+    }
+}
+
+fn valid_admission(admission: PlacementAdmissionV1) -> bool {
+    let mutation = PlacementMutationV1 {
+        struct_size: std::mem::size_of::<PlacementMutationV1>() as u32,
+        kind: PlacementMutationKindV1::ADMIT,
+        flags: 0,
+        sequence: 0,
+        now_ms: 0.0,
+        payload: PlacementMutationPayloadV1 { admission },
+    };
+    // Safety: `mutation` stays live for the entire validation call.
+    unsafe {
+        validate_mutation_batch_v1(PlacementMutationSliceV1 {
+            data: &mutation,
+            len: 1,
+        })
+        .is_ok()
+    }
 }

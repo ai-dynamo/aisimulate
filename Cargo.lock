@@ -73,6 +73,9 @@ dependencies = [
 [[package]]
 name = "aisimulate-placement-abi"
 version = "0.12.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "aisimulate-steppable-plugin"

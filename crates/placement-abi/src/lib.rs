@@ -13,6 +13,10 @@ use std::ffi::{c_char, c_void};
 
 /// The first compatible major version of the placement plugin ABI.
 pub const PLACEMENT_PLUGIN_ABI_MAJOR_V1: u32 = 1;
+/// Latest compatible minor version of the placement plugin ABI major V1.
+///
+/// Minor one adds routing-safe prompt identity and tagged admission metadata.
+pub const PLACEMENT_PLUGIN_ABI_MINOR_V1: u32 = 1;
 /// The first version of the placement creation payload.
 pub const PLACEMENT_CREATE_PAYLOAD_VERSION_V1: u32 = 1;
 /// Maximum workers accepted in a V1 creation payload.
@@ -21,6 +25,12 @@ pub const MAX_CREATE_WORKERS_V1: u64 = 65_536;
 pub const MAX_CREATE_OPTION_BYTES_V1: u64 = 1_048_576;
 /// Maximum mutations accepted in one V1 batch.
 pub const MAX_BATCH_MUTATIONS_V1: u64 = 65_536;
+/// Maximum prompt token identities accepted on one V1 admission.
+pub const MAX_ADMISSION_PROMPT_TOKEN_IDS_V1: u64 = 1_048_576;
+/// Maximum canonical block hashes accepted per identity form on one admission.
+pub const MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1: u64 = 1_048_576;
+/// Maximum tagged metadata bytes accepted on one V1 admission.
+pub const MAX_ADMISSION_METADATA_BYTES_V1: u64 = 65_536;
 
 /// A versioned C-ABI operation status.
 #[repr(transparent)]
@@ -61,6 +71,25 @@ impl ByteSliceV1 {
 impl Default for ByteSliceV1 {
     fn default() -> Self {
         Self::EMPTY
+    }
+}
+
+/// A borrowed sequence of materialized prompt token identifiers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TokenIdSliceV1 {
+    /// Start of token identifiers, or null only when `len` is zero.
+    pub data: *const u32,
+    /// Number of token identifiers.
+    pub len: u64,
+}
+
+impl Default for TokenIdSliceV1 {
+    fn default() -> Self {
+        Self {
+            data: std::ptr::null(),
+            len: 0,
+        }
     }
 }
 
@@ -223,6 +252,102 @@ pub struct PlacementCreateRequestV1 {
 /// A backward-compatible short name for the placement creation payload.
 pub type CreateRequestV1 = PlacementCreateRequestV1;
 
+/// Routing-safe prompt identity supplied with one admission.
+///
+/// The identity forms are deliberately separate from provider creation options:
+/// a provider can route with these stable identities without interpreting an
+/// opaque provider-specific configuration payload.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PromptIdentityV1 {
+    /// Presence bits selecting the identity slices below.
+    pub flags: u32,
+    /// Reserved for compatible-minor identity flags.
+    pub reserved: u32,
+    /// Materialized token IDs in prompt order when present.
+    pub materialized_token_ids: TokenIdSliceV1,
+    /// Canonical local hashes for complete prompt blocks when present.
+    pub local_block_hashes: BlockHashSliceV1,
+    /// Canonical rolling sequence hashes for complete prompt blocks when present.
+    pub sequence_block_hashes: BlockHashSliceV1,
+}
+
+impl PromptIdentityV1 {
+    /// `materialized_token_ids` is present. An empty slice is a known-empty prompt.
+    pub const MATERIALIZED_TOKEN_IDS_PRESENT: u32 = 1 << 0;
+    /// `local_block_hashes` is present. An empty slice has no complete blocks.
+    pub const LOCAL_BLOCK_HASHES_PRESENT: u32 = 1 << 1;
+    /// `sequence_block_hashes` is present. An empty slice has no complete blocks.
+    pub const SEQUENCE_BLOCK_HASHES_PRESENT: u32 = 1 << 2;
+
+    const KNOWN_FLAGS: u32 = Self::MATERIALIZED_TOKEN_IDS_PRESENT
+        | Self::LOCAL_BLOCK_HASHES_PRESENT
+        | Self::SEQUENCE_BLOCK_HASHES_PRESENT;
+
+    /// No prompt identity was materialized by the caller.
+    pub const OMITTED: Self = Self {
+        flags: 0,
+        reserved: 0,
+        materialized_token_ids: TokenIdSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+        local_block_hashes: BlockHashSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+        sequence_block_hashes: BlockHashSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+    };
+}
+
+impl Default for PromptIdentityV1 {
+    fn default() -> Self {
+        Self::OMITTED
+    }
+}
+
+/// Discriminant for [`PlacementMetadataV1`].
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmissionMetadataFormatV1(pub u32);
+
+impl AdmissionMetadataFormatV1 {
+    /// No metadata is carried; the byte slice must be canonical empty.
+    pub const NONE: Self = Self(0);
+    /// UTF-8 encoded JSON metadata. Its meaning is application-neutral.
+    pub const JSON_UTF8: Self = Self(1);
+}
+
+/// Bounded, tagged metadata associated with one admission.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlacementMetadataV1 {
+    /// Self-describing encoding of `bytes`.
+    pub format: AdmissionMetadataFormatV1,
+    /// Reserved for compatible-minor metadata flags.
+    pub flags: u32,
+    /// Metadata bytes in the declared format.
+    pub bytes: ByteSliceV1,
+}
+
+impl PlacementMetadataV1 {
+    /// Canonical absent metadata.
+    pub const EMPTY: Self = Self {
+        format: AdmissionMetadataFormatV1::NONE,
+        flags: 0,
+        bytes: ByteSliceV1::EMPTY,
+    };
+}
+
+impl Default for PlacementMetadataV1 {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
 /// Input facts for a request admission mutation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -237,8 +362,10 @@ pub struct PlacementAdmissionV1 {
     pub prompt_tokens: u64,
     /// Requested maximum generated tokens.
     pub max_output_tokens: u64,
-    /// Application-neutral request metadata.
-    pub metadata: ByteSliceV1,
+    /// Routing-safe prompt identity, with explicit omitted versus known-empty forms.
+    pub prompt_identity: PromptIdentityV1,
+    /// Tagged, bounded application-neutral request metadata.
+    pub metadata: PlacementMetadataV1,
     /// Optional session identifier encoded as UTF-8.
     pub session_id: ByteSliceV1,
 }
@@ -652,6 +779,8 @@ unsafe impl Sync for PluginDescriptorV1 {}
 impl PluginDescriptorV1 {
     /// ABI major required by this V1 descriptor.
     pub const ABI_MAJOR: u32 = PLACEMENT_PLUGIN_ABI_MAJOR_V1;
+    /// Minimum ABI minor required by this V1 descriptor.
+    pub const ABI_MINOR: u32 = PLACEMENT_PLUGIN_ABI_MINOR_V1;
 }
 
 /// All required callable operations supplied by a placement plugin.
@@ -694,6 +823,8 @@ pub enum DescriptorValidationError {
     NullDescriptor,
     /// The plugin implements an incompatible ABI major.
     IncompatibleMajor,
+    /// The plugin predates the minimum compatible ABI minor.
+    IncompatibleMinor,
     /// The descriptor was compiled with fewer fields than V1 requires.
     DescriptorTooSmall,
     /// The plugin did not identify its provider.
@@ -740,6 +871,9 @@ pub unsafe fn validate_descriptor_v1(
     let descriptor = unsafe { &*descriptor };
     if descriptor.abi_major != PLACEMENT_PLUGIN_ABI_MAJOR_V1 {
         return Err(DescriptorValidationError::IncompatibleMajor);
+    }
+    if descriptor.abi_minor < PLACEMENT_PLUGIN_ABI_MINOR_V1 {
+        return Err(DescriptorValidationError::IncompatibleMinor);
     }
     if (descriptor.struct_size as usize) < std::mem::size_of::<PluginDescriptorV1>() {
         return Err(DescriptorValidationError::DescriptorTooSmall);
@@ -829,8 +963,89 @@ pub unsafe fn validate_mutation_batch_v1(batch: PlacementMutationSliceV1) -> Res
         {
             return Err(StatusV1::INVALID_ARGUMENT);
         }
+        if mutation.kind == PlacementMutationKindV1::ADMIT {
+            // Safety: `admission` is the active union member for an ADMIT mutation.
+            let admission = unsafe { mutation.payload.admission };
+            if !valid_admission(&admission) {
+                return Err(StatusV1::INVALID_ARGUMENT);
+            }
+        }
     }
     Ok(())
+}
+
+fn valid_admission(admission: &PlacementAdmissionV1) -> bool {
+    let identity = admission.prompt_identity;
+    if identity.reserved != 0 || identity.flags & !PromptIdentityV1::KNOWN_FLAGS != 0 {
+        return false;
+    }
+    if !valid_optional_identity_slice(
+        identity.flags,
+        PromptIdentityV1::MATERIALIZED_TOKEN_IDS_PRESENT,
+        identity.materialized_token_ids.data,
+        identity.materialized_token_ids.len,
+        MAX_ADMISSION_PROMPT_TOKEN_IDS_V1,
+    ) || !valid_optional_identity_slice(
+        identity.flags,
+        PromptIdentityV1::LOCAL_BLOCK_HASHES_PRESENT,
+        identity.local_block_hashes.data,
+        identity.local_block_hashes.len,
+        MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1,
+    ) || !valid_optional_identity_slice(
+        identity.flags,
+        PromptIdentityV1::SEQUENCE_BLOCK_HASHES_PRESENT,
+        identity.sequence_block_hashes.data,
+        identity.sequence_block_hashes.len,
+        MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1,
+    ) {
+        return false;
+    }
+    if identity.flags & PromptIdentityV1::MATERIALIZED_TOKEN_IDS_PRESENT != 0
+        && identity.materialized_token_ids.len != admission.prompt_tokens
+    {
+        return false;
+    }
+    if identity.flags & PromptIdentityV1::LOCAL_BLOCK_HASHES_PRESENT != 0
+        && identity.flags & PromptIdentityV1::SEQUENCE_BLOCK_HASHES_PRESENT != 0
+        && identity.local_block_hashes.len != identity.sequence_block_hashes.len
+    {
+        return false;
+    }
+
+    let metadata = admission.metadata;
+    if metadata.flags != 0
+        || !valid_slice(metadata.bytes.data, metadata.bytes.len)
+        || metadata.bytes.len > MAX_ADMISSION_METADATA_BYTES_V1
+    {
+        return false;
+    }
+    match metadata.format {
+        AdmissionMetadataFormatV1::NONE => metadata.bytes.data.is_null() && metadata.bytes.len == 0,
+        AdmissionMetadataFormatV1::JSON_UTF8 => {
+            if metadata.bytes.len == 0 {
+                return false;
+            }
+            // Safety: a non-empty metadata slice has a non-null pointer, checked above.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(metadata.bytes.data, metadata.bytes.len as usize)
+            };
+            serde_json::from_slice::<serde_json::Value>(bytes).is_ok()
+        }
+        _ => false,
+    }
+}
+
+fn valid_optional_identity_slice<T>(
+    flags: u32,
+    present: u32,
+    data: *const T,
+    len: u64,
+    max: u64,
+) -> bool {
+    if flags & present == 0 {
+        return data.is_null() && len == 0;
+    }
+    valid_slice(data, len) && len <= max
 }
 
 fn valid_slice<T>(data: *const T, len: u64) -> bool {

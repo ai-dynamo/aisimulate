@@ -9,5 +9,8 @@ license.workspace = true
 description = "C-compatible ABI for dynamically loaded AISimulate placement policies"
 publish = false
 
+[dependencies]
+serde_json.workspace = true
+
 [lib]
 path = "src/lib.rs"
