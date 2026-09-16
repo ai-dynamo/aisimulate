@@ -125,6 +125,230 @@ pub struct BlockHashSliceV1 {
     pub len: u64,
 }
 
+/// One lossless identity record for a KV block that became cache-visible.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvStoredBlockV1 {
+    /// Sequence-aware block hash.
+    pub sequence_hash: u64,
+    /// Token-only local block hash.
+    pub token_hash: u64,
+}
+
+/// A borrowed sequence of cache-visible KV block records.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvStoredBlockSliceV1 {
+    /// Start of block records, or null only when `len` is zero.
+    pub data: *const KvStoredBlockV1,
+    /// Number of block records.
+    pub len: u64,
+}
+
+impl From<&[KvStoredBlockV1]> for KvStoredBlockSliceV1 {
+    fn from(value: &[KvStoredBlockV1]) -> Self {
+        Self {
+            data: value.as_ptr(),
+            len: value.len() as u64,
+        }
+    }
+}
+
+/// Storage tier that owns a KV event's blocks.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvStorageTierV1(pub u32);
+
+impl KvStorageTierV1 {
+    /// Device-local KV cache.
+    pub const DEVICE: Self = Self(0);
+}
+
+/// Discriminant for a lossless KV observation packet.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvEventKindV1(pub u32);
+
+impl KvEventKindV1 {
+    /// Cache blocks became visible.
+    pub const STORED: Self = Self(1);
+    /// Cache blocks were removed.
+    pub const REMOVED: Self = Self(2);
+}
+
+/// Stored-event data carried by a [`KvEventV1`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvStoreV1 {
+    /// Optional preceding sequence hash; presence is selected by event flags.
+    pub parent_hash: u64,
+    /// Optional absolute first-block position; presence is selected by event flags.
+    pub start_position: u64,
+    /// Stored blocks in producer order.
+    pub blocks: KvStoredBlockSliceV1,
+}
+
+/// Payload selected by [`KvEventV1::kind`].
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union KvEventPayloadV1 {
+    /// Active for [`KvEventKindV1::STORED`].
+    pub stored: KvStoreV1,
+    /// Active for [`KvEventKindV1::REMOVED`].
+    pub removed: BlockHashSliceV1,
+}
+
+/// One ordered, lossless AISimulate KV observation packet.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KvEventV1 {
+    /// Stable emitting worker identity.
+    pub worker_id: u64,
+    /// Emitting attention-DP rank.
+    pub dp_rank: u32,
+    /// Storage tier that owns the event's blocks.
+    pub storage_tier: KvStorageTierV1,
+    /// Monotonic producer event identity.
+    pub event_id: u64,
+    /// Event payload discriminant.
+    pub kind: KvEventKindV1,
+    /// Optional-field presence bits.
+    pub flags: u32,
+    /// Payload selected by `kind`.
+    pub payload: KvEventPayloadV1,
+}
+
+impl KvEventV1 {
+    /// Stored-event parent hash is present.
+    pub const HAS_PARENT_HASH: u32 = 1 << 0;
+    /// Stored-event start position is present.
+    pub const HAS_START_POSITION: u32 = 1 << 1;
+
+    /// Constructs one stored observation.
+    #[must_use]
+    pub fn stored(
+        worker_id: u64,
+        dp_rank: u32,
+        storage_tier: KvStorageTierV1,
+        event_id: u64,
+        parent_hash: Option<u64>,
+        start_position: Option<u64>,
+        blocks: &[KvStoredBlockV1],
+    ) -> Self {
+        let mut flags = 0;
+        if parent_hash.is_some() {
+            flags |= Self::HAS_PARENT_HASH;
+        }
+        if start_position.is_some() {
+            flags |= Self::HAS_START_POSITION;
+        }
+        Self {
+            worker_id,
+            dp_rank,
+            storage_tier,
+            event_id,
+            kind: KvEventKindV1::STORED,
+            flags,
+            payload: KvEventPayloadV1 {
+                stored: KvStoreV1 {
+                    parent_hash: parent_hash.unwrap_or_default(),
+                    start_position: start_position.unwrap_or_default(),
+                    blocks: blocks.into(),
+                },
+            },
+        }
+    }
+
+    /// Constructs one removal observation.
+    #[must_use]
+    pub fn removed(
+        worker_id: u64,
+        dp_rank: u32,
+        storage_tier: KvStorageTierV1,
+        event_id: u64,
+        hashes: &[u64],
+    ) -> Self {
+        Self {
+            worker_id,
+            dp_rank,
+            storage_tier,
+            event_id,
+            kind: KvEventKindV1::REMOVED,
+            flags: 0,
+            payload: KvEventPayloadV1 {
+                removed: BlockHashSliceV1 {
+                    data: hashes.as_ptr(),
+                    len: hashes.len() as u64,
+                },
+            },
+        }
+    }
+
+    /// Returns whether the stored payload carries a parent hash.
+    #[must_use]
+    pub const fn has_parent_hash(&self) -> bool {
+        self.flags & Self::HAS_PARENT_HASH != 0
+    }
+
+    /// Returns whether the stored payload carries an absolute start position.
+    #[must_use]
+    pub const fn has_start_position(&self) -> bool {
+        self.flags & Self::HAS_START_POSITION != 0
+    }
+
+    /// Returns the stored payload's parent hash when present.
+    #[must_use]
+    pub fn parent_hash(&self) -> Option<u64> {
+        if self.kind != KvEventKindV1::STORED || !self.has_parent_hash() {
+            return None;
+        }
+        // Safety: `kind` selects this union member.
+        Some(unsafe { self.payload.stored.parent_hash })
+    }
+
+    /// Returns the stored payload's absolute start position when present.
+    #[must_use]
+    pub fn start_position(&self) -> Option<u64> {
+        if self.kind != KvEventKindV1::STORED || !self.has_start_position() {
+            return None;
+        }
+        // Safety: `kind` selects this union member.
+        Some(unsafe { self.payload.stored.start_position })
+    }
+
+    /// Borrows the stored blocks when this is a stored event.
+    pub fn stored_blocks(&self) -> Option<&[KvStoredBlockV1]> {
+        if self.kind != KvEventKindV1::STORED {
+            return None;
+        }
+        // Safety: `kind` selects this union member and the caller keeps the
+        // borrowed packet and nested slice valid for the ABI call.
+        let stored = unsafe { self.payload.stored };
+        Some(if stored.blocks.len == 0 {
+            &[]
+        } else {
+            // Safety: non-empty ABI slices require a valid non-null pointer.
+            unsafe { std::slice::from_raw_parts(stored.blocks.data, stored.blocks.len as usize) }
+        })
+    }
+
+    /// Borrows the removed sequence hashes when this is a removal event.
+    pub fn removed_hashes(&self) -> Option<&[u64]> {
+        if self.kind != KvEventKindV1::REMOVED {
+            return None;
+        }
+        // Safety: `kind` selects this union member and the caller keeps the
+        // borrowed packet and nested slice valid for the ABI call.
+        let removed = unsafe { self.payload.removed };
+        Some(if removed.len == 0 {
+            &[]
+        } else {
+            // Safety: non-empty ABI slices require a valid non-null pointer.
+            unsafe { std::slice::from_raw_parts(removed.data, removed.len as usize) }
+        })
+    }
+}
+
 impl Default for BlockHashSliceV1 {
     fn default() -> Self {
         Self {

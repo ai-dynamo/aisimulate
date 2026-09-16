@@ -5,12 +5,44 @@ use std::ffi::c_void;
 
 use aisimulate_placement_abi::{
     AdmissionDecisionV1, AdmissionMetadataFormatV1, ByteSliceV1, DescriptorValidationError,
-    MAX_ADMISSION_METADATA_BYTES_V1, PlacementAdmissionV1, PlacementBatchResultV1,
-    PlacementCacheSampleV1, PlacementDiagnosticV1, PlacementMetadataV1, PlacementMutationKindV1,
-    PlacementMutationPayloadV1, PlacementMutationSliceV1, PlacementMutationV1, PlacementResultV1,
-    PlacementV1, PluginDescriptorV1, PluginVTableV1, PromptIdentityV1, StatusV1, TokenIdSliceV1,
+    KvEventV1, KvStorageTierV1, KvStoredBlockV1, MAX_ADMISSION_METADATA_BYTES_V1,
+    PlacementAdmissionV1, PlacementBatchResultV1, PlacementCacheSampleV1, PlacementDiagnosticV1,
+    PlacementMetadataV1, PlacementMutationKindV1, PlacementMutationPayloadV1,
+    PlacementMutationSliceV1, PlacementMutationV1, PlacementResultV1, PlacementV1,
+    PluginDescriptorV1, PluginVTableV1, PromptIdentityV1, StatusV1, TokenIdSliceV1,
     WorkerCapacityV1, WorkerTopologyV1, validate_descriptor_v1, validate_mutation_batch_v1,
 };
+
+#[test]
+fn lossless_kv_observation_records_store_and_remove_identity() {
+    let stored_blocks = [KvStoredBlockV1 {
+        sequence_hash: 101,
+        token_hash: 202,
+    }];
+    let store = KvEventV1::stored(
+        7,
+        3,
+        KvStorageTierV1::DEVICE,
+        11,
+        Some(99),
+        Some(4),
+        &stored_blocks,
+    );
+    let remove = KvEventV1::removed(7, 3, KvStorageTierV1::DEVICE, 12, &[101]);
+
+    assert_eq!(store.worker_id, 7);
+    assert_eq!(store.dp_rank, 3);
+    assert_eq!(store.event_id, 11);
+    assert!(store.has_parent_hash());
+    assert_eq!(store.parent_hash(), Some(99));
+    assert!(store.has_start_position());
+    assert_eq!(store.start_position(), Some(4));
+    assert_eq!(
+        store.stored_blocks().expect("stored payload")[0].token_hash,
+        202
+    );
+    assert_eq!(remove.removed_hashes().expect("removed payload"), &[101]);
+}
 
 #[test]
 fn placement_batch_preserves_lifecycle_order_and_all_effects() {
