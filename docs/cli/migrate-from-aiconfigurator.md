@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | Keep AIC `generate`. | [Deployment files](#54-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#411-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). Normal summaries include power; `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. Keep AIC for batch/static estimates and [remaining diagnostic gaps](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -238,7 +238,7 @@ required result, keep the AIC command above.
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
 - [4.10 Prediction details](#410-inspect-prediction-details)
-- [4.11 Power and energy analysis (planned)](#411-power-and-energy-analysis)
+- [4.11 Power and energy analysis](#411-power-and-energy-analysis)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -787,8 +787,8 @@ the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder 
 available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
 is omitted. The normal terminal summary does not display these power fields. Recommendation
 artifacts can also retain this metadata for each candidate. These fields do not provide a power
-report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
-compatibility command or SDK when power is a required analysis result.
+report for the full encoder-plus-language deployment or replace AIC's power analysis for that
+topology. Use the compatibility command or SDK when full-deployment EPD power is required.
 
 ## 5. Remaining feature and performance gaps
 
@@ -909,18 +909,20 @@ aiconfigurator cli estimate \
 
 #### 5.3.2 Remaining detailed-diagnostic gaps
 
-The supported `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.10](#410-inspect-prediction-details). Keep AIC `estimate --detail` when you need
-these additional diagnostic capabilities:
+The initial `summary`, `memory`, `time`, and `all` selectors are covered in
+[section 4.10](#410-inspect-prediction-details). The power stack adds `energy` and includes it in
+`all`, as shown in [section 4.11](#411-power-and-energy-analysis). Keep AIC `estimate --detail`
+when you need these additional diagnostic capabilities:
 
 | Remaining gap | AIC selector and evidence |
 | --- | --- |
 | Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
 | Per-operation data provenance and fallback information | `source`. |
-| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#411-power-and-energy-analysis). |
 
-AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
-three supported sections. Available AIC sections depend on the estimate mode and data;
+AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests
+`summary,memory,time,energy`. AISimulate energy evidence requires a supported engine path;
+the external Dynamo Python adapter's diagnostics export remains unqualified. Available AIC
+sections depend on the estimate mode and data;
 static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
 absent. For fixed-batch or single-pass semantics, keep the
 [static-estimate workflow](#531-static-estimates).
