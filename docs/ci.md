@@ -6,12 +6,14 @@ SPDX-License-Identifier: Apache-2.0
 # AISimulate CI guide
 
 AISimulate uses **Fast CI** for quick code and policy checks, **Full CI** for
-compiled tests and package validation, and **Nightly CI** for release artifacts
+compiled tests and package validation, and **Main branch nightly CI** for release artifacts
 and broader Forward Pass Engine (FPE) qualification. Fast and Full CI are
 separate workflows: Full CI verifies a successful standalone Fast CI run for
 the same branch and commit before starting compiled validation.
 Nightly has its own build and qualification pipeline; it does not rerun the
 entire Full CI suite.
+**Release branch nightly CI** separately discovers release branches and qualifies
+their support matrices each day.
 
 **Code review runs alongside CI.** Fast CI checks code mechanically; reviewers
 assess behavior, design, compatibility, and evidence. Passing validation,
@@ -36,6 +38,8 @@ The executable definitions live in the root
 [`.github/workflows/`](../.github/workflows/). Imported workflow copies under
 `python/aisimulate/.github/` are migration history and do not run for this repo.
 
+### Validation and review
+
 ```mermaid
 flowchart TD
     PR[PR admitted for review] --> Fast[Fast CI]
@@ -45,11 +49,6 @@ flowchart TD
     Scope --> Checks[Selected Full CI tests and package checks]
     Checks --> Success[Full CI Success]
     Success --> Stage[Main or release push: protected staging]
-    Nightly[Nightly CI] --> Build[Build nightly wheels and crate]
-    Build --> Smoke[Installed-wheel smoke tests]
-    Build --> FPE[FPE Support Matrix]
-    Smoke --> Publish[Protected nightly staging]
-    FPE --> Publish
 ```
 
 The diagram shows the high-level validation flow. Full CI verifies the
@@ -59,20 +58,74 @@ to succeed. The arrows describe prerequisites, not automatic dispatch.
 Review policy controls admission; the YAML does not automatically dispatch
 Full CI when a review finishes.
 
+### Nightly CIs
+
+```mermaid
+flowchart TD
+    subgraph MainNightly["Main branch nightly CI"]
+        MainGuard["Check for a new main commit"] -->|Changed| Build["Build nightly wheels and crate"]
+        Build --> Smoke["Installed-wheel smoke tests"]
+        Build --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
+        MainFPE --> MainQualified["Qualify main matrix artifact"]
+        Smoke --> NightlyStage["Protected nightly package staging"]
+        MainQualified --> NightlyStage
+    end
+
+    subgraph ReleaseNightly["Release branch nightly CI"]
+        Discover["Discover release/*"] --> Pin["Record each release branch's commit SHA"]
+        Pin --> PerRelease["FPE Support Matrix: each release<br/>Build wheel, discover, and probe"]
+        PerRelease --> ReleaseQualified["Qualify each release matrix artifact"]
+        ReleaseQualified --> AllReleases["Require every release to succeed"]
+    end
+
+    NightlyStage -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    AllReleases -.->|Release branch nightly CI succeeds| Pages
+    Pages --> Deploy["Deploy support matrix pages"]
+```
+
+The two nightly schedules are independent. **FPE Support Matrix** and
+**FPE Support Matrix (release)** are reusable workflows called by those schedules;
+they have no separate nightly timers. Within main's nightly run, wheel smoke
+tests and FPE qualification run in parallel. Release qualification processes
+branches sequentially, with up to 20 shard jobs within each release.
+Each release uses the commit SHA recorded at the start of the run, even if its
+branch receives new commits while the checks are running.
+
+The release path runs **only FPE support-matrix qualification**. Its scheduler
+discovers branches and calls the per-release helper, whose jobs prepare the
+wheel, generate probe reports, and qualify the matrix artifact. Main's nightly
+pipeline additionally builds distributable packages, runs wheel smoke suites,
+and stages packages. Full CI's broader test suites run in their own workflow.
+
+The main path above shows a scheduled run with a changed commit. An unchanged
+`main` skips rebuilding and qualification; release nightly refreshes every
+discovered release even when its commit is unchanged. An empty release
+inventory skips qualification. A failed release does not cancel the remaining
+branches, but Pages requires the overall producer run to succeed.
+
+Dotted arrows show successful workflow-completion events that trigger Pages.
+Pages selects retained qualified artifacts for each branch and publishes them
+in a separate deployment. Main's scheduled package staging requires protected
+environment approval; release FPE qualification produces coverage artifacts.
+Manual dispatches and site-change triggers are listed below.
+
 | Workflow | When it runs | Role |
 | --- | --- | --- |
 | [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
+| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
-| [FPE Support Matrix](../.github/workflows/fpe-support-matrix.yml) | Called by Nightly; manual dispatch with `expected_sha` | Broad native operation-level support qualification |
+| [FPE Support Matrix](../.github/workflows/fpe-support-matrix.yml) | Called by Main branch nightly CI; manual dispatch with `expected_sha` | Broad native operation-level support qualification |
+| [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Schedules FPE support-matrix refreshes for discovered `release/*` branches |
+| [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
-| [GitHub Pages](../.github/workflows/pages.yml) | Relevant site changes on PRs/`main`; manual dispatch | Builds dashboard/support-matrix pages; deployment is restricted to `main` |
+| [GitHub Pages](../.github/workflows/pages.yml) | Successful FPE Support Matrix, Main branch nightly CI, or Release branch nightly CI completion; relevant site changes on PRs/`main`; manual dispatch | Validates branch snapshots, tests FPE branch selection in Chromium, and builds dashboard/support-matrix pages; deployment is restricted to trusted `main` |
 
-The last three workflows run independently of the Fast/Full/Nightly pipelines.
+CODEOWNERS and advisory performance checks run alongside the validation
+pipelines. Pages consumes qualification evidence after producer completion.
 The DCO sign-off check and review services are additional PR signals, not jobs
 inside Fast CI. See [CONTRIBUTING.md](../CONTRIBUTING.md) for DCO requirements.
 
@@ -255,7 +308,7 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 ## Nightly CI and FPE qualification
 
-Nightly builds the approved release surface: one `aisimulate` wheel per Linux
+Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful nightly. The build stamps a date-based dev
 version, uses pinned build tooling, and records checksums and provenance.
@@ -280,6 +333,27 @@ Nightly staging depends on both smoke tests and FPE qualification. It uploads
 checksum-verified artifacts to internal Artifactory under `nightly/<run_id>/`
 through the protected `automated-release` environment. FPE output is retained
 as workflow artifacts; publishing dashboard pages is a separate Pages workflow.
+
+[Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) separately
+discovers every `release/<version>` branch each day, including new releases and
+days when their source is unchanged. From trusted `main`, it records each release
+branch's current commit SHA and calls a reusable qualification workflow once per
+release. Each builds an unchanged wheel and probes that release's inventory with
+the current harness.
+The release helper uses the same FPE probe and qualification code from `main`,
+with the release's own installed package and model inventory. Its separate
+wrapper lets older release branches use current qualification tooling without
+modifying their source. It performs wheel identity, import, and dependency
+checks needed for FPE; it does not run the main nightly's multi-architecture
+smoke suites or package staging.
+It records release and tooling commits separately. Releases run sequentially,
+with up to 20 system/backend jobs and eight probe threads per job. Versioned
+wheel, report, and web artifacts keep releases isolated. A failed release does
+not cancel the rest, but Pages requires a successful overall nightly run.
+Complete qualified results remain GitHub Actions artifacts for 90 days and
+trigger Pages; this job does not publish packages.
+Release branches without retained qualified CI evidence appear unavailable.
+See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
 
 ## Reading results and troubleshooting
 

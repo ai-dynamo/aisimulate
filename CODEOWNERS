@@ -85,7 +85,9 @@
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_release_fpe.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                      @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_e2e_accuracy_ui.mjs                      @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
@@ -152,6 +154,7 @@
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_g3_offload_cli.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_e2e_accuracy_ui.mjs                      @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
