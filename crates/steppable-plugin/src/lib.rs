@@ -11,14 +11,17 @@ use std::ffi::c_char;
 
 use aiperf_steppable_abi::{
     ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
-    EngineEventV1, PluginDescriptorV1, PluginVTableV1, ReplayHandleV1, ReplayStateV1,
-    RequestFactSliceV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1, SlaThresholdsV1,
-    StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
+    EngineEventV1, PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION,
+    REQUEST_FACT_FLAG_LATENCIES, REQUEST_FACT_FLAG_OUTPUT_LENGTH, ReplayHandleV1, ReplayStateV1,
+    RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
+    SlaThresholdsV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
     SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
 };
-use aisimulate_core::replay::{DirectRequest, ReplayEngineConfig, ReplayEngineFactory};
+use aisimulate_core::replay::{
+    DirectRequest, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus,
+};
 use serde::Deserialize;
 
 /// Topology built by the backend for one steppable replay.
@@ -250,11 +253,120 @@ unsafe extern "C" fn cancel_batch(
 }
 
 unsafe extern "C" fn step(
-    _handle: ReplayHandleV1,
-    _request: StepRequestV1,
-    _result: *mut StepResultV1,
+    handle: ReplayHandleV1,
+    request: StepRequestV1,
+    result: *mut StepResultV1,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    if result.is_null()
+        || request.struct_size as usize != std::mem::size_of::<StepRequestV1>()
+        || request.until_ms.is_nan()
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Safety: the handle is only dereferenced after null validation.
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    let outcome = match replay.engine.step_until(request.until_ms) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            replay.last_error = error.to_string();
+            return StatusV1::REJECTED;
+        }
+    };
+    let request_facts = outcome
+        .events
+        .iter()
+        .filter_map(|event| {
+            let mut flags = 0;
+            let mut reused_input_tokens = 0;
+            let mut admission_ms = 0.0;
+            if let Some((at_ms, reused)) = replay.engine.request_admission(event.uuid) {
+                flags |= REQUEST_FACT_FLAG_ADMISSION;
+                admission_ms = at_ms;
+                reused_input_tokens = reused as u64;
+            }
+            let mut ttft_ms = 0.0;
+            let mut mean_itl_ms = 0.0;
+            if let Some((ttft, mean_itl)) = replay.engine.request_latencies(event.uuid) {
+                flags |= REQUEST_FACT_FLAG_LATENCIES;
+                ttft_ms = ttft;
+                mean_itl_ms = mean_itl;
+            }
+            let mut output_length = 0;
+            if let Some(length) = replay.engine.actual_output_length(event.uuid) {
+                flags |= REQUEST_FACT_FLAG_OUTPUT_LENGTH;
+                output_length = length as u64;
+            }
+            (flags != 0).then_some(RequestFactV1 {
+                request_id: *event.uuid.as_bytes(),
+                flags,
+                reserved: 0,
+                reused_input_tokens,
+                output_length,
+                admission_ms,
+                ttft_ms,
+                mean_itl_ms,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let request_facts_len = request_facts.len() as u64;
+    let request_facts_data = Box::into_raw(request_facts).cast::<RequestFactV1>();
+    let events = outcome
+        .events
+        .into_iter()
+        .map(|event| {
+            let mut flags = 0;
+            if event.emitted_token {
+                flags |= 1;
+            }
+            if event.terminal_status.is_some() {
+                flags |= 1 << 1;
+            }
+            let terminal_status = match event.terminal_status {
+                Some(ReplayTerminalStatus::Completed) => 1,
+                Some(ReplayTerminalStatus::Rejected) => 2,
+                Some(ReplayTerminalStatus::Canceled) => 3,
+                Some(ReplayTerminalStatus::Failed) => 4,
+                None => 0,
+            };
+            EngineEventV1 {
+                request_id: *event.uuid.as_bytes(),
+                flags,
+                token_id: event.token_id.unwrap_or_default(),
+                terminal_status,
+                reserved: 0,
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let events_len = events.len() as u64;
+    let events_data = Box::into_raw(events).cast::<EngineEventV1>();
+    let next_event_ms = replay.engine.next_event_ms().unwrap_or(f64::NAN);
+    // Safety: validated non-null output pointer. Event ownership transfers to
+    // the host, which must call `release_events` exactly once.
+    unsafe {
+        *result = StepResultV1 {
+            struct_size: std::mem::size_of::<StepResultV1>() as u32,
+            flags: 0,
+            end_ms: outcome.end_ms,
+            next_event_ms,
+            in_flight: replay.engine.in_flight() as u64,
+            is_idle: u8::from(replay.engine.is_idle()),
+            reserved: [0; 7],
+            events: EngineEventSliceV1 {
+                data: events_data,
+                len: events_len,
+            },
+            request_facts: RequestFactSliceV1 {
+                data: request_facts_data,
+                len: request_facts_len,
+            },
+        };
+    }
+    StatusV1::OK
 }
 
 unsafe extern "C" fn take_report(
@@ -281,8 +393,35 @@ unsafe extern "C" fn release_bytes(bytes: ByteSliceV1) {
         )));
     }
 }
-unsafe extern "C" fn release_events(_events: EngineEventSliceV1) {}
-unsafe extern "C" fn release_request_facts(_facts: RequestFactSliceV1) {}
+unsafe extern "C" fn release_events(events: EngineEventSliceV1) {
+    if events.data.is_null() {
+        return;
+    }
+    if events.len > usize::MAX as u64 {
+        return;
+    }
+    // Safety: `step` allocates exact-length boxed slices and transfers one
+    // release obligation to the host.
+    unsafe {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            events.data.cast_mut(),
+            events.len as usize,
+        )));
+    }
+}
+unsafe extern "C" fn release_request_facts(facts: RequestFactSliceV1) {
+    if facts.data.is_null() || facts.len > usize::MAX as u64 {
+        return;
+    }
+    // Safety: `step` allocates exact-length boxed slices and transfers one
+    // release obligation to the host.
+    unsafe {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            facts.data.cast_mut(),
+            facts.len as usize,
+        )));
+    }
+}
 
 unsafe extern "C" fn state(handle: ReplayHandleV1, state: *mut ReplayStateV1) -> StatusV1 {
     if state.is_null() {

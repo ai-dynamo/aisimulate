@@ -3,7 +3,8 @@
 
 use aiperf_steppable_abi::{
     ByteSliceV1, CreateRequestV1, DirectRequestV1, PLUGIN_ABI_MAJOR_V1, ReplayContextV1,
-    ReplayHandleV1, ReplayStateV1, StatusV1, U32SliceV1, validate_descriptor_v1,
+    ReplayHandleV1, ReplayStateV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
+    validate_descriptor_v1,
 };
 
 #[test]
@@ -100,6 +101,26 @@ fn backend_creates_and_destroys_a_default_replay() {
         StatusV1::OK
     );
     assert_eq!(state.in_flight, 1);
+
+    let mut stepped = StepResultV1::EMPTY;
+    assert_eq!(
+        unsafe {
+            vtable.step.unwrap()(
+                handle,
+                StepRequestV1 {
+                    struct_size: std::mem::size_of::<StepRequestV1>() as u32,
+                    flags: 0,
+                    until_ms: f64::INFINITY,
+                },
+                &raw mut stepped,
+            )
+        },
+        StatusV1::OK
+    );
+    assert!(stepped.events.len > 0);
+    assert!(stepped.request_facts.len > 0);
+    unsafe { vtable.release_events.unwrap()(stepped.events) };
+    unsafe { vtable.release_request_facts.unwrap()(stepped.request_facts) };
 
     unsafe { vtable.destroy.unwrap()(handle) };
 }
