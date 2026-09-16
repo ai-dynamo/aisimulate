@@ -784,6 +784,8 @@ running a search. No `--detail` selector is required to calculate or display eit
 value. JSON includes both keys in prediction summaries and recommendation metrics for valid
 replay reports, using `null` for unavailable values under the publication gate below.
 
+[Example: captured summary and energy output](#4113-captured-result).
+
 #### 4.11.2 Summary power with an energy breakdown
 
 **Before — add energy detail to the same AIC estimate:**
@@ -812,6 +814,8 @@ controls only the additional breakdown; it must not enable summary power or rela
 gate. Missing breakdown evidence must be identified as unavailable with a reason. For a selected
 recommendation, use its saved prediction YAML with `predict --detail energy`; this does not add
 a `--detail` flag to `recommend`.
+
+[Example: captured summary and energy output](#4113-captured-result).
 
 **Availability in both workflows.** The [modeled-power contract](../power-model.md) defines
 `power_w` as active forward-pass average watts per GPU and `power_coverage` as latency-weighted
@@ -846,6 +850,85 @@ is omitted. The normal terminal summary does not display these power fields. Rec
 artifacts can also retain this metadata for each candidate. These fields do not provide a power
 report for the full encoder-plus-language deployment or replace AIC's power analysis for that
 topology. Use the compatibility command or SDK when full-deployment EPD power is required.
+
+#### 4.11.3 Captured result
+
+The H200/vLLM commands below were run on 2026-09-15 (Pacific) with the built-in engine
+from [PR #144 revision `32e6dee5`](https://github.com/ai-dynamo/aisimulate/commit/32e6dee575819d1d01cd472d24c5efdff47ff94c).
+The AISimulate runs use the exact `prediction.yaml` from section 3.1: Llama 3.1 8B,
+two H200 GPUs, vLLM `0.24.0`, 1,024 input tokens, 128 output tokens, concurrency 64, and
+100 requests. These are captured simulation results; values can change with the code or data.
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128
+
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
+
+aisimulate predict --stack engine --config prediction.yaml --output-dir ./power-summary
+
+aisimulate predict --stack engine --config prediction.yaml --detail energy \
+  --output-dir ./power-details
+```
+
+**AIC result.** Both AIC commands printed:
+
+```text
+Power (per GPU):  unavailable (0.0% coverage)
+```
+
+The AIC command with `--detail energy` also reported
+`--detail requested but no breakdown data is available for this mode.`
+
+**AISimulate summary, with and without energy detail.** Both runs returned exactly the same
+power fields; the serving metrics below agree at the displayed precision.
+Both `power-summary/prediction.json` and
+`power-details/prediction.json` contained this excerpt:
+
+```json
+{
+  "power_w": null,
+  "power_coverage": 0.0
+}
+```
+
+| Summary field | No `--detail` | `--detail energy` |
+| --- | --- | --- |
+| Completed requests | 100 | 100 |
+| Output throughput (tokens/s, rounded) | 5,114.43 | 5,114.43 |
+| CLI `power_w` | unavailable (insufficient energy coverage) | unavailable (insufficient energy coverage) |
+| CLI `power_coverage` | 0.00% | 0.00% |
+
+**Additional AISimulate energy result.** Only the command with `--detail energy` appended:
+
+```text
+Detail: energy
+AISimulate active forward-pass energy diagnostics (per GPU)
+Aggregate: power=N/A coverage=0.00% gate=90.00% status=withheld
+```
+
+Captured phase rows, with latency rounded:
+
+| Phase | Active latency (ms) | Covered latency (ms) | Energy (W-ms/GPU) | Coverage | Power (W/GPU) | Status/source |
+| --- | ---: | ---: | --- | ---: | --- | --- |
+| prefill | 1,340.13 | 0.00 | N/A | 0.00% | N/A | withheld missing:mixed |
+| decode | 1,162.60 | 0.00 | N/A | 0.00% | N/A | withheld missing:mixed |
+
+The operation breakdown contains 14 rows per phase. For example, `context_attention` has
+64.27 ms of active latency and `generation_attention` has 340.64 ms; both have zero covered
+latency and unavailable energy. Each reports
+`timing provider returned latency without positive energy evidence`. The default terminal
+table shows 12 rows per phase and identifies the omitted rows. The saved
+`details.sections.energy.diagnostics.phases` retains all rows.
+
+This H200/vLLM dataset has no positive energy evidence for this workload, so the captured
+result demonstrates the missing-energy case. Zero coverage does not mean zero power.
+The detail selector exposes the evidence and reasons without changing the summary values.
 
 ## 5. Remaining feature and performance gaps
 
