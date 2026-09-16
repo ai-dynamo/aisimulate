@@ -14,13 +14,14 @@ use aiperf_steppable_abi::{
     EngineEventV1, PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION,
     REQUEST_FACT_FLAG_LATENCIES, REQUEST_FACT_FLAG_OUTPUT_LENGTH, ReplayHandleV1, ReplayStateV1,
     RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
-    SlaThresholdsV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
+    SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
+    StepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
     SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
 };
 use aisimulate_core::replay::{
-    DirectRequest, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus,
+    DirectRequest, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
 };
 use serde::Deserialize;
 
@@ -461,19 +462,61 @@ unsafe extern "C" fn advance_now_ms(handle: ReplayHandleV1, now_ms: f64) -> Stat
     StatusV1::OK
 }
 
-unsafe extern "C" fn set_capture_per_request(_handle: ReplayHandleV1, _capture: u8) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+unsafe extern "C" fn set_capture_per_request(handle: ReplayHandleV1, capture: u8) -> StatusV1 {
+    if capture > 1 {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    replay.engine.set_capture_per_request(capture != 0);
+    StatusV1::OK
 }
 
 unsafe extern "C" fn set_sla_thresholds(
-    _handle: ReplayHandleV1,
-    _thresholds: SlaThresholdsV1,
+    handle: ReplayHandleV1,
+    thresholds: SlaThresholdsV1,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    let selected = |flag, value| (thresholds.flags & flag != 0).then_some(value);
+    let sla = SlaThresholds {
+        ttft_ms: selected(SLA_FLAG_TTFT, thresholds.ttft_ms),
+        itl_ms: selected(SLA_FLAG_ITL, thresholds.itl_ms),
+        e2e_ms: selected(SLA_FLAG_E2E, thresholds.e2e_ms),
+    };
+    if ((sla.ttft_ms.is_some() || sla.itl_ms.is_some()) && sla.e2e_ms.is_some())
+        || [sla.ttft_ms, sla.itl_ms, sla.e2e_ms]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || value <= 0.0)
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    replay.engine.set_sla_thresholds(sla);
+    StatusV1::OK
 }
 
-unsafe extern "C" fn last_error(_handle: ReplayHandleV1, _error: *mut ByteSliceV1) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+unsafe extern "C" fn last_error(handle: ReplayHandleV1, error: *mut ByteSliceV1) -> StatusV1 {
+    if error.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    // Safety: validated non-null output pointer.
+    unsafe {
+        *error = if replay.last_error.is_empty() {
+            ByteSliceV1::EMPTY
+        } else {
+            allocated_bytes(replay.last_error.clone())
+        };
+    }
+    StatusV1::OK
 }
 
 unsafe extern "C" fn destroy(handle: ReplayHandleV1) {

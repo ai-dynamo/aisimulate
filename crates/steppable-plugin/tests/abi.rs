@@ -3,8 +3,8 @@
 
 use aiperf_steppable_abi::{
     ByteSliceV1, CreateRequestV1, DirectRequestV1, PLUGIN_ABI_MAJOR_V1, ReplayContextV1,
-    ReplayHandleV1, ReplayStateV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
-    validate_descriptor_v1,
+    ReplayHandleV1, ReplayStateV1, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
+    StepResultV1, U32SliceV1, validate_descriptor_v1,
 };
 
 #[test]
@@ -64,6 +64,33 @@ fn backend_creates_and_destroys_a_default_replay() {
         StatusV1::OK
     );
     assert_eq!(state.now_ms, 7.5);
+
+    let mut diagnostic = ByteSliceV1::EMPTY;
+    assert_eq!(
+        unsafe { vtable.last_error.unwrap()(handle, &raw mut diagnostic) },
+        StatusV1::OK
+    );
+    assert_eq!(diagnostic.len, 0);
+
+    assert_eq!(
+        unsafe { vtable.set_capture_per_request.unwrap()(handle, 1) },
+        StatusV1::OK
+    );
+    assert_eq!(
+        unsafe {
+            vtable.set_sla_thresholds.unwrap()(
+                handle,
+                SlaThresholdsV1 {
+                    flags: SLA_FLAG_TTFT,
+                    reserved: 0,
+                    ttft_ms: 100.0,
+                    itl_ms: 0.0,
+                    e2e_ms: 0.0,
+                },
+            )
+        },
+        StatusV1::OK
+    );
 
     let tokens = [1_u32, 2, 3];
     let mut request_id = [0; 16];
