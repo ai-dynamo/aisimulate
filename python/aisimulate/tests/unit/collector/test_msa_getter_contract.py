@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,6 +56,7 @@ def _stub_torch(monkeypatch):
             is_available=lambda: False,
         ),
         device=lambda value: value,
+        inference_mode=nullcontext,
     )
 
 
