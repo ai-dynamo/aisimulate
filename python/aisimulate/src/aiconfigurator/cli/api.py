@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/cli/api.py
 
 """
 Python API for calling CLI workflows programmatically.
@@ -1101,6 +1103,7 @@ def cli_estimate(
     prefix: int = 0,
     nextn: int | str = 0,
     nextn_accepted: float | None = None,
+    speculative: dict | None = None,
     stride: int = 32,
     # AFD-specific parameters (ignored when mode != 'afd')
     n_a_nodes: int | None = None,
@@ -1217,6 +1220,9 @@ def cli_estimate(
         nextn_accepted: (common) Average accepted draft tokens per decode step
             (0 <= nextn_accepted <= nextn). Required when the draft depth
             resolves to > 0; never inferred.
+        speculative: Speculation mapping with method, params, optional draft_model_path
+            or inline draft_config, and measured accepted_tokens. Non-MTP methods
+            support agg/static modes; method="mtp" uses the legacy nextn path.
         stride: (static-only) Stride used by ``run_static`` to accelerate the
             OSL sweep. Ignored by agg / disagg. Default 32.
         n_a_nodes: (afd-only) Number of A-Worker (attention) nodes. Required
@@ -1280,6 +1286,23 @@ def cli_estimate(
     # estimate path (agg/disagg/static/afd) sees a plain int.
     if nextn == "auto":
         nextn = _resolve_nextn_auto(model_path)
+    # A speculative: block desugars mtp onto the nextn pair; scheme-based
+    # methods yield a SpeculationConfig consumed by agg/static estimation.
+    speculation_config = None
+    speculative_accepted = None
+    if speculative is not None:
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        resolution = resolve_speculative_block(speculative, nextn=nextn, nextn_accepted=nextn_accepted)
+        nextn = resolution.nextn
+        nextn_accepted = resolution.nextn_accepted
+        speculation_config = resolution.speculation_config
+        speculative_accepted = resolution.accepted_tokens
+        if speculation_config is not None and mode not in ("agg", "static", "static_ctx", "static_gen"):
+            raise NotImplementedError(
+                f"scheme-based speculative methods are wired for agg/static estimation only "
+                f"(got mode={mode!r}); mtp desugars to nextn and works everywhere."
+            )
     nextn, nextn_accepted = _normalize_nextn(nextn, nextn_accepted)
 
     active_systems_paths = None
@@ -1368,6 +1391,8 @@ def cli_estimate(
             comm_quant_mode=comm_quant_mode,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
+            speculation_config=speculation_config,
+            speculative_accepted=speculative_accepted,
             stride=stride,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
@@ -1418,6 +1443,8 @@ def cli_estimate(
             prefix=prefix,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
+            speculation_config=speculation_config,
+            speculative_accepted=speculative_accepted,
         )
     elif mode == "disagg":
         prefill_resolved_version = _resolve_version_for(system_name)
@@ -1612,6 +1639,8 @@ def cli_estimate(
             comm_quant_mode=comm_quant_mode,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
+            speculation_config=speculation_config,
+            speculative_accepted=speculative_accepted,
             stride=stride,
             engine_step_backend=engine_step_backend,
             load_database=_load_database,
@@ -1673,6 +1702,8 @@ def _run_agg_estimate(
     engine_step_backend=None,
     forward_model=None,
     attention_backend: str | None = None,
+    speculation_config=None,
+    speculative_accepted: float | None = None,
     # Common (also accepted by disagg / static)
     prefix: int = 0,
     nextn: int = 0,
@@ -1701,6 +1732,7 @@ def _run_agg_estimate(
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
+        speculation=speculation_config,
     )
     _apply_nextn(model_config, nextn)
     # Agg workers run context attention → resolve fmha against the perf data
@@ -1732,7 +1764,10 @@ def _run_agg_estimate(
     database = load_database(system_name)
     backend = get_backend(backend_name)
     session = InferenceSession(model, database, backend)
-    speculative_profile = SpeculativeDecodingProfile.from_inputs(nextn, nextn_accepted)
+    if speculation_config is not None:
+        speculative_profile = SpeculativeDecodingProfile.from_scheme(model.spec_scheme, speculative_accepted)
+    else:
+        speculative_profile = SpeculativeDecodingProfile.from_inputs(nextn, nextn_accepted)
     summary = session.run_agg(
         runtime_config,
         ctx_tokens=ctx_tokens,
@@ -1827,6 +1862,8 @@ def _run_static_estimate(
     get_model,
     forward_model=None,
     attention_backend: str | None = None,
+    speculation_config=None,
+    speculative_accepted: float | None = None,
 ) -> EstimateResult:
     """Run a single-pass static-batching estimation.
 
@@ -1859,6 +1896,7 @@ def _run_static_estimate(
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
+        speculation=speculation_config,
     )
     _apply_nextn(model_config, nextn)
     database = load_database(system_name)
@@ -1918,9 +1956,11 @@ def _run_static_estimate(
     projection_role = (
         "prefill" if static_mode == "static_ctx" else ("decode" if static_mode == "static_gen" else "static")
     )
-    summary = SpeculativeDecodingProfile.from_inputs(nextn, nextn_accepted).project_summary(
-        summary, role=projection_role
-    )
+    if speculation_config is not None:
+        profile = SpeculativeDecodingProfile.from_scheme(model.spec_scheme, speculative_accepted)
+    else:
+        profile = SpeculativeDecodingProfile.from_inputs(nextn, nextn_accepted)
+    summary = profile.project_summary(summary, role=projection_role)
 
     static_warning = None
     if summary.check_oom():
