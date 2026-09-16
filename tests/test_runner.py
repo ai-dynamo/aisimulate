@@ -576,26 +576,29 @@ engine:
     assert calls[0]["cuda_graph_reserved_bytes"] == reserved_bytes
 
 
-def test_public_prefill_schedule_interval_reaches_native_execution_rank(tmp_path):
+@pytest.mark.parametrize(
+    "backend,field,value", [("vllm", "prefill_schedule_interval", 4), ("sglang", "prefill_decode_interval", 20)]
+)
+def test_public_prefill_interval_reaches_native_execution_rank(tmp_path, backend, field, value):
     path = tmp_path / "prediction.yaml"
     path.write_text(
-        """\
+        f"""\
 engine:
   mode: aggregated
   model: example/model
   hardware: h200_sxm
-  backend: vllm
+  backend: {backend}
   context_length: 4096
   workers:
     aggregated:
       parallelism:
         attention_data: 2
       scheduler:
-        prefill_schedule_interval: 4
+        {field}: {value}
       kv_cache:
         block_size: 16
-        capacity: {type: fixed, blocks: 128}
-      timing: {type: fixed, prefill_ms: 1.0, decode_ms: 1.0}
+        capacity: {{type: fixed, blocks: 128}}
+      timing: {{type: fixed, prefill_ms: 1.0, decode_ms: 1.0}}
 """,
         encoding="utf-8",
     )
@@ -605,8 +608,8 @@ engine:
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
 
     assert public.engine.workers.aggregated is not None
-    assert public.engine.workers.aggregated.scheduler.prefill_schedule_interval == 4
-    assert runtime.execution_spec["spec"]["engine"]["rank"]["prefill_schedule_interval"] == 4
+    assert getattr(public.engine.workers.aggregated.scheduler, field) == value
+    assert runtime.execution_spec["spec"]["engine"]["rank"][field] == value
 
 
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
