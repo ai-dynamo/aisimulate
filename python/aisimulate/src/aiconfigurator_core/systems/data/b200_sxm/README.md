@@ -58,3 +58,8 @@ out of runtime `*.parquet` discovery. Focused tests in
 the imported files and check both merges against these source copies. Existing
 Parquet review tooling and packaged-data tests check the shared power-field
 storage contract.
+
+The retained local identity/latency pairs are independently pinned from AISimulate
+commit `ffcb6576b3a60077ea1200788f1b784213f979cf`, immediately before import commit
+`717f973bea4ebc07673192475b3a0f743d82c168`. The test records their digests and the
+deterministic serialization used to reproduce them from that baseline.

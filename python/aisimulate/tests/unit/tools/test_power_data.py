@@ -13,6 +13,7 @@ Version-independent power-field checks live in test_power_data_invariants.py.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -105,14 +106,29 @@ def test_b200_import_file(relative, sha256):
     assert hashlib.sha256((DATA_ROOT / relative).read_bytes()).hexdigest() == sha256
 
 
+# Local identity/latency digests come from ffcb6576b3a60077ea1200788f1b784213f979cf,
+# the parent of import commit 717f973bea4ebc07673192475b3a0f743d82c168. Filter that
+# baseline to identities absent from the pinned upstream table, then serialize
+# the ordered columns and sorted rows exactly as below; no Git access is needed
+# when running the tests.
 @pytest.mark.parametrize(
-    "phase, upstream_sha256, retained_rows",
+    "phase, upstream_sha256, retained_rows, local_sha256",
     [
-        ("context", "2ec64496ee67e80343b89386ec692813d23c7a03eddc0872d232ef45e5e64b36", 1428),
-        ("generation", "1456c5133fbf85031dfda81b9440b4d5c70b672ee5edb86174b334a12c8681e7", 1334),
+        (
+            "context",
+            "2ec64496ee67e80343b89386ec692813d23c7a03eddc0872d232ef45e5e64b36",
+            1428,
+            "eb9d42806a5c5d0c5a3d6303f27135f09a7d1b7a5ea9ce9c60c48b581b3b2ca0",
+        ),
+        (
+            "generation",
+            "1456c5133fbf85031dfda81b9440b4d5c70b672ee5edb86174b334a12c8681e7",
+            1334,
+            "a60bdcf42bcfe6e2d2a2ff53ba73ef6cd1b85a1bd33dee260ac2e0df136274fe",
+        ),
     ],
 )
-def test_attention_merge_preserves_upstream_measurements(phase, upstream_sha256, retained_rows):
+def test_attention_merge_preserves_upstream_measurements(phase, upstream_sha256, retained_rows, local_sha256):
     source = DATA_ROOT / "power_upstream" / f"{phase}_attention.parquet.source"
     assert hashlib.sha256(source.read_bytes()).hexdigest() == upstream_sha256
     upstream = pq.read_table(source)
@@ -128,3 +144,9 @@ def test_attention_merge_preserves_upstream_measurements(phase, upstream_sha256,
     local = merged.keys() - imported.keys()
     assert len(local) == retained_rows
     assert all(merged[key]["power"] == merged[key]["power_limit"] == 0.0 for key in local)
+    columns = [*identities, "latency"]
+    pairs = sorted([merged[key][name] for name in columns] for key in local)
+    evidence = json.dumps(
+        {"columns": columns, "rows": pairs}, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    assert hashlib.sha256(evidence).hexdigest() == local_sha256, "changed pre-import local identity/latency pairs"
