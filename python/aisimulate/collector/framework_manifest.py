@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,8 @@ from collector.op_catalog import CATALOG_PATH, family_for_perf_file, load_family
 from collector.registry_types import OpEntry
 
 MANIFEST_PATH = Path(__file__).with_name("framework_manifest.yaml")
+RUNTIME_MANIFEST_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST"
+RUNTIME_MANIFEST_SHA256_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256"
 
 _DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -49,8 +53,22 @@ class CollectorRuntime:
 
 def load_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
     manifest_path = Path(path)
-    with manifest_path.open(encoding="utf-8") as manifest_file:
-        manifest = yaml.safe_load(manifest_file) or {}
+    expected_digest = None
+    # Explicit non-default API paths stay authoritative. The campaign runner supplies an
+    # attested, committed declaration to the otherwise unchanged collector CLI.
+    if manifest_path == MANIFEST_PATH:
+        override = os.environ.get(RUNTIME_MANIFEST_ENV)
+        expected_digest = os.environ.get(RUNTIME_MANIFEST_SHA256_ENV)
+        if (override is None) != (expected_digest is None):
+            raise ValueError("Runtime manifest override requires both path and SHA-256")
+        if override is not None:
+            if not override or re.fullmatch(r"[0-9a-f]{64}", expected_digest or "") is None:
+                raise ValueError("Runtime manifest override requires a non-empty path and SHA-256")
+            manifest_path = Path(override)
+    content = manifest_path.read_bytes()
+    if expected_digest is not None and hashlib.sha256(content).hexdigest() != expected_digest:
+        raise ValueError("Runtime manifest SHA-256 differs from the campaign declaration")
+    manifest = yaml.safe_load(content) or {}
     if not isinstance(manifest, dict):
         raise TypeError("collector framework manifest must be a mapping")
     validate_manifest(manifest)

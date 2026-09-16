@@ -95,3 +95,51 @@ official parquet/sidecar transaction has committed. After a grace period it
 reaps only its own matching child workers (exact parent PID and UID), recording
 the cleanup. It never uses a global process-name kill or cleans workers while
 cases or publication transactions remain unfinished.
+
+## Reproducible runtime declarations and clean restore (PR #219 review)
+
+The runner now requires a **clean Git checkout at the exact `source_commit`**.
+Use a complete checkout, including `python/aisimulate/aic-core` compatibility
+links; do not repair sparse-checkout links or edit `framework_manifest.yaml`
+in place. Dirty tracked files, untracked patches, a mismatched HEAD, an
+uncommitted runtime declaration, or a SHA-256 mismatch fail before collection.
+
+Every plan must provide `local_root`, `source_commit`, and:
+
+```json
+{
+  "runtime_manifest": {
+    "path": "python/aisimulate/collector/campaigns/runtime_manifests/vllm-0.25.0-b200.yaml",
+    "sha256": "SHA256_OF_THE_COMMITTED_FILE"
+  }
+}
+```
+
+Compute the digest from the committed file in `source`, record it in the plan,
+and leave the source checkout unchanged. The runner attests the committed bytes
+and passes `AISIM_COLLECTOR_RUNTIME_MANIFEST` and
+`AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256` to `collect.py`. The manifest loader
+rechecks that digest. No default fleet-version change, case-ID change, kernel
+substitution, or executor monkeypatch is involved. The explicit B200 declaration
+selects 0.25.0 for the collected op families (including MLA); KDA keeps its
+preview pin and cannot be mislabeled as 0.25.0.
+
+A resume restores the canonical snapshot into a new directory. Previous local
+contents are quarantined as `.data-orphan-*`, not overlaid or silently deleted.
+A fresh attempt likewise cannot inherit unpublished local checkpoints. A failed
+copy leaves the old directory intact. Publication of a new snapshot uses the
+same exact-copy rule. The unchanged collector retains ownership of transaction
+recovery and case IDs.
+
+### Historical publication is not retroactively relabeled
+
+The already-published September 15 measurements predate this interface and used
+campaign-local manifest overrides plus compatibility-link repairs. Their
+original collector refs and measured values remain unchanged. The exact original
+patches are retained in `historical_runtime_overrides/`; the packaged
+`b200_sxm/vllm-0.25.0-collection-report.json` binds each patch, runtime declaration,
+and source revision by hash. These are audit/reproduction evidence, **not patches
+the hardened runner applies**. Old refs without the runtime-manifest interface
+are not claimed to work with the new runner: new runs must use a clean revision
+containing the committed declaration and loader support. This avoids inventing a
+clean-source history or stamping a new ref onto old measurements.

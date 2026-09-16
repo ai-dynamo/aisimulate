@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Explicit B200 campaign runtime. The bare image name identifies the audited
+# local SquashFS bytes by SHA-256; it is not an OCI image digest.
+# The default fleet manifest and KDA's actual preview version are unchanged.
+schema_version: 2
+frameworks:
+  vllm:
+    source_repo: https://github.com/vllm-project/vllm.git
+    default:
+      version: "0.25.0"
+      source_commit: dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+      images:
+        default: aisim-b200-vllm-0250-sqsh-9ae776fd614406ea136d29aeb5ac05d9980865cd4a10eb8ec6956437da7d4ab7
+    families:
+      kda:
+        version: "0.1.dev19262"
+        images:
+          default: vllm/vllm-openai@sha256:e90e2603b2781936651ba019804137714367c69e10a7b25a2e57b46995225616

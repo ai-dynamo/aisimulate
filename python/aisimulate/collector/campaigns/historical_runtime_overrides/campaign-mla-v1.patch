@@ -1,0 +1,441 @@
+diff --git a/python/aisimulate/collector/framework_manifest.yaml b/python/aisimulate/collector/framework_manifest.yaml
+index da039b0..d20fd88 100644
+--- a/python/aisimulate/collector/framework_manifest.yaml
++++ b/python/aisimulate/collector/framework_manifest.yaml
+@@ -1,308 +1,177 @@
+-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+-# SPDX-License-Identifier: Apache-2.0
+-#
+-# Collector V3 manifest (schema v2): one `default` runtime per framework plus
+-# explicit per-family overrides (design: docs/perf_database/
+-# collector-v3-op-centric-design.md §4), plus optional per-model overrides
+-# (`models:`) that pin one model's entire run regardless of family. Public
+-# images are digest-pinned; bare internal image names are exempt. WideEP
+-# runtimes are peer framework entries (wideep_<base>) so per-op resolution is
+-# uniform.
+-
+ schema_version: 2
+-
+ frameworks:
+   sglang:
+-    source_repo: "https://github.com/sgl-project/sglang.git"
++    source_repo: https://github.com/sgl-project/sglang.git
+     default:
+-      version: "0.5.14"
++      version: 0.5.14
+       images:
+-        default: "lmsysorg/sglang:v0.5.14@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
+-        cu130: "lmsysorg/sglang:v0.5.14-cu130@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
++        default: lmsysorg/sglang:v0.5.14@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3
++        cu130: lmsysorg/sglang:v0.5.14-cu130@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3
+     families:
+-      # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch
+-      # (https://github.com/sgl-project/sglang/tree/kimi-k3), whose build
+-      # reports 0.5.16. Pin the branch image for the kda family only.
+       kda:
+-        version: "0.5.16"
++        version: 0.5.16
+         images:
+-          default: "lmsysorg/sglang@sha256:4b8a7542e00a4d82801d1276108438b024137c9a07f33215d03b04003e500f2b"
+-      # MiniMax-M3 (minimax_m3.py + minimax_sparse_ops) landed in the official
+-      # v0.5.16 release; the stock 0.5.14 default has no M3. Pin the official
+-      # tag for the msa family only (NOT the kimi-k3 branch build above, which
+-      # is a different container).
++          default: lmsysorg/sglang@sha256:4b8a7542e00a4d82801d1276108438b024137c9a07f33215d03b04003e500f2b
+       msa:
+-        version: "0.5.16"
++        version: 0.5.16
+         images:
+-          default: "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
+-    # Model-scoped collector runtime pins: when the resolved run model_path
+-    # exactly equals one of these keys, the pin overrides BOTH the family
+-    # pins above and the framework default for every op in the run — the
+-    # whole run moves to this runtime, not just the ops that would otherwise
+-    # resolve here. A run with no model identity, or one that does not match
+-    # a key, resolves exactly as before (family/default), so this section is
+-    # purely additive. Precedence: a model pin beats a family pin even for an
+-    # op that has one (e.g. a hypothetical model-pinned run requesting a kda
+-    # op still gets the model's runtime, not 0.5.16) — unlike the family pins
+-    # above, which move a whole op family for every model, a model pin moves
+-    # one model's entire run and leaves every other model's resolution (and
+-    # every other op's family/default resolution) unchanged.
+-    #
+-    # SGLang v0.5.17 registers Qwen3_5MoeForCausalLM /
+-    # Qwen3_5ForCausalLM; v0.5.14 predates that model integration and cannot
+-    # collect these cases. Both tags below resolve to the same multi-arch
+-    # index digest. These are collector-runtime declarations, not claims of
+-    # whole-checkpoint serving validation (in particular for the RadixArk
+-    # NVFP4 collection fixture).
+-    #
+-    # Scope: the override is selected only when collect.py resolves a single
+-    # exact model_path (normally through --model-path, or through an
+-    # architecture case file with one primary model). A full/unfiltered plan
+-    # has no single model identity and therefore uses the framework/family
+-    # runtime; run these model-pinned campaigns separately at their declared
+-    # runtime rather than mixing them into an unfiltered invocation.
++          default: lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0
+     models:
+-      "Qwen/Qwen3.8-2.4T-A95B":
+-        version: "0.5.17"
++      Qwen/Qwen3.8-2.4T-A95B:
++        version: 0.5.17
+         images:
+-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+-      "Qwen/Qwen3.8-2.4T-A95B-FP8":
+-        version: "0.5.17"
++          default: lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
++          cu130: lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
++      Qwen/Qwen3.8-2.4T-A95B-FP8:
++        version: 0.5.17
+         images:
+-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+-      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
+-        version: "0.5.17"
++          default: lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
++          cu130: lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
++      RadixArk/Qwen3.8-2.4T-A95B-NVFP4:
++        version: 0.5.17
+         images:
+-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
++          default: lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
++          cu130: lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
+   trtllm:
+-    source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
++    source_repo: https://github.com/NVIDIA/TensorRT-LLM.git
+     default:
+-      version: "1.3.0rc20"
++      version: 1.3.0rc20
+       images:
+-        default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88"
++        default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88
+     families:
+-      # trtllm FP4 (w4a8_mxfp4_mxfp8) MoE rows show non-monotonic
+-      # num_tokens segments (4096->8192, 12288->16384 dips) on all four
+-      # Blackwell systems. An rc23 re-collection reproduced the dips
+-      # (2026-08-08; exact consumer-key join vs rc20: median ratio
+-      # 1.003-1.013, median |per-row delta| 2.4-2.9%, ~25% of rows >5% —
+-      # benchmark run-to-run spread, not a systematic shift), so the dips
+-      # are REAL, reproducible kernel behavior (per-bucket tactic/tile-wave
+-      # quantization), not a campaign artifact. Evidence: GitLab
+-      # aic-auto-collector (project 205688) pipelines 61692150-61692160
+-      # (moe re-collection, 2026-08-08); DSV4 attention campaigns ran as
+-      # pipelines 61771569-61838704 on feat/sbatch-partition-override. The DSV4 moe shapes stay collected on this
+-      # runtime for version coherence with the DSV4 attention family; the
+-      # remaining moe shapes reuse rc20 via the declared reuse.yaml channel.
+       moe:
+-        version: "1.3.0rc23"
++        version: 1.3.0rc23
+         images:
+-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
+-      # DeepSeek-V4 attention modules require trtllm>=1.3.0rc21 (the model
+-      # class and sparse/deepseek_v4 backend first ship there; see
+-      # collector/trtllm/collect_dsv4_attn.py __compat__). The catalog family
+-      # also carries the DSA modules (dsa_*_module), so trtllm DSA collection
+-      # moves to this runtime with it — DSA on rc23 smoke-verified on SM90
+-      # (H20) at bring-up; the rc20 serving citations in collect_mla_module
+-      # are re-audited on this bump per layer_permissions.md.
++          default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007
+       sparse_attention:
+-        version: "1.3.0rc23"
++        version: 1.3.0rc23
+         images:
+-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
+-      # MiniMax-M3: the true-sparse fmha_sm100 backend (implementation="msa",
+-      # SM100/103-only) landed in rc23; rc20 has only the Triton reference
+-      # path (measured identical-or-worse on SM90 at rc23, so the existing
+-      # existing SM90 msa data stays at rc20). Pin the msa family to rc23 for the
+-      # Blackwell collection.
++          default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007
+       msa:
+-        version: "1.3.0rc23"
++        version: 1.3.0rc23
+         images:
+-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
++          default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007
+   vllm:
+-    source_repo: "https://github.com/vllm-project/vllm.git"
++    source_repo: https://github.com/vllm-project/vllm.git
+     default:
+-      version: "0.24.0"
+-      images:
+-        default: "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
+-        cu129: "vllm/vllm-openai:v0.24.0-cu129@sha256:6b005c78cd17a1f0215f31e95d183833f4dfd6167c4473241b80d1c8843b91e8"
++      version: 0.25.0
++      images: &id001
++        default: aisim-b200-vllm-0250-sqsh-9ae776fd614406ea136d29aeb5ac05d9980865cd4a10eb8ec6956437da7d4ab7
++      source_commit: dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+     families:
+-      # Kimi-K3 KDA kernels exist on the official kimi-k3 preview image
+-      # (CUDA 13 build with fused_kda_decode + FlashKDA; setuptools-scm
+-      # version 0.1.dev19262+gb6bbf29dd) and upstreamed in v0.27.0 — but the
+-      # family pin STAYS on the preview until the coordinated consumer fix
+-      # lands (review jasonqinzhou #1559, comment 3808798129): at 0.27.0 the
+-      # DS conv-state layout makes is_fused_kda_decode_supported false, so
+-      # serving decode runs causal_conv1d_update +
+-      # fused_recurrent_kda_packed_decode + explicit gated RMSNorm, while
+-      # KimiK3Model._build_generation_ops still prices every vLLM non-spec
+-      # decode as fused_kda_decode and drops the norm. The 0.27.0 gb300 kda
+-      # rows collected by this PR are checked in as evidence
+-      # (systems/data/gb300/kda/vllm/0.27.0); until the consumer routes by
+-      # version, loading that version fills 44 fused_kda_decode rows from
+-      # this preview sibling via the shared layer and misprices generation
+-      # KDA. Re-pin when the consumer emits the conv-update + packed
+-      # decode pair (and blocks preview fused fill) for 0.27.0+.
+       kda:
+-        version: "0.1.dev19262"
++        version: 0.1.dev19262
+         images:
+-          default: "vllm/vllm-openai@sha256:e90e2603b2781936651ba019804137714367c69e10a7b25a2e57b46995225616"
+-      # mla: pin 0.27.0 so gb300/vllm MLA module rows are collected on the
+-      # same runtime as the K3 serving lane (KDA-family sibling) instead of
+-      # silently consuming the trtllm 1.3.0 low-fidelity fallback. Collector
+-      # API drift 0.24.0 -> 0.27.0 is audited before the pin lands in data.
++          default: vllm/vllm-openai@sha256:e90e2603b2781936651ba019804137714367c69e10a7b25a2e57b46995225616
+       mla:
+-        version: "0.27.0"
+-        images:
+-          default: &vllm_0270_image "vllm/vllm-openai:v0.27.0@sha256:07ea4e292adf3a26b05ac97114b28849cf4551a26beb1fbe7decd3842d752ed7"
++        version: 0.25.0
++        images: *id001
++        source_commit: dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+       mla_bmm:
+-        version: "0.27.0"
+-        images:
+-          default: *vllm_0270_image
+-      # moe: NO family pin (owner decision 2026-08-02, reverting the
+-      # 2026-08-01 family-wide preview pin — a temporary preview build must
+-      # not own a family default; a family pin here hijacks image selection
+-      # for every model). ALL vllm moe collection — including K3 — runs on
+-      # the stock v0.24.0 default image: K3 SITU cases use the
+-      # owner-approved situ-as-silu Marlin approximation in collect_moe
+-      # (serving truth is MarlinExperts W4A16 on every SM — the preview's
+-      # CUTLASS whitelist rejects SITU; stock's device-only gate is forced
+-      # off so Blackwell doesn't drift into CUTLASS W4A4, a kernel K3
+-      # serving never runs; rows are marked kernel_source *_situ_as_silu,
+-      # epilogue delta <~3%). Already-collected K3 rows (b200/b300,
+-      # preview-native situ) stay merged in the 0.24.0 moe table with
+-      # their honest runtime version column. Retire the approximation when
+-      # upstream wires SITU into a quantized-activation kernel (kernel
+-      # class flips) — re-audit at every tag bump.
+-      # (2026-08-02 audit note kept for the preview image: the kimi-k3
+-      # tag's amd64 image is IDENTICAL to the pin digest —
+-      # 0.1.dev19262+gb6bbf29dd, no deep_gemm; the earlier "drift to
+-      # sha256:d61e062d" observation was the manifest list's arm64 entry,
+-      # not a new build. On aarch64 hosts (gb200/gb300) resolve the arm64
+-      # entry of the same tag and re-verify the version string before use.)
+-    # Model-scoped collector runtime pins use the same precedence as
+-    # frameworks.sglang.models above: an exact run model_path overrides both
+-    # family pins and the framework default for every op in that run.
+-    #
+-    # Qwen3.8-Max needs vLLM v0.27.1. The vLLM model registry first maps the
+-    # bare Qwen3_5MoeForCausalLM architecture string at v0.27.1
+-    # (model_executor/models/registry.py:202 at tag v0.27.1, commit
+-    # 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac); v0.24.0 has the model class
+-    # but no standard registry route for that architecture. Docker Hub's
+-    # registry API reported the immutable index digests below on 2026-08-21.
+-    # v0.27.1 has default and cu129 variants, but no cu128/cu130 tags.
+-    #
+-    # Scope: the override is selected only when collect.py resolves one exact
+-    # model_path. A full/unfiltered plan has no single model identity and uses
+-    # the normal framework/family runtime; run these campaigns separately at
+-    # their declared runtime.
++        version: 0.25.0
++        images: *id001
++        source_commit: dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+     models:
+-      "Qwen/Qwen3.8-2.4T-A95B":
+-        version: "0.27.1"
++      Qwen/Qwen3.8-2.4T-A95B:
++        version: 0.27.1
+         images:
+-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+-      "Qwen/Qwen3.8-2.4T-A95B-FP8":
+-        version: "0.27.1"
++          default: vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
++          cu129: vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a
++      Qwen/Qwen3.8-2.4T-A95B-FP8:
++        version: 0.27.1
+         images:
+-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+-      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
+-        version: "0.27.1"
++          default: vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
++          cu129: vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a
++      RadixArk/Qwen3.8-2.4T-A95B-NVFP4:
++        version: 0.27.1
+         images:
+-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
++          default: vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
++          cu129: vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a
+   vllm_xpu:
+     base_framework: vllm
+     data_backend: vllm
+-    notes: >
+-      Intel XPU collector runtime. This is intentionally separate from stock
+-      CUDA vLLM because the XPU collectors depend on vLLM 0.26.0 plus the
+-      matching vllm-xpu-kernels runtime contract.
++    notes: 'Intel XPU collector runtime. This is intentionally separate from stock
++      CUDA vLLM because the XPU collectors depend on vLLM 0.26.0 plus the matching
++      vllm-xpu-kernels runtime contract.
++
++      '
+     default:
+-      version: "0.26.0"
++      version: 0.26.0
+       images:
+-        default: "vllm/vllm-openai-xpu:v0.26.0@sha256:e2ab50957fc309d3fb110e6331ab8bfb7dd4f0074df41cbbf0bc3c64c8bc0e52"
++        default: vllm/vllm-openai-xpu:v0.26.0@sha256:e2ab50957fc309d3fb110e6331ab8bfb7dd4f0074df41cbbf0bc3c64c8bc0e52
+   wideep_sglang:
+     base_framework: sglang
+-    collector_dir: "collector/wideep/sglang"
++    collector_dir: collector/wideep/sglang
+     data_backend: sglang
+     default:
+-      version: "0.5.10"
++      version: 0.5.10
+       images:
+-        default: "deepseek-v4-blackwell"
+-        grace_blackwell: "deepseek-v4-grace-blackwell"
++        default: deepseek-v4-blackwell
++        grace_blackwell: deepseek-v4-grace-blackwell
+     families:
+-      # DeepEP dispatch/combine only. The DeepSeek-V4 images ship deep_ep 1.1.0
+-      # (kNumMaxTopK 9), which cannot run topk=10 shapes such as
+-      # (4096, 512, 10); this image ships deep_ep 1.2.1+d28bd67 (kNumMaxTopK 11)
+-      # and collects them, verified on GB200. It is a multi-arch index (amd64 +
+-      # arm64), so one entry serves every system and no grace_blackwell variant
+-      # is needed. `moe` (wideep_moe) deliberately stays on the DeepSeek-V4
+-      # default: its DSv4 module support on this image is unverified.
+       comm:
+-        version: "0.5.12"
++        version: 0.5.12
+         images:
+-          default: "lmsysorg/sglang:v0.5.12-cu130@sha256:42194170546745092e74cd5f81ad32a7c6e944c7111fe7bf13588152277ff356"
+-    notes: >
+-      Requires an SGLang image with DeepSeek-V4/DeepEP modules; stock
+-      lmsysorg/sglang images may not include them.
++          default: lmsysorg/sglang:v0.5.12-cu130@sha256:42194170546745092e74cd5f81ad32a7c6e944c7111fe7bf13588152277ff356
++    notes: 'Requires an SGLang image with DeepSeek-V4/DeepEP modules; stock lmsysorg/sglang
++      images may not include them.
++
++      '
+   wideep_vllm:
+     base_framework: vllm
+-    collector_dir: "collector/wideep/vllm"
++    collector_dir: collector/wideep/vllm
+     data_backend: vllm
+     default:
+-      version: "0.24.0"
+-      source_commit: "ee0da84ab9e04ac7610e28580af62c365e898389"
++      version: 0.24.0
++      source_commit: ee0da84ab9e04ac7610e28580af62c365e898389
+       abi:
+-        build_mode: "official-v0.24.0-image"
+-        torch: "2.11.0"
+-        cuda: "13.0.2"
+-        deep_ep: "73b6ea4a439ba03a695563f9fd242c8e4b02b37c"
+-        nvshmem: "3.3.24"
++        build_mode: official-v0.24.0-image
++        torch: 2.11.0
++        cuda: 13.0.2
++        deep_ep: 73b6ea4a439ba03a695563f9fd242c8e4b02b37c
++        nvshmem: 3.3.24
+       backend_abi:
+         deepep_ht:
+-          deep_ep_api: "Buffer"
++          deep_ep_api: Buffer
+         deepep_ll:
+-          deep_ep_api: "Buffer"
++          deep_ep_api: Buffer
+         deepep_v2:
+-          build_mode: "official-v0.24.0-image+deepep-v2-overlay"
+-          deep_ep: "b306af06afd412c88e51e71802951606e40b7358"
+-          deep_ep_api: "ElasticBuffer"
+-          nccl: "2.30.4"
++          build_mode: official-v0.24.0-image+deepep-v2-overlay
++          deep_ep: b306af06afd412c88e51e71802951606e40b7358
++          deep_ep_api: ElasticBuffer
++          nccl: 2.30.4
+       images:
+-        default: "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
+-    notes: >
+-      The official multi-arch v0.24.0 index is the configured image identity;
+-      launchers resolve and attest its platform child at runtime. HT/LL use the
+-      legacy Buffer API. V2 uses the separately attested b306af0 ElasticBuffer
+-      overlay and NCCL 2.30.4. Four-GPU GB scale-up groups additionally require
+-      the checked-in legacy topology patch; every overlay records its wheel and
+-      patch SHA256.
++        default: vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f
++    notes: 'The official multi-arch v0.24.0 index is the configured image identity;
++      launchers resolve and attest its platform child at runtime. HT/LL use the legacy
++      Buffer API. V2 uses the separately attested b306af0 ElasticBuffer overlay and
++      NCCL 2.30.4. Four-GPU GB scale-up groups additionally require the checked-in
++      legacy topology patch; every overlay records its wheel and patch SHA256.
++
++      '
+   wideep_trtllm:
+     base_framework: trtllm
+-    collector_dir: "collector/wideep/trtllm"
++    collector_dir: collector/wideep/trtllm
+     data_backend: trtllm
+     default:
+-      version: "1.3.0rc20"
++      version: 1.3.0rc20
+       images:
+-        default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88"
++        default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88
+   trtllm_a2a:
+-    source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
++    source_repo: https://github.com/NVIDIA/TensorRT-LLM.git
+     default:
+-      version: "1.3.0rc11"
+-      source_commit: "14efb6ac673c0cbe828e1206cc5c7d5748d05ffa"
++      version: 1.3.0rc11
++      source_commit: 14efb6ac673c0cbe828e1206cc5c7d5748d05ffa
+       abi:
+-        build_mode: "source-wheel-over-pinned-base"
+-        deep_ep: "5be51b228a7c82dbdb213ea58e77bffd12b38af8"
+-        nvshmem: "3.2.5-1"
+-        nvshmem_archive_sha256: "eb2c8fb3b7084c2db86bd9fd905387909f1dfd483e7b45f7b3c3d5fcf5374b5a"
++        build_mode: source-wheel-over-pinned-base
++        deep_ep: 5be51b228a7c82dbdb213ea58e77bffd12b38af8
++        nvshmem: 3.2.5-1
++        nvshmem_archive_sha256: eb2c8fb3b7084c2db86bd9fd905387909f1dfd483e7b45f7b3c3d5fcf5374b5a
+       images:
+-        default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88"
+-    notes: >
+-      The rc20 image is an immutable build base only. Collection must build
+-      and attest source_commit 14efb6ac (package version 1.3.0rc11), including
+-      its vendored DeepEP/NVSHMEM ABI; rows from the bundled rc20 package are
+-      rejected for this workload.
++        default: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88
++    notes: 'The rc20 image is an immutable build base only. Collection must build
++      and attest source_commit 14efb6ac (package version 1.3.0rc11), including its
++      vendored DeepEP/NVSHMEM ABI; rows from the bundled rc20 package are rejected
++      for this workload.
++
++      '
+diff --git a/python/aisimulate/src/aiconfigurator/model_configs b/python/aisimulate/src/aiconfigurator/model_configs
+index 145fdcd..b45eec8 120000
+--- a/python/aisimulate/src/aiconfigurator/model_configs
++++ b/python/aisimulate/src/aiconfigurator/model_configs
+@@ -1 +1 @@
+-../../aic-core/src/aiconfigurator_core/model_configs
+\ No newline at end of file
++../aiconfigurator_core/model_configs
+\ No newline at end of file
+diff --git a/python/aisimulate/src/aiconfigurator/systems b/python/aisimulate/src/aiconfigurator/systems
+index f36c42a..eaed77a 120000
+--- a/python/aisimulate/src/aiconfigurator/systems
++++ b/python/aisimulate/src/aiconfigurator/systems
+@@ -1 +1 @@
+-../../aic-core/src/aiconfigurator_core/systems
+\ No newline at end of file
++../aiconfigurator_core/systems
+\ No newline at end of file

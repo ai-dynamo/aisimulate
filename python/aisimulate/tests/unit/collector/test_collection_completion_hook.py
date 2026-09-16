@@ -4,7 +4,6 @@ import json
 
 import pytest
 import yaml
-
 from collector.campaigns.slurm_collection_hook import case_hash, completion, validate_snapshot
 
 pytestmark = pytest.mark.unit
@@ -109,3 +108,80 @@ def test_cpu_hook_memory_limit_cannot_leak_into_gpu_step(tmp_path, monkeypatch):
     assert "SLURM_MEM_PER_NODE" not in captured["env"]
     assert "SLURM_CPUS_PER_TASK" not in captured["env"]
     assert captured["env"]["SLURM_CONF"] == "/etc/slurm/cluster.conf"
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "undeclared"])
+def test_rejects_any_declared_observed_table_mismatch(tmp_path, mismatch):
+    spec, _, _, rows = fixture(tmp_path)
+    path = tmp_path / "data/collection_meta.yaml"
+    meta = yaml.safe_load(path.read_text())
+    if mismatch == "missing":
+        meta["tables"]["second_perf"] = {"rows": 1, "status": "complete"}
+        path.write_text(yaml.safe_dump(meta))
+    else:
+        (tmp_path / "data/second_perf.parquet").write_bytes(b"unclaimed")
+    with pytest.raises(ValueError, match="table mismatch"):
+        validate_snapshot(tmp_path, spec, table_reader=lambda _: rows)
+
+
+@pytest.mark.parametrize("latency", [None, "0.01", True, [], {}, float("inf"), float("nan")])
+def test_bad_latency_is_a_shard_validation_error(tmp_path, latency):
+    spec, _, _, rows = fixture(tmp_path)
+    rows[0]["latency"] = latency
+    with pytest.raises(ValueError):
+        validate_snapshot(tmp_path, spec, table_reader=lambda _: rows)
+
+
+def test_bad_shard_does_not_prevent_later_ready_submission(tmp_path, monkeypatch):
+    from collector.campaigns import slurm_collection_hook as hook
+
+    bad_job = tmp_path / "results/gemm-bf16-00/job-1"
+    spec, _, _, rows = fixture(bad_job)
+    rows[0]["latency"] = None
+    later = {"id": "later", "op": "gemm", "mode": "full", "planned_tasks": 1}
+    (tmp_path / "plan.json").write_text(json.dumps({"smokes": [], "shards": [spec, later]}))
+    original = hook.validate_snapshot
+    monkeypatch.setattr(
+        hook, "validate_snapshot", lambda path, selected: original(path, selected, table_reader=lambda _: rows)
+    )
+    monkeypatch.setattr(hook.subprocess, "check_output", lambda *args, **kwargs: "")
+    submitted = []
+
+    def submit(config, campaign, selected):
+        submitted.append(selected["id"])
+        return {"job": "2", "shard": selected["id"]}
+
+    monkeypatch.setattr(hook, "submit", submit)
+    report = hook.tick(
+        {
+            "user": "test",
+            "max_active_jobs": 2,
+            "max_infra_attempts_per_revision": 1,
+            "expected_tasks": {"gemm": 2},
+            "campaigns": [{"root": str(tmp_path), "plan": "plan.json", "runner_revision": "test"}],
+        },
+        apply=True,
+    )
+    assert report["shards"][0]["state"] == "validation_failed"
+    assert submitted == ["later"]
+
+
+@pytest.mark.parametrize("failure", ["document", "runtime", "table_name", "table_entry", "yaml"])
+def test_corrupt_metadata_is_a_shard_validation_error(tmp_path, failure):
+    spec, _, _, rows = fixture(tmp_path)
+    path = tmp_path / "data/collection_meta.yaml"
+    meta = yaml.safe_load(path.read_text())
+    if failure == "document":
+        meta = []
+    elif failure == "runtime":
+        meta["runtime"] = None
+    elif failure == "table_name":
+        meta["tables"][123] = {}
+    elif failure == "table_entry":
+        meta["tables"]["gemm_perf"] = []
+    if failure == "yaml":
+        path.write_text("runtime: [unterminated")
+    else:
+        path.write_text(yaml.safe_dump(meta))
+    with pytest.raises(ValueError):
+        validate_snapshot(tmp_path, spec, table_reader=lambda _: rows)

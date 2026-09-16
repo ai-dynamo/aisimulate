@@ -19,6 +19,7 @@ import os
 import shlex
 import subprocess
 import time
+from numbers import Real
 from pathlib import Path
 
 import yaml
@@ -71,18 +72,36 @@ def validate_snapshot(job_dir, spec, *, table_reader=None):
             raise ValueError("Smoke did not execute its exact planned cases")
         if spec.get("case_set_sha256") and case_hash(physical) != spec["case_set_sha256"]:
             raise ValueError("GEMM shard coverage hash differs from plan")
-    meta = yaml.safe_load((data / "collection_meta.yaml").read_text())
+    try:
+        meta = yaml.safe_load((data / "collection_meta.yaml").read_text())
+    except yaml.YAMLError as error:
+        raise ValueError("Invalid performance provenance YAML") from error
+    if not isinstance(meta, dict) or not isinstance(meta.get("runtime"), dict):
+        raise ValueError("Performance provenance and runtime must be mappings")
     if meta["runtime"]["version"] != "0.25.0" or meta["runtime"]["framework"] != "vllm":
         raise ValueError("Performance provenance belongs to another framework/version")
     if table_reader is None:
         import pyarrow.parquet as pq
 
         table_reader = lambda path: pq.read_table(path).to_pylist()
+    tables = meta.get("tables")
+    if not isinstance(tables, dict) or not tables or any(not isinstance(name, str) or not name for name in tables):
+        raise ValueError("Performance provenance must declare its table set")
+    paths = sorted(data.glob("*_perf.parquet"))
+    declared = set(tables)
+    observed = {path.stem for path in paths}
+    if declared != observed:
+        raise ValueError(
+            f"Declared/observed table mismatch: missing={sorted(declared - observed)}, "
+            f"undeclared={sorted(observed - declared)}"
+        )
     files = {}
     row_count = 0
-    for path in sorted(data.glob("*_perf.parquet")):
+    for path in paths:
         rows = table_reader(path)
         entry = meta["tables"][path.stem]
+        if not isinstance(entry, dict):
+            raise ValueError("Table provenance must be a mapping")
         if spec["mode"] == "full":
             expected_ref = status.get("source_commit")
             if not expected_ref or expected_ref == "unknown" or entry.get("collector_ref") != expected_ref:
@@ -90,9 +109,12 @@ def validate_snapshot(job_dir, spec, *, table_reader=None):
         if entry.get("status") != "complete" or entry["rows"] != len(rows):
             raise ValueError("Parquet row count/status does not match its provenance")
         for row in rows:
-            if row["version"] != "0.25.0" or not math.isfinite(row["latency"]):
+            latency = row.get("latency")
+            if isinstance(latency, bool) or not isinstance(latency, Real):
+                raise ValueError(f"Performance latency must be numeric, got {type(latency).__name__}")
+            if row["version"] != "0.25.0" or not math.isfinite(latency):
                 raise ValueError("Wrong-version or non-finite performance row")
-            if row["latency"] < 0 or (row["latency"] == 0 and spec["op"] != "compute_scale"):
+            if latency < 0 or (latency == 0 and spec["op"] != "compute_scale"):
                 raise ValueError("Invalid performance latency")
         if spec["op"] == "gemm":
             keys = {str([r["gemm_dtype"], r["m"], r["n"], r["k"]]) for r in rows}

@@ -105,17 +105,28 @@ def nccl_benchmark(
         if power_monitor:
             power_monitor.start_sampling()
 
-        result = subprocess.run(
-            cmd_args,
-            capture_output=True,
-            text=True,
-            check=True,
-            env={**os.environ, "NCCL_DEBUG": "VERSION"},
-        )
-
-        # Stop power monitoring after benchmark
-        if power_monitor:
-            power_stats = power_monitor.stop_sampling()
+        benchmark_error = None
+        try:
+            result = subprocess.run(
+                cmd_args,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, "NCCL_DEBUG": "VERSION"},
+            )
+        except BaseException as error:
+            benchmark_error = error
+            raise
+        finally:
+            if power_monitor:
+                try:
+                    power_stats = power_monitor.stop_sampling()
+                except Exception as cleanup_error:
+                    if benchmark_error is None:
+                        raise
+                    # Do not replace the original process failure with a
+                    # secondary sampling-cleanup failure.
+                    print(f"Warning: power sampling cleanup also failed: {cleanup_error}", file=sys.stderr)
 
         latency = parse_nccl_latency(result.stdout, result.stderr, size, nccl_version)
 

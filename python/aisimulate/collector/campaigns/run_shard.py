@@ -18,6 +18,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -81,6 +82,90 @@ def save(path, document):
     temporary.replace(path)
 
 
+def replace_snapshot(data, snapshot=None):
+    """Restore an exact snapshot, quarantining (never overlaying) local leftovers."""
+    data = Path(data)
+    if data.is_symlink():
+        raise ValueError("Shard data directory cannot be a symlink")
+    if snapshot is not None:
+        snapshot = Path(snapshot)
+        if not snapshot.is_dir() or snapshot.is_symlink():
+            raise ValueError("Selected snapshot must be a real directory")
+        if snapshot.resolve().is_relative_to(data.resolve()) or data.resolve().is_relative_to(snapshot.resolve()):
+            raise ValueError("Snapshot and destination must be disjoint")
+    data.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{data.name}-restore-", dir=data.parent))
+    quarantine = None
+    try:
+        if snapshot is not None:
+            shutil.copytree(snapshot, temporary, dirs_exist_ok=True)
+        if data.exists():
+            quarantine = data.with_name(f".{data.name}-orphan-{time.time_ns()}-{os.getpid()}")
+            data.rename(quarantine)
+        try:
+            temporary.rename(data)
+        except BaseException:
+            if quarantine is not None:
+                quarantine.rename(data)
+            raise
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return str(quarantine) if quarantine else None
+
+
+def attest_source(root, manifest):
+    """Reject dirty/wrong checkouts and uncommitted or unhashed runtime declarations."""
+    source = (Path(root) / "source").resolve(strict=True)
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(source), *args])
+
+    if Path(git("rev-parse", "--show-toplevel").decode().strip()).resolve() != source:
+        raise ValueError("Campaign source must be the Git checkout root")
+    actual = git("rev-parse", "HEAD").decode().strip()
+    if actual != manifest.get("source_commit"):
+        raise ValueError("Source HEAD differs from campaign source_commit")
+    if git("status", "--porcelain", "--untracked-files=all").strip():
+        raise ValueError("Campaign source checkout is dirty; runtime patches must not be hidden in the worktree")
+    declaration = manifest.get("runtime_manifest")
+    if not isinstance(declaration, dict):
+        raise ValueError("Campaign must name a committed runtime_manifest path and sha256")
+    path_value = declaration.get("path")
+    if not isinstance(path_value, str) or not path_value:
+        raise ValueError("Runtime manifest path must be a non-empty string")
+    relative = Path(path_value)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError("Runtime manifest path must be relative to the source checkout")
+    path = source / relative
+    if path.is_symlink() or not path.resolve(strict=True).is_relative_to(source):
+        raise ValueError("Runtime manifest must be a file inside the source checkout")
+    expected = declaration.get("sha256")
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValueError("Runtime manifest requires a full lowercase SHA-256")
+    content = path.read_bytes()
+    try:
+        committed = git("show", f"HEAD:{relative.as_posix()}")
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Runtime declaration is not committed at the recorded source HEAD") from error
+    if content != committed or hashlib.sha256(content).hexdigest() != expected:
+        raise ValueError("Runtime declaration differs from its committed bytes or recorded SHA-256")
+    return {"path": str(path), "relative_path": relative.as_posix(), "sha256": expected, "source_commit": actual}
+
+
+def collector_environment(root, runtime_declaration):
+    """Bind helper imports and runtime selection to the attested source."""
+    source_python = str((Path(root) / "source/python/aisimulate").resolve())
+    previous_pythonpath = os.environ.get("PYTHONPATH", "")
+    return {
+        **os.environ,
+        "AISIM_COLLECTOR_RUNTIME_MANIFEST": runtime_declaration["path"],
+        "AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256": runtime_declaration["sha256"],
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": os.pathsep.join(part for part in (source_python, previous_pythonpath) if part),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("shard_id")
@@ -89,7 +174,7 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.shard_id) or args.shard_id in {".", ".."}:
         parser.error("shard_id must be a single safe path component")
-    root = args.root
+    root = args.root.resolve()
     candidates = [
         root / name
         for name in ("gemm-shards.json", "ops-shards.json", "mla-shards.json", "final-shards.json")
@@ -103,20 +188,26 @@ def main():
         parser.error("Provide exactly one campaign plan")
     manifest = json.loads(plan_path.read_text())
     spec = next(s for s in manifest["smokes"] + manifest["shards"] if s["id"] == args.shard_id)
+    runtime_declaration = attest_source(root, manifest)
     base = root / "results" / args.shard_id
     job = base / ("job-" + os.environ["SLURM_JOB_ID"])
     job.mkdir(parents=True, exist_ok=True)
     data = Path(manifest["local_root"]) / args.shard_id / "data"
-    data.mkdir(parents=True, exist_ok=True)
     previous = base / "latest_snapshot.json"
+    snapshot = None
     if previous.exists():
         snapshot = root / json.loads(previous.read_text())["relative_path"]
-        shutil.copytree(snapshot, data, dirs_exist_ok=True)
+        if not snapshot.resolve().is_relative_to(base.resolve()):
+            raise ValueError("Canonical snapshot must belong to this shard")
+    quarantine = replace_snapshot(data, snapshot)
     status = {
         "spec": spec,
         "source_commit": manifest["source_commit"],
         "clock_policy": manifest["clock_policy"],
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "runtime_manifest": runtime_declaration,
+        "source_tree_clean": True,
+        "quarantined_local_data": quarantine,
         "started_unix": time.time(),
         "status": "starting",
     }
@@ -145,8 +236,11 @@ def main():
     reviewed = spec["op"] in review
     status["failure_review"] = review.get(spec["op"])
     finalized_since = None
+    env = collector_environment(root, runtime_declaration)
     with (job / "collector.log").open("w") as log:
-        proc = subprocess.Popen(command, cwd=data, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen(
+            command, cwd=data, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env
+        )
         status.update(status="running", collector_pid=proc.pid)
         save(status_path, status)
         while proc.poll() is None:
@@ -186,7 +280,7 @@ def main():
     except ProcessLookupError:
         pass
     snapshot = job / "data"
-    shutil.copytree(data, snapshot, dirs_exist_ok=True)
+    replace_snapshot(snapshot, data)
     save(
         previous,
         {

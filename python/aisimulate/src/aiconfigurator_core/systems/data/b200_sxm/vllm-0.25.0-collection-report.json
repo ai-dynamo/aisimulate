@@ -2173,5 +2173,87 @@
     "validated_batches": 25,
     "validated_cases": 148,
     "all_smokes_passed": false
+  },
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.25.0",
+    "image": "aisim-b200-vllm-0250-sqsh-9ae776fd614406ea136d29aeb5ac05d9980865cd4a10eb8ec6956437da7d4ab7",
+    "source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40"
+  },
+  "reproduction": {
+    "runtime_manifest": "collector/campaigns/runtime_manifests/vllm-0.25.0-b200.yaml",
+    "runtime_manifest_sha256": "cf739fe12dc1c82f75a6a0e8e3530f532190643ba4035a89865f70ee6aceb469",
+    "historical_runs_used_campaign_manifest_overrides": true,
+    "historical_collector_refs_preserved": true,
+    "future_runs_require_clean_matching_source_checkout": true,
+    "note": "Historical data were not recollected or relabeled by the review fix. Their collector refs identify the original code; runtime declarations and legacy source overrides are separate evidence. The new clean runner requires a source revision containing the runtime-manifest environment interface.",
+    "historical_source_overrides": [
+      {
+        "campaign": "campaign-v2",
+        "source_commit": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
+        ],
+        "runtime_manifest_sha256": "eb8beaaf0649afd1b05208c91e50b4f12ee444c4708f34c10449482b9b07c347",
+        "patch_sha256": "797f810bd4452f3bd0306a48cd841040ce344b03e8f9486d3215fe43209ff40d",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-v2.patch"
+      },
+      {
+        "campaign": "campaign-ops-v1",
+        "source_commit": "c79cc132552deb677becc37f8139b0cca2b08d75",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
+        ],
+        "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
+        "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-ops-v1.patch"
+      },
+      {
+        "campaign": "campaign-mla-v1",
+        "source_commit": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
+        ],
+        "runtime_manifest_sha256": "04c7646128ee7dd5e1fd7dd6d007ce47acb90385a1b2d025581956a2b0ca1c60",
+        "patch_sha256": "2798ff1f02bba9aa86637312766f30b47c2685797d0a732988d6a8828321153c",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-mla-v1.patch"
+      },
+      {
+        "campaign": "campaign-final-v1",
+        "source_commit": "0df459fa62de6529d4e1585536da64fd8e917818",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
+        ],
+        "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
+        "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-final-v1.patch"
+      }
+    ]
+  },
+  "metadata_compatibility": {
+    "schema_version": 2,
+    "runtime_source_commit_location": "runtime.source_commit in this report",
+    "classified_failures_location": "tables.<filename>.source_jobs[].classified_failures in this report",
+    "original_sidecar_sha256": {
+      "attention/vllm/0.25.0/collection_meta.yaml": "d09bb327e578bc36205a484a8ff55c1f22abe40cfeefdd6c5e0f4fb7a112f0fb",
+      "encoder_attention/vllm/0.25.0/collection_meta.yaml": "e0597f784ad4c7244f426b0785985d4bf9a451ef1b7d1c1a358f4b15eda9637b",
+      "gemm/vllm/0.25.0/collection_meta.yaml": "a69d0f0504e20fe99333a02d8a3c0340ab3703c153a78352968a92ce01c6500d",
+      "linear_attention/vllm/0.25.0/collection_meta.yaml": "5c4408ecbdd739afb65b33aae541c04e27ab186e2c28582215c3e52b42c90416",
+      "mhc/vllm/0.25.0/collection_meta.yaml": "33eb96d1459be1b9c6dae3d43fb40b5258b6a8d9c13218bc6c12e3c49f15205e",
+      "mla/vllm/0.25.0/collection_meta.yaml": "24965174f547b1012d3481316573bc444fae42d9f8806fdb5940edfc489b1ae3",
+      "mla_bmm/vllm/0.25.0/collection_meta.yaml": "6faf4ecbdb70dc683907ce926781f5b23ad91b1abe364acf6fd55ffa9bc645af",
+      "moe/vllm/0.25.0/collection_meta.yaml": "d3e6d87bb3292858a8c08a27eebe38f6c91c89fd20b13c96d212672786ecc127",
+      "msa/vllm/0.25.0/collection_meta.yaml": "81be3306899328530d513d86537d132693d984ac2e1b9bc5122f2fc0579d3468",
+      "sparse_attention/vllm/0.25.0/collection_meta.yaml": "c13d6336de1efb057d8a6e27fd694a1f3b480b251a8ef662e05a4b5508303a79"
+    },
+    "note": "Relocated fields rejected by the existing public v2 loader; no parser/schema expansion and no loss of revision or failure-count evidence."
   }
 }

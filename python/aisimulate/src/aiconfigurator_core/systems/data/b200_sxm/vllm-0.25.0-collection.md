@@ -14,7 +14,9 @@ The data belong to the vLLM 0.25.0 image with source commit
   fail publication validation. No smoke rows are inserted into performance tables.
 - `collection_meta.yaml` uses the existing schema-2 multi-collection format to
   retain each original collector reference, content hash, case-plan hash, date,
-  row count and observed failure count. Old measurements are **not** relabeled as
+  row count. Upstream runtime revision and observed per-shard failure counts are
+  retained in the adjacent collection report (the public v2 sidecar schema does
+  not admit those fields). Old measurements are **not** relabeled as
   collected by the smoke-test commit.
 - Per the repository's provenance writer, a table status of `complete` means its
   collection finished; classified individual case failures are recorded separately.
