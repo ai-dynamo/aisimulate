@@ -16,6 +16,7 @@ on:
       - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
       - "tests/test_pages_site.py"
+      - "tests/test_fpe_support_matrix_browser.py"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -28,6 +29,7 @@ on:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/prepare_fpe_pages.py"
+      - "tests/test_fpe_support_matrix_browser.py"
       - "scripts/run_release_fpe.py"
       - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
@@ -83,6 +85,11 @@ jobs:
         run: python scripts/build_pages_site.py --output-dir _site
       - name: Test public artifact contract
         run: python -m unittest discover -s tests -p test_pages_site.py
+      - name: Test FPE branch selection in Chromium
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+          python -m unittest discover -s tests -p test_fpe_support_matrix_browser.py -v
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

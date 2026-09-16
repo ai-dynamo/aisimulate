@@ -122,7 +122,7 @@ Manual dispatches and site-change triggers are listed below.
 | [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
-| [GitHub Pages](../.github/workflows/pages.yml) | Successful FPE Support Matrix, Main branch nightly CI, or Release branch nightly CI completion; relevant site changes on PRs/`main`; manual dispatch | Validates branch snapshots and builds dashboard/support-matrix pages; deployment is restricted to trusted `main` |
+| [GitHub Pages](../.github/workflows/pages.yml) | Successful FPE Support Matrix, Main branch nightly CI, or Release branch nightly CI completion; relevant site changes on PRs/`main`; manual dispatch | Validates branch snapshots, tests FPE branch selection in Chromium, and builds dashboard/support-matrix pages; deployment is restricted to trusted `main` |
 
 CODEOWNERS and advisory performance checks run alongside the validation
 pipelines. Pages consumes qualification evidence after producer completion.

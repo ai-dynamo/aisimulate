@@ -90,6 +90,7 @@
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_fpe_support_matrix_browser.py            @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===
