@@ -80,8 +80,12 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             or bench.get("offload_mode", "off") != "off"
         ):
             return "nonstandard_or_error"
+        decode_gpus = config.get("num_decode_gpu", 0)
+        prefill_gpus = config.get("num_prefill_gpu", 0) if config.get("disagg") else 0
+        if any(type(count) is not int or count < 0 for count in (decode_gpus, prefill_gpus)):
+            return "invalid_gpu_count"
         per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
-        total_gpus = config.get("num_decode_gpu", 0) + (config.get("num_prefill_gpu", 0) if config.get("disagg") else 0)
+        total_gpus = decode_gpus + prefill_gpus
         if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
             return "multinode"
         if not all(positive(bench["metrics"].get(key)) for key in ("mean_ttft", "mean_tpot")):

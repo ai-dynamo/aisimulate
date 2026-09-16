@@ -118,6 +118,8 @@ def test_incomplete_new_source_run_preserves_the_previous_successful_curve(statu
         ("multinode", "multinode"),
         ("gpu_limit", "multinode"),
         ("missing_latency", "missing_mean_latency"),
+        ("null_decode_gpus", "invalid_gpu_count"),
+        ("null_prefill_gpus", "invalid_gpu_count"),
     ],
 )
 def test_new_ineligible_measurements_do_not_age_out_eligible_evidence(change, reason):
@@ -136,6 +138,10 @@ def test_new_ineligible_measurements_do_not_age_out_eligible_evidence(change, re
         newer["is_multinode"] = True
     elif change == "gpu_limit":
         newer["num_decode_gpu"] = 9
+    elif change == "null_decode_gpus":
+        newer["num_decode_gpu"] = None
+    elif change == "null_prefill_gpus":
+        newer.update(disagg=True, num_prefill_gpu=None)
     points, stats = campaign.select_points(data, 30)
     assert {point["benchmark"]["id"] for point in points} == {1}
     assert stats["excluded"] == {reason: 2}
@@ -528,6 +534,30 @@ def test_qualified_artifact_symlinks_never_fall_back_to_committed_data(tmp_path,
     (artifacts / (publish.artifact_key("main") + ".json")).symlink_to(target)
     with pytest.raises(pages.PagesBuildError, match="qualified accuracy summary cannot be a symlink"):
         pages.build_site(ROOT, tmp_path / "site", accuracy_artifacts=artifacts)
+
+
+@pytest.mark.parametrize("content", ["not-json", "{}", "directory", "bad-models"])
+def test_invalid_qualified_artifacts_use_pages_error_contract(artifact, tmp_path, content):
+    summary, _ = artifact
+    artifacts = tmp_path / "qualified"
+    artifacts.mkdir()
+    path = artifacts / (publish.artifact_key("main") + ".json")
+    if content == "directory":
+        path.mkdir()
+    else:
+        if content == "bad-models":
+            summary["models"] = None
+            content = json.dumps(summary)
+        path.write_text(content)
+    with pytest.raises(pages.PagesBuildError, match="invalid qualified accuracy artifact") as caught:
+        pages.build_site(ROOT, tmp_path / "site", accuracy_artifacts=artifacts)
+    assert isinstance(caught.value.__cause__, (OSError, ValueError, KeyError, TypeError))
+
+
+def test_invalid_gpu_count_exclusions_survive_publication_validation(artifact):
+    summary, run = artifact
+    summary["snapshot"]["campaign"]["measurement_filter_counts"]["invalid_gpu_count"] = 2
+    assert publish.validate_artifact(archive(summary), run) == summary
 
 
 def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_raw_artifacts():

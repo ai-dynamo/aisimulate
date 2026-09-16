@@ -42,10 +42,10 @@ are separate identities:
 
 | Field | Meaning |
 | --- | --- |
-| `branch` | The branch whose committed snapshot is being published. |
+| `branch` | The branch whose committed snapshot or qualified campaign evidence is being published. |
 | `status` | `evaluated`, `inherited`, `historical`, or `unavailable`, as defined above. |
 | `summary_path` | A site-relative `branches/<16 hex characters>/summary.json` path; `null` for unavailable evidence. A direct source preview uses `summary.json`. |
-| `published_from_commit` | The full commit from which the snapshot file was copied, or `null` in a local build without branch refs. This is publication provenance, not the evaluated revision. |
+| `published_from_commit` | The full commit from which the snapshot file was copied, or `null` for a qualified campaign artifact or a local build without branch refs. Campaign identity is recorded in `evaluated_revision`. This field is publication provenance, not the evaluated revision. |
 | `evaluated_revision` | Required for evaluated/inherited evidence: the producer-recorded `branch` and full `commit_sha`. Absent or `null` for historical/unavailable evidence. |
 
 The exporter, Pages validator, and browser restrict evaluated branch names to

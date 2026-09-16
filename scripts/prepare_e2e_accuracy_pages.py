@@ -254,6 +254,7 @@ def unpack_artifact(archive: bytes) -> dict:
             "stale",
             "missing_mean_latency",
             "mixed_image_curve",
+            "invalid_gpu_count",
         },
     )
     if any(type(count) is not int or count < 0 for count in q["measurement_filter_counts"].values()):

@@ -349,12 +349,15 @@ def _build_accuracy_catalog(
         if qualified is not None and (qualified.exists() or qualified.is_symlink()):
             if qualified.is_symlink():
                 raise PagesBuildError("qualified accuracy summary cannot be a symlink")
-            content = qualified.read_text()
             if __package__:
                 from .prepare_e2e_accuracy_pages import public_contract, strict_json
             else:
                 from prepare_e2e_accuracy_pages import public_contract, strict_json
-            qualified_summary = public_contract(strict_json(content))
+            try:
+                content = qualified.read_text()
+                qualified_summary = public_contract(strict_json(content))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise PagesBuildError(f"invalid qualified accuracy artifact {qualified}: {exc}") from exc
             revision = qualified_summary["snapshot"]["evaluated_revision"]
             if revision["branch"] != branch:
                 raise PagesBuildError("qualified accuracy artifact belongs to another branch")

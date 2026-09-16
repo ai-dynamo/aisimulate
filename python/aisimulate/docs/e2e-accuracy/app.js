@@ -561,6 +561,7 @@ function validateSummary(data) {
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
   const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
+    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "baseline_failed"].includes(key)) &&
     Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
   if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
     campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
