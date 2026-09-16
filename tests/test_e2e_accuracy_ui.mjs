@@ -104,7 +104,12 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
-  for (const change of [{ run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) }, { advisory: false }, { published: data.totals.rows + 1 }]) {
+  for (const change of [
+    { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
+    { advisory: false }, { published: data.totals.rows + 1 },
+    ...[[], { adapter_unsupported: -1 }, { adapter_unsupported: "1" }, { adapter_unsupported: true }]
+      .map(exclusion_reasons => ({ exclusion_reasons })),
+  ]) {
     const invalid = structuredClone(data);
     Object.assign(invalid.snapshot.campaign, change);
     app.set("invalid", invalid);

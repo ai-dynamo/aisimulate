@@ -744,3 +744,13 @@ def test_same_commit_campaign_selection_uses_completion_time_not_run_order(artif
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
     assert prepared_snapshots(output) == {"main": newer}
+
+
+@pytest.mark.parametrize(
+    "counts", [[], {"adapter_unsupported": -1}, {"adapter_unsupported": "1"}, {"adapter_unsupported": True}]
+)
+def test_invalid_exclusion_counts_cannot_publish(artifact, counts):
+    summary, run = artifact
+    summary["snapshot"]["campaign"]["exclusion_reasons"] = counts
+    with pytest.raises(ValueError):
+        publish.validate_artifact(archive(summary), run)

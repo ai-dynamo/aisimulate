@@ -231,6 +231,9 @@ def unpack_artifact(archive: bytes) -> dict:
         q["exclusion_reasons"],
         {"recipe_required", "adapter_unsupported", "baseline_failed"},
     )
+    for count in q["exclusion_reasons"].values():
+        if type(count) is not int or count < 0:
+            raise ValueError("invalid exclusion reason count")
     keys(
         q["measurement_filter_counts"],
         {

@@ -537,6 +537,9 @@ function validateSummary(data) {
     throw new Error("invalid legacy AIC CLI source");
   }
   const campaign = data.snapshot.campaign;
+  const exclusions = campaign?.exclusion_reasons;
+  const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
+    Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
   if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
     campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
     !/^[0-9a-f]{64}$/.test(campaign.wheel_sha256) || !/^[0-9a-f]{64}$/.test(campaign.dataset_sha256) ||
@@ -544,7 +547,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    !campaign.exclusion_reasons || typeof campaign.exclusion_reasons !== "object")) {
+    !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }
   return data;
