@@ -352,7 +352,7 @@ jobs:
   # SHA. This remains outside pull-request CI because a complete refresh uses
   # multiple CPU shards and remains expensive. A failed refresh
   # prevents the nightly artifacts from advancing to Artifactory.
-  # Staging waits for every shard: at most eight run concurrently and each has
+  # Staging waits for every shard: at most 20 run concurrently and each has
   # a 480-minute limit. Queueing and multiple waves can extend total latency.
   fpe-support-matrix:
     name: FPE Support Matrix (main)
