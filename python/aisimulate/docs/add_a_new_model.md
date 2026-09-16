@@ -1,128 +1,133 @@
-# How to Add a New Model
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
 
-## Understanding How AIConfigurator Does End-to-End Latency Estimation
+# How to add a new model
 
-How to add a new model depends on how 'new' the model is. First, let's review how aiconfigurator does latency estimation.
+AISimulate owns the application, model definitions, performance data, and native
+estimator. Start from the [development environment](../../../DEVELOPMENT.md).
+All paths below are relative to the repository root unless linked otherwise.
+The `aiconfigurator_core` source namespace is retained inside the `aisimulate`
+wheel; installing or rebuilding a separate AIConfigurator package is unnecessary.
 
-In aiconfigurator, the end-to-end latency estimation depends on operation-level latency estimation. There are 3 steps to achieve this:
+## Choose the smallest extension
 
-### 1. Break Down the Model into Operations
+| What changed? | Start here |
+|---|---|
+| A new architecture name with an existing operation pipeline | Map the architecture to an existing family in `python/aisimulate/src/aiconfigurator_core/sdk/common.py`. |
+| A new layer composition or model family | Add a registered class under `python/aisimulate/src/aiconfigurator_core/sdk/models/` and map its architecture. |
+| Existing operations need additional measured shapes or a backend version | Add collector cases and collect the missing performance-data cells. |
+| A genuinely new operation or execution contract | Extend the native operator and wire contract, then the Python model description and collection path. |
 
-The model is broken down into operations, as shown in the [`models` package](../src/aiconfigurator_core/sdk/models/). A model is composed of operations such as GEMM and MoE defined in the [`operations` package](../aic-core/src/aiconfigurator_core/sdk/operations/) (see its README for the single-oracle contract).
+An architecture mapping alone does not establish data coverage, quantization,
+KV-memory correctness, Replay support, or prediction accuracy. Validate the
+specific model/backend/hardware cell and the public workflow it will serve.
 
-### 2. Get Operation Latency Estimation
+## 1. Resolve and register the model
 
-Since #1357 PR-5 (single-oracle), per-op latency/energy/SOL values are
-computed only by the compiled Rust engine
-(`aic-core/rust/aiconfigurator-core`). The Python `Operation` classes are
-typed parameter bags: constructor + fields (the wire parameters),
-`get_weights()` (the memory model), and — for table-backed ops — the parquet
-loader that feeds enumeration and charts. They contain no interpolation or
-lookup math.
+The [models package](../src/aiconfigurator_core/sdk/models/README.md) owns
+registry-based model construction. Resolution reads model configuration,
+resolves the architecture to a family, then selects the `@register_model`
+class. `models/blocks/` contains reusable composition helpers and must not
+register model classes.
 
-Evaluation flows through the engine surfaces in
-[`engine.py`](../aic-core/src/aiconfigurator_core/sdk/engine.py): each op
-converts to a wire `OpSpec` (`_to_opspec`), and per-op values come back from
-`EngineHandle.evaluate_ops_json` / `evaluate_ops_sol_json` (op-list FFI) or
-the compiled per-phase/whole-run entry points (`run_static`,
-`InferenceSession`). (The legacy per-call surface
-(`Operation.query()` / `PerfDatabase.query_*`) was removed after its
-one-release deprecation window — there is no per-call Python query API.)
+For an existing family, inspect
+[`common.py`](../src/aiconfigurator_core/sdk/common.py) and the selected model
+class before adding `ARCHITECTURE_TO_MODEL_FAMILY` entries. Verify layer counts,
+attention/KV heads, head dimensions, quantization defaults, and any custom
+Hugging Face configuration fields. A model name resembling another model is
+not sufficient evidence that their operation pipelines match.
 
-### 3. Collect Data for the Operation
+For a new family, implement `BaseModel.create(...)`, register the family, and
+build its context/generation operations using the existing family-specific
+examples. See the [registry extension examples](../src/aiconfigurator_core/sdk/models/README.md#adding-a-new-model).
+Reuse the shared MoE block builder where its contract applies, including the
+separate large-EP registration described there.
 
-Taking MoE for TensorRT-LLM as an example, the current collector lives in `collector/trtllm/collect_moe.py`, while shared model/op case values live under `collector/cases/`.
+Mamba2 kernels and NemotronH hybrid model descriptions already exist in
+[`operations/mamba.py`](../src/aiconfigurator_core/sdk/operations/mamba.py) and
+[`models/nemotron_h.py`](../src/aiconfigurator_core/sdk/models/nemotron_h.py).
+They are useful references, not evidence that every Mamba variant or topology
+is supported. In particular, AFD partitioning has separate restrictions below.
 
-#### 3.1 Adding New Test Cases
+## 2. Extend the operation contract when necessary
 
-If the MoE operation you want is not covered by the current inherited
-[database](../aic-core/src/aiconfigurator_core/systems/data/h200_sxm/moe/trtllm/1.3.0rc10/moe_perf.parquet),
-you need to add the test case in the relevant YAML case file and collect your
-own data.
+Python describes model work; Rust computes per-operation latency, energy,
+and SOL values. Keep that single-oracle boundary when adding an operation:
 
-For example, if you want to cover a new model with `num_experts=1024, topk=16`, you should extend the model's `*_cases.yaml` under `collector/cases/models/` or the shared MoE cases under `collector/cases/base_ops/` when the case is common across models.
+1. Implement the native operator in
+   [`crates/core/src/perfmodel/operators/`](../../../crates/core/src/perfmodel/operators/)
+   and any table loader in
+   [`perf_database/`](../../../crates/core/src/perfmodel/perf_database/).
+   Add an independently justified numerical test, including unsupported and
+   missing-data behavior.
+2. Add the typed Python operation in
+   [`sdk/operations/`](../src/aiconfigurator_core/sdk/operations/). Follow its
+   existing construction, weight-sizing, and engine-backed table-view
+   conventions. Do not add a Python interpolation or performance-query oracle.
+3. Extend `_to_opspec` in
+   [`sdk/engine.py`](../src/aiconfigurator_core/sdk/engine.py), the native
+   [`Op` representation](../../../crates/core/src/perfmodel/operators/op.rs),
+   and the [`engine specification`](../../../crates/core/src/perfmodel/engine/spec.rs).
+   Preserve positional enum compatibility; a schema-breaking change requires
+   coordinated versioning and consumer updates.
+4. Wire the operation into the model pipeline and validate its parameter
+   conversion. Run the existing
+   [OpSpec coverage test](../tests/unit/sdk/test_opspec_coverage.py) and
+   [single-oracle contract](../tests/cross_package/test_single_oracle_contract.py).
+5. Add a representative estimator parity case when a model reaches the new
+   path. Follow the [parity README](../../../crates/core/parity_tests/perfmodel/README.md)
+   and review the numerical evidence before updating goldens.
 
-#### 3.2 Update Database
+Read the applicable rules linked from [AGENTS.md](../../../AGENTS.md) before
+changing collector or generator code. The current operator instructions in
+this page use the unified repository layout.
 
-Finalize the collector's `moe_perf.txt` staging output as
-`moe_perf.parquet`, place it in the canonical `moe` family directory, and
-rebuild and reinstall aiconfigurator.
+## 3. Collect only the missing data
 
+Use the [Collector README](../collector/README.md) and the collector rules
+required by `AGENTS.md`. Cases live under `python/aisimulate/collector/cases/`;
+model-specific cases belong under `models/`, and reusable operation shapes
+under `base_ops/`. For a new collector operation, follow the
+[collector operation runbook](../.claude/skills/aic-collector-op-development/SKILL.md).
 
-## Adding a New Model
+Run the intended backend/runtime on the intended hardware, retain the effective
+model and runtime identity, and finalize accepted staging output as Parquet
+with the required collection/reuse metadata. The canonical data root is:
 
-Now let's revisit how to add a new model in aiconfigurator. There are 3 situations:
-
-### Situation 1: Simple Variant Without New Operations
-
-If the model is a simple variant of an existing architecture (for example, it's similar to Qwen3 32B and only has slight differences, such as different positional embedding, different q/k/v heads of GQA, different number of layers, different hidden size), these are treated as **simple variants**.
-
-In this case, you just need to ensure the architecture is supported in **ARCHITECTURE_TO_MODEL_FAMILY** in [`common.py`](../src/aiconfigurator/sdk/common.py):
-
-```python
-"YourModelForCausalLM": "LLAMA",  # or "MOE", "DEEPSEEK", etc.
+```text
+python/aisimulate/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/
 ```
 
-AIConfigurator will automatically download the model's `config.json` from HuggingFace when you run with `--model-path your-org/Your-New-Model`. The model config is parsed to extract layer count, hidden size, attention heads, etc.
+Do not relabel another backend version's data as newly measured. Update query
+version/support metadata only when the new cell meets its collection and
+consumer contracts. For whole-forward profiles, use the separate
+[FPM collection-to-prediction workflow](fpm/end-to-end-workflow.md).
 
-**Note**: If the architecture already exists in `ARCHITECTURE_TO_MODEL_FAMILY` (e.g., `LlamaForCausalLM`, `Qwen3ForCausalLM`, `MixtralForCausalLM`), no changes are needed - just use the model directly.
+## 4. Validate the intended public path
 
-Here 'LLAMA', 'MOE', 'DEEPSEEK' are the model families defined in **ModelFamily** in [`common.py`](../src/aiconfigurator/sdk/common.py)
+Rebuild the editable package after native or packaging changes:
 
+```bash
+uv sync --project python/aisimulate --extra dev
+source python/aisimulate/.venv/bin/activate
+python -m pytest -c python/aisimulate/pytest.ini   python/aisimulate/tests/unit/sdk/test_opspec_coverage.py   python/aisimulate/tests/cross_package/test_single_oracle_contract.py
+```
 
-### Situation 2: Model Requires Additional Performance Data
+Also run the focused tests for the changed model, collector, and native
+operator. On macOS, use the local pytest guidance in `AGENTS.md`.
 
-This typically refers to a MoE model, as the MoE operation of a new model usually has different `num_experts` and `topk` values, etc. This difference is captured by different data points in aiconfigurator.
+Check the exact model/system/backend/version with `aiconfigurator cli support`
+from this environment, then run the intended `aisimulate predict` or
+`recommend` configuration. Keep model revision, precision, topology, workload,
+performance-data identity, and reports with the test results. If deployment
+artifacts are in scope, exercise their generator path too.
 
-You need to follow several steps:
-
-1. Define a new MoE operation test case in the relevant collector YAML case file and follow the collector [README](../collector/README.md) to collect the MoE data points for your model.
-
-2. Finalize the collected staging file as parquet and update the inherited
-   database, for example
-   `aic-core/src/aiconfigurator_core/systems/data/h200_sxm/moe/trtllm/1.3.0rc10/moe_perf.parquet`.
-
-3. Ensure the architecture mapping exists in **ARCHITECTURE_TO_MODEL_FAMILY** (see **Situation 1**).
-
-Models with different MLA operations also follow a similar process. For example, if it's a variant to model family 'DEEPSEEK' and has different definition of MLA, you need to collect new MLA data points.
-
-### Situation 3: Model Needs New Operation Support
-
-Today, we don't support the Mamba model yet. By looking at the Mamba model, it relies on the support of convolution operations. Convolution is not yet supported, so you need to add a new operation `Conv`.
-
-Steps required (per-op performance math lives ONLY in the compiled Rust
-engine — see `.claude/rules/rust-core/parity.md` Rule 2 and
-`aic-core/src/aiconfigurator_core/sdk/operations/README.md` for the full
-single-oracle flow):
-
-1. **Model `Conv` in the Rust engine**: an operator in
-   `aic-core/rust/aiconfigurator-core/src/operators/` (query + SOL roofline +
-   energy) and a parquet loader in
-   `aic-core/rust/aiconfigurator-core/src/perf_database/`, anchored by a Rust
-   `#[cfg(test)]` oracle test.
-2. **Define the Python `Conv` op class** in
-   `aic-core/src/aiconfigurator_core/sdk/operations/` — constructor, fields,
-   `get_weights`, and the parquet loader / `load_data` (the raw data plane for
-   charts and the support matrix). No Python `query()` body or interpolation:
-   the single-oracle contract test rejects those.
-3. **Wire the spec conversion**: a `_to_opspec` branch in
-   `aic-core/src/aiconfigurator_core/sdk/engine.py` and an `Op` variant appended
-   at the tail of `aic-core/rust/aiconfigurator-core/src/operators/op.rs` (mid-enum
-   insertion requires an `ENGINE_SPEC_SCHEMA_VERSION` bump on both sides),
-   plus the `aic-core/rust/aiconfigurator-core/src/engine/spec.rs` round-trip fixture.
-   `tests/unit/sdk/test_opspec_coverage.py` enforces this.
-4. **Define the data collection process** in collector by referring to existing operations' collection code, such as `collect_gemm.py`
-5. **Collect data for conv**, register its family in
-   `collector/op_backend_catalog.yaml`, and add the finalized parquet file
-   under
-   `aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/`
-   (the engine reads parquet only).
-6. **Pin the behavior**: once a shipped model reaches the op, add a parity
-   case via `aic-core/rust/aiconfigurator-core/parity_tests/pin_goldens.py`
-   (append-only); later modeling
-   changes carry their golden diff.
-7. **Add new model definition** in `models.py` to build your model with new operation. A new model class is mapping to a new model family.  
-update your model in ModelFamily dict defined in [`common.py`](../src/aiconfigurator/sdk/common.py)
+Keep these outcomes separate in the change description: model construction,
+required-data coverage, native execution, replay/generator compatibility, and
+accuracy against measured hardware. A support check or numerical parity test
+alone does not prove end-to-end predictive accuracy.
 
 ### AFD Operation Partitioning Compatibility
 
@@ -138,34 +143,3 @@ The current AFD partitioning contract is:
 6. **Layer families that need explicit rules**: Mamba and GDN layers are not covered by the current attention/FFN partition rules. Until a dedicated partitioning rule, operation model, and communication / memory accounting are added, the partitioner raises an explicit `AFDPartitionError` for these ops instead of falling back to an unknown-op side assignment.
 
 If a new operation cannot be classified, do not rely on an unknown-op fallback for production use. Update `sdk/afd_partition.py` with an explicit classification rule and add a focused unit test in `tests/unit/sdk/test_afd_partition.py`.
-
-## Final Steps
-
-Rebuild & reinstall aiconfigurator to add this model's support.
-
----
-
-> **Need Help?** If you still have difficulty adding the model you want, please create an issue in github.
-
-## A Workflow For Reference
-```mermaid
-flowchart TD
-    A[Does the model belong to an existing model_family?]
-    A --> |YES| B([Simple dense, moe variants like <i><b>Qwen/Qwen3-32B</b></i> can directly use the existing <i><b>LLAMA</b></i> or <i><b>MOE</b></i> model_family])
-    B --> C[Ensure architecture exists in <i><b>ARCHITECTURE_TO_MODEL_FAMILY</b></i>, then use directly with <i><b>--model-path</b></i>]
-    A --> |NO| D([Each layer in <i><b>Nemotron</b></i> can have a different <i><b>inter_size</b></i>, so we defined a new class for this model])
-    D --> E[Does the model need new operations?]
-    E --> |YES| F([for instance, new model might have covolution, which isn't defined in sdk/operations.py])
-    F --> G[Define your operations in <b><i>sdk/operations.py</b></i>]
-    G --> H[Define the model as a new model class in <i><b>sdk/models.py</b></i> using the op classes from <i><b>sdk/operations/</b></i>]
-    E --> |NO|H
-    H --> i[Add architecture mapping to <i><b>ARCHITECTURE_TO_MODEL_FAMILY</b></i>]
-    i --> j[Do you need to collect performance data for the new model?]
-    C --> j
-    j --> |YES|K([Some common cases in which you will need to collect new data])
-    K --> L[/• You haved defined new operations<br/> • <i><b>MoE</b></i> with different <i><b>num_experts</b></i> or <i><b>topk</b></i> from existing ones<br/>• New <i><b>attention</b></i> variant, such as <b><i>attention</b></i> with <b><i>head_size</b></i> other than 64 or 128/]
-    L --> M[Add new test cases to the relevant collector files under aiconfigurator/collector/]
-    M --> N[Collect staging data with <i><b>collect.py</b></i>, then finalize <i><b>XX_XX_perf.parquet</b></i>]
-    N --> Z
-    j --> |NO|Z[<i><b>Good news, you are now all set</b></i>]
-```

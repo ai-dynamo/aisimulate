@@ -58,9 +58,7 @@ def check_file(path: Path, root: Path) -> list[str]:
     for line, target in local_links(path.read_text(encoding="utf-8")):
         resolved = (path.parent / target).resolve()
         if not resolved.is_relative_to(root) or not resolved.exists():
-            failures.append(
-                f"{path.relative_to(root)}:{line}: missing local destination: {target}"
-            )
+            failures.append(f"{path.relative_to(root)}:{line}: missing local destination: {target}")
     return failures
 
 
@@ -89,9 +87,7 @@ def main() -> int:
         help="Optional Markdown files, relative to the current directory",
     )
     args = parser.parse_args()
-    files = (
-        [p.resolve() for p in args.paths] if args.paths else documentation_files(ROOT)
-    )
+    files = [p.resolve() for p in args.paths] if args.paths else documentation_files(ROOT)
     failures = []
     for path in files:
         if not path.is_relative_to(ROOT) or not path.is_file():
@@ -101,9 +97,7 @@ def main() -> int:
     if failures:
         print("\n".join(failures))
         return 1
-    print(
-        f"Checked local destinations in {len(files)} Markdown files (anchors and remote URLs excluded)."
-    )
+    print(f"Checked local destinations in {len(files)} Markdown files (anchors and remote URLs excluded).")
     return 0
 
 
