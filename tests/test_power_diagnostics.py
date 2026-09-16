@@ -209,9 +209,12 @@ def test_energy_publication_status_matches_nullable_watts(level, status, watts, 
     payload = _energy_detail_payload()
     diagnostics = payload["sections"]["energy"]["diagnostics"]
     record = diagnostics if level == "aggregate" else diagnostics["phases"][1]
-    record.update(publication_status=status, power_w=watts, power_coverage=1.0)
+    coverage = {"withheld": 0.8, "unsupported": None, "not_observed": 0.0}.get(status, 1.0)
+    record.update(publication_status=status, power_w=watts, power_coverage=coverage)
     if level == "aggregate":
         payload["sections"]["energy"]["status"] = status
+    else:
+        valid = valid and coverage is not None
     assert _energy_detail_validator().is_valid(payload) is valid
     if valid:
         exported = energy_diagnostics({"power_diagnostics": diagnostics})
@@ -219,7 +222,7 @@ def test_energy_publication_status_matches_nullable_watts(level, status, watts, 
         assert record["power_w"] == watts
         assert record["publication_status"] == status
     else:
-        with pytest.raises(ValueError, match="publication_status"):
+        with pytest.raises(ValueError, match="publication_status|numeric power_w"):
             energy_diagnostics({"power_diagnostics": diagnostics})
 
 
@@ -231,6 +234,55 @@ def test_energy_export_rejects_malformed_phase_containers(phases):
     diagnostics["phases"] = phases
     with pytest.raises(ValueError, match="energy phases must be a list of phase records"):
         energy_diagnostics({"power_diagnostics": diagnostics})
+
+
+@pytest.mark.parametrize("level", ["aggregate", "phase"])
+@pytest.mark.parametrize(
+    "status,coverage,valid",
+    [
+        ("withheld", 0.0, True),
+        ("withheld", 0.89, True),
+        ("withheld", 0.9, False),
+        ("withheld", 1.0, False),
+        ("withheld", None, False),
+        ("missing", 0.0, False),
+        ("missing", 0.89, False),
+        ("missing", 0.9, True),
+        ("missing", 1.0, True),
+        ("missing", None, False),
+        ("unsupported", 0.0, False),
+        ("unsupported", 1.0, False),
+        ("unsupported", None, True),
+        ("not_observed", 0.0, True),
+        ("not_observed", 0.89, False),
+        ("not_observed", 1.0, False),
+        ("not_observed", None, True),
+    ],
+)
+def test_energy_publication_status_matches_coverage(level, status, coverage, valid):
+    from aisimulate.detail import energy_diagnostics
+
+    payload = _energy_detail_payload()
+    diagnostics = payload["sections"]["energy"]["diagnostics"]
+    record = diagnostics if level == "aggregate" else diagnostics["phases"][1]
+    record.update(publication_status=status, power_w=None, power_coverage=coverage)
+    record["latency_ms"] = 0.0 if status == "not_observed" else 4.0
+    if level == "aggregate":
+        payload["sections"]["energy"]["status"] = status
+        record["unavailable_reason"] = "explicit producer absence reason"
+    else:
+        valid = valid and coverage is not None
+    assert _energy_detail_validator().is_valid(payload) is valid
+    if valid:
+        exported = energy_diagnostics({"power_diagnostics": diagnostics})
+        exported_record = exported if level == "aggregate" else exported["phases"][1]
+        assert exported_record["power_coverage"] == coverage
+        assert exported_record["publication_status"] == status
+        if level == "aggregate":
+            assert exported_record["unavailable_reason"] == record["unavailable_reason"]
+    else:
+        with pytest.raises(ValueError, match="publication_status"):
+            energy_diagnostics({"power_diagnostics": diagnostics})
 
 
 def test_energy_schema_rejects_simultaneous_output_and_skipped_reason():

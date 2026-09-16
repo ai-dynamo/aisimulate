@@ -2066,7 +2066,7 @@ def test_decode_estimate_retains_energy_and_partial_coverage(monkeypatch):
             return None
 
     monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *_: Handle())
-    value = rust_engine_step.estimate_decode_step_with_rust(
+    value = rust_engine_step._estimate_decode_step_with_rust(
         _dense_model(),
         SimpleNamespace(),
         gen_tokens=4,
@@ -2079,7 +2079,7 @@ def test_decode_estimate_retains_energy_and_partial_coverage(monkeypatch):
     assert value.per_op_energy_wms == {"covered": 30.0, "missing": 0.0}
 
 
-@pytest.mark.parametrize("entrypoint", ["estimate_decode_step_with_rust", "estimate_decode_step_breakdown_with_rust"])
+@pytest.mark.parametrize("entrypoint", ["_estimate_decode_step_with_rust", "estimate_decode_step_breakdown_with_rust"])
 @pytest.mark.parametrize("perf_miss", [True, False])
 def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, perf_miss):
     from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError

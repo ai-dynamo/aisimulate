@@ -1061,35 +1061,36 @@ def _detail_schema():
 
 
 @pytest.mark.parametrize(
-    "watts,coverage,valid",
+    "watts,coverage,status,valid",
     [
-        (450, 0.9, True),
-        (450, 1.0, True),
-        (None, 0.0, True),
-        (None, 0.89, True),
-        (None, 1.0, True),
-        (None, None, True),
-        (450, 0.8999999999999999, False),
-        (450, None, False),
-        (450, True, False),
-        (0, 1.0, False),
-        (-1, 1.0, False),
-        (None, 1.01, False),
+        (450, 0.9, "available", True),
+        (450, 1.0, "available", True),
+        (None, 0.0, "withheld", True),
+        (None, 0.89, "withheld", True),
+        (None, 1.0, "missing", True),
+        (None, None, "unsupported", True),
+        (None, 0.0, "not_observed", True),
+        (450, 0.8999999999999999, "available", False),
+        (450, None, "available", False),
+        (450, True, "available", False),
+        (0, 1.0, "available", False),
+        (-1, 1.0, "available", False),
+        (None, 1.01, "missing", False),
     ],
 )
-def test_energy_detail_schema_enforces_power_publication(watts, coverage, valid):
+def test_energy_detail_schema_enforces_power_publication(watts, coverage, status, valid):
     from jsonschema import Draft202012Validator
 
     details = {
         "schema_version": "1.0",
         "sections": {
             "energy": {
-                "status": "available" if watts is not None else "withheld",
+                "status": status,
                 "scope": "active_forward_pass_per_gpu",
                 "diagnostics": {
                     "power_w": watts,
                     "power_coverage": coverage,
-                    "publication_status": "available" if watts is not None else "withheld",
+                    "publication_status": status,
                     "phases": [],
                 },
             }
@@ -1112,7 +1113,9 @@ def test_energy_detail_schema_constrains_publication_status(status, publication_
         "scope": "active_forward_pass_per_gpu",
         "diagnostics": {
             "power_w": 400.0 if publication_status == "available" else None,
-            "power_coverage": 1.0 if publication_status == "available" else None,
+            "power_coverage": {"available": 1.0, "withheld": 0.8, "missing": 1.0, "not_observed": 0.0}.get(
+                publication_status
+            ),
             "publication_status": publication_status,
             "phases": [],
         },

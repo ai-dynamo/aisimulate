@@ -744,7 +744,7 @@ def estimate_decode_step_breakdown_with_rust(
     Python step, with real op names and per-op energies folded from the
     compiled engine's per-op results.
     """
-    estimate = estimate_decode_step_with_rust(
+    estimate = _estimate_decode_step_with_rust(
         model,
         database,
         gen_tokens=gen_tokens,
@@ -755,7 +755,7 @@ def estimate_decode_step_breakdown_with_rust(
     return (*estimate.legacy_tuple(), estimate.moe_comm_fallbacks)
 
 
-def estimate_decode_step_with_rust(
+def _estimate_decode_step_with_rust(
     model: Any,
     database: Any,
     *,

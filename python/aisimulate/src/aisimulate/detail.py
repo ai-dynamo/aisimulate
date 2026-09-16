@@ -48,6 +48,15 @@ def _normalize_energy_publication(diagnostics: dict[str, Any]) -> dict[str, Any]
         raise ValueError("energy publication_status must identify a supported publication state")
     if (status == "available") != (power["power_w"] is not None):
         raise ValueError("energy publication_status must be available exactly when power_w is numeric")
+    coverage = power["power_coverage"]
+    if status == "withheld" and (coverage is None or coverage >= 0.9):
+        raise ValueError("withheld publication_status requires numeric power_coverage below 0.9")
+    if status == "missing" and (coverage is None or coverage < 0.9):
+        raise ValueError("missing publication_status requires power_coverage >= 0.9")
+    if status == "unsupported" and coverage is not None:
+        raise ValueError("unsupported publication_status requires null power_coverage")
+    if status == "not_observed" and coverage not in (None, 0.0):
+        raise ValueError("not_observed publication_status requires zero or null power_coverage")
     return {**diagnostics, **power}
 
 
@@ -59,6 +68,8 @@ def energy_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(phases, list) or any(not isinstance(phase, dict) for phase in phases):
             raise ValueError("energy phases must be a list of phase records")
         result["phases"] = [_normalize_energy_publication(phase) for phase in phases]
+        if any(phase["power_coverage"] is None for phase in result["phases"]):
+            raise ValueError("phase publication_status requires numeric power_coverage")
         return result
     return {
         "schema_version": "1.0",

@@ -276,7 +276,90 @@
                     "type": "null"
                   }
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "withheld"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "number",
+                        "exclusiveMaximum": 0.9
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "missing"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "number",
+                        "minimum": 0.9
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "unsupported"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "not_observed"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "enum": [
+                          0,
+                          null
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
             }
           },
           "required": [
@@ -714,7 +797,90 @@
             "type": "null"
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "withheld"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "type": "number",
+                "exclusiveMaximum": 0.9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "missing"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "type": "number",
+                "minimum": 0.9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "not_observed"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "enum": [
+                  0,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",

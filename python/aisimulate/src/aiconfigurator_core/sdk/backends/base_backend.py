@@ -25,8 +25,8 @@ from aiconfigurator_core.sdk.models import BaseModel
 from aiconfigurator_core.sdk.perf_database import PerfDatabase
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aiconfigurator_core.sdk.rust_engine_step import (
+    _estimate_decode_step_with_rust,
     estimate_decode_step_breakdown_with_rust,
-    estimate_decode_step_with_rust,
     estimate_mixed_step_breakdown_with_rust,
     estimate_static_latency_breakdown_with_rust,
     should_use_rust_engine_step,
@@ -1577,7 +1577,7 @@ class BaseBackend:
         if gen_tokens <= 0:
             return StepEstimate(latency_ms=0.0, energy_wms=0.0)
         self._require_rust_engine_step(runtime_config, database, surface="decode")
-        return estimate_decode_step_with_rust(
+        return _estimate_decode_step_with_rust(
             model,
             database,
             gen_tokens=gen_tokens,
