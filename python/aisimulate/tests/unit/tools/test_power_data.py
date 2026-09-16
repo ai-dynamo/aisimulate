@@ -163,6 +163,37 @@ def test_identity_merge_manifest_validates_retained_anomaly(power_data_module, t
     assert power_data_module.validate_manifest(manifest) == []
 
 
+@pytest.mark.parametrize("column, dtype", [("shape", pa.float64()), ("shape", pa.int32()), ("latency", pa.float32())])
+def test_identity_merge_rejects_schema_drift_with_equal_values(power_data_module, tmp_path, column, dtype):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    manifest = _write_manifest(tmp_path, table_path, upstream_rows=1)
+    payload = json.loads(manifest.read_text())
+    table = pq.read_table(table_path)
+    index = table.schema.get_field_index(column)
+    table = table.set_column(index, column, table.column(column).cast(dtype))
+    pq.write_table(table, table_path)
+    payload["tables"][0]["packaged_sha256"] = _sha256(table_path)
+    manifest.write_text(json.dumps(payload))
+
+    assert any("upstream evidence schema" in issue for issue in power_data_module.validate_manifest(manifest))
+
+
+def test_identity_merge_accepts_metadata_only_differences(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    manifest = _write_manifest(tmp_path, table_path, upstream_rows=1)
+    payload = json.loads(manifest.read_text())
+    table = pq.read_table(table_path).replace_schema_metadata({b"producer": b"local"})
+    field = table.schema.field("shape").with_metadata({b"description": b"local annotation"})
+    table = table.set_column(0, field, table.column("shape"))
+    pq.write_table(table, table_path)
+    payload["tables"][0]["packaged_sha256"] = _sha256(table_path)
+    manifest.write_text(json.dumps(payload))
+
+    assert power_data_module.validate_manifest(manifest) == []
+
+
 def test_manifest_accepts_legacy_table_layout(power_data_module, tmp_path):
     table_path = tmp_path / "trtllm" / "1.0.0" / "gemm_perf.parquet"
     _write_power_table(table_path)

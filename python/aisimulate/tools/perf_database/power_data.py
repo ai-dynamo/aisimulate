@@ -145,6 +145,8 @@ def _identity_merge_issues(root: Path, entry: dict[str, Any], table: pa.Table) -
     identities, _ = table_identity_evidence(table)
     if not identities or upstream.column_names != table.column_names:
         return ["upstream evidence columns do not match packaged table"]
+    if not upstream.schema.equals(table.schema, check_metadata=False):
+        return ["upstream evidence schema does not match packaged table"]
     issues = power_metric_issues(upstream)
     if issues:
         return [f"upstream evidence: {issue}" for issue in issues]
