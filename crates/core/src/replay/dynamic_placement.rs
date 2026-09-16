@@ -169,11 +169,32 @@ impl DynamicPlacementPlugin {
                 path.display()
             )
         })?;
-        // Safety: `validate_descriptor_v1` checked this non-null readable table.
-        let vtable = unsafe { *vtable };
         // Safety: descriptor validation established that this immutable record
         // remains readable while the library is retained.
         let capabilities = unsafe { (*descriptor).capabilities };
+        // A dynamic replay always needs this extended operation. Check both
+        // the advertised capability and full tail size before copying the
+        // complete table: `validate_descriptor_v1` also accepts older V1
+        // prefix-only tables for generic hosts.
+        ensure!(
+            capabilities & CAPABILITY_LOSSLESS_KV_EVENTS_V1 != 0,
+            "dynamic placement plugin does not negotiate lossless KV observations"
+        );
+        // Safety: descriptor validation proved the mandatory prefix is
+        // readable; the size check below happens before touching the tail.
+        ensure!(
+            unsafe { (*vtable).struct_size as usize }
+                >= PluginVTableV1::LOSSLESS_KV_EVENTS_REQUIRED_SIZE,
+            "dynamic placement plugin has no lossless-KV vtable tail"
+        );
+        // Safety: the full-tail size check above proves this optional field is
+        // readable before `supports_lossless_kv_events` accesses it.
+        ensure!(
+            unsafe { (*vtable).supports_lossless_kv_events() },
+            "dynamic placement plugin does not provide apply_kv_events"
+        );
+        // Safety: the full-tail size check proved the entire table is readable.
+        let vtable = unsafe { *vtable };
 
         Ok(Self {
             library: Arc::new(library),
@@ -188,10 +209,9 @@ impl DynamicPlacementPlugin {
         workers: Vec<WorkerTopology>,
         config: DynamicPlacementConfig,
     ) -> Result<DynamicPlacementPolicy> {
-        ensure!(
+        debug_assert!(
             self.capabilities & CAPABILITY_LOSSLESS_KV_EVENTS_V1 != 0
-                && self.vtable.supports_lossless_kv_events(),
-            "dynamic placement plugin does not negotiate lossless KV observations"
+                && self.vtable.supports_lossless_kv_events()
         );
         validate_initial_topology(&workers, &config.capacities)?;
         let scheduler_ids = workers
