@@ -1814,13 +1814,18 @@ sections and skipped-section reasons to the normal prediction summary.
   and simulator wall time remain in the summary.
   This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
   approximation labels in the summary.
-- `all`: the three supported sections above, when evidence exists.
+- `energy`: active forward-pass phase and operation energy evidence per GPU, with coverage,
+  publication status, sources, and missing-evidence reasons. It preserves the normal summary
+  power values. See [Power and energy detail](#power-and-energy-detail).
+- `all`: `summary,memory,time,energy`, with availability reported for each section.
 
 Sections without evidence are omitted from `details.sections` and listed with reasons in
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
-why other roles are unavailable. Missing values are never filled with zero. `energy` and
-`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
-SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+why other roles are unavailable. Energy retains an explicit unavailable status and reason when
+the runner exports no typed evidence. Missing measurements are never invented as zero;
+energy-aware runs with no covered operations report numeric zero coverage. `source` remains
+unsupported and is excluded from `all`. SOL and the remaining timing/source diagnostics are
+[migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -1833,7 +1838,10 @@ Use `prediction.yaml` from [Predict one deployment](#predict-one-deployment): Qw
 one H200, vLLM performance-data version `0.24.0`, 1,024 input tokens, 128 output tokens,
 concurrency four, and twelve requests. These outputs were captured from the built-in engine
 on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
-results; values may change with the implementation or performance data.
+results; values may change with the implementation or performance data. These excerpts retain
+the initial summary/memory/time capture. The energy extension adds another section to `all`;
+see the [captured energy result](migrate-from-aiconfigurator.md#4113-captured-result) for its
+command and output.
 
 ```bash
 aisimulate predict -c prediction.yaml --detail all \
@@ -1964,8 +1972,9 @@ Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC 
 ```
 
 For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
-above. `--detail all` would still include summary and time while skipping memory. Power and
-energy are absent from all these examples.
+above. `--detail all` includes summary, time, and energy while skipping memory. The excerpts
+above omit the subsequently added power labels and energy section; the linked energy capture
+shows them explicitly.
 
 <a id="errors-and-exit-codes"></a>
 

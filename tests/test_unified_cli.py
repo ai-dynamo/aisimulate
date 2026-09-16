@@ -1022,6 +1022,63 @@ def _detail_schema():
     return json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
 
 
+@pytest.mark.parametrize(
+    "watts,coverage,valid",
+    [
+        (450, 0.9, True),
+        (450, 1.0, True),
+        (None, 0.0, True),
+        (None, 0.89, True),
+        (None, 1.0, True),
+        (None, None, True),
+        (450, 0.8999999999999999, False),
+        (450, None, False),
+        (450, True, False),
+        (0, 1.0, False),
+        (-1, 1.0, False),
+        (None, 1.01, False),
+    ],
+)
+def test_energy_detail_schema_enforces_power_publication(watts, coverage, valid):
+    from jsonschema import Draft202012Validator
+
+    details = {
+        "schema_version": "1.0",
+        "sections": {
+            "energy": {
+                "status": "withheld",
+                "scope": "active_forward_pass_per_gpu",
+                "diagnostics": {
+                    "power_w": watts,
+                    "power_coverage": coverage,
+                    "publication_status": "withheld",
+                    "phases": [],
+                },
+            }
+        },
+        "skipped": {},
+    }
+    assert Draft202012Validator(_detail_schema()).is_valid(details) is valid
+
+
+@pytest.mark.parametrize("status", ["available", "withheld", "unsupported", "not_observed", "missing", "invented"])
+def test_energy_detail_schema_constrains_publication_status(status):
+    from jsonschema import Draft202012Validator
+
+    schema = _detail_schema()["properties"]["sections"]["properties"]["energy"]
+    section = {
+        "status": "unsupported",
+        "scope": "active_forward_pass_per_gpu",
+        "diagnostics": {
+            "power_w": None,
+            "power_coverage": None,
+            "publication_status": status,
+            "phases": [],
+        },
+    }
+    assert Draft202012Validator(schema).is_valid(section) is (status != "invented")
+
+
 @pytest.mark.parametrize("selector", ["all", "time,time", "memory"])
 def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch, capsys, selector):
     from jsonschema import validate

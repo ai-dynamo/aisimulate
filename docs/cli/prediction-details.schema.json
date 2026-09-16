@@ -227,6 +227,15 @@
                   "minimum": 0,
                   "maximum": 1
                 },
+                "publication_status": {
+                  "enum": [
+                    "available",
+                    "withheld",
+                    "unsupported",
+                    "not_observed",
+                    "missing"
+                  ]
+                },
                 "phases": {
                   "type": "array"
                 }
@@ -236,7 +245,25 @@
                 "power_coverage",
                 "phases",
                 "publication_status"
-              ]
+              ],
+              "if": {
+                "properties": {
+                  "power_w": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "power_w"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "power_coverage": {
+                    "type": "number",
+                    "minimum": 0.9
+                  }
+                }
+              }
             }
           },
           "required": [
