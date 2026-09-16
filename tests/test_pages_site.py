@@ -759,6 +759,25 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     ]
 
 
+def test_missing_local_accuracy_summary_raises_pages_build_error(tmp_path: Path) -> None:
+    output = tmp_path / "site"
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "accuracy summary is missing") as raised:
+        PAGES._build_accuracy_catalog(tmp_path, output, False)
+    assert isinstance(raised.exception.__cause__, FileNotFoundError)
+    assert not (output / "e2e-accuracy/branches.json").exists()
+
+
+def test_accuracy_git_timeout_raises_pages_build_error(tmp_path: Path) -> None:
+    error = subprocess.TimeoutExpired(["git", "for-each-ref"], 10)
+    with (
+        patch.object(PAGES.subprocess, "check_output", side_effect=error) as git,
+        unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "timed out.*accuracy branch") as raised,
+    ):
+        PAGES._build_accuracy_catalog(tmp_path, tmp_path / "site", True)
+    assert raised.exception.__cause__ is error
+    assert git.call_args.kwargs["timeout"] == 10
+
+
 def test_malformed_accuracy_data_fails_publication() -> None:
     for value in (
         "[]",

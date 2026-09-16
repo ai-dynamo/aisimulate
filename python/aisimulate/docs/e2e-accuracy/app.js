@@ -19,6 +19,8 @@ const summaryGrid = document.getElementById("summary-grid");
 const matrixBody = document.getElementById("matrix-body");
 const identityLine = document.getElementById("identity-line");
 const releaseLabel = document.getElementById("release-label");
+const scopeControl = document.getElementById("scope-control");
+const scopeCheck = document.getElementById("scope-check");
 const multinodeLabel = document.getElementById("multinode-label");
 const measurementSourceLink = document.getElementById("measurement-source-link");
 const scopeClaim = document.getElementById("scope-claim");
@@ -112,7 +114,12 @@ function renderSnapshot() {
     throw new Error("unsafe measurement source URL");
   }
   releaseLabel.textContent = `Measurements: ${snapshot.release_tag}`;
-  multinodeLabel.textContent = scope.multinode === "included"
+  const includesMultinode = scope.multinode === "included";
+  scopeCheck.hidden = includesMultinode;
+  scopeControl.title = includesMultinode
+    ? "This snapshot includes multi-node predictions."
+    : "This snapshot includes single-node predictions only.";
+  multinodeLabel.textContent = includesMultinode
     ? "Multi-node predictions included"
     : `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;

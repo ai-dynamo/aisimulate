@@ -202,6 +202,10 @@ input {
   font-weight: 800;
 }
 
+.scope-check[hidden] {
+  display: none;
+}
+
 .identity-line {
   margin: 0 0 13px;
   color: var(--muted);

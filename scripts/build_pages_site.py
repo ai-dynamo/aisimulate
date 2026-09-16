@@ -121,7 +121,11 @@ def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
 
 def _git(repo_root: Path, *args: str) -> str:
     try:
-        return subprocess.check_output(["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE, timeout=10
+        ).strip()
+    except subprocess.TimeoutExpired as exc:
+        raise PagesBuildError("timed out reading accuracy branch evidence") from exc
     except subprocess.CalledProcessError as exc:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
 
@@ -299,7 +303,10 @@ def _build_accuracy_catalog(repo_root: Path, output_dir: Path, include_refs: boo
             source = repo_root / relative_path
             if source.is_symlink():
                 raise PagesBuildError("accuracy summary cannot be a symlink")
-            content = source.read_text()
+            try:
+                content = source.read_text()
+            except FileNotFoundError as exc:
+                raise PagesBuildError(f"accuracy summary is missing: {source}") from exc
             if include_refs:
                 entry["published_from_commit"] = _git(repo_root, "rev-parse", "HEAD")
         else:

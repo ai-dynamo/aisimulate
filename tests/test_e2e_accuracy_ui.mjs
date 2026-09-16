@@ -122,6 +122,27 @@ test("legacy summary loads with historical provenance and branch-specific downlo
   assert.match(app.element("provenance-content").innerHTML, /Repository provenance was not recorded/);
 });
 
+test("branch switching updates the multi-node scope label, check, and tooltip", async () => {
+  const included = structuredClone(historical);
+  included.scope.multinode = "included";
+  included.scope.excluded_multinode_rows = 0;
+  included.scope.raw_rows = included.scope.published_rows;
+  const app = setup(async (path) => response(path === `./${pathFor("b")}` ? included : historical));
+  await app.run('loadBranch("main")');
+  assert.equal(app.element("scope-check").hidden, false);
+  assert.match(app.element("multinode-label").textContent, /Exclude multi-node predictions/);
+
+  await app.run('loadBranch("release/0.12.0")');
+  assert.equal(app.element("scope-check").hidden, true);
+  assert.equal(app.element("multinode-label").textContent, "Multi-node predictions included");
+  assert.equal(app.element("scope-control").title, "This snapshot includes multi-node predictions.");
+
+  await app.run('loadBranch("main")');
+  assert.equal(app.element("scope-check").hidden, false);
+  assert.match(app.element("multinode-label").textContent, /Exclude multi-node predictions.*hidden/);
+  assert.equal(app.element("scope-control").title, "This snapshot includes single-node predictions only.");
+});
+
 test("bundled AIC CLI provenance links to AISimulate and rejects another repository or revision", async () => {
   const data = withEvaluation();
   const app = setup(async () => response(data));
@@ -487,6 +508,26 @@ test("catalog metadata rejects malformed revisions and contradictory status", ()
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateCatalog(invalid)"), /invalid accuracy branch catalog/);
   }
+});
+
+test("catalog requires entries, a main branch, and a main default", () => {
+  const app = setup();
+  for (const change of [
+    { branches: [] },
+    { branches: catalog.branches.filter((entry) => entry.branch !== "main") },
+    { default_branch: "release/0.12.0" },
+  ]) {
+    app.set("invalid", { ...catalog, ...change });
+    assert.throws(() => app.run("validateCatalog(invalid)"), /invalid accuracy branch catalog/);
+  }
+});
+
+test("topology points cannot decrease in concurrency", () => {
+  const app = setup();
+  const invalid = withTopology();
+  invalid.models[0].workloads[0].gpus[0].topologies[0].points.reverse();
+  app.set("invalid", invalid);
+  assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
 });
 
 test("summary rejects evaluated branches outside the exporter contract", () => {

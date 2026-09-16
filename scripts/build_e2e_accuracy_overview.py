@@ -634,7 +634,12 @@ def build_summary(
     revision = _evaluated_revision(runtime, branch)
     if revision is not None:
         prediction_run = predictions.get("aisimulate_run", {})
-        prediction_source = prediction_run.get("runtime", {}).get("source_checkout")
+        if not isinstance(prediction_run, dict):
+            raise SnapshotError("predictions.aisimulate_run must be an object")
+        prediction_runtime = prediction_run.get("runtime", {})
+        if not isinstance(prediction_runtime, dict):
+            raise SnapshotError("predictions.aisimulate_run.runtime must be an object")
+        prediction_source = prediction_runtime.get("source_checkout")
         if prediction_source != runtime["source_checkout"]:
             raise SnapshotError("predictions and metadata source_checkout disagree")
         if aisimulate_run.get("incremental_refreshes"):

@@ -526,6 +526,21 @@ def test_branch_publication_rejects_mismatched_or_mixed_runs(mixed: bool) -> Non
         )
 
 
+@pytest.mark.parametrize("prediction_run", [None, [], {"runtime": None}, {"runtime": []}])
+def test_branch_publication_rejects_invalid_prediction_run_shape(prediction_run: object) -> None:
+    predictions, metadata, coverage = _qualified_inputs()
+    predictions["aisimulate_run"] = prediction_run
+    with pytest.raises(OVERVIEW.SnapshotError, match=r"predictions\.aisimulate_run"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
 def test_successful_replay_rejects_zero_latency() -> None:
     predictions, metadata, coverage = _inputs()
     predictions["rows"][0]["dynamo_ttft_ms"] = 0
