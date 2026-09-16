@@ -25,12 +25,10 @@ from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, Supp
 def add_support_parser(subparsers: Any) -> None:
     onboard = subparsers.add_parser(
         "onboard",
-        aliases=("support",),
         help="Onboard a model for FPM simulation on a target hardware platform.",
         description=(
             "Onboard a model for FPM simulation on a target hardware platform. "
-            "Declare the model and hardware, generate a plan, and preview or execute FPM collection. "
-            "The previous command name 'support' remains a compatibility alias."
+            "Declare the model and hardware, generate a plan, and preview or execute FPM collection."
         ),
     )
     actions = onboard.add_subparsers(dest="support_action", required=True)

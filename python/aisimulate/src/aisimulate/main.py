@@ -321,7 +321,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    if args.command in {"onboard", "support"}:
+    if args.command == "onboard":
         try:
             return run_support_command(args)
         except (ValidationError, ValueError, OSError) as exc:

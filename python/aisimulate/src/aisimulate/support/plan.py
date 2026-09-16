@@ -305,18 +305,7 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
                 raise ValueError(f"refusing symlinked plan output {destination}")
             if not destination.exists():
                 pending[relative] = content
-            else:
-                existing = destination.read_bytes()
-                if existing == content:
-                    continue
-                if relative == Path("commands.json"):
-                    # Preserve exact pre-rename commands; the support alias still
-                    # enters the same guarded collector. Accept no other edits.
-                    legacy_commands = json.loads(content)
-                    legacy_commands["fpm_run_local"][1] = "support"
-                    legacy_content = (json.dumps(legacy_commands, indent=2, sort_keys=True) + "\n").encode()
-                    if existing == legacy_content:
-                        continue
+            elif destination.read_bytes() != content:
                 raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
         (root / "systems/data").mkdir(parents=True, exist_ok=True)
         for relative, content in pending.items():

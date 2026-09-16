@@ -7,8 +7,6 @@ SPDX-License-Identifier: Apache-2.0
 
 `aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one pure tensor-parallel worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's existing per-worker FPM support and packaged collector. No other draft PR needs to be merged first.
 
-`aisimulate support` remains a compatibility alias for existing commands and scripts. Saved request schemas, default output paths, and plan filenames remain unchanged; existing plans can be reused, and `plan --overwrite` repairs missing files without rewriting their saved commands. New next-step and collection commands use `aisimulate onboard`.
-
 Planning works before the model has an AISimulate model class or measured FPM timings. A valid request records your choices; model integration, runtime compatibility, and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not implement an Inkling model class, run preflight checks, provision GPU resources, or establish measured accuracy. Those steps belong to the broader integration project.
 
 ## Create the request

@@ -70,7 +70,7 @@ def _terminal(monkeypatch, answers=()) -> list[str]:
     return prompts
 
 
-@pytest.mark.parametrize("command", [[], ["onboard"], ["support"]])
+@pytest.mark.parametrize("command", [[], ["onboard"]])
 def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> None:
     with pytest.raises(SystemExit) as result:
         cli.main([*command, "--help"])
@@ -79,6 +79,29 @@ def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> N
     output = " ".join(capsys.readouterr().out.split())
     assert "Onboard a model for FPM simulation on a target hardware platform." in output
     assert "aisimulate" in output
+
+
+@pytest.mark.parametrize("action", ["init", "plan", "collect-fpm"])
+def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypatch, capsys, action) -> None:
+    def unexpected_dispatch(*args, **kwargs):
+        pytest.fail("the retired command must be rejected before setup or collector dispatch")
+
+    monkeypatch.setattr(cli, "run_support_command", unexpected_dispatch)
+    monkeypatch.setattr(cli, "resolve_runner_factory", unexpected_dispatch)
+    request = tmp_path / "request.yaml"
+    if action == "init":
+        args = _init_args(request)[1:]
+    else:
+        args = [action, "--config", str(request), "--output-dir", str(tmp_path / "plan")]
+        if action == "collect-fpm":
+            args.append("--execute")
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(["support", *args])
+
+    assert result.value.code == 2
+    assert "invalid choice: 'support'" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
 
 
 def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatch, capsys) -> None:
@@ -315,10 +338,9 @@ def test_printed_plan_next_command_runs_in_a_shell(tmp_path, monkeypatch, capsys
     assert "--plan-only" in result.stdout
 
 
-@pytest.mark.parametrize("command", ["onboard", "support"])
 @pytest.mark.parametrize("model_kind", ["dense", "moe"])
 def test_init_plan_and_preview_use_real_public_configs_without_launching_collection(
-    tmp_path, monkeypatch, capsys, model_kind, command
+    tmp_path, monkeypatch, capsys, model_kind
 ) -> None:
     def unexpected_launch(*args, **kwargs):
         pytest.fail("setup, plan, and preview must not launch a collector")
@@ -328,11 +350,12 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     monkeypatch.setattr(cli, "resolve_runner_factory", unexpected_launch)
     request_path = tmp_path / "request 'quoted'.yaml"
     output = tmp_path / "plan 'quoted'"
-    assert cli.main([command, *_init_args(request_path, model_kind=model_kind, tensor_parallel=2)[1:]]) == 0
+    assert cli.main(_init_args(request_path, model_kind=model_kind, tensor_parallel=2)) == 0
     capsys.readouterr()
 
     assert (
-        cli.main([command, "plan", "--config", str(request_path), "--output-dir", str(output), "--format", "json"]) == 0
+        cli.main(["onboard", "plan", "--config", str(request_path), "--output-dir", str(output), "--format", "json"])
+        == 0
     )
     summary = json.loads(capsys.readouterr().out)
     plan = json.loads((output / "support-plan.json").read_text())
@@ -348,7 +371,7 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
 
     next_command = shlex.split(summary["next"])
     assert next_command[:3] == ["aisimulate", "onboard", "collect-fpm"]
-    assert cli.main([command, *next_command[2:]]) == 0
+    assert cli.main(next_command[1:]) == 0
     preview = capsys.readouterr().out
     assert "collector.fpm_forward" in preview
     assert "--fpm-max-gpus 2 --fpm-gpu-counts 2" in preview

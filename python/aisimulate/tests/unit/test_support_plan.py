@@ -373,29 +373,27 @@ def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tm
     assert data.read_bytes() == b"timings"
 
 
-@pytest.mark.parametrize("modified_command", [False, True])
-def test_pre_onboard_plan_repairs_only_exact_legacy_commands(tmp_path, modified_command):
+@pytest.mark.parametrize("modification", ["retired_command", "missing_execute", "formatting"])
+def test_overwrite_rejects_modified_commands_before_repairing_missing_files(tmp_path, modification):
     request = _request()
-    plan = create_plan(request, tmp_path)
+    create_plan(request, tmp_path)
     command_file = tmp_path / "commands.json"
     commands = json.loads(command_file.read_text())
-    commands["fpm_run_local"][1] = "support"
-    if modified_command:
+    if modification == "retired_command":
+        commands["fpm_run_local"][1] = "support"
+    elif modification == "missing_execute":
         commands["fpm_run_local"].remove("--execute")
-    command_file.write_text(json.dumps(commands, indent=2, sort_keys=True) + "\n")
+    command_file.write_text(
+        json.dumps(commands, indent=4 if modification == "formatting" else 2, sort_keys=True) + "\n"
+    )
     _seed_campaign(tmp_path)
-    original = _file_contents(tmp_path)
     prediction = tmp_path / "predict/pilot.yaml"
     prediction.unlink()
     before_repair = _file_contents(tmp_path)
 
-    if modified_command:
-        with pytest.raises(ValueError, match="generated plan input .*commands.json was modified"):
-            create_plan(request, tmp_path, overwrite=True)
-        assert _file_contents(tmp_path) == before_repair
-    else:
-        assert create_plan(request, tmp_path, overwrite=True) == plan
-        assert _file_contents(tmp_path) == original
+    with pytest.raises(ValueError, match="generated plan input .*commands.json was modified"):
+        create_plan(request, tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before_repair
 
 
 def test_new_gpu_is_rejected_before_creating_outputs(tmp_path):
@@ -475,8 +473,7 @@ def _reject_collector_import(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_collector_import)
 
 
-@pytest.mark.parametrize("command_name", ["onboard", "support"])
-def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys, command_name):
+def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys):
     from aisimulate.main import main
 
     create_plan(_request(), tmp_path)
@@ -484,7 +481,6 @@ def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monk
     before = _file_contents(tmp_path)
     command = json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"]
     assert command[:3] == ["aisimulate", "onboard", "collect-fpm"]
-    command[1] = command_name
     _reject_collector_import(monkeypatch)
 
     with pytest.raises(SystemExit) as error:
