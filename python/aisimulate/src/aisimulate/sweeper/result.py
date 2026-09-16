@@ -469,6 +469,7 @@ def make_candidate_provenance(
                 "strategy",
                 "replicas",
                 "prefill_tp",
+                "prefill_hardware_sku",
                 "prefill_pp",
                 "prefill_attention_dp",
                 "prefill_moe_tp",
@@ -476,6 +477,7 @@ def make_candidate_provenance(
                 "prefill_strategy",
                 "prefill_replicas",
                 "decode_tp",
+                "decode_hardware_sku",
                 "decode_pp",
                 "decode_attention_dp",
                 "decode_moe_tp",
@@ -486,6 +488,11 @@ def make_candidate_provenance(
         }
     )
     raw_performance_data = runner_metadata.get("performance_data", [])
+    encoder = candidate_config.get("encoder")
+    if isinstance(encoder, dict):
+        topology_fields["encoder"] = deepcopy(encoder)
+        topology_fields["language_gpus"] = candidate_config.get("language_gpus")
+        topology_fields["total_gpus"] = candidate_config.get("used_gpus")
     performance_data: list[dict[str, JsonValue]] = (
         deepcopy(raw_performance_data)
         if isinstance(raw_performance_data, list) and all(isinstance(item, dict) for item in raw_performance_data)
@@ -502,6 +509,8 @@ def make_candidate_provenance(
                     }
                 )
     identity_config: dict[str, JsonValue] = {}
+    if isinstance(encoder, dict):
+        performance_data.append({"role": "encoder", "provider": "aic", "database_mode": "SILICON", **deepcopy(encoder)})
     if deployment is not None:
         for raw_metadata in deployment.performance_model_metadata.values():
             if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("config"), dict):

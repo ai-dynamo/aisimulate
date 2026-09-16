@@ -44,13 +44,10 @@ def _is_source_manifest(path: Path) -> bool:
 def check_manifests() -> tuple[str, str]:
     """Validate the manifest set; return (wheel version, crate version)."""
     pyprojects = {
-        path: str(_toml(path)["project"]["name"])
-        for path in ROOT.rglob("pyproject.toml")
-        if _is_source_manifest(path)
+        path: str(_toml(path)["project"]["name"]) for path in ROOT.rglob("pyproject.toml") if _is_source_manifest(path)
     }
     assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
-        "publishable Python manifest set changed:\n"
-        f"expected={EXPECTED_PYTHON_PROJECTS}\nactual={pyprojects}"
+        f"publishable Python manifest set changed:\nexpected={EXPECTED_PYTHON_PROJECTS}\nactual={pyprojects}"
     )
 
     publishable_crates: dict[Path, str] = {}
@@ -71,32 +68,20 @@ def check_manifests() -> tuple[str, str]:
     py_version = str(app["version"])
     crate_version = str(crate["version"])
     dev_suffix = py_version.removeprefix(VERSION)
-    assert py_version.startswith(VERSION) and (
-        dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)
-    ), f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
-    expected_crate_version = (
-        f"{VERSION}-dev.{dev_suffix[len('.dev'):]}" if dev_suffix else VERSION
+    assert py_version.startswith(VERSION) and (dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)), (
+        f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
     )
+    expected_crate_version = f"{VERSION}-dev.{dev_suffix[len('.dev') :]}" if dev_suffix else VERSION
     assert crate_version == expected_crate_version, (
-        f"crate version {crate_version} does not match wheel version "
-        f"{py_version} (expected {expected_crate_version})"
+        f"crate version {crate_version} does not match wheel version {py_version} (expected {expected_crate_version})"
     )
     optional_dependencies = app.get("optional-dependencies", {})
     dependencies = [
         *app["dependencies"],
-        *(
-            dependency
-            for group in optional_dependencies.values()
-            for dependency in group
-        ),
+        *(dependency for group in optional_dependencies.values() for dependency in group),
     ]
-    assert not any(
-        str(dep).lower().startswith(("aisimulate-core", "aiconfigurator"))
-        for dep in dependencies
-    )
-    assert not any(
-        str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies
-    )
+    assert not any(str(dep).lower().startswith(("aisimulate-core", "aiconfigurator")) for dep in dependencies)
+    assert not any(str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies)
     assert app["scripts"] == {
         "aiconfigurator": "aiconfigurator.main:main",
         "aisimulate": "aisimulate.supervision:main",
@@ -117,16 +102,24 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
     if any(output.iterdir()):
         raise SystemExit(f"output directory must be empty: {output}")
 
-    _run(
-        sys.executable,
-        "-m",
-        "maturin",
-        "build",
-        "--release",
-        "--out",
-        str(output),
-        cwd=ROOT / "python" / "aisimulate",
-    )
+    if sys.platform.startswith("linux"):
+        _run(
+            sys.executable,
+            str(ROOT / "scripts" / "build_manylinux_wheel.py"),
+            "--output-dir",
+            str(output),
+        )
+    else:
+        _run(
+            sys.executable,
+            "-m",
+            "maturin",
+            "build",
+            "--release",
+            "--out",
+            str(output),
+            cwd=ROOT / "python" / "aisimulate",
+        )
 
     with tempfile.TemporaryDirectory(prefix="aisimulate-crate-") as temp:
         target = Path(temp) / "target"
@@ -151,25 +144,15 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
 def verify_output(output: Path, py_version: str, crate_version: str) -> None:
     names = sorted(path.name for path in output.iterdir() if path.is_file())
     expected_crate = f"aisimulate-core-{crate_version}.crate"
-    app_wheels = [
-        name
-        for name in names
-        if name.startswith(f"aisimulate-{py_version}-") and name.endswith(".whl")
-    ]
+    app_wheels = [name for name in names if name.startswith(f"aisimulate-{py_version}-") and name.endswith(".whl")]
     assert len(names) == 2, f"expected exactly two artifacts, got {names}"
     assert len(app_wheels) == 1, f"missing or duplicate aisimulate wheel: {names}"
     assert expected_crate in names, f"missing {expected_crate}: {names}"
     wheel_path = output / app_wheels[0]
     with zipfile.ZipFile(wheel_path) as wheel:
         for legal_file in LEGAL_FILES:
-            matches = [
-                name
-                for name in wheel.namelist()
-                if name.endswith(f".dist-info/licenses/{legal_file}")
-            ]
-            assert len(matches) == 1, (
-                f"expected one packaged {legal_file}, found {matches}"
-            )
+            matches = [name for name in wheel.namelist() if name.endswith(f".dist-info/licenses/{legal_file}")]
+            assert len(matches) == 1, f"expected one packaged {legal_file}, found {matches}"
             assert wheel.read(matches[0]) == (ROOT / legal_file).read_bytes(), (
                 f"packaged {legal_file} differs from the root original"
             )

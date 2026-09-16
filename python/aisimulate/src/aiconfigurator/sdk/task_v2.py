@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/sdk/task_v2.py
 
 """
 Task — flat user-facing config for sweep_agg / sweep_disagg.
@@ -565,6 +567,8 @@ class Task:
     # still never inferred.
     nextn: int | str = 0
     nextn_accepted: float | None = None
+    # Scheme configuration and measured acceptance; method="mtp" desugars to the legacy pair.
+    speculative: dict | None = field(default=None, kw_only=True)
     moe_backend: common.MoEBackend | None = None
     # Applies to every graph with standard dense ContextAttention/GenerationAttention ops and to
     # supported DeepSeek MLA/WideEP paths. Named support is backend/table/version-specific and fails
@@ -875,6 +879,7 @@ class Task:
         # depend on it (non-negative integer nextn; finite acceptance in range).
         # nextn="auto" is the one exception: its depth comes from the checkpoint,
         # so it is resolved and validated in _resolve_model_identity.
+        self._resolve_speculative_block()
         if self.nextn != "auto":
             self.nextn, self.nextn_accepted = normalize_speculative_decoding(self.nextn, self.nextn_accepted)
         self._validate_deepseek_v4_hardware()
@@ -2092,6 +2097,7 @@ class Task:
             fmha_quant_mode=self._role_attr(role, "fmha_quant_mode"),
             comm_quant_mode=self._role_attr(role, "comm_quant_mode"),
             nextn=self.nextn,
+            speculation=getattr(self, "_speculation_config", None),
             enable_encoder_dp=self.enable_encoder_dp,
             enable_eplb=self._role_attr(role, "enable_eplb"),
             # moe_backend / attention_backend / wideep_num_slots are shared across roles
@@ -2144,8 +2150,37 @@ class Task:
 
         return _build
 
+    def _resolve_speculative_block(self) -> None:
+        """Normalize the ``speculative:`` block into a SpeculationConfig.
+
+        ``method="mtp"`` desugars onto the legacy nextn pair so every existing
+        code path stays authoritative. Other methods build a scheme config
+        consumed by ``build_model_config`` / ``build_speculative_profile``;
+        the acceptance value is validated against the scheme's verify width
+        here so bad inputs fail at task construction, not mid-sweep.
+        """
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        resolution = resolve_speculative_block(self.speculative, nextn=self.nextn, nextn_accepted=self.nextn_accepted)
+        if resolution.speculation_config is not None and (self.serving_mode != "agg" or self.enable_epd):
+            raise ValueError(
+                "scheme-based speculative decoding currently supports aggregated serving without EPD only "
+                f"(got serving_mode={self.serving_mode!r}, enable_epd={self.enable_epd!r}); "
+                "method='mtp' uses the supported legacy nextn path."
+            )
+        self.nextn = resolution.nextn
+        self.nextn_accepted = resolution.nextn_accepted
+        self._speculation_config = resolution.speculation_config
+        self._speculative_accepted = resolution.accepted_tokens
+
     def build_speculative_profile(self) -> SpeculativeDecodingProfile:
         """Build the upper-layer expected-progress assumption for prediction."""
+        spec_config = getattr(self, "_speculation_config", None)
+        if spec_config is not None:
+            from aiconfigurator.sdk.speculation import build_spec_scheme
+
+            scheme = build_spec_scheme(None, spec_config)
+            return SpeculativeDecodingProfile.from_scheme(scheme, self._speculative_accepted)
         return SpeculativeDecodingProfile.from_inputs(self.nextn, self.nextn_accepted)
 
     def iter_parallel(self, role: Literal["agg", "prefill", "decode"]) -> Iterator[ParallelChoice]:

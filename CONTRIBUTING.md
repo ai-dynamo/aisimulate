@@ -13,6 +13,7 @@ instructions, see the [application README](python/aisimulate/README.md).
 
 ## Quick Links
 
+- [CI guide: workflows, code review, and required checks](docs/ci.md)
 - [Good first issues](https://github.com/ai-dynamo/aisimulate/labels/good-first-issue)
 - [Help wanted](https://github.com/ai-dynamo/aisimulate/labels/help-wanted)
 - [Open an issue](https://github.com/ai-dynamo/aisimulate/issues/new)

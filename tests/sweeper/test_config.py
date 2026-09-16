@@ -134,9 +134,38 @@ def test_defaults_are_backend_only():
     assert config.goal.target is OptimizationTarget.THROUGHPUT
     assert config.sweep.parallel_evals == 16
     dumped = config.search_space.model_dump()
-    assert (
-        not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
-    )
+    assert not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "prefill", "decode"),
+    [
+        ({}, "h200_sxm", "h200_sxm"),
+        ({"prefill_hardware_sku": "gb200"}, "gb200", "h200_sxm"),
+        ({"decode_hardware_sku": "gb200"}, "h200_sxm", "gb200"),
+        (
+            {"prefill_hardware_sku": "h100_sxm", "decode_hardware_sku": "gb200"},
+            "h100_sxm",
+            "gb200",
+        ),
+    ],
+)
+def test_disagg_role_hardware_inherits_shared_sku(overrides, prefill, decode):
+    search_space = SearchSpace(**_search_space(deployment_mode=["disagg"], **overrides))
+
+    assert search_space.hardware_sku_for("prefill") == prefill
+    assert search_space.hardware_sku_for("decode") == decode
+    assert search_space.hardware_sku_for("agg") == "h200_sxm"
+
+
+def test_role_hardware_requires_disagg_mode():
+    with pytest.raises(ValidationError, match="require deployment_mode to include 'disagg'"):
+        SearchSpace(
+            **_search_space(
+                deployment_mode=["agg"],
+                prefill_hardware_sku="gb200",
+            )
+        )
 
 
 def test_extra_fields_are_forbidden_at_each_boundary():
@@ -307,15 +336,9 @@ def test_invalid_workloads_are_rejected(workload):
         Workload(**workload)
 
 
-@pytest.mark.parametrize(
-    ("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)]
-)
-@pytest.mark.parametrize(
-    "target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU]
-)
-def test_goodput_requires_at_least_one_sla_bound(
-    target: OptimizationTarget, field: str, bound: float
-):
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)])
+@pytest.mark.parametrize("target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU])
+def test_goodput_requires_at_least_one_sla_bound(target: OptimizationTarget, field: str, bound: float):
     with pytest.raises(ValidationError, match="require at least one SLA"):
         OptimizationGoal(target=target)
 

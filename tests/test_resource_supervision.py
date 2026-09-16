@@ -113,7 +113,20 @@ def test_overwrite_clears_stale_results_before_early_resource_refusal(tmp_path):
     import subprocess
 
     config = tmp_path / "config.yaml"
-    config.write_text("execution:\n  resources:\n    memory_limit_gib: 0.000001\n")
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "mode": "aggregated",
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "workers": {"aggregated": {}},
+                },
+                "optimization": {"target": "throughput"},
+                "execution": {"resources": {"memory_limit_gib": 0.000001}},
+            }
+        )
+    )
     output = tmp_path / "output"
     recommendations = output / "recommendations"
     recommendations.mkdir(parents=True)
