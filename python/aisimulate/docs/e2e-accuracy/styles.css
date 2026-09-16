@@ -691,7 +691,7 @@ a[aria-disabled="true"] { color: var(--dim); pointer-events: none; }
 .topology-control select { width: 100%; }
 
 .branch-control select {
-  max-width: 220px;
+  max-width: min(320px, calc(100vw - 108px));
   padding: 4px 8px;
   border: 0;
   background: var(--elevated);

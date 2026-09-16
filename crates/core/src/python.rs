@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::engine::{Backend, TimingModel, TimingModelConfig};
+use crate::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
 use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
@@ -112,6 +112,28 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .context("agentic execution requires a configured target model")
+}
+
+fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+    let ReplayRuntimeInput::Workload(driver) = input else {
+        return Ok(());
+    };
+    if !driver.is_agentic() {
+        return Ok(());
+    }
+    ensure!(
+        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
+        "agentic M1 execution supports only vLLM and SGLang backends"
+    );
+    ensure!(
+        rank.native_host_offload.is_none(),
+        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+    );
+    ensure!(
+        rank.aic_nextn.is_none(),
+        "agentic M1 execution requires speculative decoding disabled"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -970,6 +992,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            if let Some(built) = &built_input {
+                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+            }
             let resolved_basis = built_input
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
@@ -1146,6 +1171,109 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
+        let directory = tempfile::tempdir().unwrap();
+        let dynamo = serde_json::json!({
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10,
+            "agent_context": {"session_id": "session"},
+            "request": {
+                "request_id": "root", "model": "model", "output_tokens": 1,
+                "request_received_ms": 0, "total_time_ms": 10,
+                "replay": {"trace_block_size": 4, "input_length": 4, "input_sequence_hashes": [1]}
+            }
+        });
+        let mut standard_dynamo = dynamo.clone();
+        standard_dynamo
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_context");
+        let fixtures = [
+            (
+                "weka",
+                vec![serde_json::json!({
+                    "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+                    "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+                })],
+                true,
+            ),
+            (
+                "agentic_mooncake",
+                vec![
+                    serde_json::json!({
+                        "schema": "dynamo.agentic_mooncake", "version": 2,
+                        "block_size": 4, "hash_id_scope": "local",
+                        "source": {"format": "test", "digest": "qualification"}
+                    }),
+                    serde_json::json!({
+                        "request_id": "root", "play_id": "play", "session_id": "session", "model": "model",
+                        "input_length": 4, "output_length": 1, "hash_ids": [1], "not_before_ms": 0.0
+                    }),
+                ],
+                true,
+            ),
+            ("dynamo", vec![dynamo], true),
+            ("dynamo", vec![standard_dynamo], false),
+        ];
+        for (format, rows, agentic) in fixtures {
+            let path = directory.path().join(format!("{format}-{agentic}.jsonl"));
+            std::fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            for (options, message) in [
+                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
+                (
+                    serde_json::json!({"aic_nextn": 1}),
+                    "speculative decoding disabled",
+                ),
+                (
+                    serde_json::json!({
+                        "kv_cache_bytes_per_token": 16,
+                        "native_host_offload": {"num_host_blocks": 8}
+                    }),
+                    "HBM-only",
+                ),
+            ] {
+                let mut rank = serde_json::json!({
+                    "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                rank.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let payload = serde_json::json!({
+                    "spec": {
+                        "version": 1,
+                        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1, "startup_delay_ms": 0.0}},
+                        "engine": {"rank": rank},
+                        "requests": []
+                    },
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps",
+                        "trace_format": format, "trace_path": path,
+                        "trace_block_size": 4, "execution_model": "model"
+                    }
+                });
+                // No lane flag: Dynamo agentic detection must follow loaded content.
+                let result = execute_json(&payload.to_string(), false);
+                if agentic {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains(message), "{format}: {error}");
+                } else {
+                    let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+                    assert_eq!(report["completed_requests"], 1);
+                    assert!(report.get("agentic_qualification").is_none());
+                }
+            }
+        }
+    }
 
     #[pyclass]
     struct DecodeCoordinateProbe;

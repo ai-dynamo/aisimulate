@@ -137,6 +137,9 @@ function renderSnapshot() {
     <p>Legacy AIC CLI source: ${snapshot.aic_source
       ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (bundled aiconfigurator CLI)`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
+    <p>Snapshot file source: ${state.branch.published_from_commit
+      ? `<a href="https://github.com/ai-dynamo/aisimulate/blob/${state.branch.published_from_commit}/python/aisimulate/docs/e2e-accuracy/summary.json">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
+      : "Local preview; publication commit not recorded"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
     <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
@@ -449,6 +452,28 @@ function renderDrilldown() {
   });
 }
 
+function validBranchName(branch) {
+  return typeof branch === "string" &&
+    (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
+}
+
+function validRevision(revision) {
+  return revision && typeof revision.commit_sha === "string" &&
+    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch);
+}
+
+function snapshotEvidence(branch, snapshot) {
+  const revision = snapshot.evaluated_revision;
+  return revision
+    ? { status: revision.branch === branch ? "evaluated" : "inherited", evaluated_revision: revision }
+    : { status: "historical" };
+}
+
+function branchOption(entry) {
+  const suffix = { historical: " — historical only", inherited: " — inherited evidence", unavailable: " — no snapshot" };
+  return `<option value="${escapeHtml(entry.branch)}">${escapeHtml(entry.branch + (suffix[entry.status] || ""))}</option>`;
+}
+
 function validateSummary(data) {
   const metrics = (item) => item && Number.isInteger(item.points) && item.points >= 0 &&
     ["ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"]
@@ -484,7 +509,7 @@ function validateSummary(data) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
-  if (revision && (!/^[0-9a-f]{40}$/.test(revision.commit_sha) || typeof revision.branch !== "string")) {
+  if (revision != null && !validRevision(revision)) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
@@ -502,11 +527,16 @@ function validateCatalog(catalog) {
   const seen = new Set();
   if (!catalog || catalog.schema_version !== 1 || catalog.default_branch !== "main" ||
     !Array.isArray(catalog.branches) || !catalog.branches.length || catalog.branches.some((entry) => {
-      if (!entry || typeof entry.branch !== "string" ||
-        !(entry.branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(entry.branch)) ||
+      if (!entry || !validBranchName(entry.branch) ||
         seen.has(entry.branch) || !["evaluated", "inherited", "historical", "unavailable"].includes(entry.status) ||
         (entry.summary_path !== null && !/^(summary\.json|branches\/[0-9a-f]{16}\/summary\.json)$/.test(entry.summary_path)) ||
-        (entry.status === "unavailable") !== (entry.summary_path === null)) return true;
+        (entry.status === "unavailable") !== (entry.summary_path === null) ||
+        !(entry.published_from_commit === null || typeof entry.published_from_commit === "string" &&
+          /^[0-9a-f]{40}$/.test(entry.published_from_commit))) return true;
+      const revision = entry.evaluated_revision;
+      if (["evaluated", "inherited"].includes(entry.status)) {
+        if (!validRevision(revision) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
+      } else if (revision != null) return true;
       seen.add(entry.branch);
       return false;
     }) || !seen.has("main")) throw new Error("invalid accuracy branch catalog");
@@ -558,7 +588,13 @@ function showError(error) {
   errorBanner.textContent = `Could not load the published accuracy snapshot: ${error.message}`;
 }
 
-async function loadBranch(branchName, restoreSelection = false) {
+async function fetchSummary(path) {
+  const response = await fetch(`./${path}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return validateSummary(await response.json());
+}
+
+async function loadBranch(branchName, restoreSelection = false, previewData = null) {
   const loadId = ++state.loadId;
   const params = new URL(location.href).searchParams;
   const entry = state.catalog.branches.find((item) => item.branch === branchName);
@@ -574,12 +610,15 @@ async function loadBranch(branchName, restoreSelection = false) {
       branchStatus.textContent = `${entry.branch}: no published accuracy snapshot.`;
       return;
     }
-    const response = await fetch(`./${entry.summary_path}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = validateSummary(await response.json());
+    const data = previewData || await fetchSummary(entry.summary_path);
     if (loadId !== state.loadId) return;
-    state.data = data;
+    const evidence = snapshotEvidence(entry.branch, data.snapshot);
     const revision = data.snapshot.evaluated_revision;
+    if (entry.status !== evidence.status ||
+      revision && ["branch", "commit_sha"].some((key) => entry.evaluated_revision?.[key] !== revision[key])) {
+      throw new Error("Branch catalog and snapshot provenance disagree");
+    }
+    state.data = data;
     if (revision) {
       branchStatus.textContent = revision.branch === entry.branch
         ? `${entry.branch} · evaluated commit ${revision.commit_sha.slice(0, 12)} (snapshot results; no live rerun)`
@@ -618,13 +657,14 @@ async function initialize() {
   const response = await fetch("./branches.json");
   // Directly serving the source docs remains useful before a Pages build.
   // Only a missing catalog permits this legacy single-snapshot mode.
-  state.catalog = validateCatalog(response.status === 404 ? {
+  const previewData = response.status === 404 ? await fetchSummary("summary.json") : null;
+  state.catalog = validateCatalog(previewData ? {
     schema_version: 1, default_branch: "main",
-    branches: [{ branch: "main", status: "historical", summary_path: "summary.json" }],
+    branches: [{ branch: "main", ...snapshotEvidence("main", previewData.snapshot),
+      summary_path: "summary.json", published_from_commit: null }],
   } : response.ok ? await response.json() : (() => { throw new Error(`HTTP ${response.status}`); })());
-  branchSelect.innerHTML = state.catalog.branches.map((entry) =>
-    `<option value="${escapeHtml(entry.branch)}">${escapeHtml(entry.branch)}${entry.status === "unavailable" ? " (no snapshot)" : ""}</option>`).join("");
+  branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");
   branchSelect.disabled = false;
   branchSelect.addEventListener("change", () => loadBranch(branchSelect.value));
-  await loadBranch(new URL(location.href).searchParams.get("branch") || state.catalog.default_branch, true);
+  await loadBranch(new URL(location.href).searchParams.get("branch") || state.catalog.default_branch, true, previewData);
 }
