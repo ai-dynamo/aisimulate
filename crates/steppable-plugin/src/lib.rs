@@ -22,9 +22,9 @@ use aisimulate_core::replay::loadgen::{
     DynPlacement, SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
 };
 use aisimulate_core::replay::{
-    DirectRequest, DynamicPlacementConfig, DynamicPlacementMetadata, DynamicPlacementPlugin,
-    NoEngineEvents, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
-    WorkerStage, WorkerTopology,
+    DirectRequest, DynamicKvEventObservation, DynamicPlacementConfig, DynamicPlacementMetadata,
+    DynamicPlacementPlugin, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus,
+    SlaThresholds, WorkerStage, WorkerTopology,
 };
 use aisimulate_placement_abi::{PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
@@ -296,8 +296,8 @@ unsafe extern "C" fn create(
                     DynamicPlacementPlugin::load(&locator.library_path).and_then(|plugin| {
                         let engine_config = config.engine.clone();
                         SteppableAgg::<
-                            DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
-                            NoEngineEvents,
+                            DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+                            DynamicKvEventObservation,
                             DynamicPlacementMetadata,
                         >::with_placement(
                             config.engine,
@@ -336,8 +336,8 @@ unsafe extern "C" fn create(
                     DynamicPlacementPlugin::load(&locator.library_path).and_then(|plugin| {
                         let engine_config = config.engine.clone();
                         SteppableDisagg::<
-                            DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
-                            NoEngineEvents,
+                            DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+                            DynamicKvEventObservation,
                             DynamicPlacementMetadata,
                         >::with_placements(
                             config.engine,

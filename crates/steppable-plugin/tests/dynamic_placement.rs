@@ -7,14 +7,14 @@ use aisimulate_core::replay::loadgen::{
     DynPlacement, SteppableAgg, SteppableDisagg, SteppableReplay,
 };
 use aisimulate_core::replay::{
-    DirectRequest, DynamicPlacementMetadata, DynamicPlacementPolicy, NoEngineEvents,
+    DirectRequest, DynamicKvEventObservation, DynamicPlacementMetadata, DynamicPlacementPolicy,
     ReplayEngineConfig, ReplayEngineFactory,
 };
 use aisimulate_placement_abi::{
-    AdmissionDecisionV1, ByteSliceV1, PlacementBatchResultV1, PlacementCacheSampleV1,
-    PlacementDiagnosticSliceV1, PlacementHandleV1, PlacementLimitsV1, PlacementMutationKindV1,
-    PlacementMutationSliceV1, PlacementResultSliceV1, PlacementResultV1, PlacementSliceV1,
-    PlacementV1, PluginVTableV1, StatusV1,
+    AdmissionDecisionV1, ByteSliceV1, KvEventSliceV1, PlacementBatchResultV1,
+    PlacementCacheSampleV1, PlacementDiagnosticSliceV1, PlacementHandleV1, PlacementLimitsV1,
+    PlacementMutationKindV1, PlacementMutationSliceV1, PlacementResultSliceV1, PlacementResultV1,
+    PlacementSliceV1, PlacementV1, PluginVTableV1, StatusV1,
 };
 use uuid::Uuid;
 
@@ -24,6 +24,41 @@ struct Fixture {
     admitted: Option<[u8; 16]>,
     prefill_admitted: Option<[u8; 16]>,
     decode_admitted: Option<[u8; 16]>,
+    kv_event_count: usize,
+}
+
+unsafe extern "C" fn apply_kv_events(
+    _handle: PlacementHandleV1,
+    events: KvEventSliceV1,
+    _now_ms: f64,
+    result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    if events.len != 1 || events.data.is_null() || result.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    FIXTURE.lock().expect("fixture lock").kv_event_count += 1;
+    // Safety: a checked non-null output gets one complete result.
+    unsafe {
+        *result = PlacementBatchResultV1 {
+            struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
+            flags: 0,
+            applied_mutations: 1,
+            pending_count: 0,
+            admission_results: PlacementResultSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+            released: PlacementSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+            diagnostics: PlacementDiagnosticSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+        };
+    }
+    StatusV1::OK
 }
 
 static FIXTURE: LazyLock<Mutex<Fixture>> = LazyLock::new(|| Mutex::new(Fixture::default()));
@@ -144,6 +179,7 @@ static FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
     release_bytes: Some(release_bytes),
     last_error: Some(last_error),
     destroy: Some(destroy),
+    apply_kv_events: Some(apply_kv_events),
 };
 
 static PREFILL_FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
@@ -162,8 +198,8 @@ fn aggregated_steppable_uses_the_dynamic_placement_abi_fixture() {
     *FIXTURE.lock().expect("fixture lock") = Fixture::default();
     let factory = ReplayEngineFactory::new();
     let mut replay = SteppableAgg::<
-        DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
-        NoEngineEvents,
+        DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+        DynamicKvEventObservation,
         DynamicPlacementMetadata,
     >::with_placement(
         ReplayEngineConfig::default(),
@@ -210,12 +246,14 @@ fn disaggregated_steppable_uses_distinct_dynamic_policies_for_prefill_and_decode
     let _test_lock = TEST_LOCK.lock().expect("test lock");
     *FIXTURE.lock().expect("fixture lock") = Fixture::default();
     let factory = ReplayEngineFactory::new();
+    let mut engine = ReplayEngineConfig::default();
+    engine.rank.block_size = 4;
     let mut replay = SteppableDisagg::<
-        DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
-        NoEngineEvents,
+        DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+        DynamicKvEventObservation,
         DynamicPlacementMetadata,
     >::with_placements(
-        ReplayEngineConfig::default(),
+        engine,
         &factory,
         1,
         1,
@@ -255,7 +293,9 @@ fn disaggregated_steppable_uses_distinct_dynamic_policies_for_prefill_and_decode
     replay
         .submit(DirectRequest {
             uuid: Some(request_id),
-            tokens: vec![1, 2, 3],
+            // A full prompt block forces a router-visible stored-KV event
+            // during prefill.
+            tokens: (1..=8).collect(),
             max_output_tokens: 1,
             ..Default::default()
         })
@@ -269,4 +309,8 @@ fn disaggregated_steppable_uses_distinct_dynamic_policies_for_prefill_and_decode
     let fixture = FIXTURE.lock().expect("fixture lock");
     assert_eq!(fixture.prefill_admitted, Some(request_id.into_bytes()));
     assert_eq!(fixture.decode_admitted, Some(request_id.into_bytes()));
+    assert!(
+        fixture.kv_event_count > 0,
+        "dynamic prefill placement receives each router-visible KV event"
+    );
 }

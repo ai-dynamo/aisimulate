@@ -6,15 +6,15 @@
 //! The public loader validates the exported descriptor before it copies the
 //! vtable, and the resulting policy keeps the shared library alive until after
 //! its opaque instance is destroyed. The adapter carries Replay's routing-safe
-//! admission metadata but deliberately supports only the `NoEngineEvents`
-//! observation boundary; callers with concrete engine-observation DTOs must
-//! use an adapter that encodes those DTOs rather than dropping them here.
+//! admission metadata and forwards router-visible KV observations through the
+//! negotiated lossless packet callback.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use aisimulate_placement_abi::{
     AdmissionDecisionV1, AdmissionMetadataFormatV1, BlockHashSliceV1, ByteSliceV1,
+    CAPABILITY_LOSSLESS_KV_EVENTS_V1, KvEventSliceV1, KvEventV1, KvStorageTierV1, KvStoredBlockV1,
     MAX_ADMISSION_METADATA_BYTES_V1, MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1,
     MAX_ADMISSION_PROMPT_TOKEN_IDS_V1, PlacementAdmissionV1, PlacementBatchResultV1,
     PlacementCacheSampleV1, PlacementCreateRequestV1, PlacementDiagnosticSliceV1,
@@ -29,12 +29,14 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use libloading::Library;
 use uuid::Uuid;
 
-use super::components::ReplayAdmissionMetadata;
+use super::components::{ReplayAdmissionMetadata, ReplayEngineObservation};
 use super::core::{
-    Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
-    WorkerTopology,
+    EngineEventBatch, Placement, PlacementCacheSample, PlacementDecision, PlacementEffects,
+    PlacementPolicy, WorkerTopology,
 };
 use super::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
+use crate::engine::{KvEvent, KvEventData};
+use crate::replay::WorkerStage;
 
 /// Fixed export name every V1 placement plugin must provide.
 const PLACEMENT_PLUGIN_ENTRY_V1: &[u8] = b"aisimulate_placement_plugin_v1\0";
@@ -65,6 +67,59 @@ pub struct DynamicPlacementMetadata {
     replay_hashes: Option<ReplayRequestHashes>,
 }
 
+/// One router-visible AISimulate KV event tagged with its emitting worker.
+#[derive(Debug)]
+struct DynamicKvEvent {
+    worker_id: usize,
+    event: KvEvent,
+}
+
+/// Ordered KV observations that a dynamically loaded placement provider sees.
+#[derive(Debug, Default)]
+pub struct DynamicKvEventBatch(Vec<DynamicKvEvent>);
+
+impl EngineEventBatch for DynamicKvEventBatch {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn append(&mut self, mut other: Self) {
+        self.0.append(&mut other.0);
+    }
+}
+
+/// Observation flavor that retains exactly the KV events needed by a dynamic
+/// KV-aware placement provider.
+#[derive(Debug, Default)]
+pub struct DynamicKvEventObservation;
+
+impl ReplayEngineObservation for DynamicKvEventObservation {
+    type Batch = DynamicKvEventBatch;
+
+    const CAPTURE_ENGINE_KV_EVENTS: bool = true;
+
+    fn capture_engine_kv_events(stage: WorkerStage) -> bool {
+        !matches!(stage, WorkerStage::Decode)
+    }
+
+    fn observe_engine_events(
+        stage: WorkerStage,
+        worker_id: usize,
+        _dp_rank: u32,
+        events: Vec<KvEvent>,
+    ) -> Self::Batch {
+        if matches!(stage, WorkerStage::Decode) {
+            return DynamicKvEventBatch::default();
+        }
+        DynamicKvEventBatch(
+            events
+                .into_iter()
+                .map(|event| DynamicKvEvent { worker_id, event })
+                .collect(),
+        )
+    }
+}
+
 impl ReplayAdmissionMetadata for DynamicPlacementMetadata {
     fn from_hashes(replay_hashes: Option<ReplayRequestHashes>) -> Self {
         Self { replay_hashes }
@@ -91,6 +146,7 @@ impl ReplayAdmissionMetadata for DynamicPlacementMetadata {
 pub struct DynamicPlacementPlugin {
     library: Arc<Library>,
     vtable: PluginVTableV1,
+    capabilities: u64,
 }
 
 impl DynamicPlacementPlugin {
@@ -115,10 +171,14 @@ impl DynamicPlacementPlugin {
         })?;
         // Safety: `validate_descriptor_v1` checked this non-null readable table.
         let vtable = unsafe { *vtable };
+        // Safety: descriptor validation established that this immutable record
+        // remains readable while the library is retained.
+        let capabilities = unsafe { (*descriptor).capabilities };
 
         Ok(Self {
             library: Arc::new(library),
             vtable,
+            capabilities,
         })
     }
 
@@ -128,6 +188,11 @@ impl DynamicPlacementPlugin {
         workers: Vec<WorkerTopology>,
         config: DynamicPlacementConfig,
     ) -> Result<DynamicPlacementPolicy> {
+        ensure!(
+            self.capabilities & CAPABILITY_LOSSLESS_KV_EVENTS_V1 != 0
+                && self.vtable.supports_lossless_kv_events(),
+            "dynamic placement plugin does not negotiate lossless KV observations"
+        );
         validate_initial_topology(&workers, &config.capacities)?;
         let scheduler_ids = workers
             .iter()
@@ -207,6 +272,7 @@ impl DynamicPlacementPlugin {
             pending_count: 0,
             last_now_ms: 0.0,
             limits: config.limits,
+            supports_lossless_kv_events: true,
             // Field order intentionally destroys `instance` before unloading the
             // library: its Drop invokes the provider's destroy callback.
             _library: Some(Arc::clone(&self.library)),
@@ -220,6 +286,7 @@ pub struct DynamicPlacementPolicy {
     pending_count: usize,
     last_now_ms: f64,
     limits: PlacementLimitsV1,
+    supports_lossless_kv_events: bool,
     _library: Option<Arc<Library>>,
 }
 
@@ -242,15 +309,9 @@ impl DynamicPlacementPolicy {
             pending_count: 0,
             last_now_ms: 0.0,
             limits,
+            supports_lossless_kv_events: vtable.supports_lossless_kv_events(),
             _library: None,
         }
-    }
-
-    /// Returns an explicit error for an observation DTO this neutral adapter cannot encode.
-    pub fn unsupported_observation(&self, observation: &str) -> Result<()> {
-        bail!(
-            "dynamic placement supports only neutral NoEngineEvents observations; cannot encode {observation}"
-        )
     }
 
     fn apply(&mut self, mutation: PlacementMutationV1) -> Result<AppliedBatch> {
@@ -268,24 +329,7 @@ impl DynamicPlacementPolicy {
             data: &mutation,
             len: 1,
         };
-        let mut result = PlacementBatchResultV1 {
-            struct_size: 0,
-            flags: 0,
-            applied_mutations: 0,
-            pending_count: 0,
-            admission_results: PlacementResultSliceV1 {
-                data: std::ptr::null(),
-                len: 0,
-            },
-            released: PlacementSliceV1 {
-                data: std::ptr::null(),
-                len: 0,
-            },
-            diagnostics: PlacementDiagnosticSliceV1 {
-                data: std::ptr::null(),
-                len: 0,
-            },
-        };
+        let mut result = empty_batch_result();
         // Safety: `instance` is live, `batch` is valid for the call, and the
         // result output points to host-owned initialized storage.
         let status = unsafe {
@@ -319,6 +363,103 @@ impl DynamicPlacementPolicy {
             admissions,
             released,
         })
+    }
+
+    fn apply_kv_event(&mut self, event: DynamicKvEvent, now_ms: f64) -> Result<Vec<Placement>> {
+        ensure!(
+            self.supports_lossless_kv_events,
+            "dynamic placement plugin does not negotiate lossless KV observations"
+        );
+        ensure!(
+            now_ms.is_finite(),
+            "dynamic placement observation time must be finite"
+        );
+        ensure!(
+            now_ms >= self.last_now_ms,
+            "dynamic placement observation time {now_ms} precedes the previous time {}",
+            self.last_now_ms
+        );
+        let worker_id = u64::try_from(event.worker_id)
+            .context("KV observation worker ID does not fit the placement ABI")?;
+        let event_id = event.event.event_id;
+        let dp_rank = event.event.dp_rank;
+        let (_stored_blocks, packet) = match &event.event.data {
+            KvEventData::Stored(stored) => {
+                let stored_blocks: Vec<KvStoredBlockV1> = stored
+                    .blocks
+                    .iter()
+                    .map(|block| KvStoredBlockV1 {
+                        sequence_hash: block.block_hash,
+                        token_hash: block.tokens_hash,
+                    })
+                    .collect();
+                let packet = KvEventV1::stored(
+                    worker_id,
+                    dp_rank,
+                    KvStorageTierV1::DEVICE,
+                    event_id,
+                    stored.parent_hash,
+                    stored
+                        .start_position
+                        .map(u64::try_from)
+                        .transpose()
+                        .context("KV observation start position does not fit the placement ABI")?,
+                    &stored_blocks,
+                );
+                (stored_blocks, packet)
+            }
+            KvEventData::Removed { block_hashes } => (
+                Vec::new(),
+                KvEventV1::removed(
+                    worker_id,
+                    dp_rank,
+                    KvStorageTierV1::DEVICE,
+                    event_id,
+                    block_hashes,
+                ),
+            ),
+        };
+        let batch = KvEventSliceV1 {
+            data: std::ptr::from_ref(&packet),
+            len: 1,
+        };
+        let mut result = empty_batch_result();
+        // Safety: the packet and its nested vectors remain live for the full
+        // synchronous callback; capability negotiation established the tail.
+        let status = unsafe {
+            required_apply_kv_events(&self.instance.vtable)(
+                self.instance.handle,
+                batch,
+                now_ms,
+                &mut result,
+            )
+        };
+        if status != StatusV1::OK {
+            let error = self.instance.last_error()?;
+            bail!(
+                "placement plugin apply_kv_events failed with status {}{}",
+                status.0,
+                error_suffix(error.as_deref())
+            );
+        }
+        let result_guard = BatchResultGuard {
+            vtable: self.instance.vtable,
+            result,
+        };
+        result_guard.validate(self.limits)?;
+        ensure!(
+            result_guard.result.applied_mutations == 1,
+            "placement plugin committed {} of 1 KV observation(s)",
+            result_guard.result.applied_mutations
+        );
+        ensure!(
+            result_guard.result.admission_results.len == 0,
+            "placement plugin returned admission decisions for a KV observation"
+        );
+        self.pending_count = usize::try_from(result_guard.result.pending_count)
+            .context("placement plugin pending count does not fit this host")?;
+        self.last_now_ms = now_ms;
+        unsafe { copy_placements(result_guard.result.released, self.limits) }
     }
 
     fn lifecycle(
@@ -387,7 +528,7 @@ impl DynamicPlacementPolicy {
 
 impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
     type Metadata = DynamicPlacementMetadata;
-    type Observation = ();
+    type Observation = DynamicKvEventBatch;
 
     fn place(
         &mut self,
@@ -474,11 +615,12 @@ impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
         })
     }
 
-    fn observe(&mut self, _observation: Self::Observation, _now_ms: f64) -> Result<Vec<Placement>> {
-        // `()` is the explicit NoEngineEvents representation: there is no DTO
-        // to encode and therefore no provider call to omit. Richer observation
-        // adapters must use `unsupported_observation` rather than this impl.
-        Ok(Vec::new())
+    fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>> {
+        let mut released = Vec::new();
+        for event in observation.0 {
+            released.extend(self.apply_kv_event(event, now_ms)?);
+        }
+        Ok(released)
     }
 
     fn cancel_pending(&mut self, request_id: Uuid) -> bool {
@@ -603,6 +745,27 @@ impl Drop for BatchResultGuard {
 struct AppliedBatch {
     admissions: Vec<AdmissionResult>,
     released: Vec<Placement>,
+}
+
+fn empty_batch_result() -> PlacementBatchResultV1 {
+    PlacementBatchResultV1 {
+        struct_size: 0,
+        flags: 0,
+        applied_mutations: 0,
+        pending_count: 0,
+        admission_results: PlacementResultSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+        released: PlacementSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+        diagnostics: PlacementDiagnosticSliceV1 {
+            data: std::ptr::null(),
+            len: 0,
+        },
+    }
 }
 
 struct AdmissionResult {
@@ -816,6 +979,18 @@ fn required_apply_batch(
     vtable
         .apply_batch
         .expect("descriptor validation requires apply_batch")
+}
+fn required_apply_kv_events(
+    vtable: &PluginVTableV1,
+) -> unsafe extern "C" fn(
+    PlacementHandleV1,
+    KvEventSliceV1,
+    f64,
+    *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    vtable
+        .apply_kv_events
+        .expect("lossless-KV capability validation requires apply_kv_events")
 }
 fn required_release_results(
     vtable: &PluginVTableV1,

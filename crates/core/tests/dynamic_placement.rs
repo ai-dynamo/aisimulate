@@ -1,20 +1,23 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use aisimulate_core::engine::{KvBlock, KvEvent, KvEventData, StoredBlocks};
 use aisimulate_core::replay::DynamicPlacementPlugin;
 use std::sync::{LazyLock, Mutex};
 
 use aisimulate_core::replay::DirectRequest;
 use aisimulate_core::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
 use aisimulate_core::replay::{
-    DynamicPlacementMetadata, DynamicPlacementPolicy, PlacementDecision, PlacementPolicy,
-    ReplayAdmissionMetadata, ReplayRequestContext, WorkerTopology,
+    DynamicKvEventObservation, DynamicPlacementMetadata, DynamicPlacementPolicy, PlacementDecision,
+    PlacementPolicy, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayRequestContext,
+    WorkerStage, WorkerTopology,
 };
 use aisimulate_placement_abi::{
-    AdmissionDecisionV1, AdmissionMetadataFormatV1, ByteSliceV1, PlacementBatchResultV1,
-    PlacementCacheSampleV1, PlacementDiagnosticSliceV1, PlacementHandleV1, PlacementLimitsV1,
-    PlacementMutationKindV1, PlacementMutationSliceV1, PlacementResultSliceV1, PlacementResultV1,
-    PlacementSliceV1, PlacementV1, PluginVTableV1, PromptIdentityV1, StatusV1,
+    AdmissionDecisionV1, AdmissionMetadataFormatV1, ByteSliceV1, KvEventKindV1, KvEventSliceV1,
+    KvStorageTierV1, PlacementBatchResultV1, PlacementCacheSampleV1, PlacementDiagnosticSliceV1,
+    PlacementHandleV1, PlacementLimitsV1, PlacementMutationKindV1, PlacementMutationSliceV1,
+    PlacementResultSliceV1, PlacementResultV1, PlacementSliceV1, PlacementV1, PluginVTableV1,
+    PromptIdentityV1, StatusV1,
 };
 use uuid::Uuid;
 
@@ -25,6 +28,7 @@ struct Fixture {
     admissions: Vec<PlacementResultV1>,
     released: Vec<PlacementV1>,
     last_admission: Option<CapturedAdmission>,
+    kv_events: Vec<CapturedKvEvent>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -35,6 +39,19 @@ struct CapturedAdmission {
     sequence_block_hashes: Option<Vec<u64>>,
     metadata_format: AdmissionMetadataFormatV1,
     metadata: Option<Vec<u8>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedKvEvent {
+    worker_id: u64,
+    dp_rank: u32,
+    storage_tier: KvStorageTierV1,
+    event_id: u64,
+    kind: KvEventKindV1,
+    parent_hash: Option<u64>,
+    start_position: Option<u64>,
+    stored_blocks: Vec<(u64, u64)>,
+    removed_hashes: Vec<u64>,
 }
 
 static FIXTURE: LazyLock<Mutex<Fixture>> = LazyLock::new(|| Mutex::new(Fixture::default()));
@@ -134,6 +151,80 @@ unsafe extern "C" fn fixture_apply_batch(
     StatusV1::OK
 }
 
+unsafe extern "C" fn fixture_apply_kv_events(
+    _handle: PlacementHandleV1,
+    events: KvEventSliceV1,
+    _now_ms: f64,
+    result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    if events.len != 1 || events.data.is_null() || result.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Safety: a non-null single-event slice was validated above. The host owns
+    // the event packet and all nested slices until this callback returns.
+    let event = unsafe { &*events.data };
+    let (parent_hash, start_position, stored_blocks, removed_hashes) = match event.kind {
+        KvEventKindV1::STORED => (
+            event.parent_hash(),
+            event.start_position(),
+            event
+                .stored_blocks()
+                .expect("stored event has stored blocks")
+                .iter()
+                .map(|block| (block.sequence_hash, block.token_hash))
+                .collect(),
+            Vec::new(),
+        ),
+        KvEventKindV1::REMOVED => (
+            None,
+            None,
+            Vec::new(),
+            event
+                .removed_hashes()
+                .expect("removed event has removed hashes")
+                .to_vec(),
+        ),
+        _ => return StatusV1::INVALID_ARGUMENT,
+    };
+    FIXTURE
+        .lock()
+        .expect("fixture lock")
+        .kv_events
+        .push(CapturedKvEvent {
+            worker_id: event.worker_id,
+            dp_rank: event.dp_rank,
+            storage_tier: event.storage_tier,
+            event_id: event.event_id,
+            kind: event.kind,
+            parent_hash,
+            start_position,
+            stored_blocks,
+            removed_hashes,
+        });
+    // Safety: non-null result output was validated above.
+    unsafe {
+        *result = PlacementBatchResultV1 {
+            struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
+            flags: 0,
+            applied_mutations: 1,
+            pending_count: 0,
+            admission_results: PlacementResultSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+            released: PlacementSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+            diagnostics: PlacementDiagnosticSliceV1 {
+                data: std::ptr::null(),
+                len: 0,
+            },
+        };
+    }
+    StatusV1::OK
+}
+
 fn capture_optional_slice<T: Copy>(
     flags: u32,
     present_flag: u32,
@@ -170,6 +261,7 @@ static FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
     release_bytes: Some(fixture_release_bytes),
     last_error: Some(fixture_last_error),
     destroy: Some(fixture_destroy),
+    apply_kv_events: Some(fixture_apply_kv_events),
 };
 
 fn fixture_placement(request_id: [u8; 16]) -> PlacementV1 {
@@ -426,14 +518,66 @@ fn neutral_adapter_distinguishes_omitted_identity_and_metadata_from_known_empty(
 }
 
 #[test]
-fn neutral_adapter_refuses_observation_dtos_it_cannot_encode() {
+fn dynamic_adapter_forwards_each_kv_event_as_one_lossless_packet() {
     let _test_lock = TEST_LOCK.lock().expect("test lock");
-    let policy = policy();
+    let mut policy = policy();
+    let batch = DynamicKvEventObservation::observe_engine_events(
+        WorkerStage::Aggregated,
+        7,
+        3,
+        vec![
+            KvEvent {
+                event_id: 11,
+                dp_rank: 3,
+                data: KvEventData::Stored(StoredBlocks {
+                    parent_hash: Some(31),
+                    start_position: Some(5),
+                    blocks: vec![KvBlock {
+                        block_hash: 41,
+                        tokens_hash: 43,
+                        token_ids: None,
+                    }],
+                }),
+            },
+            KvEvent {
+                event_id: 12,
+                dp_rank: 3,
+                data: KvEventData::Removed {
+                    block_hashes: vec![41],
+                },
+            },
+        ],
+    );
 
-    let error = policy
-        .unsupported_observation("KvObservation")
-        .expect_err("unrepresentable observations must not be dropped");
+    policy
+        .observe(batch, 6.0)
+        .expect("KV observations are forwarded");
 
-    assert!(error.to_string().contains("NoEngineEvents"));
-    assert!(error.to_string().contains("KvObservation"));
+    assert_eq!(
+        FIXTURE.lock().expect("fixture lock").kv_events,
+        vec![
+            CapturedKvEvent {
+                worker_id: 7,
+                dp_rank: 3,
+                storage_tier: KvStorageTierV1::DEVICE,
+                event_id: 11,
+                kind: KvEventKindV1::STORED,
+                parent_hash: Some(31),
+                start_position: Some(5),
+                stored_blocks: vec![(41, 43)],
+                removed_hashes: Vec::new(),
+            },
+            CapturedKvEvent {
+                worker_id: 7,
+                dp_rank: 3,
+                storage_tier: KvStorageTierV1::DEVICE,
+                event_id: 12,
+                kind: KvEventKindV1::REMOVED,
+                parent_hash: None,
+                start_position: None,
+                stored_blocks: Vec::new(),
+                removed_hashes: vec![41],
+            },
+        ]
+    );
 }
