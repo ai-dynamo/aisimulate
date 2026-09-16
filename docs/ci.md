@@ -68,7 +68,7 @@ Full CI when a review finishes.
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
 | [FPE Support Matrix](../.github/workflows/fpe-support-matrix.yml) | Called by Nightly; manual dispatch with `expected_sha` | Broad native operation-level support qualification |
-| [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Qualifies the current `release/0.12.0` wheel and retains release matrix evidence |
+| [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Discovers `release/*` branches and qualifies each pinned release wheel |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
 | [GitHub Pages](../.github/workflows/pages.yml) | Relevant site changes on PRs/`main`; manual dispatch | Builds dashboard/support-matrix pages; deployment is restricted to `main` |
@@ -283,12 +283,16 @@ through the protected `automated-release` environment. FPE output is retained
 as workflow artifacts; publishing dashboard pages is a separate Pages workflow.
 
 [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) separately
-refreshes `release/0.12.0` every day, including days when its source is unchanged.
-The workflow runs on `main`, resolves the release tip once, builds its unchanged
-wheel, and probes the release inventory with the current qualification harness.
-It records release and tooling commits separately. Up to 20 system/backend jobs
-use eight probe threads each. Complete qualified results remain GitHub Actions
-artifacts for 90 days and trigger Pages; this job does not publish packages.
+discovers every `release/<version>` branch each day, including new releases and
+days when their source is unchanged. From trusted `main`, it pins all release
+tips and calls a reusable qualification workflow once per release. Each builds
+an unchanged wheel and probes that release's inventory with the current harness.
+It records release and tooling commits separately. Releases run sequentially,
+with up to 20 system/backend jobs and eight probe threads per job. Versioned
+wheel, report, and web artifacts keep releases isolated. A failed release does
+not cancel the rest, but Pages requires a successful overall nightly run.
+Complete qualified results remain GitHub Actions artifacts for 90 days and
+trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
 

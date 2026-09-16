@@ -15,6 +15,7 @@ import re
 import subprocess
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 ARTIFACT_NAME = "fpe-support-matrix-web"
 DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
@@ -142,11 +143,18 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
         return selected
 
 
-def list_artifacts(repository: str, *, api=github) -> list[dict]:
+def artifact_name(branch: str) -> str:
+    branch_path(branch)
+    if branch == "main":
+        return ARTIFACT_NAME
+    return f"{ARTIFACT_NAME}-release-{quote(branch.removeprefix('release/'), safe='')}"
+
+
+def list_artifacts(repository: str, *, name=ARTIFACT_NAME, api=github) -> list[dict]:
     artifacts = []
     page = 1
     while True:
-        batch = json.loads(api(repository, f"actions/artifacts?name={ARTIFACT_NAME}&per_page=100&page={page}"))[
+        batch = json.loads(api(repository, f"actions/artifacts?name={quote(name, safe='')}&per_page=100&page={page}"))[
             "artifacts"
         ]
         artifacts.extend(batch)
@@ -178,6 +186,8 @@ def prepare(
     ranks = {sha: index for index, sha in enumerate(ancestors)}
     if artifacts is None:
         artifacts = list_artifacts(repository, api=api)
+        if branch != "main":
+            artifacts += list_artifacts(repository, name=artifact_name(branch), api=api)
     tooling_history = set(
         subprocess.check_output(
             ["git", "rev-list", "--topo-order", "HEAD", "--"], cwd=repo_root, text=True
@@ -186,7 +196,7 @@ def prepare(
     candidates = []
     for artifact in artifacts:
         identity = artifact.get("workflow_run") or {}
-        if artifact.get("name") != ARTIFACT_NAME or not (
+        if artifact.get("name") not in {ARTIFACT_NAME, artifact_name(branch)} or not (
             (identity.get("head_branch") == branch and identity.get("head_sha") in ranks)
             or (
                 branch != "main"
@@ -210,6 +220,8 @@ def prepare(
         run = json.loads(api(repository, f"actions/runs/{run_id}"))
         workflow_sha = artifact["workflow_run"]["head_sha"]
         release_producer = branch != "main" and run.get("path") == RELEASE_WORKFLOW
+        if artifact["name"] != ARTIFACT_NAME and not release_producer:
+            continue
         producer_branch = "main" if release_producer else branch
         if (
             (run.get("path") not in WORKFLOWS and not release_producer)
@@ -247,6 +259,8 @@ def prepare(
             if declared_branch == "main" or qualification.get("tooling_sha") != workflow_sha:
                 raise ValueError("release FPE source/tooling provenance does not match its CI run")
             if declared_branch != branch:
+                if artifact["name"] != ARTIFACT_NAME:
+                    raise ValueError("release artifact name does not match its qualified branch")
                 continue
         source_sha = qualification.get("source_sha") if isinstance(qualification, dict) else None
         if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
@@ -305,9 +319,18 @@ def prepare_branches(repository: str, repo_root: Path, destination: Path, *, api
     for branch, ref in branches.items():
         path = branch_path(branch)
         entry = {"name": branch, "path": path, "status": "available"}
+        branch_artifacts = artifacts
+        if branch != "main":
+            branch_artifacts = artifacts + list_artifacts(repository, name=artifact_name(branch), api=api)
         try:
             prepare(
-                repository, repo_root, destination / path, branch=branch, history_ref=ref, artifacts=artifacts, api=api
+                repository,
+                repo_root,
+                destination / path,
+                branch=branch,
+                history_ref=ref,
+                artifacts=branch_artifacts,
+                api=api,
             )
         except SnapshotUnavailable as exc:
             if branch == "main":

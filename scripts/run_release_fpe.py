@@ -26,6 +26,25 @@ PROBES = Path("python/aisimulate/tools/support_matrix")
 DATA = Path("python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix")
 
 
+def list_releases(root: Path) -> list[dict]:
+    """Pin every fetched release/<version> tip before any wheel is built."""
+    refs = subprocess.check_output(
+        ["git", "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/remotes/origin/release/"],
+        cwd=root,
+        text=True,
+    ).splitlines()
+    releases = []
+    for ref in refs:
+        name, sha = ref.split("\0")
+        version = name.removeprefix("refs/remotes/origin/release/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", version) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError(f"invalid release branch or commit: {name}")
+        releases.append({"version": version, "source_sha": sha})
+    if len(releases) > 256:
+        raise ValueError("release inventory exceeds GitHub's 256-job matrix limit")
+    return releases
+
+
 def revision(root: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 
@@ -138,7 +157,7 @@ def package_reports(reports: Path, expected: dict, wheel_sha: str, shards: list,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("record-wheel", "discover", "probe", "package"))
+    parser.add_argument("action", choices=("list-releases", "record-wheel", "discover", "probe", "package"))
     parser.add_argument("--source-root", type=Path, default=ROOT / "release-source")
     parser.add_argument("--wheel-dir", type=Path, default=ROOT / "fpe-release-wheel")
     parser.add_argument("--harness-dir", type=Path, default=ROOT / "release-probe-harness")
@@ -148,6 +167,11 @@ def main() -> None:
     args, probe_args = parser.parse_known_args()
     if probe_args and args.action != "probe":
         parser.error(f"unexpected arguments: {probe_args}")
+    if args.action == "list-releases":
+        releases = json.dumps(list_releases(ROOT))
+        output("releases", releases)
+        print(releases)
+        return
     expected = identity(
         args.source_root,
         os.environ["FPE_SOURCE_SHA"],

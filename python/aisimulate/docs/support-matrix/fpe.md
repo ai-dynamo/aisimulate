@@ -183,19 +183,28 @@ explicit release and tooling provenance. An old-commit rerun cannot displace a n
 A release without retained qualification is labeled **unavailable**; an
 expired release artifact also removes its data from the next deployment.
 The page shows a **Results not available yet** notice with a **Check again**
-button and a link to that branch's coverage runs. It does not promise an
-availability date because release refreshes are not automatically scheduled.
+button and a link to the release nightly runs. Coverage appears after a
+successful qualified nightly run and Pages deployment.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
 **FPE Release Nightly** runs daily at 09:23 UTC from trusted `main`, and can
-also be dispatched on `main`. It currently targets `release/0.12.0`. It resolves
-the release tip once, builds one wheel from that unmodified checkout, and uses
+also be dispatched on `main`. It discovers every fetched `release/<version>`
+branch and pins all release tips before building. New branches such as
+`release/0.13.0` join the next run automatically, without a workflow edit or
+backport. Versions may contain letters, digits, dots, underscores, and hyphens,
+starting with a letter or digit. An empty inventory skips qualification.
+
+The scheduler calls the same reusable qualification workflow for each release,
+one release at a time. It builds one wheel from each unmodified checkout and uses
 the release's locked dependencies, curated model inventory, SDK, estimator,
 model definitions, and performance tables. Up to 20 system/backend shards run
 concurrently with eight probe threads each; the runner pool is shared with
-other CI. Every scheduled run refreshes the evidence, even if the release SHA
-is unchanged, so retained artifacts do not silently expire.
+other CI. The serial release matrix keeps this limit at 20 across the release
+nightly run. A failed release does not cancel the remaining releases, but
+publication requires the entire nightly run to succeed. Every scheduled run
+refreshes the evidence, even if the release SHA is unchanged, so retained
+artifacts do not silently expire.
 
 The probe harness and required-probe manifest come from the workflow's exact
 `main` commit. CI records that tooling SHA separately from the tested release
@@ -204,9 +213,11 @@ package bytes and import locations against the shared wheel. The release branch
 does not need a workflow backport. This job produces qualification evidence;
 it does not stage or publish release packages.
 
-After all shards and required probes pass, CI uploads `fpe-support-matrix-web`
-for 90 days and triggers Pages. The publisher verifies the trusted producing
-workflow, its main-history tooling commit, the artifact's release identity,
+After a release's shards and required probes pass, CI uploads its own
+`fpe-support-matrix-web-release-<version>` artifact for 90 days. Wheels and raw
+reports also have version-specific names, so releases in one run cannot mix
+data. A successful nightly run triggers Pages. The publisher verifies the
+trusted producing workflow, its main-history tooling commit, the artifact's release identity,
 and the tested source's membership in release history. It ranks snapshots by
 tested source history, then artifact ID, while preserving the existing failed
 rerun and expired-artifact protections. An older-source rerun cannot replace a
@@ -219,7 +230,7 @@ The page links to the CI run and shows both tested source and probe tooling.
 
 To reproduce a release result, check out the recorded tooling commit at the
 workspace root and the recorded release source under `release-source/`.
-Download the run's `fpe-release-wheel` artifact into the workspace (preserving
+Download the run's `fpe-release-wheel-<version>` artifact into the workspace (preserving
 its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
 release's locked environment and exact wheel as in the workflow, and activate
 that environment. The matrix's per-cell command runs the verified release

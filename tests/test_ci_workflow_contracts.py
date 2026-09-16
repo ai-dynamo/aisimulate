@@ -1676,24 +1676,51 @@ def test_pages_release_completion_still_executes_main_checkout():
     assert "FPE Release Nightly" in trigger["workflow_run"]["workflows"]
 
 
-def test_release_nightly_pins_source_and_tooling_across_all_jobs():
+def test_release_nightly_discovers_versions_and_bounds_total_concurrency():
     workflow = _workflow("fpe-release-nightly.yml")
     trigger = workflow.get("on", workflow.get(True))
     assert trigger["schedule"] == [{"cron": "23 9 * * *"}]
     assert "workflow_dispatch" in trigger
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["env"]["FPE_BRANCH"] == "release/0.12.0"
-    assert workflow["env"]["FPE_TOOLING_SHA"] == "${{ github.sha }}"
+    assert workflow["concurrency"] == {"group": "fpe-release-nightly", "cancel-in-progress": "false"}
+    discover = workflow["jobs"]["discover"]
+    assert discover["if"] == "github.ref == 'refs/heads/main'"
+    checkout = discover["steps"][0]["with"]
+    assert checkout == {"ref": "${{ github.sha }}", "fetch-depth": "0", "persist-credentials": "false"}
+    assert "run_release_fpe.py list-releases" in _run_commands(discover)
+    releases = workflow["jobs"]["releases"]
+    assert releases["needs"] == "discover"
+    assert releases["if"] == "needs.discover.outputs.releases != '[]'"
+    assert releases["strategy"] == {
+        "fail-fast": "false",
+        "max-parallel": "1",
+        "matrix": {"release": "${{ fromJSON(needs.discover.outputs.releases) }}"},
+    }
+    assert releases["uses"] == "./.github/workflows/fpe-release-qualify.yml"
+    assert releases["with"] == {
+        "release": "${{ matrix.release.version }}",
+        "source_sha": "${{ matrix.release.source_sha }}",
+    }
+
+
+def test_release_qualification_pins_source_and_tooling_across_all_jobs():
+    workflow = _workflow("fpe-release-qualify.yml")
+    assert set(workflow["on"]) == {"workflow_call"}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["env"] == {
+        "FPE_BRANCH": "release/${{ inputs.release }}",
+        "FPE_SOURCE_SHA": "${{ inputs.source_sha }}",
+        "FPE_TOOLING_SHA": "${{ github.sha }}",
+    }
     jobs = workflow["jobs"]
     assert jobs["prepare"]["if"] == "github.ref == 'refs/heads/main'"
     assert jobs["generate"]["needs"] == "prepare"
     assert set(jobs["qualify"]["needs"]) == {"prepare", "generate"}
-    for name, job in jobs.items():
+    for job in jobs.values():
         checkouts = [step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
         assert len(checkouts) == 2
         assert checkouts[0]["ref"] == "${{ github.sha }}"
-        expected = "${{ steps.source.outputs.sha }}" if name == "prepare" else "${{ needs.prepare.outputs.source_sha }}"
-        assert checkouts[1]["ref"] == expected
+        assert checkouts[1]["ref"] == "${{ inputs.source_sha }}"
         assert checkouts[1]["path"] == "release-source"
         assert all(step["persist-credentials"] == "false" for step in checkouts)
     prepare = _run_commands(jobs["prepare"])
@@ -1708,6 +1735,29 @@ def test_release_nightly_pins_source_and_tooling_across_all_jobs():
     assert jobs["generate"]["strategy"]["max-parallel"] == "20"
     assert "run_release_fpe.py package" in _run_commands(jobs["qualify"])
     upload = jobs["qualify"]["steps"][-1]
-    assert upload["with"]["name"] == "fpe-support-matrix-web"
+    assert upload["with"]["name"] == "fpe-support-matrix-web-release-${{ inputs.release }}"
     assert upload["with"]["retention-days"] == "90"
     assert "if" not in upload  # Never publish a partially failed qualification.
+
+
+def test_release_artifact_handoffs_cannot_mix_versions():
+    import fnmatch
+
+    jobs = _workflow("fpe-release-qualify.yml")["jobs"]
+    wheel = jobs["prepare"]["steps"][-1]["with"]["name"]
+    for name in ("generate", "qualify"):
+        download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+        assert download["with"]["name"] == wheel
+    assert wheel == "fpe-release-wheel-${{ inputs.release }}"
+    upload = jobs["generate"]["steps"][-1]["with"]["name"]
+    pattern = next(s["with"]["pattern"] for s in jobs["qualify"]["steps"] if "pattern" in s.get("with", {}))
+    versions = ["0.12.0", "0.13.0", "0.13.0-rc1", "0.13.0--preview"]
+    for selected in versions:
+        selected_pattern = pattern.replace("${{ inputs.release }}", selected)
+        for version in versions:
+            name = (
+                upload.replace("${{ inputs.release }}", version)
+                .replace("${{ matrix.shard.system }}", "h200_sxm")
+                .replace("${{ matrix.shard.backend }}", "vllm")
+            )
+            assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)

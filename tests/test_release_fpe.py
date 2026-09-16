@@ -34,6 +34,52 @@ WHEEL = "c" * 64
 IDENTITY = {"schema_version": 1, "source_branch": "release/0.12.0", "source_sha": SHA, "tooling_sha": TOOLING}
 
 
+def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True, stderr=subprocess.DEVNULL).strip()
+
+    git("init", "-b", "main")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "first")
+    first = git("rev-parse", "HEAD")
+    assert RELEASE.list_releases(tmp_path) == []
+    git("update-ref", "refs/remotes/origin/release/0.12.0", first)
+    git("update-ref", "refs/remotes/origin/feature/skip", first)
+    git("update-ref", "refs/heads/release/local-only", first)
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "second")
+    second = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", second)
+    git("update-ref", "refs/remotes/origin/release/0.14.0-rc1", second)
+    captured = RELEASE.list_releases(tmp_path)
+    assert captured == [
+        {"version": "0.12.0", "source_sha": first},
+        {"version": "0.13.0", "source_sha": second},
+        {"version": "0.14.0-rc1", "source_sha": second},
+    ]
+    git("update-ref", "refs/remotes/origin/release/0.12.0", second)
+    assert captured[0]["source_sha"] == first
+    assert RELEASE.list_releases(tmp_path)[0]["source_sha"] == second
+
+
+@pytest.mark.parametrize("version,sha", [("nested/branch", SHA), ("bad*glob", SHA), ("0.13.0", "not-a-sha")])
+def test_discovery_rejects_unsafe_matrix_values(tmp_path, version, sha):
+    with (
+        patch.object(
+            RELEASE.subprocess, "check_output", return_value=f"refs/remotes/origin/release/{version}\0{sha}\n"
+        ),
+        pytest.raises(ValueError, match="invalid release branch or commit"),
+    ):
+        RELEASE.list_releases(tmp_path)
+
+
+def test_discovery_does_not_silently_truncate_releases(tmp_path):
+    refs = "".join(f"refs/remotes/origin/release/{n}\0{SHA}\n" for n in range(257))
+    with (
+        patch.object(RELEASE.subprocess, "check_output", return_value=refs),
+        pytest.raises(ValueError, match="matrix limit"),
+    ):
+        RELEASE.list_releases(tmp_path)
+
+
 def test_harness_uses_release_inventory_and_current_probe_code(tmp_path):
     source = tmp_path / "release"
     inventory = source / RELEASE.PROBES / "support_matrix.py"
