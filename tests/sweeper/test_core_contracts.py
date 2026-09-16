@@ -264,3 +264,34 @@ def test_public_contract_versions_start_at_one():
 
 def test_lazy_exports_are_listed_in_public_api():
     assert set(sweeper._LAZY_EXPORTS).issubset(sweeper.__all__)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_replay_report_rejects_nonfinite_ordinary_metrics(value):
+    with pytest.raises(ValueError, match="must be finite"):
+        ReplayReport(metrics={"output_throughput_tok_s": value})
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"power_w": 500.0, "power_coverage": 0.42},
+        {"power_w": 500.0, "power_coverage": None},
+        {"power_w": None, "power_coverage": 1.01},
+    ],
+)
+def test_replay_report_rejects_invalid_power_pairs(metrics):
+    with pytest.raises(ValueError, match="power_"):
+        ReplayReport(metrics=metrics)
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"power_w": 500.0, "power_coverage": 0.9},
+        {"power_w": None, "power_coverage": 0.42},
+        {"power_w": None, "power_coverage": None},
+    ],
+)
+def test_replay_report_preserves_valid_power_availability(metrics):
+    assert ReplayReport(metrics=metrics).metrics == metrics

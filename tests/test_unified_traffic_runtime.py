@@ -139,7 +139,7 @@ def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
     active_power_row = next(line for line in table.splitlines() if "Active Power per GPU (W)" in line)
 
     assert "Active Power per GPU (W)" in table
-    assert "N/A" in active_power_row
+    assert "unavailable (insufficient energy coverage)" in active_power_row
     assert "Power Data Coverage (%)" in table
     assert "42.00" in table
 

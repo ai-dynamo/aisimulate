@@ -1340,11 +1340,12 @@ class Sweeper:
                 else:
                     status = CandidateStatus.FAILED
                 snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
-                record_metrics = deepcopy(
+                reported_metrics = (
                     provenance_metrics
                     if provenance_metrics is not None
-                    else (candidate.metrics if candidate is not None else {})
+                    else (candidate.metrics if candidate is not None else None)
                 )
+                record_metrics = deepcopy(reported_metrics) if reported_metrics is not None else {}
                 record = CandidateRecord(
                     candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
                     status=status,
@@ -1367,7 +1368,7 @@ class Sweeper:
                     provenance=make_candidate_provenance(
                         snapshot,
                         replay_spec=replay_spec,
-                        metrics=record_metrics,
+                        metrics=reported_metrics,
                         runner_metadata=runner_metadata,
                     ),
                 )

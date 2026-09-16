@@ -750,4 +750,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     ]
     assert result.candidates[0].reason_category is ReasonCategory.BACKEND_TOPOLOGY
     assert result.candidates[1].reason_category is ReasonCategory.REPLAY_RUNTIME
+    for record in json.loads(result.to_json())["candidates"]:
+        assert record["metrics"] == {}
+        assert record["provenance"]["power"] == {}
     assert result.selected_candidates == []

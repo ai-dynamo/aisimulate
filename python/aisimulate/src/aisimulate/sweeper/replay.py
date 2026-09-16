@@ -15,7 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from ..power import POWER_FIELDS
+from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
@@ -130,6 +130,9 @@ class ReplayReport:
                 continue
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
+            if not math.isfinite(value):
+                raise ValueError(f"runner metric {name} must be finite")
+        normalize_power_summary(self.metrics)
 
 
 @dataclass(frozen=True)
