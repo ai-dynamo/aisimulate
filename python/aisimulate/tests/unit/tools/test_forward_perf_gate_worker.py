@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
 import subprocess
-from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
 from tools.forward_perf_gate import run as gate_run
 from tools.prediction_regression_gate import grid
@@ -75,8 +74,7 @@ def test_additional_profiles_preserve_original_cache_groups() -> None:
 
 def test_workflow_filters_cover_matrix_dependencies() -> None:
     repo_root = Path(__file__).resolve().parents[5]
-    workflow = yaml.load((repo_root / ".github/workflows/performance.yml").read_text(), Loader=yaml.BaseLoader)
-    patterns = workflow["on"]["push"]["paths"]
+    matches_path = runpy.run_path(str(repo_root / "scripts/select_forward_perf.py"))["matches_path"]
     dependencies = set()
     for case in cases.expand_cases():
         root = "python/aisimulate/src/aiconfigurator_core"
@@ -84,13 +82,13 @@ def test_workflow_filters_cover_matrix_dependencies() -> None:
         assert (repo_root / model_config).is_file()
         dependencies.add(model_config)
         dependencies.add(f"{root}/systems/data/{case['system_name']}/gemm/{case['backend_name']}/data.parquet")
-    assert all(any(fnmatchcase(path, pattern) for pattern in patterns) for path in dependencies)
+    assert all(matches_path(path) for path in dependencies)
     for unrelated in (
         "docs/cli/user-guide.md",
         "python/aisimulate/src/aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
         "python/aisimulate/src/aiconfigurator_core/systems/data/a100_sxm/gemm/vllm/data.parquet",
     ):
-        assert not any(fnmatchcase(unrelated, pattern) for pattern in patterns)
+        assert not matches_path(unrelated)
 
 
 def test_case_hash_is_stable_across_key_order() -> None:

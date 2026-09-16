@@ -11,38 +11,10 @@ on:
         required: true
         type: number
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # Start even when copy-pr-bot creates a ref with an empty push commit list.
+    # Select relevant PR files in the hosted job before allocating a benchmark runner.
     branches:
       - "pull-request/*"
-    paths:
-      # Keep this filter aligned with the measured Rust and Python call path.
-      - ".github/workflows/performance.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/core/Cargo.toml"
-      - "crates/core/src/lib.rs"
-      - "crates/core/src/python.rs"
-      - "crates/core/src/engine/**"
-      - "crates/core/src/perfmodel/**"
-      - "python/aisimulate/pyproject.toml"
-      - "python/aisimulate/src/aisimulate/__init__.py"
-      - "python/aisimulate/src/aiconfigurator/sdk/**"
-      - "python/aisimulate/src/aiconfigurator_core/*.py"
-      - "python/aisimulate/src/aiconfigurator_core/sdk/**"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/Qwen--Qwen3-32B_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/Qwen--Qwen3-235B-A22B_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/openai--gpt-oss-120b_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json"
-      - "python/aisimulate/src/aiconfigurator_core/systems/*.yaml"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/data/h100_sxm/**"
-      - "python/aisimulate/tools/forward_perf_gate/**"
-      - "python/aisimulate/tools/prediction_regression_gate/grid.py"
 
 permissions:
   contents: read
@@ -53,7 +25,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select Forward Performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      number: ${{ steps.scope.outputs.number }}
+      head_sha: ${{ steps.scope.outputs.head_sha }}
+      base_ref: ${{ steps.scope.outputs.base_ref }}
+      run_comparison: ${{ steps.scope.outputs.run_comparison }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Select from the complete PR change set
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: python scripts/select_forward_perf.py
+
   compare:
+    needs: select
+    if: needs.select.outputs.run_comparison == 'true'
     name: Forward Prediction Performance (advisory)
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 45
@@ -66,43 +64,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - name: Resolve pull request
-        id: pr
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
-        with:
-          script: |
-            let number;
-            if (context.eventName === 'workflow_dispatch') {
-              number = Number(context.payload.inputs.pr_number);
-            } else {
-              const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
-              if (!match) {
-                core.setFailed(`Cannot resolve a PR number from ${context.ref}`);
-                return;
-              }
-              number = Number(match[1]);
-            }
-            const {data: pull} = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: number,
-            });
-            let headSha = context.sha;
-            if (context.eventName === 'workflow_dispatch') {
-              const {data: canonical} = await github.rest.git.getRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `heads/pull-request/${number}`,
-              });
-              headSha = canonical.object.sha;
-            }
-            core.setOutput('number', String(number));
-            core.setOutput('head_sha', headSha);
-            core.setOutput('base_ref', pull.base.ref);
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.pr.outputs.head_sha }}
+          ref: ${{ needs.select.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -126,8 +90,8 @@ jobs:
       - name: Prepare exact revisions
         id: revisions
         env:
-          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          PR_HEAD_SHA: ${{ needs.select.outputs.head_sha }}
+          BASE_REF: ${{ needs.select.outputs.base_ref }}
         run: |
           set -euo pipefail
           actual_head="$(git rev-parse HEAD)"
@@ -256,7 +220,7 @@ jobs:
         if: always() && steps.revisions.outputs.run_comparison == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: forward-prediction-performance-pr-${{ steps.pr.outputs.number }}
+          name: forward-prediction-performance-pr-${{ needs.select.outputs.number }}
           path: ${{ env.RESULTS_DIR }}
           if-no-files-found: warn
           retention-days: 30

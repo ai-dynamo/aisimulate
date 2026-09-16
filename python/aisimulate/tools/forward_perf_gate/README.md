@@ -5,6 +5,12 @@ This tool measures the CPU time for
 with its merge base on the same worker. The check is advisory: regressions make
 the check red, but repository rules do not require it.
 
+The workflow starts on every trusted `pull-request/*` push. A small
+GitHub-hosted selection job checks the complete PR change set against
+`scripts/select_forward_perf.py` before starting the benchmark runner. This
+also works when the bot creates a branch with an empty push commit list.
+Unrelated PRs produce an explicit skip. Manual dispatch still forces a comparison.
+
 Each revision runs the matrix in one process for the availability pass and one
 new process for each measured round. Within that process, cases are grouped by
 model and database mode. Before each group, the worker releases the prior
