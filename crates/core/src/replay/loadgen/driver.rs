@@ -12,6 +12,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::phase::{AgenticPhaseEvidence, AgenticPreparation, AgenticPreparationTransition};
 use super::trace::validate_synthesizable_prompt;
 use super::types::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
@@ -775,6 +776,7 @@ pub struct WorkloadDriver {
     agentic_graph_identity: Option<AgenticGraphIdentity>,
     agentic_replay_context: Option<Arc<AgenticReplayContext>>,
     agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    agentic_preparation: Option<AgenticPreparation>,
     sessions: Vec<SessionRuntime>,
     in_flight: FxHashMap<Uuid, InFlightTurn>,
     agentic_settling: FxHashMap<Uuid, usize>,
@@ -782,6 +784,135 @@ pub struct WorkloadDriver {
 }
 
 impl WorkloadDriver {
+    /// Warm full snapshot prefixes without advancing the saved request graph.
+    /// Each lane runs its primers then ten one-output-token prefix requests.
+    /// The runtime must call [`Self::finish_agentic_preparation`] at its settled
+    /// timestamp boundary before admitting any profiling work.
+    pub fn new_agentic_warmup(
+        prepared: PreparedAgenticSnapshots,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+    ) -> Result<Self> {
+        let preparation = AgenticPreparation::new(
+            &prepared,
+            u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
+            include_replay_hashes,
+        )?;
+        let mut driver = Self::new_agentic_snapshots(
+            prepared,
+            engine_block_size,
+            include_replay_hashes,
+            speedup,
+        )?;
+        driver.agentic_preparation = Some(preparation);
+        Ok(driver)
+    }
+
+    pub fn is_agentic_preparing(&self) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(|phase| phase.transition().is_none())
+    }
+
+    pub fn knows_preparation_request(&self, uuid: Uuid) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(|phase| phase.contains(uuid))
+    }
+
+    pub fn agentic_phase_evidence(&self) -> Option<AgenticPhaseEvidence> {
+        self.agentic_preparation
+            .as_ref()
+            .map(AgenticPreparation::evidence)
+    }
+
+    pub fn preparation_request_ids(&self) -> Vec<Uuid> {
+        self.agentic_preparation
+            .as_ref()
+            .map(AgenticPreparation::dispatched_ids)
+            .unwrap_or_default()
+    }
+
+    pub fn record_preparation_admission(
+        &mut self,
+        uuid: Uuid,
+        at_ms: f64,
+        reused_input_tokens: usize,
+    ) -> Result<()> {
+        self.agentic_preparation
+            .as_mut()
+            .context("driver has no agentic preparation")?
+            .record_admission(uuid, at_ms, reused_input_tokens)
+    }
+
+    /// Open profiling only after all preparation requests succeed and settle,
+    /// or finish an aborted preparation after its submitted server work drains.
+    /// This does not change the saved graph's frontier or dependency delays.
+    pub fn finish_agentic_preparation(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        let Some(preparation) = &self.agentic_preparation else {
+            return Ok(None);
+        };
+        let Some(transition) = preparation.ready_transition(now_ms)? else {
+            return Ok(None);
+        };
+        if let SchedulingPolicy::Agentic(state) = &self.policy
+            && state
+                .last_runtime_feedback_at_ms
+                .is_some_and(|last| now_ms < last)
+        {
+            bail!("agentic preparation boundary precedes runtime feedback");
+        }
+        if transition == AgenticPreparationTransition::OpenProfile {
+            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+                unreachable!()
+            };
+            // Validate every addition before changing any scheduler state.
+            if state
+                .ready_after_ms
+                .iter()
+                .any(|at| !(at + now_ms).is_finite())
+                || self
+                    .sessions
+                    .iter()
+                    .filter_map(|session| session.next_ready_at_ms)
+                    .any(|at| !(at + now_ms).is_finite())
+                || self
+                    .ready_sessions
+                    .iter()
+                    .any(|ready| !(ready.ready_at_ms + now_ms).is_finite())
+            {
+                bail!("agentic profile activation overflows saved snapshot timing");
+            }
+            for at in &mut state.ready_after_ms {
+                *at += now_ms;
+            }
+            for session in &mut self.sessions {
+                if let Some(at) = &mut session.next_ready_at_ms {
+                    *at += now_ms;
+                }
+            }
+            self.ready_sessions = std::mem::take(&mut self.ready_sessions)
+                .into_iter()
+                .map(|mut ready| {
+                    ready.ready_at_ms += now_ms;
+                    ready
+                })
+                .collect();
+            for play in &mut state.plays {
+                play.root_dispatch_ms = Some(now_ms);
+            }
+        }
+        self.agentic_preparation
+            .as_mut()
+            .unwrap()
+            .finish(transition, now_ms);
+        Ok(Some(transition))
+    }
+
     /// Execute the retained request suffix with a cold runtime. This consumes
     /// prepared logical state; it does not execute primers or restore native KV.
     /// Source history was compiled before this view and is never submitted.
@@ -1239,6 +1370,7 @@ impl WorkloadDriver {
             agentic_graph_identity: Some(agentic_graph_identity),
             agentic_replay_context: None,
             agentic_snapshots: None,
+            agentic_preparation: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1351,6 +1483,7 @@ impl WorkloadDriver {
             agentic_graph_identity: None,
             agentic_replay_context: None,
             agentic_snapshots: None,
+            agentic_preparation: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1409,6 +1542,10 @@ impl WorkloadDriver {
     /// deadlocking: `pop_ready` skips sessions with `in_flight.is_some()`, so a
     /// leaked session would leave `is_drained` stuck at `false` forever.
     pub fn release_cap_slot(&mut self, request_uuid: Uuid, now_ms: f64) {
+        if self.knows_preparation_request(request_uuid) {
+            let _ = self.on_terminal(request_uuid, now_ms, ReplayTerminalStatus::Canceled);
+            return;
+        }
         let Ok(Some(resolution)) = self.resolve_turn(request_uuid, now_ms, TurnOutcome::Cancelled)
         else {
             return;
@@ -1425,6 +1562,13 @@ impl WorkloadDriver {
 
     #[doc(hidden)]
     pub fn pop_ready_compact(&mut self, now_ms: f64, limit: usize) -> Vec<CompactReadyTurn> {
+        if let Some(preparation) = &mut self.agentic_preparation {
+            match preparation.transition() {
+                None => return preparation.pop_ready(now_ms, limit, self.emit_session_metadata),
+                Some(AgenticPreparationTransition::Aborted) => return Vec::new(),
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         let effective_limit = self.policy.dispatch_limit(limit, self.in_flight.len());
         if effective_limit == 0 {
             return Vec::new();
@@ -1578,6 +1722,13 @@ impl WorkloadDriver {
     }
 
     pub fn on_output_token(&mut self, request_uuid: Uuid, token_id: u32) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self
+                .agentic_preparation
+                .as_mut()
+                .unwrap()
+                .on_output(request_uuid);
+        }
         if self.prompt_mode == PromptMode::Full {
             return Ok(());
         }
@@ -1620,6 +1771,17 @@ impl WorkloadDriver {
     }
 
     fn agentic_node_ordinal(&self, request_uuid: Uuid) -> Result<usize> {
+        if let Some(ordinal) = self
+            .agentic_preparation
+            .as_ref()
+            .and_then(|phase| phase.ordinal(request_uuid))
+        {
+            return self
+                .sessions
+                .len()
+                .checked_add(ordinal)
+                .context("agentic feedback ordinal overflow");
+        }
         self.in_flight
             .get(&request_uuid)
             .map(|turn| turn.session_index)
@@ -1654,6 +1816,10 @@ impl WorkloadDriver {
                 "agentic runtime feedback timestamp regressed from {last_at_ms} ms to {} ms",
                 feedback.at_ms
             );
+        }
+
+        if let Some(preparation) = &self.agentic_preparation {
+            preparation.validate_feedback(&feedback)?;
         }
 
         let ordinal_by_uuid = feedback
@@ -1714,6 +1880,9 @@ impl WorkloadDriver {
         debug_assert_eq!(self.prompt_mode, PromptMode::Full);
         let mut becoming_terminal = FxHashSet::default();
         for terminal in &feedback.causal_terminals {
+            if self.knows_preparation_request(terminal.request_uuid) {
+                continue;
+            }
             let outcome = match terminal.status {
                 ReplayTerminalStatus::Completed => TurnOutcome::Completed,
                 ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
@@ -1733,6 +1902,9 @@ impl WorkloadDriver {
             becoming_terminal.insert(terminal.request_uuid);
         }
         for request_uuid in &feedback.quiescent_requests {
+            if self.knows_preparation_request(*request_uuid) {
+                continue;
+            }
             if !self.agentic_settling.contains_key(request_uuid)
                 && !becoming_terminal.contains(request_uuid)
             {
@@ -1786,6 +1958,13 @@ impl WorkloadDriver {
         now_ms: f64,
         status: ReplayTerminalStatus,
     ) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self.agentic_preparation.as_mut().unwrap().on_terminal(
+                request_uuid,
+                now_ms,
+                status,
+            );
+        }
         let outcome = match status {
             ReplayTerminalStatus::Completed => TurnOutcome::Completed,
             ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
@@ -1814,6 +1993,13 @@ impl WorkloadDriver {
 
     /// Mark an already-terminal agentic request free of runtime-owned state.
     pub fn on_quiescent(&mut self, request_uuid: Uuid, now_ms: f64) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self
+                .agentic_preparation
+                .as_mut()
+                .unwrap()
+                .on_quiescent(request_uuid, now_ms);
+        }
         let SchedulingPolicy::Agentic(state) = &mut self.policy else {
             return Ok(());
         };
@@ -1962,6 +2148,13 @@ impl WorkloadDriver {
     }
 
     pub fn next_ready_time_ms(&mut self) -> Option<f64> {
+        if let Some(preparation) = &self.agentic_preparation {
+            match preparation.transition() {
+                None => return preparation.next_ready_time_ms(),
+                Some(AgenticPreparationTransition::Aborted) => return None,
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         if self.policy.at_dispatch_capacity(self.in_flight.len()) {
             return None;
         }
@@ -1980,6 +2173,13 @@ impl WorkloadDriver {
     }
 
     pub fn is_drained(&self) -> bool {
+        if let Some(preparation) = &self.agentic_preparation {
+            match preparation.transition() {
+                None => return false,
+                Some(AgenticPreparationTransition::Aborted) => return true,
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         self.in_flight.is_empty()
             && self.agentic_settling.is_empty()
             && self

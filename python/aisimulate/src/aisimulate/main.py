@@ -280,6 +280,13 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
+    phases = report.metadata.get("agentic_phases")
+    if isinstance(phases, dict) and phases.get("phase") == "aborted":
+        sys.stderr.write(
+            f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
+            f"saved full report to: {report_path}\n"
+        )
+        return 1
     return 0
 
 

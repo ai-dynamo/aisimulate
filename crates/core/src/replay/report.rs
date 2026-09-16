@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
 use crate::replay::loadgen::{
-    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticSnapshotEvidence,
-    AgenticTrajectorySnapshot,
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPhaseEvidence, AgenticPlayOutcome,
+    AgenticReplayPhase, AgenticSnapshotEvidence, AgenticTrajectorySnapshot,
 };
 use crate::replay::{AgenticRuntimeIdentity, PlacementCacheSample};
 
@@ -38,6 +38,8 @@ pub struct ReplayReport {
     pub agentic_graph: Option<AgenticGraphIdentity>,
     /// Source-clock snapshot preparation, separate from actual execution events.
     pub agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    /// Preparation is audited separately from the profile measurements.
+    pub agentic_phases: Option<AgenticPhaseEvidence>,
     /// Canonical driver lifecycle evidence. The compact JSON report publishes
     /// only its digest and event count; conformance tests can inspect all events.
     pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
@@ -495,6 +497,9 @@ impl Serialize for ReplayReport {
         if let Some(snapshots) = &self.agentic_snapshots {
             map.serialize_entry("agentic_snapshots", snapshots)?;
         }
+        if let Some(phases) = &self.agentic_phases {
+            map.serialize_entry("agentic_phases", phases)?;
+        }
         if let Some(lifecycle) = &self.agentic_lifecycle {
             map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
             map.serialize_entry(
@@ -797,6 +802,8 @@ pub struct PerRequestRecord {
     pub metadata: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agentic: Option<AgenticRuntimeIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agentic_phase: Option<AgenticReplayPhase>,
     pub uuid: String,
     pub arrival_time_ms: f64,
     pub dispatched_at_ms: Option<f64>,
@@ -975,6 +982,8 @@ pub struct TraceCollector {
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
     agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    agentic_phases: Option<AgenticPhaseEvidence>,
+    g3_profile_baseline: Option<crate::engine::G3Stats>,
     agentic_lifecycle: Option<AgenticLifecycleTranscript>,
     agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
@@ -1193,6 +1202,16 @@ impl TraceCollector {
 
     pub fn set_agentic_snapshots(&mut self, snapshots: Vec<AgenticSnapshotEvidence>) {
         self.agentic_snapshots = Some(snapshots);
+    }
+
+    /// Preparation evidence uses the absolute runtime clock. Measured request
+    /// timestamps use the profile barrier as their origin.
+    pub fn set_agentic_phases(&mut self, phases: AgenticPhaseEvidence) {
+        self.agentic_phases = Some(phases);
+    }
+
+    pub(crate) fn set_g3_profile_baseline(&mut self, baseline: Option<crate::engine::G3Stats>) {
+        self.g3_profile_baseline = baseline;
     }
 
     pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
@@ -1637,6 +1656,7 @@ impl TraceCollector {
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
         let agentic_snapshots = self.agentic_snapshots;
+        let agentic_phases = self.agentic_phases;
         let agentic_lifecycle = self.agentic_lifecycle;
         let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
@@ -1746,7 +1766,9 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
-            g3_offload: self.g3_offload,
+            g3_offload: self
+                .g3_offload
+                .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -1794,6 +1816,7 @@ impl TraceCollector {
             trajectories,
             agentic_graph,
             agentic_snapshots,
+            agentic_phases,
             agentic_lifecycle,
             agentic_play_outcomes,
             goodput,
@@ -1831,6 +1854,9 @@ impl TraceCollector {
                 turn_index: stats.turn_index,
                 metadata: stats.metadata.clone(),
                 agentic: stats.agentic.clone(),
+                agentic_phase: self.agentic_phases.as_ref().and_then(|phases| {
+                    phases.profile_start_ms.map(|_| AgenticReplayPhase::Profile)
+                }),
                 uuid: uuid.to_string(),
                 arrival_time_ms: stats.arrival_time_ms,
                 dispatched_at_ms: stats.dispatched_at_ms,
@@ -1876,6 +1902,45 @@ impl TraceCollector {
                 pressure_record_ordinals: detail.pressure_record_ordinals.clone(),
                 terminal_status,
             });
+        }
+        if let Some(origin) = self
+            .agentic_phases
+            .as_ref()
+            .and_then(|phases| phases.profile_start_ms)
+        {
+            for record in &mut records {
+                record.arrival_time_ms -= origin;
+                record.terminal_time_ms -= origin;
+                for timestamp in [
+                    &mut record.dispatched_at_ms,
+                    &mut record.first_admit_ms,
+                    &mut record.first_token_ms,
+                    &mut record.last_token_ms,
+                    &mut record.prefill_admit_ms,
+                    &mut record.source_held_ms,
+                    &mut record.destination_reserved_ms,
+                    &mut record.destination_activated_ms,
+                    &mut record.decode_admit_ms,
+                    &mut record.source_released_ms,
+                ] {
+                    if let Some(time) = timestamp {
+                        *time -= origin;
+                    }
+                }
+                for routing in &mut record.routing_history {
+                    for timestamp in [
+                        &mut routing.queue_entered_at_ms,
+                        &mut routing.released_at_ms,
+                    ] {
+                        if let Some(time) = timestamp {
+                            *time -= origin;
+                        }
+                    }
+                }
+                for admission in &mut record.admission_history {
+                    admission.at_ms -= origin;
+                }
+            }
         }
         // Authored IDs make agentic output stable across equivalent import
         // paths even when runtime UUIDs differ. Legacy requests retain their
@@ -1935,6 +2000,32 @@ impl TraceCollector {
             })
             .sum()
     }
+}
+
+// Cumulative G3 counters cover only the measured time window. Residency and
+// pending-block values are gauges of the preserved cache at report completion.
+fn g3_since(
+    mut stats: crate::engine::G3Stats,
+    baseline: Option<&crate::engine::G3Stats>,
+) -> crate::engine::G3Stats {
+    if let Some(base) = baseline {
+        stats.lookup_probes -= base.lookup_probes;
+        stats.lookup_hits -= base.lookup_hits;
+        stats.lookup_pending -= base.lookup_pending;
+        stats.evictions -= base.evictions;
+        stats.cross_worker_read_blocks -= base.cross_worker_read_blocks;
+        for (current, previous) in [
+            (&mut stats.read, &base.read),
+            (&mut stats.write, &base.write),
+        ] {
+            current.submitted_jobs -= previous.submitted_jobs;
+            current.completed_jobs -= previous.completed_jobs;
+            current.cancelled_jobs -= previous.cancelled_jobs;
+            current.completed_bytes -= previous.completed_bytes;
+            current.transfer_ms -= previous.transfer_ms;
+        }
+    }
+    stats
 }
 
 fn mean(values: &[f64]) -> f64 {
@@ -2019,6 +2110,106 @@ fn std_dev(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warmup_report_excludes_preparation_and_rebases_profile_timestamps() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let primer = Uuid::from_u128(1_u128 << 127);
+        collector.on_arrival(primer, 0.0, 128, 1);
+        collector.on_admit(primer, 1.0, 0);
+        collector.on_token(primer, 90.0);
+        collector.on_terminal(primer, 90.0, ReplayTerminalStatus::Completed);
+        assert_eq!(
+            collector
+                .take_report(100.0)
+                .request_counts
+                .completed_requests,
+            1
+        );
+        collector.set_agentic_phases(AgenticPhaseEvidence {
+            schema: super::super::loadgen::AGENTIC_PHASE_SCHEMA_V1,
+            phase: AgenticReplayPhase::Profile,
+            barrier_condition: "all_preparation_quiescent",
+            profile_start_ms: Some(100.0),
+            finished_at_ms: Some(100.0),
+            failure_request_id: None,
+            failure_reason: None,
+            lanes: vec![],
+            requests: vec![],
+        });
+        // A late event for a preparation UUID cannot add a measured request.
+        collector.on_token(primer, 105.0);
+        collector.on_terminal(primer, 106.0, ReplayTerminalStatus::Completed);
+        let profile = Uuid::from_u128(1);
+        collector.on_arrival(profile, 110.0, 128, 2);
+        collector.on_agentic_metadata(profile, "after".into(), "play".into(), 110.0);
+        collector.on_prefill_admit(profile, 115.0, 64);
+        collector.on_source_held(profile, 120.0);
+        collector.on_destination_reserved(profile, 122.0);
+        collector.on_destination_activated(profile, 125.0);
+        collector.on_decode_admit(profile, 126.0, 64);
+        collector.on_source_released(profile, 127.0);
+        collector.on_token(profile, 130.0);
+        collector.on_token(profile, 140.0);
+        collector.on_terminal(profile, 140.0, ReplayTerminalStatus::Completed);
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.duration_ms, 40.0);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.5);
+        let record = &report.per_request[0];
+        assert_eq!(record.agentic_phase, Some(AgenticReplayPhase::Profile));
+        assert_eq!(record.arrival_time_ms, 10.0);
+        assert_eq!(record.dispatched_at_ms, Some(10.0));
+        assert_eq!(record.first_admit_ms, Some(15.0));
+        assert_eq!(record.terminal_time_ms, 40.0);
+        assert_eq!(record.first_token_ms, Some(30.0));
+        assert_eq!(record.last_token_ms, Some(40.0));
+        assert_eq!(record.source_held_ms, Some(20.0));
+        assert_eq!(record.destination_reserved_ms, Some(22.0));
+        assert_eq!(record.destination_activated_ms, Some(25.0));
+        assert_eq!(record.decode_admit_ms, Some(26.0));
+        assert_eq!(record.source_released_ms, Some(27.0));
+        assert_eq!(record.admission_history[0].at_ms, 15.0);
+        assert_eq!(record.ttft_ms, Some(20.0));
+        assert_eq!(record.e2e_latency_ms, Some(30.0));
+        assert_eq!(record.itl_ms, Some(10.0));
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["agentic_phases"]["profile_start_ms"],
+            100.0
+        );
+    }
+
+    #[test]
+    fn g3_profile_baseline_preserves_cache_gauges() {
+        let base = crate::engine::G3Stats {
+            lookup_probes: 10,
+            lookup_hits: 8,
+            resident_blocks: 8,
+            pending_blocks: 1,
+            write: crate::engine::G3IoStats {
+                completed_bytes: 2048,
+                transfer_ms: 4.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut current = base.clone();
+        current.lookup_probes += 3;
+        current.lookup_hits += 2;
+        current.write.completed_bytes += 1024;
+        current.write.transfer_ms += 2.0;
+        current.resident_blocks = 12;
+        current.pending_blocks = 0;
+        let measured = g3_since(current, Some(&base));
+        assert_eq!(measured.lookup_probes, 3);
+        assert_eq!(measured.lookup_hits, 2);
+        assert_eq!(measured.write.completed_bytes, 1024);
+        assert_eq!(measured.write.transfer_ms, 2.0);
+        assert_eq!(measured.resident_blocks, 12);
+        assert_eq!(measured.pending_blocks, 0);
+    }
 
     fn build_distribution_stats_sorted(values: &[f64]) -> TraceDistributionStats {
         if values.is_empty() {

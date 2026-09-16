@@ -65,8 +65,11 @@ Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-b
 integer. Omit this field for turn-zero replay. The existing `--set
 traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
 recommendation. Snapshot evidence is retained in JSON results. This executes the
-remaining request suffix against a cold engine; primer execution and benchmark
-warmup are separate phase-orchestration work.
+remaining request suffix against a cold engine by default. Add `--set
+traffic.load.agentic_warmup=true` to first execute one-token primers and ten
+one-token warmup requests per lane on the same engine. Preparation is excluded
+from profile metrics and the configured profile time limit; `agentic_phases`
+retains its separate evidence. See [warmup inputs and barrier behavior](../agentic-warmup.md).
 
 <a id="commands"></a>
 
@@ -693,6 +696,7 @@ the current SA convention.
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
+| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on aggregated vLLM/SGLang Engine replay. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |

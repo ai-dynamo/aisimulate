@@ -52,7 +52,9 @@ use crate::replay::handoff::{
 };
 #[cfg(test)]
 use crate::replay::loadgen::WorkloadDriver;
-use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
+use crate::replay::loadgen::{
+    AgenticPreparationTransition, ReplayRequestHashes, ReplayRequestPayload,
+};
 use crate::replay::protocol::ForwardPassSnapshot;
 use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
@@ -948,6 +950,7 @@ where
     collect_fpm: bool,
     drive_started: bool,
     drive_finalized: bool,
+    profile_observers_started: bool,
 }
 
 #[cfg(test)]
@@ -1085,6 +1088,7 @@ where
             collect_fpm: false,
             drive_started: false,
             drive_finalized: false,
+            profile_observers_started: false,
         })
     }
 
@@ -1837,7 +1841,9 @@ where
 
     fn finish_logical_request(&mut self, uuid: Uuid, remove_actions: bool) -> Result<()> {
         self.flow.prepare_logical_finish(uuid, remove_actions)?;
-        self.progress.inc_completed();
+        if !self.admission.knows_preparation_request(uuid) {
+            self.progress.inc_completed();
+        }
         #[cfg(test)]
         {
             self.stats
@@ -1995,6 +2001,11 @@ where
 
     /// Process one prefill output signal, including router updates and decode handoff scheduling.
     fn process_prefill_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        if !self.admission.is_agentic_preparing()
+            && self.admission.knows_preparation_request(signal.uuid)
+        {
+            return Ok(());
+        }
         let disposition =
             self.flow
                 .inspect_prefill_signal(&signal, self.now_ms, &mut self.collector)?;
@@ -2021,6 +2032,11 @@ where
 
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        if !self.admission.is_agentic_preparing()
+            && self.admission.knows_preparation_request(signal.uuid)
+        {
+            return Ok(());
+        }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
@@ -2466,6 +2482,7 @@ where
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            changed |= self.finish_agentic_preparation()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
@@ -2677,6 +2694,73 @@ where
         result
     }
 
+    fn start_profile_observers(&mut self) -> Result<()> {
+        if !self.profile_observers_started {
+            self.seed_first_telemetry_tick()?;
+            self.seed_first_scaling_tick()?;
+            self.profile_observers_started = true;
+        }
+        Ok(())
+    }
+
+    fn finish_agentic_preparation(&mut self) -> Result<bool> {
+        if !self.admission.is_agentic_preparing()
+            || !self.prefill_engine.is_drained()
+            || !self.decode_engine.is_drained()
+            || self.cluster_in_flight() > 0
+        {
+            return Ok(false);
+        }
+        let Some(transition) = self
+            .admission
+            .finish_agentic_preparation(self.now_ms, &self.collector)?
+        else {
+            return Ok(false);
+        };
+
+        // Source release and destination quiescence precede this boundary;
+        // retain both live KV pools and clear only the measurement windows.
+        self.collector.take_report(self.now_ms);
+        self.collector.set_agentic_phases(
+            self.admission
+                .agentic_phase_evidence()
+                .expect("a preparation transition retains its audit evidence"),
+        );
+        self.traffic.drain_planner(self.now_ms);
+        self.traffic.drain_telemetry(self.now_ms);
+        self.prefill_engine.take_telemetry_snapshot()?;
+        self.decode_engine.take_telemetry_snapshot()?;
+        self.prefill_fpm_buffer = LatestFpmBuffer::default();
+        self.decode_fpm_buffer = LatestFpmBuffer::default();
+        if self.collect_fpm {
+            for worker_id in self.prefill_engine.active_group_ids() {
+                self.prefill_fpm_buffer.activate_worker(
+                    worker_id,
+                    self.prefill_engine.dp_size(),
+                    self.now_ms,
+                );
+            }
+            for worker_id in self.decode_engine.active_group_ids() {
+                self.decode_fpm_buffer.activate_worker(
+                    worker_id,
+                    self.decode_engine.dp_size(),
+                    self.now_ms,
+                );
+            }
+        }
+        if transition == AgenticPreparationTransition::OpenProfile {
+            if let Some(cap_ms) = &mut self.max_sim_time_ms {
+                *cap_ms += self.now_ms;
+                anyhow::ensure!(
+                    cap_ms.is_finite(),
+                    "profile time limit overflows runtime clock"
+                );
+            }
+            self.start_profile_observers()?;
+        }
+        Ok(true)
+    }
+
     fn seed_first_telemetry_tick(&mut self) -> Result<()> {
         let Some(telemetry) = self.telemetry.as_mut() else {
             return Ok(());
@@ -2710,6 +2794,9 @@ where
     }
 
     fn publish_final_telemetry_sample(&mut self) -> Result<()> {
+        if !self.profile_observers_started {
+            return Ok(());
+        }
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
@@ -3247,8 +3334,9 @@ where
             bail!("max_sim_time_ms must be a finite, non-negative value; got {cap_ms}");
         }
         self.drain_current_timestamp()?;
-        self.seed_first_telemetry_tick()?;
-        self.seed_first_scaling_tick()?;
+        if self.admission.agentic_phase_evidence().is_none() {
+            self.start_profile_observers()?;
+        }
         // Keep the baseline before the first scaling decision, but settle any
         // tick seeded at this instant before exposing a settled step boundary.
         if !self.is_done()
@@ -3295,6 +3383,7 @@ where
                 );
             };
             if let Some(cap_ms) = self.max_sim_time_ms
+                && !self.admission.is_agentic_preparing()
                 && canonical_timestamp_ms > cap_ms
             {
                 return Ok(ReplayStepOutcome::TimeLimitReached {
@@ -3346,6 +3435,9 @@ where
         }
         if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
             self.collector.set_agentic_snapshots(snapshots);
+        }
+        if let Some(phases) = self.admission.agentic_phase_evidence() {
+            self.collector.set_agentic_phases(phases);
         }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);

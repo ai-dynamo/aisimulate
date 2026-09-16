@@ -1290,13 +1290,15 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
-def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(trace_format: str) -> None:
+@pytest.mark.parametrize("warmup", [False, True])
+def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(trace_format: str, warmup: bool) -> None:
     evidence = [{"seed": 2**64 - 1, "lane_id": "lane:0", "t_star_ms": 50.0}]
+    phases = {"schema": "aisimulate.agentic.phases.v1", "phase": "profile"}
 
     class SnapshotRuntime(RecordingRuntime):
         def run_replay_json(self, execution_spec_json):
             report = json.loads(super().run_replay_json(execution_spec_json))
-            return json.dumps(report | {"agentic_snapshots": evidence})
+            return json.dumps(report | {"agentic_snapshots": evidence} | ({"agentic_phases": phases} if warmup else {}))
 
     runtime = SnapshotRuntime()
     report = (
@@ -1311,12 +1313,15 @@ def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(tra
                     "trace_format": trace_format,
                     "agentic_lanes": 1,
                     "agentic_snapshot": {"seed": 2**64 - 1},
+                    "agentic_warmup": warmup,
                 }
             )
         )
     )
     assert runtime.execution_spec["traffic"]["agentic_snapshot"] == {"seed": 2**64 - 1}
     assert report.metadata["agentic_snapshots"] == evidence
+    assert runtime.execution_spec["traffic"]["agentic_warmup"] is warmup
+    assert report.metadata.get("agentic_phases") == (phases if warmup else None)
     assert "native_report" not in report.metadata
 
 
@@ -1339,13 +1344,16 @@ def test_agentic_snapshot_runner_rejects_untyped_invalid_options(snapshot: dict)
     assert runtime.execution_spec is None
 
 
-def test_agentic_snapshot_capability_is_explicit() -> None:
+@pytest.mark.parametrize(
+    "capability,label", [("supports_agentic_snapshots", "snapshots"), ("supports_agentic_warmup", "warmup")]
+)
+def test_agentic_snapshot_capability_is_explicit(capability: str, label: str) -> None:
     from dataclasses import replace
 
     factory = EngineReplayRunnerFactory()
-    assert factory.capabilities().supports_agentic_snapshots
-    capabilities = replace(factory.capabilities(), supports_agentic_snapshots=False)
-    with pytest.raises(ValueError, match="does not support agentic snapshots"):
+    assert getattr(factory.capabilities(), capability)
+    capabilities = replace(factory.capabilities(), **{capability: False})
+    with pytest.raises(ValueError, match=f"does not support agentic {label}"):
         capabilities.require_compatible(
             _spec(
                 workload={
@@ -1355,6 +1363,22 @@ def test_agentic_snapshot_capability_is_explicit() -> None:
                     "trace_format": "weka",
                     "agentic_lanes": 1,
                     "agentic_snapshot": {"seed": 42},
+                    "agentic_warmup": True,
                 }
             )
         )
+
+
+@pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
+def test_agentic_warmup_runner_rejects_untyped_invalid_options(warmup) -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_warmup must be a boolean"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload={"agentic_warmup": warmup}))
+    assert runtime.execution_spec is None
+
+
+def test_agentic_warmup_runner_requires_snapshot() -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_warmup requires agentic_snapshot"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload={"agentic_warmup": True}))
+    assert runtime.execution_spec is None

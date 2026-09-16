@@ -123,6 +123,7 @@ class TrafficPredictionLoad(StrictModel):
     speedup: PositiveFloat | None = None
     agentic_lanes: PositiveInt | None = None
     agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -154,6 +155,7 @@ class TrafficRecommendationLoad(StrictModel):
     speedup: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     agentic_lanes: PositiveInt | None = None
     agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -195,12 +197,14 @@ def _validate_load_fields(load) -> None:
         )
         if getattr(load, name, None) is not None
     }
+    if load.agentic_warmup:
+        used.add("agentic_warmup")
     allowed = {
         "concurrency": {"concurrency"},
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot"},
+        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot", "agentic_warmup"},
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -224,6 +228,8 @@ class _TrafficConfigBase(StrictModel):
     def _validate_source_load_stop(self, load) -> None:
         source = self.source
         stop = self.stop
+        if load.agentic_warmup and load.agentic_snapshot is None:
+            raise ValueError("agentic_warmup requires agentic_snapshot")
         if load.agentic_snapshot is not None and load.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if isinstance(source, TraceSource):

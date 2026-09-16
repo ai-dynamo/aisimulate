@@ -1158,7 +1158,8 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
 
 
 @pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
-def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int) -> None:
+@pytest.mark.parametrize("warmup", [False, True])
+def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int, warmup: bool) -> None:
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
     from aisimulate.recommend import _recommendation_workload
@@ -1166,7 +1167,12 @@ def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: 
 
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
-        "load": {"type": "trace_timestamps", "agentic_lanes": 2, "agentic_snapshot": {"seed": seed}},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 2,
+            "agentic_snapshot": {"seed": seed},
+            "agentic_warmup": warmup,
+        },
     }
     for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
         assert schema.model_validate(traffic).load.agentic_snapshot.seed == seed
@@ -1175,9 +1181,12 @@ def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: 
     )
     workload = prediction_to_replay_spec(prediction).workload
     assert workload["agentic_snapshot"] == {"seed": seed}
+    assert workload.get("agentic_warmup", False) is warmup
     recommended = _recommendation_workload(traffic)
     assert recommended["agentic_snapshot"] == {"seed": seed}
+    assert recommended.get("agentic_warmup", False) is warmup
     assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == {"seed": seed}
+    assert Workload.model_validate(recommended).agentic_warmup is warmup
 
 
 @pytest.mark.parametrize(
@@ -1232,3 +1241,53 @@ def test_agentic_snapshot_is_opt_in() -> None:
     )
     assert config.traffic.load.agentic_snapshot is None
     assert "agentic_snapshot" not in prediction_to_replay_spec(config).workload
+    assert config.traffic.load.agentic_warmup is False
+    assert "agentic_warmup" not in prediction_to_replay_spec(config).workload
+
+
+@pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
+def test_agentic_warmup_requires_a_strict_boolean(warmup) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+        },
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match="agentic_warmup"):
+            schema.model_validate(traffic)
+    with pytest.raises(ValidationError, match="agentic_warmup"):
+        Workload.model_validate({"agentic_warmup": warmup})
+
+
+@pytest.mark.parametrize("missing", ["agentic_snapshot", "agentic_lanes"])
+def test_agentic_warmup_requires_snapshot_and_lanes(missing: str) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+    }
+    del load[missing]
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match=missing):
+            schema.model_validate({"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load})
+    with pytest.raises(ValidationError, match=missing):
+        Workload.model_validate(
+            {
+                "source_type": "trace",
+                "trace_path": "corpus",
+                "trace_format": "weka",
+                "load_type": load.pop("type"),
+                **load,
+            }
+        )

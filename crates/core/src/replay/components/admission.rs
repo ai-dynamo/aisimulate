@@ -11,8 +11,9 @@ use super::ReplayMode;
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
 use crate::replay::loadgen::{
-    AgenticOutputFeedback, AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests,
-    ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
+    AgenticOutputFeedback, AgenticPhaseEvidence, AgenticPreparationTransition,
+    AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests, ReplayRequestHashes,
+    ReplayRequestPayload, WorkloadDriver,
 };
 use crate::replay::protocol::DirectRequest;
 
@@ -520,6 +521,43 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
         driver.apply_agentic_runtime_feedback(pending_agentic_runtime_feedback.take(now_ms))?;
         Ok(true)
+    }
+
+    pub(crate) fn is_agentic_preparing(&self) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic_preparing())
+    }
+
+    pub(crate) fn knows_preparation_request(&self, uuid: Uuid) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.knows_preparation_request(uuid))
+    }
+
+    pub(crate) fn agentic_phase_evidence(&self) -> Option<AgenticPhaseEvidence> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_phase_evidence()
+    }
+
+    /// Preserve actual first-admission reuse before the runtime discards the
+    /// preparation measurement epoch. The runtime separately requires native
+    /// engine quiescence before opening the saved profile suffix.
+    pub(crate) fn finish_agentic_preparation(
+        &mut self,
+        now_ms: f64,
+        collector: &crate::replay::TraceCollector,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(None);
+        };
+        if !driver.is_agentic_preparing() {
+            return Ok(None);
+        }
+        for uuid in driver.preparation_request_ids() {
+            if let Some((at_ms, reused_tokens)) = collector.request_admission(uuid) {
+                driver.record_preparation_admission(uuid, at_ms, reused_tokens)?;
+            }
+        }
+        driver.finish_agentic_preparation(now_ms)
     }
 
     pub(crate) fn is_drained(&self) -> bool {

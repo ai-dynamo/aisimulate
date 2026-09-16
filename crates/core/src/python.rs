@@ -16,8 +16,8 @@ use crate::replay::{
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
-        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        AgenticReplayPhase, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
+        LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
@@ -66,6 +66,8 @@ struct RuntimeTraffic {
     agentic_lanes: Option<usize>,
     #[serde(default)]
     agentic_snapshot: Option<AgenticSnapshotOptions>,
+    #[serde(default)]
+    agentic_warmup: bool,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -795,7 +797,11 @@ fn build_agentic_driver(
             .context("agentic_snapshot requires positive agentic_lanes")?;
         // Sample recorded time before applying speedup to remaining timers.
         let prepared = graph.prepare_snapshots(lanes, *options)?;
-        WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
+        if traffic.agentic_warmup {
+            WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
+        } else {
+            WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
+        }
     } else {
         WorkloadDriver::new_agentic_trace_with_options(
             graph.normalize_starts().speed_up_timing(speedup)?,
@@ -812,6 +818,10 @@ fn build_runtime_input(
     allow_agentic: bool,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        !traffic.agentic_warmup || traffic.agentic_snapshot.is_some(),
+        "agentic_warmup requires agentic_snapshot"
+    );
     if traffic.agentic_snapshot.is_some() {
         ensure!(
             traffic.source_type == "trace"
@@ -1330,6 +1340,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         );
     }
     let serialized_engine = spec.engine.clone();
+    let record_per_request = spec.record_per_request;
     let mut engine_config: ReplayEngineConfig = if spec.engine.is_null() {
         ReplayEngineConfig::default()
     } else {
@@ -1529,7 +1540,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }),
         );
     }
-    if !report.per_request.is_empty() {
+    if !report.per_request.is_empty()
+        || (record_per_request
+            && report
+                .agentic_phases
+                .as_ref()
+                .is_some_and(|phases| phases.phase == AgenticReplayPhase::Aborted))
+    {
         let object = report_json
             .as_object_mut()
             .context("AISimulate replay report did not serialize as an object")?;
@@ -1608,6 +1625,40 @@ mod tests {
         fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
             Some(self.0.clone())
         }
+    }
+
+    #[test]
+    fn warmup_requires_a_boolean_and_seeded_snapshot_at_the_native_boundary() {
+        let base = serde_json::json!({
+            "source_type": "trace", "load_type": "trace_timestamps",
+            "trace_path": "unused", "trace_format": "weka", "agentic_lanes": 1,
+        });
+        assert!(
+            !serde_json::from_value::<RuntimeTraffic>(base.clone())
+                .unwrap()
+                .agentic_warmup
+        );
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!("true"),
+            serde_json::json!({}),
+        ] {
+            let mut traffic = base.clone();
+            traffic["agentic_warmup"] = invalid;
+            assert!(serde_json::from_value::<RuntimeTraffic>(traffic).is_err());
+        }
+        let mut traffic = base;
+        traffic["agentic_warmup"] = serde_json::json!(true);
+        let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
+        assert!(
+            build_runtime_input(traffic, 64, true)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("agentic_warmup requires agentic_snapshot")
+        );
     }
 
     #[test]

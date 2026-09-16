@@ -256,6 +256,7 @@ class Workload(BaseModel):
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -362,6 +363,8 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_warmup and self.agentic_snapshot is None:
+            raise ValueError("agentic_warmup requires agentic_snapshot")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if self.agentic_lanes is not None:

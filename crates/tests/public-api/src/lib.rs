@@ -275,6 +275,17 @@ mod tests {
             first.materialize_prefix("before", 65).unwrap(),
             first.materialize_prefix("after", 128).unwrap()[..65]
         );
+        let warmup = WorkloadDriver::new_agentic_warmup(prepared, 32, true, 2.0).unwrap();
+        let phases = warmup.agentic_phase_evidence().unwrap();
+        assert!(warmup.is_agentic_preparing());
+        assert_eq!(phases.lanes[0].primers_expected, 1);
+        assert_eq!(phases.lanes[0].warmup_expected, 10);
+        assert_eq!(phases.requests[0].source_request_id, "before");
+        assert!(phases
+            .requests
+            .iter()
+            .all(|request| request.max_output_tokens == 1));
+        assert_eq!(phases.profile_start_ms, None);
         let mut driver = WorkloadDriver::new_agentic_snapshots(
             PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
             32,

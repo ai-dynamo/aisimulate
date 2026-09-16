@@ -759,8 +759,10 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
 
 
 @pytest.mark.parametrize("backend,expected_warm_reuse", [("vllm", 64), ("sglang", 127)])
-def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_time(
-    tmp_path, backend: str, expected_warm_reuse: int
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("prefix_caching", [False, True])
+def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
+    tmp_path, backend: str, expected_warm_reuse: int, warmup: bool, prefix_caching: bool
 ) -> None:
     # Self-authored trace: every request shares one conversation and prefix.
     path = tmp_path / "snapshot.json"
@@ -790,10 +792,17 @@ def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_
         "engine": {**_engine(), "backend": backend},
         "traffic": {
             "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
-            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 0}},
+            "load": {
+                "type": "trace_timestamps",
+                "agentic_lanes": 1,
+                "agentic_snapshot": {"seed": 0},
+                "agentic_warmup": warmup,
+            },
         },
     }
     config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_caching"] = prefix_caching
+    expected_warm_reuse = expected_warm_reuse if prefix_caching else 0
     first = _run(config).metadata["native_report"]
     repeated = _run(config).metadata["native_report"]
     for key in (
@@ -820,7 +829,21 @@ def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_
         request["identity"]["request_id"] for request in retained
     }
     earliest, subsequent = sorted(first["per_request"], key=lambda record: record["first_admit_ms"])
-    assert earliest["admission_history"][0]["reused_input_tokens"] == 0
+    assert earliest["admission_history"][0]["reused_input_tokens"] == (expected_warm_reuse if warmup else 0)
+    if warmup:
+        phases = first["agentic_phases"]
+        assert phases == repeated["agentic_phases"]
+        assert phases["phase"] == "profile"
+        assert phases["profile_start_ms"] > 0
+        assert phases["failure_request_id"] is None
+        [lane] = phases["lanes"]
+        assert lane["primers_completed"] == lane["primers_expected"] == 1
+        assert lane["warmup_completed"] == lane["warmup_expected"] == 10
+        assert len(phases["requests"]) == lane["requests_quiescent"] == 11
+        assert all(request["observed_output_tokens"] == 1 for request in phases["requests"])
+        assert all(record["agentic_phase"] == "profile" for record in first["per_request"])
+    else:
+        assert "agentic_phases" not in first
     # Both schedulers recompute the final prompt token. With the default block
     # sizes (vLLM 64, SGLang 1), the shared 128-token prompt reuses 64 or 127.
     assert subsequent["admission_history"][0]["reused_input_tokens"] == expected_warm_reuse
