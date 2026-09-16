@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Nightly CI
+name: Main Nightly CI
 
 # Nightly build of the approved AISimulate release artifacts — the
 # `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
@@ -355,7 +355,7 @@ jobs:
   # Staging waits for every shard: at most eight run concurrently and each has
   # a 480-minute limit. Queueing and multiple waves can extend total latency.
   fpe-support-matrix:
-    name: Refresh FPE support matrix
+    name: FPE Support Matrix (main)
     needs: [changes-guard, build-artifacts]
     if: needs.changes-guard.outputs.should-build == 'true'
     permissions:

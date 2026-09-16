@@ -1467,7 +1467,7 @@ function ErrorBanner({ message, onRetry }) {
 
 function UnavailableNotice({ branch, onRetry }) {
   const runsUrl = branch.startsWith('release/')
-    ? `https://github.com/${REPO}/actions/workflows/fpe-release-nightly.yml`
+    ? `https://github.com/${REPO}/actions/workflows/release-nightly-ci.yml`
     : `https://github.com/${REPO}/actions/workflows/fpe-support-matrix.yml?query=${encodeURIComponent(`branch:${branch}`)}`;
   return (
     <section role="status" className="max-w-2xl mx-auto my-16 p-8 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">

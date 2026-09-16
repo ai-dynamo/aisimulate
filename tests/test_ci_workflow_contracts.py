@@ -1673,16 +1673,19 @@ def test_pages_release_completion_still_executes_main_checkout():
     assert checkout["with"]["ref"] == "${{ github.event_name == 'pull_request' && github.ref || 'main' }}"
     assert checkout["with"]["fetch-depth"] == 0
     assert checkout["with"]["persist-credentials"] is False
-    assert "FPE Release Nightly" in trigger["workflow_run"]["workflows"]
+    watched_workflows = trigger["workflow_run"]["workflows"]
+    for producer in ("fpe-support-matrix.yml", "nightly-ci.yml", "release-nightly-ci.yml"):
+        assert _workflow(producer)["name"] in watched_workflows
+    assert "Nightly CI" in watched_workflows  # Runs started before the main workflow rename.
 
 
 def test_release_nightly_discovers_versions_and_bounds_total_concurrency():
-    workflow = _workflow("fpe-release-nightly.yml")
+    workflow = _workflow("release-nightly-ci.yml")
     trigger = workflow.get("on", workflow.get(True))
     assert trigger["schedule"] == [{"cron": "23 9 * * *"}]
     assert "workflow_dispatch" in trigger
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["concurrency"] == {"group": "fpe-release-nightly", "cancel-in-progress": "false"}
+    assert workflow["concurrency"] == {"group": "release-nightly-ci", "cancel-in-progress": "false"}
     discover = workflow["jobs"]["discover"]
     assert discover["if"] == "github.ref == 'refs/heads/main'"
     checkout = discover["steps"][0]["with"]

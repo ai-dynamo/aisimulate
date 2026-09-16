@@ -20,7 +20,7 @@ from urllib.parse import quote
 ARTIFACT_NAME = "fpe-support-matrix-web"
 DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
-RELEASE_WORKFLOW = ".github/workflows/fpe-release-nightly.yml"
+RELEASE_WORKFLOW = ".github/workflows/release-nightly-ci.yml"
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"
 # Producer contract: tools/support_matrix/qualify_fpe_support_matrix.py::STATUSES.
 PROBE_STATUSES = {

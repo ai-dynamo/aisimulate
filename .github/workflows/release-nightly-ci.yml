@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: FPE Release Nightly
+name: Release Nightly CI
 
 on:
   schedule:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fpe-release-nightly
+  group: release-nightly-ci
   cancel-in-progress: false
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
         run: python3 scripts/run_release_fpe.py list-releases
 
   releases:
-    name: FPE release/${{ matrix.release.version }}
+    name: FPE Support Matrix (release/${{ matrix.release.version }})
     needs: discover
     if: needs.discover.outputs.releases != '[]'
     strategy:

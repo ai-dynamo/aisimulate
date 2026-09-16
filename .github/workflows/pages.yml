@@ -3,7 +3,8 @@ name: GitHub Pages
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["FPE Support Matrix", "Nightly CI", "FPE Release Nightly"]
+    # Retain the old main workflow name for runs started before the rename.
+    workflows: ["FPE Support Matrix", "Main Nightly CI", "Release Nightly CI", "Nightly CI"]
     types: [completed]
     branches: [main, 'release/**']
   pull_request:
@@ -12,7 +13,7 @@ on:
       - "scripts/build_pages_site.py"
       - "scripts/prepare_fpe_pages.py"
       - "scripts/run_release_fpe.py"
-      - ".github/workflows/fpe-release-nightly.yml"
+      - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
       - "tests/test_pages_site.py"
       - "python/aisimulate/docs/index.html"
@@ -28,7 +29,7 @@ on:
       - "scripts/build_pages_site.py"
       - "scripts/prepare_fpe_pages.py"
       - "scripts/run_release_fpe.py"
-      - ".github/workflows/fpe-release-nightly.yml"
+      - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"

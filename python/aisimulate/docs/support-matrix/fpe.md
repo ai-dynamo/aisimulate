@@ -106,7 +106,7 @@ a time. Native database loading and hot-path queries release the Python GIL,
 but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
-Nightly CI calls the reusable FPE workflow after confirming that `main` has
+Main Nightly CI calls the reusable FPE workflow after confirming that `main` has
 changed and building its release artifacts. All FPE shards install the exact
 amd64 nightly wheel, verified against the artifact checksums, source commit,
 and one recorded wheel hash. A manual run requires the full `expected_sha` and
@@ -138,9 +138,10 @@ count, plus the source SHA from the measured run.
 
 ## Website publication
 
-GitHub Pages rebuilds after a successful FPE, Nightly, or FPE Release Nightly run
-and on public-documentation changes. For main, every deployment selects the retained qualified
-FPE artifact with the newest tested source commit in the current main history.
+GitHub Pages rebuilds after a successful FPE Support Matrix, Main Nightly CI,
+or Release Nightly CI run and on public-documentation changes. For main, every
+deployment selects the retained qualified FPE artifact with the newest tested
+source commit in the current main history.
 Re-running an older commit cannot displace a newer qualified snapshot. The page
 shows the snapshot's source SHA, artifact creation time, and producing CI run.
 
@@ -177,9 +178,10 @@ SHA, timestamp, and evidence link. Release results never fall back to main's dat
 
 Pages discovers release branches from the fetched `origin` refs. For each
 branch, it selects the newest retained qualified artifact with a source SHA in
-that branch's history. Eligible producers are successful FPE or Nightly runs on
-the selected branch, or the main-hosted release workflow described below with
-explicit release and tooling provenance. An old-commit rerun cannot displace a newer tested commit.
+that branch's history. Eligible producers are successful runs of
+`fpe-support-matrix.yml` or `nightly-ci.yml` on the selected branch, or the
+main-hosted release workflow described below with explicit release and tooling
+provenance. An old-commit rerun cannot displace a newer tested commit.
 A release without retained qualification is labeled **unavailable**; an
 expired release artifact also removes its data from the next deployment.
 The page shows a **Results not available yet** notice with a **Check again**
@@ -188,7 +190,7 @@ successful qualified nightly run and Pages deployment.
 Malformed qualification fails the deployment. Main still requires a retained
 qualified snapshot before the site can deploy.
 
-**FPE Release Nightly** runs daily at 09:23 UTC from trusted `main`, and can
+**Release Nightly CI** runs daily at 09:23 UTC from trusted `main`, and can
 also be dispatched on `main`. It discovers every fetched `release/<version>`
 branch and pins all release tips before building. New branches such as
 `release/0.13.0` join the next run automatically, without a workflow edit or
