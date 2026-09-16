@@ -11,8 +11,9 @@ use crate::engine::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
 };
 use crate::replay::{
-    ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
-    ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
+    POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
+    ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
         WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
@@ -1026,6 +1027,95 @@ fn run_with_input(
     }
 }
 
+struct TimingPowerSource {
+    timing: Arc<dyn TimingModel>,
+    prefill_speedup_ratio: f64,
+    decode_speedup_ratio: f64,
+}
+
+impl TimingPowerSource {
+    fn new(timing: Arc<dyn TimingModel>, config: &EngineConfig) -> Self {
+        Self {
+            timing,
+            prefill_speedup_ratio: config.speedup_ratio,
+            decode_speedup_ratio: config.speedup_ratio * config.decode_speedup_ratio,
+        }
+    }
+}
+
+fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePowerStats>> {
+    let mut combined = TimingPhaseEvidence::default();
+    for source in sources {
+        let Some(summary) = source.timing.evidence_summary() else {
+            return Ok(None);
+        };
+        combined.try_accumulate(scale_power_phase(
+            summary.prefill,
+            source.prefill_speedup_ratio,
+        )?)?;
+        combined.try_accumulate(scale_power_phase(
+            summary.decode,
+            source.decode_speedup_ratio,
+        )?)?;
+    }
+    if combined.latency_ms <= 0.0 {
+        return Ok(Some(TracePowerStats::new(None, 0.0)?));
+    }
+    // Keep uncovered latency separate: subtracting two rounded totals loses
+    // the exact 0.27 covered + 0.03 uncovered boundary. C >= 9U expresses the
+    // same 90% gate without a tolerance that would admit the next lower case.
+    let uncovered: f64 = if combined.operations.is_empty() {
+        combined.latency_ms - combined.covered_latency_ms
+    } else {
+        combined
+            .operations
+            .iter()
+            .map(|op| op.latency_ms - op.covered_latency_ms)
+            .sum()
+    };
+    let qualifies =
+        combined.covered_latency_ms > 0.0 && combined.covered_latency_ms / 9.0 >= uncovered;
+    let ratio = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
+    let coverage = if qualifies {
+        ratio.max(POWER_DATA_COVERAGE_THRESHOLD)
+    } else {
+        ratio.min(POWER_DATA_COVERAGE_THRESHOLD.next_down())
+    };
+    let power_w = qualifies
+        .then(|| {
+            combined
+                .energy_wms
+                .map(|energy| energy / combined.latency_ms)
+        })
+        .flatten()
+        .filter(|power| power.is_finite() && *power > 0.0);
+    Ok(Some(TracePowerStats::new(power_w, coverage)?))
+}
+
+fn scale_power_phase(
+    mut phase: TimingPhaseEvidence,
+    speedup_ratio: f64,
+) -> Result<TimingPhaseEvidence> {
+    ensure!(
+        speedup_ratio.is_finite() && speedup_ratio >= 0.0,
+        "modeled speedup ratio must be finite and non-negative, got {speedup_ratio}"
+    );
+    let scale = if speedup_ratio > 0.0 {
+        speedup_ratio.recip()
+    } else {
+        1.0
+    };
+    phase.energy_wms = phase.energy_wms.map(|energy| energy * scale);
+    phase.latency_ms *= scale;
+    phase.covered_latency_ms *= scale;
+    for operation in &mut phase.operations {
+        operation.energy_wms = operation.energy_wms.map(|energy| energy * scale);
+        operation.latency_ms *= scale;
+        operation.covered_latency_ms *= scale;
+    }
+    Ok(phase)
+}
+
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
@@ -1058,14 +1148,22 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         serde_json::from_value(spec.engine.clone())
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
+    let expected_power_sources = match &spec.topology {
+        ReplayTopology::Aggregated { .. } => 1,
+        ReplayTopology::Disaggregated { .. } => 2,
+    };
+    let mut power_sources = Vec::with_capacity(expected_power_sources);
 
-    let (report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
+    let (mut report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let capacity_is_explicit = role
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
             let timing = resolve_role_timing(&mut role, capacity_is_explicit)?;
+            if let Some(timing) = timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
+            }
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
             engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
@@ -1121,6 +1219,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
             let prefill_timing = resolve_role_timing(&mut prefill, prefill_capacity_is_explicit)?;
             let decode_timing = resolve_role_timing(&mut decode, decode_capacity_is_explicit)?;
+            if let Some(timing) = prefill_timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
+            }
+            if let Some(timing) = decode_timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank));
+            }
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -1169,6 +1273,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         }
     }
     .context("AISimulate replay failed")?;
+    if power_sources.len() == expected_power_sources {
+        report = report.with_power(replay_power_stats(&power_sources)?);
+    }
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
     if report.agentic_graph.is_some()
@@ -1269,6 +1376,33 @@ mod tests {
     };
 
     use super::*;
+
+    struct PowerTiming(TimingEvidenceSummary);
+
+    impl TimingModel for PowerTiming {
+        fn predict_prefill_ms(
+            &self,
+            _batch_size: usize,
+            _mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> Result<f64> {
+            Ok(0.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            _batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> Result<f64> {
+            Ok(0.0)
+        }
+
+        fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+            Some(self.0.clone())
+        }
+    }
 
     #[test]
     fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
@@ -1389,6 +1523,38 @@ mod tests {
 
         fn predict_decode_latency_total(&self, _batch_size: u32, total_past_kv_tokens: u32) -> u64 {
             u64::from(total_past_kv_tokens)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn run_static_per_op(
+            &self,
+            batch_size: u32,
+            beam_width: u32,
+            isl: u32,
+            osl: u32,
+            prefix: u32,
+            seq_imbalance_correction_scale: f64,
+            gen_seq_imbalance_correction_scale: f64,
+            mode: &str,
+            stride: u32,
+        ) -> (
+            Vec<(String, f64, f64, String)>,
+            Vec<(String, f64, f64, String)>,
+        ) {
+            let _ = (
+                beam_width,
+                osl,
+                prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                mode,
+                stride,
+            );
+            let latency_ms = f64::from(batch_size) * f64::from(isl + 1);
+            (
+                Vec::new(),
+                vec![("decode".into(), latency_ms, 0.0, "test".into())],
+            )
         }
     }
 
@@ -1558,6 +1724,203 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn per_op_power_summary_matches_aic_coverage_semantics() {
+        let summary = phase_evidence_from_python(vec![
+            ("covered".into(), 100.0, 50_000.0, "silicon".into()),
+            ("missing".into(), 25.0, 0.0, "empirical".into()),
+            ("no-op".into(), 0.0, 0.0, "silicon".into()),
+        ])
+        .unwrap();
+        assert_eq!(summary.energy_wms, Some(50_000.0));
+        assert_eq!(summary.latency_ms, 125.0);
+        assert_eq!(summary.covered_latency_ms, 100.0);
+    }
+
+    #[test]
+    fn replay_power_applies_phase_speedups_before_weighting() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(100_000.0),
+                    latency_ms: 200.0,
+                    covered_latency_ms: 190.0,
+                    ..Default::default()
+                },
+                decode: TimingPhaseEvidence {
+                    energy_wms: Some(150_000.0),
+                    latency_ms: 300.0,
+                    covered_latency_ms: 300.0,
+                    ..Default::default()
+                },
+            })),
+            prefill_speedup_ratio: 2.0,
+            decode_speedup_ratio: 4.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.power_w, Some(500.0));
+        assert!((power.coverage - 170.0 / 175.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn replay_power_returns_errors_for_non_finite_derived_evidence() {
+        // Each input is finite and positive. Scaling or combining it can still
+        // overflow; the provider boundary must return Err instead of panicking.
+        for (energy, latency, speedup) in [
+            (1.0, 1.0, f64::from_bits(1)),
+            (f64::MAX, 1.0, 0.5),
+            (1.0, f64::MAX, 0.5),
+            (f64::MAX, 1.0, 1.0),
+        ] {
+            let phase = TimingPhaseEvidence {
+                energy_wms: Some(energy),
+                latency_ms: latency,
+                covered_latency_ms: latency,
+                ..Default::default()
+            };
+            for failing_prefill in [true, false] {
+                let summary = if failing_prefill {
+                    TimingEvidenceSummary {
+                        prefill: phase.clone(),
+                        decode: phase.clone(),
+                    }
+                } else {
+                    TimingEvidenceSummary {
+                        prefill: TimingPhaseEvidence::default(),
+                        decode: phase.clone(),
+                    }
+                };
+                let source = TimingPowerSource {
+                    timing: Arc::new(PowerTiming(summary)),
+                    prefill_speedup_ratio: speedup,
+                    decode_speedup_ratio: speedup,
+                };
+                // The final case overflows only when two phases are summed.
+                if energy == f64::MAX && speedup == 1.0 && !failing_prefill {
+                    continue;
+                }
+                assert!(replay_power_stats(&[source]).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn replay_power_is_withheld_below_aic_coverage_gate() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(40_000.0),
+                    latency_ms: 100.0,
+                    covered_latency_ms: 80.0,
+                    ..Default::default()
+                },
+                decode: TimingPhaseEvidence::default(),
+            })),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.power_w, None);
+        assert_eq!(power.coverage, 0.8);
+    }
+
+    #[test]
+    fn replay_power_matches_shared_contract_fixtures() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/power-contract-v1.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut sources = Vec::new();
+            for role in case["roles"].as_array().unwrap() {
+                let timing: Arc<dyn TimingModel> = if role["energy_aware"].as_bool().unwrap() {
+                    let ops = role["operations"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, op)| {
+                            TimingOperationEvidence::new(
+                                index.to_string(),
+                                op["latency_ms"].as_f64().unwrap(),
+                                op["energy_wms"].as_f64(),
+                                TimingEvidenceSource::Silicon,
+                            )
+                            .unwrap()
+                        })
+                        .collect();
+                    Arc::new(PowerTiming(TimingEvidenceSummary {
+                        prefill: TimingPhaseEvidence::from_operations(ops),
+                        decode: TimingPhaseEvidence::default(),
+                    }))
+                } else {
+                    struct LatencyOnly;
+                    impl TimingModel for LatencyOnly {
+                        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+                            Ok(1.0)
+                        }
+                        fn predict_decode_ms(
+                            &self,
+                            _: usize,
+                            _: usize,
+                            _: usize,
+                            _: usize,
+                        ) -> Result<f64> {
+                            Ok(1.0)
+                        }
+                    }
+                    Arc::new(LatencyOnly)
+                };
+                let speedup = 1.0 / role["scale"].as_f64().unwrap_or(1.0);
+                sources.push(TimingPowerSource {
+                    timing,
+                    prefill_speedup_ratio: speedup,
+                    decode_speedup_ratio: speedup,
+                });
+            }
+            let stats = replay_power_stats(&sources).unwrap();
+            let actual = [
+                stats.and_then(|power| power.power_w),
+                stats.map(|power| power.coverage),
+            ];
+            for (index, name) in ["power_w", "power_coverage"].iter().enumerate() {
+                let expected = case["expected"][name].as_f64();
+                match (actual[index], expected) {
+                    (Some(actual), Some(expected)) => assert!(
+                        (actual - expected).abs() < 1e-10,
+                        "{} {name}: {actual} != {expected}",
+                        case["name"]
+                    ),
+                    (None, None) => (),
+                    _ => panic!(
+                        "{} {name}: {:?} != {expected:?}",
+                        case["name"], actual[index]
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replay_power_is_published_at_the_exact_coverage_gate() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(45_000.0),
+                    latency_ms: 100.0,
+                    covered_latency_ms: 90.0,
+                    ..Default::default()
+                },
+                decode: TimingPhaseEvidence::default(),
+            })),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.coverage, POWER_DATA_COVERAGE_THRESHOLD);
+        assert_eq!(power.power_w, Some(450.0));
     }
 
     #[test]

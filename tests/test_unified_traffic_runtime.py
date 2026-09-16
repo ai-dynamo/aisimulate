@@ -75,6 +75,82 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
 
 
+def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 128,
+                    "output_tokens": 4,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "Qwen/Qwen3-30B-A3B",
+                "hardware": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "current",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "replicas": 1,
+                            "tensor": 4,
+                            "pipeline": 1,
+                            "attention_data": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 4,
+                        },
+                        "scheduler": {
+                            "max_batched_tokens": 8192,
+                            "max_sequences": 256,
+                        },
+                        "kv_cache": {
+                            "block_size": 64,
+                            "prefix_caching": True,
+                            "capacity": {"type": "fixed", "blocks": 4096},
+                        },
+                        "timing": {"type": "default"},
+                    }
+                },
+            },
+        }
+    )
+
+    assert report.metrics["power_coverage"] == 0.0
+    assert "power_w" not in report.metrics
+
+
+def test_b200_power_survives_native_json_and_runner_normalization() -> None:
+    # Pin the measured-data identity and workload from migration section 4.11.
+    report = _run(
+        {
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1024, "output_tokens": 128},
+                "load": {"type": "concurrency", "concurrency": 64},
+                "stop": {"requests": 100},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "meta-llama/Meta-Llama-3.1-8B",
+                "hardware": "b200_sxm",
+                "backend": "trtllm",
+                "backend_version": "1.3.0rc20",
+                "workers": {"aggregated": {"parallelism": {"tensor": 2, "replicas": 1}}},
+            },
+        }
+    )
+
+    assert report.metrics["completed_requests"] == 100
+    native_summary = report.metadata["native_report"]
+    for name, expected in {"power_w": 655.9411158961074, "power_coverage": 0.9070317503277924}.items():
+        assert native_summary[name] == pytest.approx(expected)
+        assert report.metrics[name] == native_summary[name]
+
+
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     report = _run(
         {
@@ -576,7 +652,7 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     sections = stdout["details"]["sections"]
     assert set(sections) == {"summary", "memory", "time"}
     assert "power_diagnostics" not in saved
-    assert "power_w" not in stdout["summary"]
+    assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
     assert memory["status"] == "available"
     assert memory["stage"] == "before_native_capacity_adjustments"
