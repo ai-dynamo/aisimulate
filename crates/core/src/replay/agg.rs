@@ -32,7 +32,7 @@ use super::{
 };
 use crate::engine::{Command, CommandResult};
 use crate::replay::engine::ReplayRoleFactory;
-use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
+use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
 use crate::replay::{ReplayCaptureOptions, ReplayRequestPool};
 use crate::replay::{ReplayTerminalStatus, TraceCollector};

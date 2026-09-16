@@ -436,7 +436,7 @@ impl ReplayRequestHashes {
                 xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
             })
             .collect::<Vec<_>>();
-        let mut sequence_hashes = Vec::with_capacity(local_block_hashes.len());
+        let mut sequence_hashes: Vec<u64> = Vec::with_capacity(local_block_hashes.len());
         for &block_hash in &local_block_hashes {
             let sequence_hash =
                 sequence_hashes
@@ -508,15 +508,16 @@ impl ReplayRequestHashes {
 
         let mut sequence_hashes = Vec::with_capacity(local_block_hashes.len());
         for &block_hash in &local_block_hashes {
-            let sequence_hash = sequence_hashes
-                .last()
-                .copied()
-                .map_or(block_hash, |parent| {
-                    let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
-                    bytes[..8].copy_from_slice(&parent.to_le_bytes());
-                    bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
-                    xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
-                });
+            let sequence_hash =
+                sequence_hashes
+                    .last()
+                    .copied()
+                    .map_or(block_hash, |parent: u64| {
+                        let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
+                        bytes[..8].copy_from_slice(&parent.to_le_bytes());
+                        bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
+                        xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
+                    });
             sequence_hashes.push(sequence_hash);
         }
 
