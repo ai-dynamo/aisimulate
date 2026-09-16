@@ -15,8 +15,8 @@ use rand::rngs::StdRng;
 pub use driver::WorkloadDriver;
 pub use dynamo::DynamoRequestTrace;
 pub use steppable::{
-    DynPlacement, EngineEvent, StepOutcome, SteppableAgg, SteppableDisagg, SteppableEngine,
-    SteppableReplay,
+    CompactDirectRequest, DynPlacement, EngineEvent, StepOutcome, SteppableAgg, SteppableDisagg,
+    SteppableEngine, SteppableReplay,
 };
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]

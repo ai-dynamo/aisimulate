@@ -32,7 +32,7 @@ use super::{
 };
 use crate::engine::{Command, CommandResult};
 use crate::replay::engine::ReplayRoleFactory;
-use crate::replay::loadgen::ReplayRequestPayload;
+use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
 use crate::replay::{ReplayCaptureOptions, ReplayRequestPool};
 use crate::replay::{ReplayTerminalStatus, TraceCollector};
@@ -1793,6 +1793,30 @@ where
             ReplayRequestPayload::materialized(request),
             arrival_time_ms,
             Metadata::from_hashes(None),
+            None,
+        )?;
+        if self.defer_drive {
+            self.drive_pending = true;
+        }
+        Ok(uuid)
+    }
+
+    /// Admit a trace-compiled request without retaining a materialized prompt.
+    /// The placement policy still receives its canonical engine-block hashes at
+    /// arrival, matching the legacy workload-driver route.
+    pub(crate) fn submit_dynamic_compact(
+        &mut self,
+        request: ReplayRequestPayload,
+        engine_block_size: usize,
+    ) -> anyhow::Result<Uuid> {
+        anyhow::ensure!(engine_block_size > 0, "engine block size must be positive");
+        let arrival_time_ms = self.now_ms;
+        let tokens = request.prompt_tokens();
+        let replay_hashes = ReplayRequestHashes::from_tokens(&tokens, engine_block_size as u32);
+        let uuid = self.assign_request(
+            request,
+            arrival_time_ms,
+            Metadata::from_hashes(Some(replay_hashes)),
             None,
         )?;
         if self.defer_drive {

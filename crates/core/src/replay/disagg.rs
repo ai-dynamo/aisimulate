@@ -3785,6 +3785,25 @@ where
         Ok(uuid)
     }
 
+    /// Admit a trace-compiled request without retaining a materialized prompt.
+    /// Dynamic placement receives the same engine-block identities as the
+    /// legacy workload driver before the worker later materializes the prompt.
+    pub(crate) fn submit_dynamic_compact(
+        &mut self,
+        request: ReplayRequestPayload,
+        engine_block_size: usize,
+    ) -> Result<Uuid> {
+        anyhow::ensure!(engine_block_size > 0, "engine block size must be positive");
+        let arrival_time_ms = self.now_ms;
+        let tokens = request.prompt_tokens();
+        let replay_hashes = ReplayRequestHashes::from_tokens(&tokens, engine_block_size as u32);
+        let uuid = self.on_external_arrival(request, arrival_time_ms, Some(replay_hashes), None)?;
+        if self.defer_drive {
+            self.drive_pending = true;
+        }
+        Ok(uuid)
+    }
+
     /// Cancel a dynamically admitted request and return its terminal status
     /// when it was still owned by this replay.
     pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {

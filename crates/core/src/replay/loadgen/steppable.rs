@@ -109,6 +109,48 @@ pub struct StepOutcome {
     pub events: Vec<EngineEvent>,
 }
 
+/// A full-prompt request in the compact representation emitted by the legacy
+/// trace compiler. `hash_ids` contains one canonical identity per trace block;
+/// token IDs are synthesized only when a worker admits the request.
+#[derive(Debug, Clone)]
+pub struct CompactDirectRequest {
+    /// Request metadata. Its `tokens` field must be empty.
+    pub request: DirectRequest,
+    /// Logical prompt length in tokens.
+    pub input_token_count: usize,
+    /// Tokens represented by each element of `hash_ids`.
+    pub trace_block_size: usize,
+    /// Canonical trace-block identities.
+    pub hash_ids: Vec<u32>,
+}
+
+impl CompactDirectRequest {
+    fn into_payload(self) -> anyhow::Result<ReplayRequestPayload> {
+        anyhow::ensure!(
+            self.request.tokens.is_empty(),
+            "compact request must not include raw tokens"
+        );
+        anyhow::ensure!(
+            self.trace_block_size > 0,
+            "compact request trace_block_size must be positive"
+        );
+        let expected_blocks = self.input_token_count.div_ceil(self.trace_block_size);
+        anyhow::ensure!(
+            self.hash_ids.len() == expected_blocks,
+            "compact request has {} hash ids for {} tokens at trace block size {}; expected {expected_blocks}",
+            self.hash_ids.len(),
+            self.input_token_count,
+            self.trace_block_size,
+        );
+        Ok(ReplayRequestPayload::deferred(
+            self.request,
+            self.input_token_count,
+            self.hash_ids,
+            self.trace_block_size,
+        ))
+    }
+}
+
 /// An offline replay runtime as a steppable, clock-injected, dynamically fed
 /// engine. Every topology implements it, so one caller loop drives any of them.
 pub trait SteppableReplay {
@@ -131,6 +173,11 @@ pub trait SteppableReplay {
     /// among live requests and measurements retained in the current report
     /// epoch. A successful [`Self::take_report`] permits reuse in the next epoch.
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid>;
+
+    /// Admit a compact full-prompt trace at the current simulated time.
+    fn submit_compact(&mut self, _request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        anyhow::bail!("this steppable replay does not support compact trace submission")
+    }
 
     /// Cancel one live request. Returns its terminal event when cancellation
     /// won the race; already-terminal or unknown requests return `None`.
@@ -246,6 +293,7 @@ pub struct SteppableAgg<
 {
     runtime: AggRuntimeImpl<P, O, M>,
     live: LiveRequests,
+    engine_block_size: usize,
 }
 
 /// The aggregated role factory both constructors below build identically,
@@ -303,6 +351,7 @@ where
         make_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<DynPlacement<O, M>>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
+        let engine_block_size = engine.rank.block_size;
         let role_factory = aggregated_role_factory::<O>(factory, &engine)?;
         let runtime = AggRuntimeImpl::<DynPlacement<O, M>, O, M>::new_composed(
             role_factory,
@@ -332,6 +381,7 @@ where
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
+            engine_block_size,
         })
     }
 }
@@ -361,6 +411,7 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
         capture: ReplayCaptureOptions,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
+        let engine_block_size = engine.rank.block_size;
         let role_factory = aggregated_role_factory::<NoEngineEvents>(factory, &engine)?;
         let runtime = AggRuntimeImpl::new_composed(
             role_factory,
@@ -382,6 +433,7 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
+            engine_block_size,
         })
     }
 }
@@ -428,6 +480,24 @@ where
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
         let uuid = self.runtime.submit_dynamic(request)?;
+        self.live.insert(uuid);
+        Ok(uuid)
+    }
+
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        if let Some(uuid) = request.request.uuid
+            && self.live.contains(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already live");
+        }
+        if let Some(uuid) = request.request.uuid
+            && self.runtime.collector().contains_request(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already retained");
+        }
+        let uuid = self
+            .runtime
+            .submit_dynamic_compact(request.into_payload()?, self.engine_block_size)?;
         self.live.insert(uuid);
         Ok(uuid)
     }
@@ -533,6 +603,10 @@ impl SteppableReplay for SteppableEngine {
         self.inner.submit(request)
     }
 
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        self.inner.submit_compact(request)
+    }
+
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
         self.inner.cancel(uuid)
     }
@@ -590,6 +664,7 @@ pub struct SteppableDisagg<
 {
     runtime: SteppableDisaggRuntime<P, O, M>,
     live: LiveRequests,
+    engine_block_size: usize,
 }
 
 impl SteppableDisagg<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata> {
@@ -621,6 +696,7 @@ impl SteppableDisagg<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetada
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
         anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
+        let engine_block_size = engine.rank.block_size;
         // `false`, not `O::capture_engine_kv_events(..)` the way `with_placement`
         // computes it on the aggregated side: this constructor has no
         // observation-flavor type parameter to read one from. `SteppableDisagg`
@@ -657,6 +733,7 @@ impl SteppableDisagg<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetada
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
+            engine_block_size,
         })
     }
 }
@@ -683,6 +760,7 @@ where
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
         anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
+        let engine_block_size = engine.rank.block_size;
         let config = OfflineDisaggReplayConfig {
             prefill_factory: factory.role_factory(
                 &engine,
@@ -727,6 +805,7 @@ where
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
+            engine_block_size,
         })
     }
 }
@@ -771,6 +850,23 @@ where
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
         let uuid = self.runtime.submit_dynamic(request)?;
+        self.live.insert(uuid);
+        Ok(uuid)
+    }
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        if let Some(uuid) = request.request.uuid
+            && self.live.contains(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already live");
+        }
+        if let Some(uuid) = request.request.uuid
+            && self.runtime.collector().contains_request(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already retained");
+        }
+        let uuid = self
+            .runtime
+            .submit_dynamic_compact(request.into_payload()?, self.engine_block_size)?;
         self.live.insert(uuid);
         Ok(uuid)
     }
@@ -1102,6 +1198,30 @@ mod tests {
         assert_eq!(report.request_counts.completed_requests, 1);
         assert_eq!(report.request_counts.total_output_tokens, 16);
         assert_eq!(uuid, Uuid::from_u128(1));
+    }
+
+    #[test]
+    fn compact_submit_defers_trace_tokens_until_worker_admission() {
+        let mut engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .expect("engine builds");
+        let uuid = engine
+            .submit_compact(CompactDirectRequest {
+                request: DirectRequest {
+                    max_output_tokens: 1,
+                    uuid: Some(Uuid::from_u128(99)),
+                    arrival_timestamp_ms: Some(0.0),
+                    ..Default::default()
+                },
+                input_token_count: 32,
+                trace_block_size: 16,
+                hash_ids: vec![11, 12],
+            })
+            .expect("compact request submits");
+
+        assert_eq!(uuid, Uuid::from_u128(99));
+        let events = drain(&mut engine);
+        assert_eq!(events.iter().filter(|event| event.emitted_token).count(), 1);
     }
 
     #[test]
