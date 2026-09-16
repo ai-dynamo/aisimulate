@@ -10,6 +10,7 @@ import math
 import pickle
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 
 import pytest
 
@@ -266,7 +267,7 @@ def test_lazy_exports_are_listed_in_public_api():
     assert set(sweeper._LAZY_EXPORTS).issubset(sweeper.__all__)
 
 
-@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, 10**400, Fraction(10**400)])
 def test_replay_report_rejects_nonfinite_ordinary_metrics(value):
     with pytest.raises(ValueError, match="must be finite"):
         ReplayReport(metrics={"output_throughput_tok_s": value})
@@ -282,6 +283,14 @@ def test_replay_report_rejects_nonfinite_ordinary_metrics(value):
 )
 def test_replay_report_rejects_invalid_power_pairs(metrics):
     with pytest.raises(ValueError, match="power_"):
+        ReplayReport(metrics=metrics)
+
+
+@pytest.mark.parametrize("field", ["power_w", "power_coverage"])
+@pytest.mark.parametrize("value", [10**400, Fraction(10**400)])
+def test_replay_report_rejects_overflowing_power(field, value):
+    metrics = {"power_w": None, "power_coverage": 0.9, field: value}
+    with pytest.raises(ValueError, match=f"{field} must be a finite number"):
         ReplayReport(metrics=metrics)
 
 
