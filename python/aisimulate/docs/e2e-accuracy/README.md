@@ -18,6 +18,9 @@ The Pages build publishes a `branches.json` catalog containing `main` and every
 fetched `origin/release/*` branch. Each entry loads the summary committed on that
 branch, using the same reviewed UI from main. The browser loads packaged data
 from the site, so it does not require access to GitHub's repository API.
+The selector explicitly labels **historical only**, **inherited evidence**, and
+**no snapshot** entries; an unqualified historical file does not establish that
+its containing branch was evaluated.
 
 The branch containing an artifact and the revision evaluated by that artifact
 are separate identities:
@@ -31,6 +34,27 @@ are separate identities:
   commit were not. Selecting a branch does not relabel those results as a new run.
 - **Unavailable:** the branch has no committed summary. The page shows an empty
   state instead of falling back to main's results.
+
+### Catalog contract
+
+`schema_version` is `1`, `default_branch` is `main`, and `branches` contains unique
+`main` or `release/<name>` entries. Each entry records:
+
+| Field | Meaning |
+| --- | --- |
+| `branch` | The branch whose committed snapshot is being published. |
+| `status` | `evaluated`, `inherited`, `historical`, or `unavailable`, as defined above. |
+| `summary_path` | A site-relative `branches/<16 hex characters>/summary.json` path; `null` for unavailable evidence. A direct source preview uses `summary.json`. |
+| `published_from_commit` | The full commit from which the snapshot file was copied, or `null` in a local build without branch refs. This is publication provenance, not the evaluated revision. |
+| `evaluated_revision` | Required for evaluated/inherited evidence: the producer-recorded `branch` and full `commit_sha`. Absent or `null` for historical/unavailable evidence. |
+
+The exporter, Pages validator, and browser restrict evaluated branch names to
+`main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*` and commits to 40 lowercase hex
+characters. Evaluated snapshots must include matching bundled AIC CLI provenance;
+only historical snapshots may omit it. The browser checks catalog status and evaluated identity against the
+loaded summary before rendering. Contradictory evidence fails visibly rather
+than displaying another branch's results. A missing catalog permits direct
+source preview, whose label is derived from the loaded summary itself.
 
 The refreshed `summary.json` evaluates AISimulate main at
 [`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
@@ -116,7 +140,9 @@ fails without replacing its published evidence.
   configurations requiring acceptance-rate overrides and unresolved recipe
   fingerprints are excluded with counts. Both predictors use the bundled CLI's
   resolved performance-database version. These versions are reported; they can
-  differ from the measured server image. Replay uses default scheduler settings,
+  differ from the measured server image. Replay pins `max_num_seqs=max(256, concurrency)`,
+  `max_num_batched_tokens=8192`, `enable_prefix_caching=False`, and
+  `aic_forward_model="op_level"`, with
   seed 0, lengths from 80–100% of nominal, and ten requests per concurrency slot.
   This policy differs from the earlier private campaign's reviewed recipe mapping;
   aggregate differences are not evidence of a runtime improvement.

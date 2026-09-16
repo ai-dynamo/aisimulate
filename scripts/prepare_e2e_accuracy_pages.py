@@ -16,6 +16,7 @@ import subprocess
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 if __package__:
@@ -386,7 +387,9 @@ def prepare(repo: Path, output: Path) -> None:
                     continue
                 if (
                     current["commit_sha"] == revision["commit_sha"]
-                    and (previous.get("aisimulate_completed_at") or "") >= current["completed_at"]
+                    and previous.get("aisimulate_completed_at")
+                    and datetime.fromisoformat(previous["aisimulate_completed_at"])
+                    >= datetime.fromisoformat(current["completed_at"])
                 ):
                     continue
         (output / (hashlib.sha256(branch.encode()).hexdigest()[:16] + ".json")).write_text(

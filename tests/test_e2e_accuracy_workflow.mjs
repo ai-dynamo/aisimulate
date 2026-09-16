@@ -7,7 +7,8 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const workflow = readFileSync(new URL("../.github/workflows/e2e-accuracy.yml", import.meta.url), "utf8");
-const source = workflow.match(/          script: \|\n((?:            .*\n)+)/)[1];
+const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
+assert.match(source, /core\.setOutput\('nightly-run', nightlyRun\);\s*$/);
 const sha = "a".repeat(40);
 const run = {
   id: 123, head_sha: sha, head_branch: "main", event: "schedule",

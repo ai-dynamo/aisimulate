@@ -329,7 +329,11 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
 
     assert '<html lang="en" data-theme="dark">' in page
     assert 'class="top-header"' in page
-    assert 'class="tab-nav"' in page
+    header = page.split("<header", 1)[1].split("</header>", 1)[0]
+    assert 'id="page-title"' in header
+    assert "E2E Accuracy Overview" in header
+    assert 'id="branch-select"' in header
+    assert 'class="tab-nav"' not in page
     assert 'class="summary-grid"' in page
     assert 'class="matrix-panel"' in page
     assert 'class="hero"' not in page

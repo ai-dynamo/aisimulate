@@ -2,25 +2,28 @@ name: GitHub Pages
 
 on:
   workflow_dispatch:
+  schedule:
+    # Refresh committed release snapshots; prediction campaigns run separately.
+    - cron: "17 9 * * *"
   workflow_run:
-    workflows: [E2E Accuracy Matrix]
+    workflows: ["FPE Support Matrix", "Nightly CI", "E2E Accuracy Matrix"]
     types: [completed]
     branches: [main]
-  schedule:
-    # Pick up release-branch snapshots using the main-branch publisher.
-    - cron: "17 6 * * *"
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
-      - "tests/test_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_fpe_pages.py"
       - "scripts/prepare_e2e_accuracy_pages.py"
       - "scripts/run_e2e_accuracy.py"
       - "scripts/fetch_accuracy_measurements.py"
-      - "tests/test_e2e_accuracy_nightly.py"
+      - ".github/workflows/e2e-accuracy.yml"
+      - ".github/e2e-accuracy-dataset.json"
+      - "tests/test_pages_site.py"
       - "tests/test_e2e_accuracy_overview.py"
       - "tests/test_e2e_accuracy_ui.mjs"
+      - "tests/test_e2e_accuracy_nightly.py"
       - "tests/test_e2e_accuracy_workflow.mjs"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
@@ -34,9 +37,12 @@ on:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_fpe_pages.py"
       - "scripts/prepare_e2e_accuracy_pages.py"
       - "scripts/run_e2e_accuracy.py"
       - "scripts/fetch_accuracy_measurements.py"
+      - ".github/workflows/e2e-accuracy.yml"
+      - ".github/e2e-accuracy-dataset.json"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -54,38 +60,56 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false
+          # workflow_run payloads never choose executable repository content.
+          ref: ${{ github.event_name == 'pull_request' && github.ref || 'main' }}
           fetch-depth: 0
-          # workflow_run consumes data only; publisher code always comes from main.
-          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Fetch release snapshot refs
+        run: git fetch --no-tags --prune origin "+refs/heads/release/*:refs/remotes/origin/release/*"
+      - name: Prepare newest qualified main FPE snapshot
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: python scripts/prepare_fpe_pages.py --repository "$GH_REPOSITORY" --output-dir fpe-pages-data
       - name: Prepare qualified accuracy snapshots
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
-      - name: Build allowlisted public site
+      - name: Build public deployment with qualified FPE and accuracy data
+        if: github.event_name != 'pull_request'
         run: |
-          python scripts/build_pages_site.py --accuracy-refs \
-            --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy" --output-dir _site
-      - name: Test accuracy publication and public artifact contracts
+          python scripts/build_pages_site.py --accuracy-refs --output-dir _site \
+            --fpe-data-dir fpe-pages-data --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy"
+      - name: Build pull request preview from repository data
+        if: github.event_name == 'pull_request'
+        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
+      - name: Test public artifact and accuracy contracts
         run: |
           python -m pip install pytest==8.4.2 pyyaml==6.0.3
           python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-      - name: Test accuracy interactions
+      - name: Test accuracy UI state
         run: node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
       - name: Upload GitHub Pages artifact
         if: >-

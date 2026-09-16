@@ -16,9 +16,9 @@ for (const model of historical.models) for (const workload of model.workloads) {
 }
 const pathFor = (key) => `branches/${key.repeat(16)}/summary.json`;
 const catalog = { schema_version: 1, default_branch: "main", branches: [
-  { branch: "main", status: "historical", summary_path: pathFor("a") },
-  { branch: "release/0.12.0", status: "historical", summary_path: pathFor("b") },
-  { branch: "release/empty", status: "unavailable", summary_path: null },
+  { branch: "main", status: "historical", published_from_commit: "a".repeat(40), summary_path: pathFor("a") },
+  { branch: "release/0.12.0", status: "historical", published_from_commit: "a".repeat(40), summary_path: pathFor("b") },
+  { branch: "release/empty", status: "unavailable", published_from_commit: "b".repeat(40), summary_path: null },
 ] };
 const response = (data, status = 200) => ({ ok: status === 200, status, json: async () => structuredClone(data) });
 
@@ -59,6 +59,14 @@ function setup(fetch, url) {
   return app;
 }
 
+function withEvaluation() {
+  const data = structuredClone(historical);
+  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.aic_commit_sha = "d".repeat(40);
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  return data;
+}
+
 function withTopology() {
   const data = structuredClone(historical);
   const gpu = data.models[0].workloads[0].gpus[0];
@@ -75,9 +83,8 @@ function withTopology() {
 }
 
 test("qualified campaign shows its run and exclusions and rejects unsafe provenance", async () => {
-  const data = structuredClone(historical);
-  const revision = { branch: "main", commit_sha: "d".repeat(40) };
-  data.snapshot.evaluated_revision = revision;
+  const data = withEvaluation();
+  const revision = data.snapshot.evaluated_revision;
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
@@ -86,15 +93,25 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
     selection_policy: "latest-complete-config-run-v1",
   };
   const app = setup(async () => response(data));
+  app.set("revisionFixture", revision);
+  app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture, published_from_commit: null})');
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
+  assert.match(app.element("provenance-content").innerHTML, /Qualified e2e-accuracy-web artifact/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisimulate\/blob\//);
+  assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
-  for (const change of [{ run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) }, { advisory: false }]) {
+  for (const change of [{ run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) }, { advisory: false }, { published: data.totals.rows + 1 }]) {
     const invalid = structuredClone(data);
     Object.assign(invalid.snapshot.campaign, change);
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /campaign provenance/);
   }
+  const orphan = structuredClone(data);
+  delete orphan.snapshot.evaluated_revision;
+  app.set("orphan", orphan);
+  assert.throws(() => app.run("validateSummary(orphan)"), /campaign provenance/);
 });
 
 test("legacy summary loads with historical provenance and branch-specific download", async () => {
@@ -108,11 +125,10 @@ test("legacy summary loads with historical provenance and branch-specific downlo
 });
 
 test("bundled AIC CLI provenance links to AISimulate and rejects another repository or revision", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
-  data.snapshot.aic_commit_sha = "d".repeat(40);
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  const data = withEvaluation();
   const app = setup(async () => response(data));
+  app.set("revisionFixture", data.snapshot.evaluated_revision);
+  app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /Legacy AIC CLI source:.*aisimulate\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
@@ -264,10 +280,98 @@ test("partial GPU links and topology-only links fail explicitly", async () => {
 });
 
 test("inherited evaluated evidence identifies its original branch", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  const data = withEvaluation();
   const app = setup(async () => response(data));
+  app.set("revisionFixture", data.snapshot.evaluated_revision);
+  app.run('Object.assign(state.catalog.branches[1], {status: "inherited", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("release/0.12.0")');
   assert.match(app.element("branch-status").textContent, /inherited evidence from main/);
   assert.match(app.element("branch-status").textContent, /this branch has not been evaluated/);
+});
+
+test("branch options distinguish evaluated, historical, inherited, and missing evidence", async () => {
+  const labeled = structuredClone(catalog);
+  labeled.branches.push(
+    { branch: "release/evaluated", status: "evaluated", published_from_commit: null,
+      summary_path: pathFor("c"), evaluated_revision: { branch: "release/evaluated", commit_sha: "d".repeat(40) } },
+    { branch: "release/inherited", status: "inherited", published_from_commit: null,
+      summary_path: pathFor("d"), evaluated_revision: { branch: "main", commit_sha: "d".repeat(40) } },
+  );
+  const app = harness(async (path) => response(path === "./branches.json" ? labeled : historical));
+  await app.run("initialize()");
+  const options = app.element("branch-select").innerHTML;
+  assert.match(options, /value="release\/0.12.0">release\/0.12.0 — historical only<\/option>/);
+  assert.match(options, /release\/inherited — inherited evidence<\/option>/);
+  assert.match(options, /release\/empty — no snapshot<\/option>/);
+  assert.match(options, /value="release\/evaluated">release\/evaluated<\/option>/);
+  assert.match(app.element("provenance-content").innerHTML, /Snapshot file source:.*blob\/a{40}/);
+});
+
+test("catalog metadata rejects malformed revisions and contradictory status", () => {
+  const app = setup();
+  for (const change of [
+    { published_from_commit: "short" }, { published_from_commit: false }, { published_from_commit: undefined },
+    { evaluated_revision: { branch: "main", commit_sha: "d".repeat(40) } },
+    { status: "evaluated" },
+    { status: "evaluated", evaluated_revision: { branch: "release/0.12.0", commit_sha: "d".repeat(40) } },
+    { status: "inherited", evaluated_revision: { branch: "main", commit_sha: "d".repeat(40) } },
+    { status: "evaluated", evaluated_revision: { branch: "main", commit_sha: "short" } },
+    { status: "inherited", evaluated_revision: { branch: "feature/private", commit_sha: "d".repeat(40) } },
+  ]) {
+    const invalid = structuredClone(catalog); Object.assign(invalid.branches[0], change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateCatalog(invalid)"), /invalid accuracy branch catalog/);
+  }
+});
+
+test("summary rejects evaluated branches outside the exporter contract", () => {
+  const app = setup();
+  for (const branch of ["", "feature/private", "release/", "release/with space", 42, null]) {
+    const invalid = structuredClone(historical);
+    invalid.snapshot.evaluated_revision = { branch, commit_sha: "d".repeat(40) };
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
+  }
+  for (const revision of [false, 0, "main"]) {
+    const invalid = structuredClone(historical); invalid.snapshot.evaluated_revision = revision;
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
+  }
+});
+
+test("catalog and loaded snapshot must agree before rendering", async () => {
+  const data = withEvaluation();
+  const app = setup(async () => response(data));
+  for (const metadata of [
+    { status: "historical" },
+    { status: "evaluated", evaluated_revision: { branch: "main", commit_sha: "e".repeat(40) } },
+    { status: "inherited", evaluated_revision: { branch: "release/0.12.0", commit_sha: "d".repeat(40) } },
+  ]) {
+    app.set("metadata", metadata);
+    app.run("Object.assign(state.catalog.branches[0], metadata)");
+    await app.run('loadBranch("main")');
+    assert.match(app.element("error-banner").textContent, /catalog and snapshot provenance disagree/);
+    assert.equal(app.run("state.data"), null);
+    assert.equal(app.element("download-json").href, undefined);
+  }
+});
+
+test("direct source preview derives its label from the actual evaluated snapshot", async () => {
+  const data = withEvaluation();
+  const app = harness(async (path) => path === "./branches.json" ? response({}, 404) : response(data));
+  await app.run("initialize()");
+  assert.equal(app.run("state.catalog.branches[0].status"), "evaluated");
+  assert.equal(app.element("branch-select").innerHTML, '<option value="main">main</option>');
+  assert.equal(app.element("download-json").href, "./summary.json");
+});
+
+test("evaluated snapshots require matching legacy CLI provenance", () => {
+  const app = setup();
+  const data = withEvaluation();
+  delete data.snapshot.aic_source;
+  app.set("invalid", data);
+  assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+  delete data.snapshot.evaluated_revision;
+  app.set("historicalOnly", data);
+  assert.doesNotThrow(() => app.run("validateSummary(historicalOnly)"));
 });

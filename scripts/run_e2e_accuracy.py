@@ -71,15 +71,27 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             )
         ) + (bench["isl"], bench["osl"])
 
+    def eligibility_exclusion(bench):
+        config, run = configs[bench["config_id"]], runs[bench["workflow_run_id"]]
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            return "incomplete_measurement_run"
+        if (
+            bench["benchmark_type"] != "single_turn"
+            or bench.get("error") is not None
+            or bench.get("offload_mode", "off") != "off"
+        ):
+            return "nonstandard_or_error"
+        per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
+        total_gpus = config.get("num_decode_gpu", 0) + (config.get("num_prefill_gpu", 0) if config.get("disagg") else 0)
+        if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
+            return "multinode"
+        if not all(positive(bench["metrics"].get(key)) for key in ("mean_ttft", "mean_tpot")):
+            return "missing_mean_latency"
+        return None
+
     latest_by_family = {}
     for bench in tables["benchmark_results"]:
-        run = runs[bench["workflow_run_id"]]
-        if (
-            bench["benchmark_type"] == "single_turn"
-            and bench.get("error") is None
-            and run.get("status") == "completed"
-            and run.get("conclusion") == "success"
-        ):
+        if eligibility_exclusion(bench) is None:
             key = family(bench)
             latest_by_family[key] = max(latest_by_family.get(key, date.min), date.fromisoformat(bench["date"]))
     groups = {}
@@ -89,28 +101,13 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
         if bench["id"] in ids:
             raise ValueError("duplicate benchmark ID")
         ids.add(bench["id"])
-        config, run = configs[bench["config_id"]], runs[bench["workflow_run_id"]]
-        if run.get("status") != "completed" or run.get("conclusion") != "success":
-            excluded["incomplete_measurement_run"] += 1
-            continue
-        metrics = bench["metrics"]
-        if (
-            bench["benchmark_type"] != "single_turn"
-            or bench.get("error") is not None
-            or bench.get("offload_mode", "off") != "off"
-        ):
-            excluded["nonstandard_or_error"] += 1
-            continue
-        per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
-        total_gpus = config.get("num_decode_gpu", 0) + (config.get("num_prefill_gpu", 0) if config.get("disagg") else 0)
-        if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
-            excluded["multinode"] += 1
+        run = runs[bench["workflow_run_id"]]
+        reason = eligibility_exclusion(bench)
+        if reason is not None:
+            excluded[reason] += 1
             continue
         if (latest_by_family[family(bench)] - date.fromisoformat(bench["date"])).days > max_age_days:
             excluded["stale"] += 1
-            continue
-        if not all(positive(metrics.get(key)) for key in ("mean_ttft", "mean_tpot")):
-            excluded["missing_mean_latency"] += 1
             continue
         if not all(type(bench.get(key)) is int and bench[key] > 0 for key in ("isl", "osl", "conc")):
             raise ValueError("invalid benchmark workload")

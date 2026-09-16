@@ -112,6 +112,36 @@ def test_incomplete_new_source_run_preserves_the_previous_successful_curve(statu
 
 
 @pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("offload", "nonstandard_or_error"),
+        ("multinode", "multinode"),
+        ("gpu_limit", "multinode"),
+        ("missing_latency", "missing_mean_latency"),
+    ],
+)
+def test_new_ineligible_measurements_do_not_age_out_eligible_evidence(change, reason):
+    data = tables()
+    data["configs"][0].update(hardware="h200", num_decode_gpu=1)
+    newer = {**data["configs"][0], "id": 2}
+    data["configs"].append(newer)
+    data["benchmark_results"][0]["date"] = "2026-07-01"
+    for row in data["benchmark_results"][1:]:
+        row["config_id"] = 2
+        if change == "offload":
+            row["offload_mode"] = "cpu"
+        elif change == "missing_latency":
+            row["metrics"]["mean_ttft"] = 0
+    if change == "multinode":
+        newer["is_multinode"] = True
+    elif change == "gpu_limit":
+        newer["num_decode_gpu"] = 9
+    points, stats = campaign.select_points(data, 30)
+    assert {point["benchmark"]["id"] for point in points} == {1}
+    assert stats["excluded"] == {reason: 2}
+
+
+@pytest.mark.parametrize(
     "change",
     ["duplicate_id", "duplicate_concurrency", "mixed_image", "multinode", "nonfinite"],
 )
@@ -388,11 +418,21 @@ def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, t
     key = hashlib.sha256(b"main").hexdigest()[:16]
     (artifacts / (key + ".json")).write_bytes(campaign.encoded(summary))
     output = tmp_path / "site"
-    pages.build_site(ROOT, output, accuracy_artifacts=artifacts)
+    fpe = tmp_path / "qualified-fpe"
+    fpe.mkdir()
+    fpe_index = {"files": ["example.csv"], "snapshot": {"source_sha": "a" * 40}}
+    (fpe / "index.json").write_text(json.dumps(fpe_index))
+    (fpe / "example.csv").write_text("System,Status\nh200_sxm,PASS\n")
+    pages.build_site(ROOT, output, fpe_data_dir=fpe, accuracy_artifacts=artifacts)
+    published_fpe = output / "data/fpe-support-matrix"
+    assert json.loads((published_fpe / "index.json").read_text()) == fpe_index
+    assert (published_fpe / "example.csv").read_bytes() == (fpe / "example.csv").read_bytes()
     assert json.loads((output / "e2e-accuracy/summary.json").read_text()) == summary
     catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
     entry = catalog["branches"][0]
     assert entry["status"] == "evaluated"
+    assert entry["published_from_commit"] is None
+    assert entry["evaluated_revision"] == summary["snapshot"]["evaluated_revision"]
     assert json.loads((output / "e2e-accuracy" / entry["summary_path"]).read_text()) == summary
 
 
@@ -416,6 +456,59 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     }
     assert "actions: write" not in (ROOT / ".github/workflows/e2e-accuracy.yml").read_text()
     pages_workflow = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
-    assert pages_workflow["on"]["workflow_run"]["workflows"] == ["E2E Accuracy Matrix"]
+    assert set(pages_workflow["on"]["workflow_run"]["workflows"]) == {
+        "FPE Support Matrix",
+        "Nightly CI",
+        "E2E Accuracy Matrix",
+    }
+    deploy_build = next(s for s in pages_workflow["jobs"]["build"]["steps"] if "--fpe-data-dir" in s.get("run", ""))
+    assert "--accuracy-artifacts" in deploy_build["run"]
+    assert deploy_build["if"] == "github.event_name != 'pull_request'"
     checkout = pages_workflow["jobs"]["build"]["steps"][0]
     assert "'main'" in checkout["with"]["ref"]
+
+
+@pytest.mark.parametrize(
+    "previous_time,current_time,should_publish",
+    [
+        ("2026-09-15T09:00:00Z", "2026-09-15T09:00:00.500000+00:00", True),
+        ("2026-09-15T09:00:00.500000+00:00", "2026-09-15T09:00:00Z", False),
+        ("2026-09-15T11:00:00+02:00", "2026-09-15T09:00:00.500000+00:00", True),
+        ("2026-09-15T09:00:00.000000+00:00", "2026-09-15T09:00:00+00:00", False),
+        (None, "2026-09-15T09:00:00+00:00", True),
+    ],
+)
+def test_same_commit_publication_compares_completion_times(
+    artifact,
+    tmp_path,
+    monkeypatch,
+    previous_time,
+    current_time,
+    should_publish,
+):
+    summary, run = artifact
+    run["head_sha"] = "a" * 40
+    summary["snapshot"]["campaign"]["completed_at"] = current_time
+    summary["snapshot"]["aisimulate_completed_at"] = current_time
+    previous = deepcopy(summary)
+    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    responses = {
+        "actions/workflows/e2e-accuracy.yml/runs?status=success&branch=main&per_page=100": {"workflow_runs": [run]},
+        "actions/runs/123": run,
+        "actions/runs/123/artifacts?per_page=100": {
+            "artifacts": [{"id": 7, "name": "e2e-accuracy-web", "expired": False}]
+        },
+        "actions/artifacts/7/zip": archive(summary),
+    }
+    monkeypatch.setattr(publish, "api", lambda path, **kwargs: responses[path])
+    monkeypatch.setattr(publish, "ancestor", lambda *args: True)
+    monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
+    )
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    files = list(output.glob("*.json"))
+    assert bool(files) == should_publish
+    if should_publish:
+        assert json.loads(files[0].read_text()) == summary
