@@ -164,6 +164,33 @@ mod tests {
     }
 
     #[test]
+    fn power_statistics_require_validated_public_construction() {
+        use aiconfigurator_core::replay::TracePowerStats;
+
+        let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
+        assert_eq!(available.power_w(), Some(500.0));
+        assert_eq!(available.coverage(), 0.9);
+        let withheld = TracePowerStats::new(None, 0.42).unwrap();
+        assert_eq!(withheld.power_w(), None);
+        assert_eq!(withheld.coverage(), 0.42);
+        assert!(TracePowerStats::new(None, 1.0).is_ok());
+
+        for (watts, coverage) in [
+            (Some(500.0), 0.9_f64.next_down()),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            assert!(TracePowerStats::new(watts, coverage).is_err());
+        }
+    }
+
+    #[test]
     fn ergonomic_builder_is_available_to_external_crates() {
         let _builder = configured_builder();
     }

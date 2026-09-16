@@ -1059,10 +1059,7 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
         )?)?;
     }
     if combined.latency_ms <= 0.0 {
-        return Ok(Some(TracePowerStats {
-            power_w: None,
-            coverage: 0.0,
-        }));
+        return Ok(Some(TracePowerStats::new(None, 0.0)?));
     }
     // Keep uncovered latency separate: subtracting two rounded totals loses
     // the exact 0.27 covered + 0.03 uncovered boundary. C >= 9U expresses the
@@ -1092,7 +1089,7 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
         })
         .flatten()
         .filter(|power| power.is_finite() && *power > 0.0);
-    Ok(Some(TracePowerStats { power_w, coverage }))
+    Ok(Some(TracePowerStats::new(power_w, coverage)?))
 }
 
 fn scale_power_phase(

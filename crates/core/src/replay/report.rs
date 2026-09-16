@@ -118,17 +118,42 @@ pub struct TraceGoodputStats {
 }
 
 /// Replay-level power summary derived from timing-provider energy evidence.
+///
+/// External callers construct validated values and cannot mutate their fields:
+///
+/// ```compile_fail
+/// use aisimulate_core::replay::TracePowerStats;
+/// let mut power = TracePowerStats::new(Some(500.0), 1.0).unwrap();
+/// power.coverage = 0.1;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TracePowerStats {
     /// Active forward-pass average power per GPU, in watts. `None` means the
     /// publication conditions did not all hold. JSON always includes this field.
-    pub power_w: Option<f64>,
+    pub(crate) power_w: Option<f64>,
     /// Latency-weighted fraction of modeled forward-pass work with positive
     /// measured energy, in `[0, 1]`.
-    pub coverage: f64,
+    pub(crate) coverage: f64,
 }
 
 impl TracePowerStats {
+    /// Validate finite values and the inclusive power publication threshold.
+    pub fn new(power_w: Option<f64>, coverage: f64) -> anyhow::Result<Self> {
+        let stats = Self { power_w, coverage };
+        stats.validate()?;
+        Ok(stats)
+    }
+
+    /// Active forward-pass watts per GPU, or `None` when publication is withheld.
+    pub fn power_w(&self) -> Option<f64> {
+        self.power_w
+    }
+
+    /// Latency-weighted energy-evidence coverage, in `[0, 1]`.
+    pub fn coverage(&self) -> f64 {
+        self.coverage
+    }
+
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.coverage.is_finite() && (0.0..=1.0).contains(&self.coverage),
@@ -220,6 +245,9 @@ impl ReplayReport {
 
 impl Display for ReplayReport {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        if let Some(power) = self.power {
+            power.validate().map_err(|_| std::fmt::Error)?;
+        }
         writeln!(
             f,
             "  completed_requests: {}",
@@ -2046,6 +2074,30 @@ mod tests {
         assert_eq!(summary["num_ttft_samples"], 0);
         assert_eq!(summary["num_tpot_samples"], 0);
         assert_eq!(summary["num_e2e_latency_samples"], 0);
+    }
+
+    #[test]
+    fn power_display_rejects_invalid_statistics_before_writing() {
+        use std::fmt::Write;
+
+        for (power_w, coverage) in [
+            (Some(500.0), 0.89),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            let report = TraceCollector::default()
+                .finish()
+                .with_power(Some(TracePowerStats { power_w, coverage }));
+            let mut output = String::new();
+            assert!(write!(&mut output, "{report}").is_err());
+            assert!(output.is_empty());
+        }
     }
 
     #[test]
