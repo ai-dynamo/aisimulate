@@ -169,6 +169,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if config.engine.speculation is not None and (args.stack != "engine" or args.online or adapter_raw):
+        raise ValueError("ngram speculation requires offline --stack engine without adapters")
     epd = config.engine.workers.encoder is not None
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
         raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")

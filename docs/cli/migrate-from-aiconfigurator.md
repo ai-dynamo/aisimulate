@@ -999,7 +999,11 @@ aiconfigurator cli estimate \
 using the supplied acceptance. `1.5` is an illustrative assumption, not predicted acceptance. MTP,
 EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK cost models, subject
 to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
-The unified CLI has no speculative configuration.
+The unified CLI supports [ngram prompt-lookup speculation](user-guide.md#prompt-lookup-ngram-speculative-decoding)
+through `engine.speculation` for offline engine-stack vLLM prediction and recommendation.
+Replay requires per-token conditional `acceptance_rates`; a scalar accepted-token mean such as
+`1.5` does not uniquely determine that distribution. Other schemes retain their existing
+compatibility/SDK interfaces.
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 

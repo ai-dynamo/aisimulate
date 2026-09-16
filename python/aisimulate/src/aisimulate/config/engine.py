@@ -138,6 +138,24 @@ class KvCachePredictionConfig(StrictModel):
         return self
 
 
+class NgramSpeculationConfig(StrictModel):
+    """Prompt-lookup cost and explicit workload acceptance assumptions."""
+
+    kind: Literal["ngram"]
+    num_speculative_tokens: Annotated[int, Field(strict=True, ge=1, le=5)]
+    acceptance_rates: list[Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]]
+    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+
+    @model_validator(mode="after")
+    def _validate_rates(self) -> NgramSpeculationConfig:
+        if len(self.acceptance_rates) != self.num_speculative_tokens:
+            raise ValueError("acceptance_rates must contain one conditional probability per speculative token")
+        return self
+
+    def cost_config(self) -> dict[str, Any]:
+        return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
+
+
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = "op_level"
@@ -214,6 +232,7 @@ class EnginePredictionConfig(StrictModel):
     backend: Backend = "vllm"
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
+    speculation: NgramSpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
@@ -248,6 +267,7 @@ class EnginePredictionConfig(StrictModel):
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
+        _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
 
 
@@ -389,6 +409,7 @@ class EngineRecommendationConfig(StrictModel):
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
+    speculation: NgramSpeculationConfig | None = None
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
     afd: AFDSearchRecommendationConfig | None = None
@@ -418,8 +439,24 @@ class EngineRecommendationConfig(StrictModel):
             )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_recommendation_host_offload(self)
+        _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
+    if engine.speculation is None:
+        return
+    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError("ngram speculation does not support host_offload")
+        if worker.timing.forward_model != "op_level":
+            raise ValueError("ngram speculation requires op_level timing")
 
 
 def _validate_worker_hardware(*, modes: set[str], workers) -> None:
