@@ -31,53 +31,48 @@ SPDX-License-Identifier: Apache-2.0
   <body>
     <header class="top-header">
       <div class="shell top-header-inner">
-        <a class="brand" href="../" aria-label="AISimulate documentation home">
-          <span class="brand-mark" aria-hidden="true"><span></span></span>
-          <span>AISimulate Dashboard</span>
-        </a>
-        <nav class="source-nav" aria-label="Source links">
-          <a id="measurement-source-link" href="https://github.com/SemiAnalysisAI/InferenceX-app/releases">
-            Silicon source
+        <div class="brand">
+          <a href="../" aria-label="AISimulate documentation home">
+            <span class="brand-mark" aria-hidden="true"><span></span></span>
           </a>
-          <a href="https://github.com/ai-dynamo/aisimulate">AISimulate</a>
-          <button
-            class="theme-toggle"
-            id="theme-toggle"
-            type="button"
-            aria-label="Switch to light theme"
-            title="Switch theme"
-          >
-            <span id="theme-icon" aria-hidden="true">☀</span>
-          </button>
-        </nav>
+          <h1 id="page-title"><a href="../">AISimulate</a>
+            <span class="page-name">— E2E Accuracy Overview</span>
+          </h1>
+        </div>
+        <div class="header-controls">
+          <label class="branch-control" for="branch-select">Branch
+            <select id="branch-select" disabled><option>Loading…</option></select>
+          </label>
+          <nav class="source-nav" aria-label="Source links">
+            <a id="measurement-source-link" href="https://github.com/SemiAnalysisAI/InferenceX-app/releases">
+              Silicon source
+            </a>
+            <a href="https://github.com/ai-dynamo/aisimulate">GitHub</a>
+            <button
+              class="theme-toggle"
+              id="theme-toggle"
+              type="button"
+              aria-label="Switch to light theme"
+              title="Switch theme"
+            >
+              <span id="theme-icon" aria-hidden="true">☀</span>
+            </button>
+          </nav>
+        </div>
       </div>
     </header>
 
-    <nav class="tab-nav" aria-label="Primary">
-      <div class="shell tab-nav-inner">
-        <a class="active" href="./" aria-current="page">E2E Accuracy Overview</a>
-        <a href="https://github.com/ai-dynamo/aisimulate">Repository</a>
-        <a id="download-json" href="./summary.json" download>Download JSON</a>
-      </div>
-    </nav>
-
     <main class="shell dashboard">
-      <section class="overview-heading" aria-labelledby="page-title">
-        <h1 id="page-title">E2E Accuracy Overview</h1>
-        <div class="heading-controls">
-          <label class="branch-control" for="branch-select">AISimulate branch
-            <select id="branch-select" disabled><option>Loading…</option></select>
-          </label>
-          <span
-            class="scope-control"
-            title="The checked-in public snapshot contains single-node configurations only."
-          >
-            <span class="scope-check" aria-hidden="true">✓</span>
-            <span id="multinode-label">Exclude multi-node predictions</span>
-          </span>
-          <span id="release-label">release: loading…</span>
-        </div>
-      </section>
+      <div class="heading-controls" aria-label="Snapshot scope">
+        <span
+          class="scope-control"
+          title="The checked-in public snapshot contains single-node configurations only."
+        >
+          <span class="scope-check" aria-hidden="true">✓</span>
+          <span id="multinode-label">Exclude multi-node predictions</span>
+        </span>
+        <span id="release-label">release: loading…</span>
+      </div>
 
       <section class="migration-context" aria-label="CLI migration comparison">
         <p><strong>Compare the new AISim CLI with the legacy AIC CLI.</strong>
@@ -168,6 +163,7 @@ SPDX-License-Identifier: Apache-2.0
             <article>
               <h2>Reproducible snapshot identity</h2>
               <div id="provenance-content">Loading provenance…</div>
+              <a class="download-link" id="download-json" href="./summary.json" download>Download JSON</a>
             </article>
           </div>
         </details>
