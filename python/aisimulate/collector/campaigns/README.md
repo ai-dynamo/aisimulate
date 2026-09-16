@@ -61,6 +61,8 @@ underlying problem, not to defeat the retry limit.
   stock recovery checks before it can be resumed; do not edit its ledger.
 - Install `pyarrow` in the isolated runtime for official parquet finalization.
   Keep the GPU framework's existing NumPy/Torch/CUDA versions unchanged.
+  Install dependencies in the selected interpreter/venv/image, not in an extra
+  directory injected via a parent `PYTHONPATH`; the runner does not inherit it.
 - Provide a real Git executable and the actual source checkout for
   `collector_ref`; never fabricate a commit in metadata. Verify runtime and
   source identity before timing.
@@ -123,6 +125,29 @@ rechecks that digest. No default fleet-version change, case-ID change, kernel
 substitution, or executor monkeypatch is involved. The explicit B200 declaration
 selects 0.25.0 for the collected op families (including MLA); KDA keeps its
 preview pin and cannot be mislabeled as 0.25.0.
+
+The child receives only the attested `source/python/aisimulate` in `PYTHONPATH`.
+Inherited `PYTHONHOME`, `PYTHONUSERBASE`, and `PYTHONSTARTUP` are removed and
+`PYTHONNOUSERSITE=1` disables user-site packages. Parent import roots and their
+`sitecustomize.py` cannot silently inject campaign-local patches. The chosen
+interpreter and its installed dependencies remain part of the trusted runtime;
+this is import-path isolation, not an operating-system sandbox.
+
+The runner owns its collector process group for the full subprocess lifecycle.
+Checkpoint reads, worker inspection, status-write errors, interruption, and
+controlled walltime exits all pass through cleanup: SIGTERM, a bounded wait,
+SIGKILL escalation when needed, and reaping of the direct child. The group is
+checked even if its leader has already exited; live members must exit before
+a snapshot can be published (unreaped zombies cannot write). This inspection
+requires the standard POSIX `ps` utility. Monitoring failures record
+`runner_failed` with the original exception and cleanup result, then re-raise;
+a secondary reporting error cannot replace that exception. Failed runs do not
+publish a new snapshot. Only task-owned process groups are signaled, never a
+global process-name match. Uncatchable SIGKILL or host loss still requires
+scheduler-level job cleanup.
+
+These runner regressions use real CPU subprocesses; they are not new GPU
+collection, serving benchmarks, or E2E-accuracy qualification.
 
 A resume restores the canonical snapshot into a new directory. Previous local
 contents are quarantined as `.data-orphan-*`, not overlaid or silently deleted.

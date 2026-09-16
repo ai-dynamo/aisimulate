@@ -148,7 +148,7 @@ def test_attestation_rejects_unreproducible_inputs(tmp_path, failure):
         attest_source(tmp_path, manifest)
 
 
-def test_collector_child_receives_attested_runtime_and_source_first(tmp_path, monkeypatch):
+def test_collector_child_receives_only_attested_source(tmp_path, monkeypatch):
     from collector.campaigns.run_shard import collector_environment
 
     monkeypatch.setenv("PYTHONPATH", "/unrelated/source")
@@ -159,5 +159,6 @@ def test_collector_child_receives_attested_runtime_and_source_first(tmp_path, mo
     assert env["AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256"] == declaration["sha256"]
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str((tmp_path / "source/python/aisimulate").resolve()),
-        "/unrelated/source",
     ]
+
+    assert env["PYTHONNOUSERSITE"] == "1"

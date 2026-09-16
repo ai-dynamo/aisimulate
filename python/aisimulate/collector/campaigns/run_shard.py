@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -156,14 +157,187 @@ def attest_source(root, manifest):
 def collector_environment(root, runtime_declaration):
     """Bind helper imports and runtime selection to the attested source."""
     source_python = str((Path(root) / "source/python/aisimulate").resolve())
-    previous_pythonpath = os.environ.get("PYTHONPATH", "")
+    # Extra import roots (including sitecustomize) are not covered by source
+    # attestation. Runtime dependencies must be installed in this interpreter.
+    inherited = {
+        key: value for key, value in os.environ.items() if key not in {"PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP"}
+    }
     return {
-        **os.environ,
+        **inherited,
         "AISIM_COLLECTOR_RUNTIME_MANIFEST": runtime_declaration["path"],
         "AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256": runtime_declaration["sha256"],
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": os.pathsep.join(part for part in (source_python, previous_pythonpath) if part),
+        "PYTHONPATH": source_python,
+        "PYTHONNOUSERSITE": "1",
     }
+
+
+def process_group_active(pid):
+    """Require no live group members before publishing; zombies cannot write."""
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Some hosts briefly report EPERM for an exiting group. Confirm its
+        # actual members below rather than ignoring a permission failure.
+        pass
+    states = subprocess.check_output(["ps", "-e", "-o", "pgid=,stat="], text=True, timeout=5)
+    for line in states.splitlines():
+        group, state = line.split()
+        if int(group) == pid and not state.startswith("Z"):
+            return True
+    return False
+
+
+def signal_process_group(pid, signum):
+    try:
+        os.killpg(pid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if process_group_active(pid):
+            raise
+
+
+def terminate_process_group(proc, *, timeout=30):
+    """Stop only the session created for this child; reap it with bounded waits.
+
+    Check the group even when its leader has exited: orphan workers may still
+    own GPUs or write files. SIGKILL covers workers that ignore SIGTERM.
+    """
+    forced = False
+    signal_process_group(proc.pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        signal_process_group(proc.pid, signal.SIGKILL)
+        forced = True
+        proc.wait(timeout=max(1, timeout))
+    # The leader may have exited before its workers. Wait for them separately,
+    # including after SIGKILL, so callers cannot snapshot still-active writers.
+    if forced:
+        deadline = time.monotonic() + timeout
+    while process_group_active(proc.pid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if forced:
+                raise TimeoutError(f"Collector process group {proc.pid} remains active after SIGKILL")
+            signal_process_group(proc.pid, signal.SIGKILL)
+            forced = True
+            deadline = time.monotonic() + timeout
+        else:
+            time.sleep(min(0.05, remaining))
+    return {"process_group": proc.pid, "forced": forced, "collector_exit_code": proc.returncode}
+
+
+@contextmanager
+def collector_process(command, *, data, env, log, status, shutdown_timeout=30):
+    """Own the entire child session, including exceptional and SIGTERM exits."""
+
+    proc = None
+    startup_signal = None
+
+    def interrupted(signum, frame):
+        nonlocal startup_signal
+        if proc is None:
+            # Do not unwind Popen after it created a child but before it returns
+            # the handle we need for cleanup. Deliver this signal once owned.
+            startup_signal = signum
+            return
+        raise InterruptedError(f"Runner received signal {signum}")
+
+    previous_term = signal.signal(signal.SIGTERM, interrupted)
+    previous_int = signal.signal(signal.SIGINT, interrupted)
+    original_error = None
+    try:
+        proc = subprocess.Popen(
+            command, cwd=data, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env
+        )
+        if startup_signal is not None:
+            interrupted(startup_signal, None)
+        yield proc
+    except BaseException as error:
+        original_error = error
+        raise
+    finally:
+        # A second termination request must not interrupt session cleanup.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            if proc is not None:
+                try:
+                    status["process_group_cleanup"] = terminate_process_group(proc, timeout=shutdown_timeout)
+                except BaseException as cleanup_error:
+                    status["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    if original_error is None:
+                        raise
+                    original_error.add_note(f"Collector cleanup also failed: {cleanup_error}")
+                finally:
+                    status["collector_exit_code"] = proc.returncode
+        finally:
+            signal.signal(signal.SIGINT, previous_int)
+            signal.signal(signal.SIGTERM, previous_term)
+
+
+def record_runner_failure(status_path, status, error):
+    status.update(
+        status="runner_failed",
+        runner_error={"type": type(error).__name__, "message": str(error)},
+        finished_unix=time.time(),
+    )
+    try:
+        save(status_path, status)
+    except BaseException as recording_error:
+        error.add_note(f"Recording runner failure also failed: {recording_error}")
+        print(f"Runner failed ({error}); could not persist failure status: {recording_error}", file=sys.stderr)
+
+
+def execute_collector(
+    command, data, status_path, status, spec, reviewed, env, log, *, poll_interval=15, shutdown_timeout=30
+):
+    finalized_since = None
+    try:
+        with collector_process(
+            command, data=data, env=env, log=log, status=status, shutdown_timeout=shutdown_timeout
+        ) as proc:
+            status.update(status="running", collector_pid=proc.pid)
+            save(status_path, status)
+            while proc.poll() is None:
+                time.sleep(poll_interval)
+                details, done, failed = checkpoint_state(data)
+                status.update(checkpoints=details, done=len(done), failed=len(failed))
+                accounted = len(done | failed)
+                if finalized_all_ids(data, spec["planned_tasks"]):
+                    finalized_since = finalized_since or time.monotonic()
+                    if time.monotonic() - finalized_since > 60:
+                        killed = reap_finished_workers(proc.pid)
+                        if killed:
+                            status.setdefault("completed_worker_cleanup", []).append(
+                                {"time": time.time(), "pids": killed}
+                            )
+                should_stop = False
+                if not reviewed and accounted >= 100 and len(failed) / accounted >= 1 / 3:
+                    status.update(
+                        status="stopped_systemic_failure",
+                        stop_reason="Unreviewed systemic failures; all observations retained",
+                    )
+                    should_stop = True
+                if time.time() - status["started_unix"] > 6600:
+                    status["stop_reason"] = "walltime_checkpoint_yield"
+                    should_stop = True
+                save(status_path, status)
+                if should_stop:
+                    break  # The context manager stops and reaps the session.
+        details, done, failed = checkpoint_state(data)
+        status.update(checkpoints=details, done=len(done), failed=len(failed))
+        return done, failed
+    except BaseException as error:
+        # Recording is best effort; cleanup has already run, even if saving
+        # status was the original failure. Never publish a new snapshot here.
+        record_runner_failure(status_path, status, error)
+        raise
 
 
 def main():
@@ -235,50 +409,9 @@ def main():
     review = manifest.get("reviewed_failure_continuation", {})
     reviewed = spec["op"] in review
     status["failure_review"] = review.get(spec["op"])
-    finalized_since = None
     env = collector_environment(root, runtime_declaration)
     with (job / "collector.log").open("w") as log:
-        proc = subprocess.Popen(
-            command, cwd=data, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env
-        )
-        status.update(status="running", collector_pid=proc.pid)
-        save(status_path, status)
-        while proc.poll() is None:
-            time.sleep(15)
-            details, done, failed = checkpoint_state(data)
-            status.update(checkpoints=details, done=len(done), failed=len(failed))
-            accounted = len(done | failed)
-            if finalized_all_ids(data, spec["planned_tasks"]):
-                finalized_since = finalized_since or time.monotonic()
-                if time.monotonic() - finalized_since > 60:
-                    killed = reap_finished_workers(proc.pid)
-                    if killed:
-                        status.setdefault("completed_worker_cleanup", []).append({"time": time.time(), "pids": killed})
-            should_stop = False
-            if not reviewed and accounted >= 100 and len(failed) / accounted >= 1 / 3:
-                status.update(
-                    status="stopped_systemic_failure",
-                    stop_reason="Unreviewed systemic failures; all observations retained",
-                )
-                should_stop = True
-            if time.time() - status["started_unix"] > 6600:
-                status["stop_reason"] = "walltime_checkpoint_yield"
-                should_stop = True
-            if should_stop:
-                os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait()
-            save(status_path, status)
-    status["collector_exit_code"] = proc.wait()
-    details, done, failed = checkpoint_state(data)
-    status.update(checkpoints=details, done=len(done), failed=len(failed))
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+        done, failed = execute_collector(command, data, status_path, status, spec, reviewed, env, log)
     snapshot = job / "data"
     replace_snapshot(snapshot, data)
     save(
