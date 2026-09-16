@@ -1811,8 +1811,7 @@ where
     ) -> anyhow::Result<Uuid> {
         anyhow::ensure!(engine_block_size > 0, "engine block size must be positive");
         let arrival_time_ms = self.now_ms;
-        let tokens = request.prompt_tokens();
-        let replay_hashes = ReplayRequestHashes::from_tokens(&tokens, engine_block_size as u32);
+        let replay_hashes = request.replay_hashes(engine_block_size as u32);
         let uuid = self.assign_request(
             request,
             arrival_time_ms,

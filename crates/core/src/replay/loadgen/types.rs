@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xxhash_rust::xxh3::Xxh3;
 
 use super::trace::synthesize_validated_trace_tokens;
 use crate::replay::protocol::DirectRequest;
@@ -455,6 +456,75 @@ impl ReplayRequestHashes {
             sequence_hashes,
         }
     }
+
+    /// Derives engine-block identities directly from compact trace blocks.
+    ///
+    /// The result is byte-for-byte equivalent to first synthesizing the trace
+    /// tokens and passing them to [`Self::from_tokens`], without allocating a
+    /// full prompt-sized token vector.
+    pub fn from_trace_blocks(
+        input_length: usize,
+        hash_ids: &[u32],
+        trace_block_size: usize,
+        engine_block_size: u32,
+    ) -> Self {
+        if engine_block_size == 0 || trace_block_size == 0 {
+            return Self {
+                local_block_hashes: Vec::new(),
+                sequence_hashes: Vec::new(),
+            };
+        }
+
+        let engine_block_size = engine_block_size as usize;
+        let complete_blocks = input_length / engine_block_size;
+        let mut local_block_hashes = Vec::with_capacity(complete_blocks);
+        let mut hasher = Xxh3::with_seed(1337);
+        let mut engine_tokens = 0;
+        let mut remaining_prompt = input_length;
+        let mut trace_bytes = vec![0_u8; trace_block_size.saturating_mul(4)];
+
+        for &hash_id in hash_ids {
+            if remaining_prompt == 0 {
+                break;
+            }
+            let trace_tokens = remaining_prompt.min(trace_block_size);
+            for bytes in trace_bytes[..trace_tokens * 4].chunks_exact_mut(4) {
+                bytes.copy_from_slice(&hash_id.to_le_bytes());
+            }
+            let mut consumed = 0;
+            while consumed < trace_tokens {
+                let take = (engine_block_size - engine_tokens).min(trace_tokens - consumed);
+                hasher.update(&trace_bytes[consumed * 4..(consumed + take) * 4]);
+                consumed += take;
+                engine_tokens += take;
+                if engine_tokens == engine_block_size {
+                    local_block_hashes.push(hasher.digest());
+                    hasher.reset();
+                    engine_tokens = 0;
+                }
+            }
+            remaining_prompt -= trace_tokens;
+        }
+
+        let mut sequence_hashes = Vec::with_capacity(local_block_hashes.len());
+        for &block_hash in &local_block_hashes {
+            let sequence_hash = sequence_hashes
+                .last()
+                .copied()
+                .map_or(block_hash, |parent| {
+                    let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
+                    bytes[..8].copy_from_slice(&parent.to_le_bytes());
+                    bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
+                    xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
+                });
+            sequence_hashes.push(sequence_hash);
+        }
+
+        Self {
+            local_block_hashes,
+            sequence_hashes,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -559,6 +629,25 @@ impl ReplayRequestPayload {
         }
     }
 
+    pub fn replay_hashes(&self, engine_block_size: u32) -> ReplayRequestHashes {
+        match self {
+            Self::Materialized(request) => {
+                ReplayRequestHashes::from_tokens(&request.tokens, engine_block_size)
+            }
+            Self::Deferred {
+                input_length,
+                hash_ids,
+                trace_block_size,
+                ..
+            } => ReplayRequestHashes::from_trace_blocks(
+                *input_length,
+                hash_ids,
+                *trace_block_size,
+                engine_block_size,
+            ),
+        }
+    }
+
     pub fn into_direct_request(self) -> DirectRequest {
         match self {
             Self::Materialized(request) => request,
@@ -616,5 +705,30 @@ impl CompactReadyTurn {
             replay_hashes: self.replay_hashes,
             request: self.request.into_direct_request(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReplayRequestHashes;
+    use crate::replay::loadgen::trace::synthesize_trace_tokens;
+
+    #[test]
+    fn compact_trace_hashes_match_synthesized_tokens_when_blocks_misalign() {
+        let input_length = 23;
+        let trace_block_size = 6;
+        let hash_ids = [7, 11, 13, 17];
+        let engine_block_size = 8;
+        let tokens = synthesize_trace_tokens(input_length, &hash_ids, trace_block_size).unwrap();
+
+        assert_eq!(
+            ReplayRequestHashes::from_trace_blocks(
+                input_length,
+                &hash_ids,
+                trace_block_size,
+                engine_block_size,
+            ),
+            ReplayRequestHashes::from_tokens(&tokens, engine_block_size),
+        );
     }
 }
