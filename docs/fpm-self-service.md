@@ -7,7 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 
 `aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one pure tensor-parallel worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's existing per-worker FPM support and packaged collector. No other draft PR needs to be merged first.
 
-Planning works before the model has an AISimulate model class or measured FPM timings. A valid request records your choices; model integration, runtime compatibility, and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not implement an Inkling model class, run preflight checks, provision GPU resources, or establish measured accuracy. Those steps belong to the broader integration project.
+Planning works before the model has an AISimulate model class or measured FPM timings. A valid request records your choices; model metadata and execution readiness, runtime compatibility, and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not run target preflight checks, provision GPU resources, or establish measured accuracy.
+
+In this revision, ordinary FPM `predict` and `recommend` still construct a registered analytical model for resource accounting and SOL-based timing transfer. A separate decoupling change will add a route that uses model/resource metadata and direct interpolation of measured timings without an op-level model class. The existing registered-model/SOL route will remain available. See [Choose the model execution route](#choose-the-model-execution-route) before handing off a new architecture.
+
+The Inkling pilot is planned for NVIDIA GB200 with TP, DEP, and TEP configurations through the class-independent route. This guided planner currently generates pure-TP configurations only. The checkpoint, runtime, allocation, and strategy degrees must be pinned before that pilot; this guide does not establish Inkling readiness or GB200 accuracy.
 
 ## Create the request
 
@@ -51,6 +55,8 @@ aisimulate onboard collect-fpm \
 
 The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. The second prints the collector command without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each request. On an existing plan, `--overwrite` can repair missing generated files for the identical request; it rejects changed inputs and preserves existing collected data.
 
+If a newer draft revision changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate earlier draft plans. Guidance changes do not change the saved-request identity checks used by collection.
+
 The search uses one selected TP size. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Dense collection uses the `tp` preset; MoE uses `pure_tp`; the selected TP size remains exact.
 
 Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command.
@@ -75,7 +81,7 @@ The collector narrows initial prefill sampling with the pilot's input-token and 
 
 ## Run the generated ordinary configurations
 
-After model integration and formal data collection are complete:
+After the selected model execution route is available and formal data collection is complete:
 
 ```bash
 aisimulate predict \
@@ -125,10 +131,13 @@ Run either the individual recommendation command or the loop against fresh resul
 
 The generated configurations select `engine.workers.aggregated.timing.forward_model: fpm` and set `engine.systems_path` to the plan's absolute local systems directory. The same root supplies hardware and collected FPM data. Recommendation preserves it in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there.
 
-Ordinary `predict` and `recommend` commands retain their existing behavior and defaults. Their generated configs can be loaded and edited through the public configuration schema. Missing model integration or data may still prevent execution; a successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
+Ordinary `predict` and `recommend` commands retain their existing behavior and defaults. Their generated configs can be loaded and edited through the public configuration schema. In this revision, missing model registration or data may still prevent execution; a successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
 
-## Hand off a new model architecture
+## Choose the model execution route
 
-Give an engineer the saved request, the pinned model configuration, and the plan. Follow [How to Add a New Model](../python/aisimulate/docs/add_a_new_model.md) to integrate the architecture and model class, including its operation graph, memory accounting, and KV-cache behavior. FPM supplies measured whole-forward timings; it does not replace the model structure needed by simulation.
+Hand off the saved request, pinned model configuration, and plan. Both routes need a canonical checkpoint identity, effective precision and topology, correct weight and KV-cache accounting, and matching whole-forward FPM measurements. Collected timings alone do not establish memory fit.
 
-The model guide also describes legacy per-operation silicon profiling. Collecting those per-operation timings is not mandatory for this FPM workflow. Integrate the model structure first, collect the matching whole-forward FPM data through the existing collector, and then verify prediction and recommendation on the target deployment.
+- **Registered-model/SOL route, available in this revision:** reuse a compatible analytical class or follow [How to Add a New Model](../python/aisimulate/docs/add_a_new_model.md) when choosing to add one. Verify its operation graph, memory and cache accounting, and native FPM SOL execution. A dedicated class is an option for this route, not the intended prerequisite for every FPM onboarding.
+- **Class-independent route, planned in the separate decoupling change:** resolve model and resource metadata without constructing an operation graph. Use direct measured-time interpolation, including wider two-sided KV brackets at the same batch size when both neighboring prompt curves cover the query. Missing brackets or unsupported metadata must produce explicit errors. This route is not implemented by the guided foundation; 2D interpolation remains experimental.
+
+Per-operation silicon profiling described in the model guide is not required by either FPM route. The intended self-service workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Collection bootstrap can already resolve some unregistered model configurations; that does not establish that this revision's ordinary FPM prediction path can construct them.

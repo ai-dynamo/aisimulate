@@ -181,8 +181,10 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "id": "model_integration",
                 "status": "not_checked",
                 "detail": (
-                    "Add or verify the registered model class, architecture mapping, memory/cache accounting, "
-                    "and chosen parallelism using docs/add_a_new_model.md. Per-operation silicon data is not required."
+                    "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. This revision's "
+                    "FPM predict/recommend uses registered analytical classes and SOL transfer; follow "
+                    "python/aisimulate/docs/add_a_new_model.md for that route. Class-independent FPM with direct "
+                    "timing interpolation is planned separately. Per-operation silicon data is not required."
                 ),
             },
             {
