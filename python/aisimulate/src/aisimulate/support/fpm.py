@@ -156,6 +156,6 @@ def run_fpm(
         # entering run_resolved; only execution failures escape this call.
         try:
             return fpm_main(command[3:])
-        except (RuntimeError, ValueError, OSError) as exc:
+        except Exception as exc:
             print(f"aisimulate support collect-fpm failed: {exc}", file=sys.stderr)
             return 1

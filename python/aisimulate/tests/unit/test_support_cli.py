@@ -560,6 +560,68 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
         assert "aisimulate support collect-fpm failed: test collection failure" in stderr
 
 
+def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection(tmp_path, capsys):
+    from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
+
+    command = _local_collection_command(tmp_path)
+    capsys.readouterr()
+    assert cli.main([argument for argument in command if argument != "--execute"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    launch_marker = tmp_path / "cluster-command-launched"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    kubectl = bin_dir / "kubectl"
+    kubectl.write_text('#!/bin/sh\n: > "$FPM_TEST_LAUNCH_MARKER"\nexit 99\n')
+    kubectl.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "FPM_KUBECTL": "kubectl",
+        "FPM_TEST_LAUNCH_MARKER": str(launch_marker),
+    }
+    planned = subprocess.run(
+        [sys.executable, *preview[1:]],
+        cwd=tmp_path,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert planned.returncode == 0, planned.stderr
+    frozen = json.loads(planned.stdout)
+    root = tmp_path / "plan"
+    checkpoint = root / "fpm-checkpoint/fpm_forward.json"
+    checkpoint.parent.mkdir()
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "schema": CHECKPOINT_SCHEMA,
+                "plan_sha256": frozen["sha256"],
+                "cells": {frozen["cells"][0]["cell_id"]: []},
+            }
+        )
+    )
+    original = checkpoint.read_bytes()
+
+    resumed = subprocess.run(
+        [sys.executable, "-m", "aisimulate", *command, "--resume"],
+        cwd=tmp_path,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert resumed.returncode == 1, resumed.stderr
+    assert "Traceback" not in resumed.stderr
+    assert "aisimulate support collect-fpm failed:" in resumed.stderr
+    assert checkpoint.read_bytes() == original
+    assert not launch_marker.exists()
+    assert not list((root / "fpm-artifacts").rglob("*.yaml"))
+
+
 @pytest.mark.parametrize("contents", ["[one, two]\n", "identity: [\n", "identity: {}\n"])
 def test_bad_request_yaml_is_reported_without_a_traceback(tmp_path, capsys, contents) -> None:
     request = tmp_path / "bad.yaml"
