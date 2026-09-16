@@ -345,6 +345,7 @@ def _worker_engine_args(
         "max_num_batched_tokens": worker.scheduler.max_batched_tokens,
         "max_num_seqs": worker.scheduler.max_sequences,
         "prefill_schedule_interval": worker.scheduler.prefill_schedule_interval,
+        "prefill_decode_interval": worker.scheduler.prefill_decode_interval,
         "block_size": block_size,
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,

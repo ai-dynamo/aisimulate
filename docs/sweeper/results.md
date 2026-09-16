@@ -89,6 +89,13 @@ candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
 validation rejects numeric watts below the coverage gate. Null values never
 become zero or enter objective arithmetic.
 
+This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
+their legacy schema and sentinels; the mapping below describes conversion targets,
+not an automatic converter. They do not satisfy this power contract as-is. A
+converter must establish coverage and preserve unavailable values before emitting
+a conforming result; it cannot infer coverage from a legacy wattage column alone.
+
 ### Counts
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals

@@ -173,6 +173,33 @@ fn zero_output_request_completes_after_prefill() {
 }
 
 #[test]
+fn interval_idle_ratio_distinguishes_a_busy_peer_from_global_idle() {
+    let mut args = test_args(256, 1, 16);
+    args.prefill_decode_interval = 2;
+    let mut core = SglangCore::new(args);
+    let ratio_after_prior_decodes = 0.4;
+    core.new_token_ratio = ratio_after_prior_decodes;
+
+    // A peer's EXTEND arms this idle rank too.
+    core.prepare_group_pass();
+    core.finish_group_pass(true, true);
+    core.prepare_group_pass();
+    let pass = core.execute_hidden_pass(0.0);
+    assert_eq!(pass.end_ms, 0.0);
+    assert!(!core.model_work_in_pass());
+    core.finish_group_pass(false, true);
+    assert_eq!(core.new_token_ratio, ratio_after_prior_decodes);
+
+    // On the next round the whole group is idle: upstream on_idle resets the
+    // ratio. This round must neither keep decaying it nor retain the old value.
+    core.prepare_group_pass();
+    core.execute_hidden_pass(0.0);
+    core.finish_group_pass(false, false);
+    assert_eq!(core.new_token_ratio, core.config.init_new_token_ratio);
+    assert!(core.is_drained());
+}
+
+#[test]
 fn same_timestamp_retry_hint_stops_when_admission_state_converges() {
     let mut core = SglangCore::new(test_args(1, 4, 8));
     core.receive(direct_request(vec![1; 8], 2));
@@ -1840,6 +1867,40 @@ mod forward_pass_metrics {
                 ..
             }] if *signal_uuid == uuid
         ));
+    }
+
+    #[test]
+    fn cache_only_completion_does_not_arm_prefill_decode_interval() {
+        let mut args = fpm_args();
+        args.prefill_decode_interval = 2;
+        let mut core = SglangCore::new(args);
+        let tokens = (0..8).collect::<Vec<_>>();
+        core.receive(direct_request(tokens.clone(), 0));
+        let seed = core.execute_hidden_pass(0.0);
+        assert_eq!(seed.fpm.unwrap().num_prefill_requests, 1);
+
+        // A completed request leaves two scheduler rounds, even without decode.
+        for remaining in (0..2).rev() {
+            assert!(!core.is_drained());
+            assert!(!core.waiting_for_external_command());
+            let idle = core.execute_hidden_pass(seed.end_ms);
+            assert_eq!(idle.end_ms, seed.end_ms);
+            assert_eq!(
+                idle.same_timestamp_retry,
+                crate::engine::generalized::SameTimestampRetry::Countdown { remaining }
+            );
+        }
+        assert!(core.is_drained());
+
+        core.receive(direct_request(tokens, 0));
+        let cached = core.execute_hidden_pass(seed.end_ms);
+        assert_eq!(cached.completed_requests, 1);
+        assert_eq!(cached.fpm.unwrap().num_prefill_requests, 0);
+        assert!(core.is_drained(), "cache bookkeeping must not arm EXTEND");
+
+        core.receive(direct_request((100..108).collect(), 1));
+        let fresh = core.execute_hidden_pass(cached.end_ms);
+        assert_eq!(fresh.fpm.unwrap().num_prefill_requests, 1);
     }
 
     #[test]
