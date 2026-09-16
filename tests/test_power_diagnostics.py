@@ -185,6 +185,61 @@ def test_energy_schema_requires_a_reason_when_energy_is_skipped(skipped, valid):
     assert _energy_detail_validator().is_valid(payload) is valid
 
 
+@pytest.mark.parametrize("level", ["aggregate", "phase"])
+@pytest.mark.parametrize(
+    "status,watts,valid",
+    [
+        ("available", 400.0, True),
+        ("available", None, False),
+        ("withheld", 400.0, False),
+        ("withheld", None, True),
+        ("unsupported", 400.0, False),
+        ("unsupported", None, True),
+        ("not_observed", 400.0, False),
+        ("not_observed", None, True),
+        ("missing", 400.0, False),
+        ("missing", None, True),
+        ("invented", 400.0, False),
+        ("invented", None, False),
+    ],
+)
+def test_energy_publication_status_matches_nullable_watts(level, status, watts, valid):
+    from aisimulate.detail import energy_diagnostics
+
+    payload = _energy_detail_payload()
+    diagnostics = payload["sections"]["energy"]["diagnostics"]
+    record = diagnostics if level == "aggregate" else diagnostics["phases"][1]
+    record.update(publication_status=status, power_w=watts, power_coverage=1.0)
+    if level == "aggregate":
+        payload["sections"]["energy"]["status"] = status
+    assert _energy_detail_validator().is_valid(payload) is valid
+    if valid:
+        exported = energy_diagnostics({"power_diagnostics": diagnostics})
+        record = exported if level == "aggregate" else exported["phases"][1]
+        assert record["power_w"] == watts
+        assert record["publication_status"] == status
+    else:
+        with pytest.raises(ValueError, match="publication_status"):
+            energy_diagnostics({"power_diagnostics": diagnostics})
+
+
+@pytest.mark.parametrize("phases", [None, {}, "invalid", [None]])
+def test_energy_export_rejects_malformed_phase_containers(phases):
+    from aisimulate.detail import energy_diagnostics
+
+    diagnostics = _diagnostics()
+    diagnostics["phases"] = phases
+    with pytest.raises(ValueError, match="energy phases must be a list of phase records"):
+        energy_diagnostics({"power_diagnostics": diagnostics})
+
+
+def test_energy_schema_rejects_simultaneous_output_and_skipped_reason():
+    payload = _energy_detail_payload()
+    assert _energy_detail_validator().is_valid(payload)
+    payload["skipped"]["energy"] = "also skipped"
+    assert not _energy_detail_validator().is_valid(payload)
+
+
 @pytest.mark.parametrize("value", ["invalid", 42, None, {}, ["nested"]])
 @pytest.mark.parametrize("level", ["phase", "operation"])
 def test_energy_schema_rejects_malformed_nested_records(level, value):

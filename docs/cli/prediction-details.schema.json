@@ -251,19 +251,29 @@
               ],
               "if": {
                 "properties": {
-                  "power_w": {
-                    "type": "number"
+                  "publication_status": {
+                    "const": "available"
                   }
                 },
                 "required": [
-                  "power_w"
+                  "publication_status"
                 ]
               },
               "then": {
                 "properties": {
+                  "power_w": {
+                    "type": "number"
+                  },
                   "power_coverage": {
                     "type": "number",
                     "minimum": 0.9
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "power_w": {
+                    "type": "null"
                   }
                 }
               }
@@ -679,16 +689,29 @@
       "additionalProperties": false,
       "if": {
         "properties": {
-          "power_w": {
-            "type": "number"
+          "publication_status": {
+            "const": "available"
           }
-        }
+        },
+        "required": [
+          "publication_status"
+        ]
       },
       "then": {
         "properties": {
+          "power_w": {
+            "type": "number"
+          },
           "power_coverage": {
             "type": "number",
             "minimum": 0.9
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "power_w": {
+            "type": "null"
           }
         }
       }
@@ -739,6 +762,22 @@
           "skipped": {
             "required": [
               "time"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "energy"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "energy"
             ]
           }
         }

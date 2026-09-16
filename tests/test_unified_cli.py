@@ -1084,12 +1084,12 @@ def test_energy_detail_schema_enforces_power_publication(watts, coverage, valid)
         "schema_version": "1.0",
         "sections": {
             "energy": {
-                "status": "withheld",
+                "status": "available" if watts is not None else "withheld",
                 "scope": "active_forward_pass_per_gpu",
                 "diagnostics": {
                     "power_w": watts,
                     "power_coverage": coverage,
-                    "publication_status": "withheld",
+                    "publication_status": "available" if watts is not None else "withheld",
                     "phases": [],
                 },
             }
@@ -1111,8 +1111,8 @@ def test_energy_detail_schema_constrains_publication_status(status, publication_
         "status": status,
         "scope": "active_forward_pass_per_gpu",
         "diagnostics": {
-            "power_w": None,
-            "power_coverage": None,
+            "power_w": 400.0 if publication_status == "available" else None,
+            "power_coverage": 1.0 if publication_status == "available" else None,
             "publication_status": publication_status,
             "phases": [],
         },

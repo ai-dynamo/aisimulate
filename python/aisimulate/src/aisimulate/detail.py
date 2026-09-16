@@ -41,10 +41,25 @@ def prediction_summary(native: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_energy_publication(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    power = normalize_power_summary(diagnostics)
+    status = diagnostics.get("publication_status")
+    if status not in ("available", "withheld", "unsupported", "not_observed", "missing"):
+        raise ValueError("energy publication_status must identify a supported publication state")
+    if (status == "available") != (power["power_w"] is not None):
+        raise ValueError("energy publication_status must be available exactly when power_w is numeric")
+    return {**diagnostics, **power}
+
+
 def energy_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
     diagnostics = native.get("power_diagnostics")
     if isinstance(diagnostics, dict):
-        return {**deepcopy(diagnostics), **normalize_power_summary(diagnostics)}
+        result = _normalize_energy_publication(deepcopy(diagnostics))
+        phases = result.get("phases", [])
+        if not isinstance(phases, list) or any(not isinstance(phase, dict) for phase in phases):
+            raise ValueError("energy phases must be a list of phase records")
+        result["phases"] = [_normalize_energy_publication(phase) for phase in phases]
+        return result
     return {
         "schema_version": "1.0",
         "scope": "active_forward_pass_per_gpu",
