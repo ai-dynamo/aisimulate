@@ -5,12 +5,13 @@ use std::ffi::c_void;
 
 use aisimulate_placement_abi::{
     AdmissionDecisionV1, AdmissionMetadataFormatV1, ByteSliceV1, DescriptorValidationError,
-    KvEventV1, KvStorageTierV1, KvStoredBlockV1, MAX_ADMISSION_METADATA_BYTES_V1,
+    KvEventSliceV1, KvEventV1, KvStorageTierV1, KvStoredBlockV1, MAX_ADMISSION_METADATA_BYTES_V1,
     PlacementAdmissionV1, PlacementBatchResultV1, PlacementCacheSampleV1, PlacementDiagnosticV1,
     PlacementMetadataV1, PlacementMutationKindV1, PlacementMutationPayloadV1,
     PlacementMutationSliceV1, PlacementMutationV1, PlacementResultV1, PlacementV1,
     PluginDescriptorV1, PluginVTableV1, PromptIdentityV1, StatusV1, TokenIdSliceV1,
-    WorkerCapacityV1, WorkerTopologyV1, validate_descriptor_v1, validate_mutation_batch_v1,
+    WorkerCapacityV1, WorkerTopologyV1, validate_descriptor_v1, validate_kv_event_batch_v1,
+    validate_mutation_batch_v1,
 };
 
 #[test]
@@ -42,6 +43,47 @@ fn lossless_kv_observation_records_store_and_remove_identity() {
         202
     );
     assert_eq!(remove.removed_hashes().expect("removed payload"), &[101]);
+}
+
+#[test]
+fn lossless_kv_event_validator_rejects_invalid_nested_slices() {
+    let stored_blocks = [KvStoredBlockV1 {
+        sequence_hash: 101,
+        token_hash: 202,
+    }];
+    let valid = KvEventV1::stored(
+        7,
+        3,
+        KvStorageTierV1::DEVICE,
+        11,
+        Some(99),
+        Some(4),
+        &stored_blocks,
+    );
+    assert_eq!(
+        unsafe {
+            validate_kv_event_batch_v1(KvEventSliceV1 {
+                data: &valid,
+                len: 1,
+            })
+        },
+        Ok(())
+    );
+
+    let mut invalid = valid;
+    // This deliberately constructs an invalid foreign-ABI packet with a
+    // nonzero null stored-block slice.
+    invalid.payload.stored.blocks.data = std::ptr::null();
+    invalid.payload.stored.blocks.len = 1;
+    assert_eq!(
+        unsafe {
+            validate_kv_event_batch_v1(KvEventSliceV1 {
+                data: &invalid,
+                len: 1,
+            })
+        },
+        Err(StatusV1::INVALID_ARGUMENT)
+    );
 }
 
 #[test]

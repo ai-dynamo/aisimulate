@@ -31,6 +31,8 @@ pub const MAX_ADMISSION_PROMPT_TOKEN_IDS_V1: u64 = 1_048_576;
 pub const MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1: u64 = 1_048_576;
 /// Maximum tagged metadata bytes accepted on one V1 admission.
 pub const MAX_ADMISSION_METADATA_BYTES_V1: u64 = 65_536;
+/// Maximum blocks or removed hashes accepted in one lossless KV event.
+pub const MAX_KV_EVENT_BLOCKS_V1: u64 = 1_048_576;
 
 /// A versioned C-ABI operation status.
 #[repr(transparent)]
@@ -1237,6 +1239,57 @@ pub unsafe fn validate_mutation_batch_v1(batch: PlacementMutationSliceV1) -> Res
             if !valid_admission(&admission) {
                 return Err(StatusV1::INVALID_ARGUMENT);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Validates a borrowed sequence of lossless KV observation packets.
+///
+/// # Safety
+///
+/// A non-empty `batch` must reference readable [`KvEventV1`] records for the
+/// duration of this call. Every nested non-empty slice must likewise be
+/// readable for the duration of this call.
+pub unsafe fn validate_kv_event_batch_v1(batch: KvEventSliceV1) -> Result<(), StatusV1> {
+    if !valid_slice(batch.data, batch.len) || batch.len > MAX_BATCH_MUTATIONS_V1 {
+        return Err(StatusV1::INVALID_ARGUMENT);
+    }
+    if batch.len == 0 {
+        return Ok(());
+    }
+    // Safety: required by this function's contract and guarded by the null
+    // check above.
+    let events = unsafe { std::slice::from_raw_parts(batch.data, batch.len as usize) };
+    for event in events {
+        if event.storage_tier != KvStorageTierV1::DEVICE {
+            return Err(StatusV1::INVALID_ARGUMENT);
+        }
+        match event.kind {
+            KvEventKindV1::STORED => {
+                if event.flags & !(KvEventV1::HAS_PARENT_HASH | KvEventV1::HAS_START_POSITION) != 0
+                {
+                    return Err(StatusV1::INVALID_ARGUMENT);
+                }
+                // Safety: `kind` selects the stored union arm.
+                let stored = unsafe { event.payload.stored };
+                if !valid_slice(stored.blocks.data, stored.blocks.len)
+                    || stored.blocks.len > MAX_KV_EVENT_BLOCKS_V1
+                {
+                    return Err(StatusV1::INVALID_ARGUMENT);
+                }
+            }
+            KvEventKindV1::REMOVED => {
+                if event.flags != 0 {
+                    return Err(StatusV1::INVALID_ARGUMENT);
+                }
+                // Safety: `kind` selects the removed union arm.
+                let removed = unsafe { event.payload.removed };
+                if !valid_slice(removed.data, removed.len) || removed.len > MAX_KV_EVENT_BLOCKS_V1 {
+                    return Err(StatusV1::INVALID_ARGUMENT);
+                }
+            }
+            _ => return Err(StatusV1::INVALID_ARGUMENT),
         }
     }
     Ok(())
