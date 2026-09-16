@@ -119,6 +119,9 @@ def recommendation_to_sweeper(
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
+    for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("hardware") is not None:
+            search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
     if isinstance(afd, dict):
         search_space.update(_afd_search_space(afd))
         if modes == ["afd+pd"]:
@@ -795,6 +798,8 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
+            engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 

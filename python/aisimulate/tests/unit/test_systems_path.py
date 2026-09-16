@@ -214,6 +214,18 @@ def test_custom_timing_can_use_local_profiles_for_inferred_kv_capacity(local_pro
     assert _predict(raw).metrics["completed_requests"] == 1
 
 
+@pytest.mark.parametrize("explicit_version", [False, True])
+def test_worker_hardware_override_resolves_in_local_systems_root(local_profiles, explicit_version):
+    raw = _local_request(local_profiles[0], "disaggregated")
+    raw["engine"]["hardware"] = "h200_sxm"
+    for worker in raw["engine"]["workers"].values():
+        worker["hardware"] = _SYSTEM
+    if not explicit_version:
+        raw["engine"].pop("backend_version")
+
+    assert _predict(raw).metrics["completed_requests"] == 1
+
+
 def test_default_prediction_still_uses_bundled_op_level_data_after_a_local_request(local_profiles):
     local = _local_request(local_profiles[0])
     default = deepcopy(local)

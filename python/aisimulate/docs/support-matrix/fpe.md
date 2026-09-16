@@ -1,8 +1,9 @@
 # Strict-native FPE coverage matrix
 
-The Forward Pass Engine (FPE) matrix answers one narrow question: can the
-supported public native estimator build a resolved engine identity and return
-positive, finite latency estimates for representative forward-pass shapes?
+The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+answers one narrow question: can the supported public native estimator build a
+resolved engine identity and return positive, finite latency estimates for
+representative forward-pass shapes?
 
 It does **not** certify the AISimulate CLI, Sweeper, scheduler, Replay,
 disaggregated rate matching, deployment validity, or prediction accuracy.
@@ -134,6 +135,41 @@ every classified failure and representative error in the matrix artifacts.
 Refresh-time claims must name both runner concurrency and per-runner thread
 count, plus the source SHA from the measured run.
 
+## Website publication
+
+GitHub Pages rebuilds after a successful main-branch FPE or Nightly run and on
+public-documentation changes. Every deployment selects the retained qualified
+FPE artifact with the newest tested source commit in the current main history.
+Manual runs can test an `expected_sha` that differs from the workflow event SHA;
+Pages uses the qualification manifest's tested SHA and verifies that every CSV
+row agrees. Re-running an older commit cannot displace a newer qualified snapshot.
+The newest artifact ID wins when several artifacts qualify the same source.
+The page shows the snapshot's source SHA, artifact creation time, and producing
+CI run.
+
+Pages checks the producing workflow, successful main-branch run, qualification
+manifest, row source identities, and complete shard count. It copies only the
+indexed CSV data; HTML and scripts always come from main. Pull request previews
+use repository data and cannot deploy. If no eligible artifact remains, Pages
+fails and preserves the existing website instead of republishing stale committed
+data. Run **FPE Support Matrix** on main with the current full main SHA, then
+rerun **GitHub Pages** if needed. Web artifacts are retained for 90 days, subject
+to the repository's retention policy. Artifacts generated before the qualification
+manifest was introduced cannot be published by this path.
+
+A partial Nightly retry can retain the FPE artifact from an earlier attempt.
+If the newest qualified snapshot belongs to a retried run whose latest attempt
+has not completed successfully, Pages stops deployment and preserves the current
+website. Retrying an older tested source does not block a newer qualified snapshot.
+Initially failed or unfinished runs remain ineligible.
+
+An expired artifact does not reveal which source it tested. Pages stops if an
+otherwise eligible artifact has expired or is malformed, unless a validated
+snapshot at current main HEAD with a higher artifact ID already proves that
+remaining older artifacts cannot win. Consequently, an expired historical run
+can block publication when the available qualified snapshot is older than main
+HEAD. Refresh FPE at the current main SHA to restore publication.
+
 Staging waits for the complete matrix. Each shard has a 480-minute timeout;
 the eight-shard concurrency limit and runner queues can make the total wait
 longer than that per-shard limit. A successful wheel build alone does not make
@@ -145,3 +181,26 @@ The final platform-wheel check invokes the package verifier with
 repository generator and Git checkout; its subprocess runs from an unrelated
 temporary directory against the installed wheel. The reduced Docker build
 context runs the package/runtime verifier without the repository-only FPE flag.
+
+## Legacy AIC snapshot provenance
+
+The Legacy AIC Support Matrix displays a **Historical snapshot** and
+**Qualification not recorded**. Its **Latest data change** timestamp is the
+commit time of the most recent change to its index or an indexed CSV, with a
+link to that data commit. It is not the website build time or evidence of a
+complete matrix rerun. No full-matrix generation time or qualification report
+was recorded for the retained legacy data.
+
+The Pages builder adds this provenance to the packaged
+`data/support-matrix/index.json`. Website-only changes do not refresh the data
+date. A build with modified/untracked data, a shallow Git history, or no Git
+history leaves the date unavailable. Direct source-tree previews also show the
+missing-date state because the committed legacy index contains no provenance.
+
+To reproduce the browser checks, install Chromium with
+`uv run --python 3.12 --with playwright playwright install chromium`, then run
+`uv run --python 3.12 --with playwright python scripts/check_legacy_support_matrix_browser.py`.
+The script builds a temporary site and verifies real data, commit links, missing
+and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
+Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
+`--screenshot /path/to/preview.png` to capture the real page before test fixtures.
