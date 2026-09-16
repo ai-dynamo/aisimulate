@@ -1119,7 +1119,7 @@ aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
 
-<a id="native-vllm-host-offload-prediction"></a>
+<a id="prompt-lookup-ngram-speculative-decoding"></a>
 
 ### Prompt-lookup (ngram) speculative decoding
 
@@ -1172,6 +1172,8 @@ Recommendation pins this block for every candidate; it does not search draft
 length or acceptance. Saved prediction YAML retains the block for replay.
 Backend deployment artifact generation rejects these candidates until the
 ngram runtime flags are supported.
+
+<a id="native-vllm-host-offload-prediction"></a>
 
 ### 12.2 Native vLLM host-offload prediction
 
