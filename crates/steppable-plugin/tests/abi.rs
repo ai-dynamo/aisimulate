@@ -57,6 +57,161 @@ fn plugin_entry_exposes_a_complete_v1_table() {
 }
 
 #[test]
+fn rejected_lease_operations_initialize_outputs() {
+    let descriptor = unsafe { &*aisimulate_steppable_plugin::aiperf_steppable_plugin_v1() };
+    let vtable = unsafe { &*descriptor.vtable };
+    let tail = unsafe {
+        aiperf_steppable_abi::PluginVTableV1::compact_buffer_leases(
+            descriptor.vtable.cast(),
+            descriptor.capabilities,
+        )
+    }
+    .expect("AISimulate advertises a complete compact-buffer lease tail");
+    let payload = br"{}";
+    let mut handle = ReplayHandleV1(std::ptr::dangling_mut());
+    let mut error = ByteSliceV1 {
+        data: std::ptr::dangling(),
+        len: 99,
+    };
+
+    assert_eq!(
+        unsafe {
+            tail.create_with_hash_buffer_leases.unwrap()(
+                CreateRequestV1 {
+                    struct_size: std::mem::size_of::<CreateRequestV1>() as u32,
+                    flags: 0,
+                    provider_payload: ByteSliceV1 {
+                        data: payload.as_ptr(),
+                        len: payload.len() as u64,
+                    },
+                },
+                HashBufferLeaseCallbacksV1::EMPTY,
+                &raw mut handle,
+                &raw mut error,
+            )
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
+    assert!(handle.0.is_null());
+    assert!(error.data.is_null());
+    assert_eq!(error.len, 0);
+
+    let releases = AtomicUsize::new(0);
+    assert_eq!(
+        unsafe {
+            tail.create_with_hash_buffer_leases.unwrap()(
+                CreateRequestV1 {
+                    struct_size: std::mem::size_of::<CreateRequestV1>() as u32,
+                    flags: 0,
+                    provider_payload: ByteSliceV1 {
+                        data: payload.as_ptr(),
+                        len: payload.len() as u64,
+                    },
+                },
+                HashBufferLeaseCallbacksV1 {
+                    struct_size: std::mem::size_of::<HashBufferLeaseCallbacksV1>() as u32,
+                    flags: 0,
+                    context: (&raw const releases).cast_mut().cast(),
+                    release_hash_buffer: Some(count_hash_buffer_release),
+                },
+                &raw mut handle,
+                &raw mut error,
+            )
+        },
+        StatusV1::OK
+    );
+
+    let mut buffer_id = HashBufferIdV1(99);
+    assert_eq!(
+        unsafe {
+            tail.register_hash_buffer.unwrap()(handle, U32SliceV1::EMPTY, &raw mut buffer_id)
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
+    assert_eq!(buffer_id, HashBufferIdV1::INVALID);
+
+    let mut request_id = [99; 16];
+    assert_eq!(
+        unsafe {
+            tail.submit_compact_hash_buffer_range.unwrap()(
+                handle,
+                compact_request(),
+                HashBufferRangeV1 {
+                    buffer_id: HashBufferIdV1::INVALID,
+                    offset: 0,
+                    len: 0,
+                },
+                &raw mut request_id,
+            )
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
+    assert_eq!(request_id, [0; 16]);
+
+    unsafe { vtable.destroy.unwrap()(handle) };
+}
+
+#[test]
+fn hash_buffer_registration_rejects_lengths_larger_than_a_rust_slice() {
+    let descriptor = unsafe { &*aisimulate_steppable_plugin::aiperf_steppable_plugin_v1() };
+    let vtable = unsafe { &*descriptor.vtable };
+    let tail = unsafe {
+        aiperf_steppable_abi::PluginVTableV1::compact_buffer_leases(
+            descriptor.vtable.cast(),
+            descriptor.capabilities,
+        )
+    }
+    .expect("AISimulate advertises a complete compact-buffer lease tail");
+    let releases = AtomicUsize::new(0);
+    let payload = br"{}";
+    let mut handle = ReplayHandleV1(std::ptr::null_mut());
+    let mut error = ByteSliceV1::EMPTY;
+    assert_eq!(
+        unsafe {
+            tail.create_with_hash_buffer_leases.unwrap()(
+                CreateRequestV1 {
+                    struct_size: std::mem::size_of::<CreateRequestV1>() as u32,
+                    flags: 0,
+                    provider_payload: ByteSliceV1 {
+                        data: payload.as_ptr(),
+                        len: payload.len() as u64,
+                    },
+                },
+                HashBufferLeaseCallbacksV1 {
+                    struct_size: std::mem::size_of::<HashBufferLeaseCallbacksV1>() as u32,
+                    flags: 0,
+                    context: (&raw const releases).cast_mut().cast(),
+                    release_hash_buffer: Some(count_hash_buffer_release),
+                },
+                &raw mut handle,
+                &raw mut error,
+            )
+        },
+        StatusV1::OK
+    );
+
+    let hashes = [401_u32];
+    let mut buffer_id = HashBufferIdV1::INVALID;
+    let too_large = isize::MAX as u64 / std::mem::size_of::<u32>() as u64 + 1;
+    assert_eq!(
+        unsafe {
+            tail.register_hash_buffer.unwrap()(
+                handle,
+                U32SliceV1 {
+                    data: hashes.as_ptr(),
+                    len: too_large,
+                },
+                &raw mut buffer_id,
+            )
+        },
+        StatusV1::INVALID_ARGUMENT
+    );
+    assert_eq!(buffer_id, HashBufferIdV1::INVALID);
+
+    unsafe { vtable.destroy.unwrap()(handle) };
+}
+
+#[test]
 fn leased_compact_range_releases_once_when_cancelled() {
     let descriptor = unsafe { &*aisimulate_steppable_plugin::aiperf_steppable_plugin_v1() };
     let vtable = unsafe { &*descriptor.vtable };

@@ -7,8 +7,11 @@
 //! Request, event, and measurement records use the ABI crate's fixed-layout
 //! data-plane records.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_char;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +38,11 @@ use aisimulate_core::replay::{
 use aisimulate_placement_abi::{PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
 use uuid::Uuid;
+
+#[cfg(test)]
+thread_local! {
+    static PANIC_NEXT_LEASE_RANGE: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Topology built by the backend for one steppable replay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -260,6 +268,24 @@ unsafe fn backend_mut(handle: ReplayHandleV1) -> Result<&'static mut BackendRepl
     Ok(unsafe { &mut *handle.0.cast::<BackendReplay>() })
 }
 
+fn panic_status(handle: ReplayHandleV1) -> StatusV1 {
+    // Error recording is best-effort: containment is the required C-ABI
+    // guarantee. Do not let recording the original panic trigger another.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(replay) = unsafe { backend_mut(handle) } {
+            replay.last_error = "panic contained at AISimulate steppable ABI boundary".to_owned();
+        }
+    }));
+    StatusV1::INTERNAL
+}
+
+fn catch_status(operation: impl FnOnce() -> StatusV1, handle: ReplayHandleV1) -> StatusV1 {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(status) => status,
+        Err(_) => panic_status(handle),
+    }
+}
+
 unsafe fn borrowed_tokens(slice: U32SliceV1) -> Result<&'static [u32], StatusV1> {
     if slice.len > usize::MAX as u64
         || (slice.data.is_null() && slice.len != 0)
@@ -348,7 +374,7 @@ unsafe fn compact_request_from_hash_buffer_range(
     ))
 }
 
-unsafe extern "C" fn create(
+unsafe fn create_impl(
     request: CreateRequestV1,
     handle: *mut ReplayHandleV1,
     error: *mut ByteSliceV1,
@@ -499,31 +525,63 @@ unsafe extern "C" fn create(
     }
 }
 
+unsafe extern "C" fn create(
+    request: CreateRequestV1,
+    handle: *mut ReplayHandleV1,
+    error: *mut ByteSliceV1,
+) -> StatusV1 {
+    if !handle.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *handle = ReplayHandleV1(std::ptr::null_mut()) };
+    }
+    if !error.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *error = ByteSliceV1::EMPTY };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        create_impl(request, handle, error)
+    })) {
+        Ok(status) => status,
+        Err(_) => StatusV1::INTERNAL,
+    }
+}
+
 unsafe extern "C" fn create_with_hash_buffer_leases(
     request: CreateRequestV1,
     callbacks: HashBufferLeaseCallbacksV1,
     handle: *mut ReplayHandleV1,
     error: *mut ByteSliceV1,
 ) -> StatusV1 {
+    if !handle.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *handle = ReplayHandleV1(std::ptr::null_mut()) };
+    }
+    if !error.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *error = ByteSliceV1::EMPTY };
+    }
     if !callbacks.has_release_callback() {
         return StatusV1::INVALID_ARGUMENT;
     }
-    // Safety: forwarded to the base creator, which validates and initializes
-    // the output pointers before allocating a replay.
-    let status = unsafe { create(request, handle, error) };
-    if status != StatusV1::OK {
-        return status;
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        let status = create_impl(request, handle, error);
+        if status != StatusV1::OK {
+            return status;
+        }
+        // Safety: `create_impl` returned a non-null replay handle on success.
+        let replay = match backend_mut(*handle) {
+            Ok(replay) => replay,
+            Err(_) => return StatusV1::INTERNAL,
+        };
+        replay.lease_callbacks = Some(callbacks);
+        StatusV1::OK
+    })) {
+        Ok(status) => status,
+        Err(_) => StatusV1::INTERNAL,
     }
-    // Safety: `create` returned a non-null replay handle on success.
-    let replay = match unsafe { backend_mut(*handle) } {
-        Ok(replay) => replay,
-        Err(_) => return StatusV1::INTERNAL,
-    };
-    replay.lease_callbacks = Some(callbacks);
-    StatusV1::OK
 }
 
-unsafe extern "C" fn register_hash_buffer(
+unsafe fn register_hash_buffer_impl(
     handle: ReplayHandleV1,
     hash_ids: U32SliceV1,
     buffer_id: *mut HashBufferIdV1,
@@ -531,6 +589,7 @@ unsafe extern "C" fn register_hash_buffer(
     if buffer_id.is_null()
         || hash_ids.len == 0
         || hash_ids.len > usize::MAX as u64
+        || hash_ids.len > isize::MAX as u64 / std::mem::size_of::<u32>() as u64
         || hash_ids.data.is_null()
         || !hash_ids.data.is_aligned()
     {
@@ -561,12 +620,33 @@ unsafe extern "C" fn register_hash_buffer(
     StatusV1::OK
 }
 
-unsafe extern "C" fn submit_compact_hash_buffer_range(
+unsafe extern "C" fn register_hash_buffer(
+    handle: ReplayHandleV1,
+    hash_ids: U32SliceV1,
+    buffer_id: *mut HashBufferIdV1,
+) -> StatusV1 {
+    if !buffer_id.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *buffer_id = HashBufferIdV1::INVALID };
+    }
+    catch_status(
+        || unsafe { register_hash_buffer_impl(handle, hash_ids, buffer_id) },
+        handle,
+    )
+}
+
+unsafe fn submit_compact_hash_buffer_range_impl(
     handle: ReplayHandleV1,
     request: CompactRequestV1,
     range: HashBufferRangeV1,
     request_id: *mut RequestIdV1,
 ) -> StatusV1 {
+    #[cfg(test)]
+    PANIC_NEXT_LEASE_RANGE.with(|pending| {
+        if pending.replace(false) {
+            panic!("injected compact hash-buffer range panic");
+        }
+    });
     if request_id.is_null()
         || !range.is_valid()
         || range.offset > usize::MAX as u64
@@ -630,6 +710,22 @@ unsafe extern "C" fn submit_compact_hash_buffer_range(
             StatusV1::REJECTED
         }
     }
+}
+
+unsafe extern "C" fn submit_compact_hash_buffer_range(
+    handle: ReplayHandleV1,
+    request: CompactRequestV1,
+    range: HashBufferRangeV1,
+    request_id: *mut RequestIdV1,
+) -> StatusV1 {
+    if !request_id.is_null() {
+        // Safety: the non-null caller-owned output is valid for this call.
+        unsafe { *request_id = [0; 16] };
+    }
+    catch_status(
+        || unsafe { submit_compact_hash_buffer_range_impl(handle, request, range, request_id) },
+        handle,
+    )
 }
 
 unsafe extern "C" fn submit(
@@ -1136,12 +1232,18 @@ unsafe extern "C" fn last_error(handle: ReplayHandleV1, error: *mut ByteSliceV1)
     StatusV1::OK
 }
 
-unsafe extern "C" fn destroy(handle: ReplayHandleV1) {
+unsafe fn destroy_impl(handle: ReplayHandleV1) {
     if handle.0.is_null() {
         return;
     }
     // Safety: caller transfers the unique handle returned by `create`.
     unsafe { drop(Box::from_raw(handle.0.cast::<BackendReplay>())) };
+}
+
+unsafe extern "C" fn destroy(handle: ReplayHandleV1) {
+    // The callback contract forbids panicking or re-entry. This guard covers
+    // internal destruction so an unexpected Rust panic cannot cross the ABI.
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { destroy_impl(handle) }));
 }
 
 static VTABLE: PluginVTableV1 = PluginVTableV1 {
@@ -1189,6 +1291,28 @@ pub extern "C" fn aiperf_steppable_plugin_v1() -> *const PluginDescriptorV1 {
 mod tests {
     use super::*;
     use aisimulate_core::replay::ReplayRoleConfig;
+
+    #[test]
+    fn compact_lease_range_ffi_entry_contains_an_injected_panic() {
+        PANIC_NEXT_LEASE_RANGE.with(|pending| pending.set(true));
+        let mut request_id = [99; 16];
+        assert_eq!(
+            unsafe {
+                submit_compact_hash_buffer_range(
+                    ReplayHandleV1(std::ptr::null_mut()),
+                    std::mem::zeroed(),
+                    HashBufferRangeV1 {
+                        buffer_id: HashBufferIdV1::INVALID,
+                        offset: 0,
+                        len: 0,
+                    },
+                    &raw mut request_id,
+                )
+            },
+            StatusV1::INTERNAL
+        );
+        assert_eq!(request_id, [0; 16]);
+    }
 
     fn locator() -> DynamicPlacementLocator {
         DynamicPlacementLocator {
