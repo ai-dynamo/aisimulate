@@ -42,7 +42,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#411-power-and-energy-analysis). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#411-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -795,6 +795,10 @@ These gaps concern the unified `aisimulate predict` and `aisimulate recommend` c
 AISimulate package still includes the compatibility AIC CLI and SDKs, so a feature can be available
 in the package without a unified-CLI replacement.
 
+Migration prioritizes features that materially support serving prediction and deployment decisions.
+It does not aim to reproduce every AIC option. Some differences are deliberate product boundaries,
+including the [static estimate modes](#531-static-estimates), rather than planned migration work.
+
 <a id="recommendation-runtime"></a>
 
 ### 5.1 Recommendation runtime
@@ -888,9 +892,23 @@ If both are supplied, it uses the GPU budget and warns that the load target is i
 
 #### 5.3.1 Static estimates
 
-Keep `estimate` for a fixed batch or single pass. `aisimulate predict` models a serving workload;
-its concurrency and scheduling controls do not reproduce a fixed-batch estimate. For example,
-inspect one decode pass:
+**Intentionally not migrated to the AISimulate CLI.** AIC's `static` (fixed-batch prefill plus
+decode), `static_ctx` (prefill only), and `static_gen` (decode only) modes are not exposed by
+`aisimulate predict` or `aisimulate recommend`.
+
+Fixed-batch estimates omit request arrivals, queueing, and serving scheduling. An isolated
+prefill-only or decode-only estimate does not answer the end-to-end latency, throughput, or SLA
+questions that drive AISimulate's serving workflow. These modes do not provide enough value for
+that workflow to justify additional CLI modes and output contracts.
+
+Use `predict` to [evaluate a deployment under its workload](#31-migrate-one-concrete-deployment)
+and `recommend` to [compare deployments](#32-search-with-a-fixed-gpu-budget). Serving concurrency
+controls in-flight requests; it is not a substitute for a fixed batch size.
+[Serving with prefill/decode disaggregation](#41-predict-regular-prefilldecode-disaggregation)
+remains supported.
+
+For specialized estimator diagnostics, the existing AIC compatibility CLI and SDK remain available.
+For example, estimate decode for a fixed batch:
 
 ```bash
 aiconfigurator cli estimate \
@@ -900,7 +918,7 @@ aiconfigurator cli estimate \
   --isl 1024 --osl 128
 ```
 
-**Result to inspect:** the terminal summary describes the fixed batch and decode pass. See
+**Result to inspect:** the terminal summary describes the fixed batch and modeled decode phase. See
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
 
 <a id="detailed-diagnostics"></a>
@@ -921,7 +939,7 @@ these additional diagnostic capabilities:
 AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
 three supported sections. Available AIC sections depend on the estimate mode and data;
 static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For fixed-batch or single-pass semantics, keep the
+absent. For specialized fixed-batch diagnostics, use the compatibility
 [static-estimate workflow](#531-static-estimates).
 
 <a id="deployment-artifacts"></a>
@@ -1121,7 +1139,8 @@ exact candidate domain; see the [default search projection](../sweeper/architect
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
 form batches from the workload: `traffic.load.concurrency` controls in-flight requests, while
 `scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
-Keep AIC for fixed-batch estimates or its original capacity-sweep behavior.
+Fixed-batch static modes are [intentionally not migrated](#531-static-estimates). Keep AIC for
+those diagnostics or its original capacity-sweep behavior.
 
 #### 5.7.5 Context and request-length sweeps
 

@@ -51,6 +51,7 @@ struct LogicalWorker {
     in_flight_by_rank: Vec<BTreeSet<Uuid>>,
     pending_pass: Option<PendingPass>,
     consecutive_same_timestamp_retries: usize,
+    same_timestamp_countdown: Option<usize>,
     #[cfg(test)]
     same_timestamp_retries_total: usize,
 }
@@ -324,6 +325,7 @@ where
             in_flight_by_rank: vec![BTreeSet::new(); dp_size],
             pending_pass: None,
             consecutive_same_timestamp_retries: 0,
+            same_timestamp_countdown: None,
             #[cfg(test)]
             same_timestamp_retries_total: 0,
         }));
@@ -850,6 +852,23 @@ where
                 && self.ready_workers.contains(&worker_id);
             if same_timestamp_candidate {
                 match same_timestamp_retry {
+                    SameTimestampRetry::Countdown { remaining } => {
+                        let worker = self.required_worker_mut(worker_id)?;
+                        if worker
+                            .same_timestamp_countdown
+                            .is_some_and(|previous| remaining >= previous)
+                        {
+                            let in_flight = worker.total_in_flight();
+                            bail!(
+                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining"
+                            );
+                        }
+                        // Configured round counts can exceed the admission
+                        // convergence limit. Strict decrease proves this retry
+                        // is bounded without inventing time or visible effects.
+                        worker.same_timestamp_countdown = Some(remaining);
+                        continue;
+                    }
                     SameTimestampRetry::Retry => {
                         let worker = self.required_worker_mut(worker_id)?;
                         worker.consecutive_same_timestamp_retries += 1;
@@ -885,6 +904,8 @@ where
             }
             self.required_worker_mut(worker_id)?
                 .consecutive_same_timestamp_retries = 0;
+            self.required_worker_mut(worker_id)?
+                .same_timestamp_countdown = None;
             if effects.is_empty() {
                 if self.ready_workers.remove(&worker_id) {
                     self.deferred_ready_workers.insert(worker_id);
