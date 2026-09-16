@@ -31,6 +31,7 @@ def perf_database():
     """
     project_root = _find_repo_root(Path(__file__))
     src_path = project_root / "src"
+    saved_sys_path = list(sys.path)
     sys.path.insert(0, str(src_path))
 
     saved_aiconfigurator_modules = {}
@@ -42,20 +43,23 @@ def perf_database():
         ):
             saved_aiconfigurator_modules[key] = sys.modules.pop(key)
 
-    import aiconfigurator.sdk.perf_database as perf_database
+    try:
+        import aiconfigurator.sdk.perf_database as perf_database
 
-    importlib.reload(perf_database)
-    yield perf_database
+        importlib.reload(perf_database)
+        yield perf_database
 
-    # Drop the isolated legacy/canonical module pair, then restore both module
-    # graphs together so imported class references in other test modules do not
-    # point at a reloaded canonical implementation.
-    for key in list(sys.modules.keys()):
-        if key in {"aiconfigurator", "aiconfigurator_core"} or key.startswith(
-            ("aiconfigurator.", "aiconfigurator_core.")
-        ):
-            sys.modules.pop(key)
-    sys.modules.update(saved_aiconfigurator_modules)
+    finally:
+        sys.path[:] = saved_sys_path
+        # Drop the isolated legacy/canonical module pair, then restore both module
+        # graphs together so imported class references in other test modules do not
+        # point at a reloaded canonical implementation.
+        for key in list(sys.modules.keys()):
+            if key in {"aiconfigurator", "aiconfigurator_core"} or key.startswith(
+                ("aiconfigurator.", "aiconfigurator_core.")
+            ):
+                sys.modules.pop(key)
+        sys.modules.update(saved_aiconfigurator_modules)
 
 
 @pytest.fixture
