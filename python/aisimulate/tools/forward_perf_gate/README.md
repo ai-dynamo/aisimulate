@@ -87,10 +87,13 @@ and compare runtime with the original matrix. Missing data or more than five
 additional benchmark minutes blocks rollout; do not remove cases or change
 thresholds to hide a blocker.
 
-CI uses the base revision's controller and matrix. An expanded matrix becomes
-active when the PR's merge base includes it. The PR that adds cases must
-therefore validate the expanded controller explicitly before merge; its normal
-advisory job still measures the base revision's matrix.
+The normal CI comparison uses the base revision's controller and matrix.
+When a PR changes the benchmark harness, the same job also runs the PR's
+controller against the already-built base and head installations. This validates
+new cases in CI before merge, with separate results under `head-controller/`
+in the artifact and a separate summary. Both runs use the same measurement
+method and retain their own regression checks. After merge, the expanded matrix
+becomes the normal comparison when a PR's merge base includes it.
 
 The default comparison requires four of five paired rounds to exceed both a
 10% relative threshold and a 2 us absolute threshold. Other round counts use

@@ -148,6 +148,13 @@ jobs:
             exit 0
           fi
 
+          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- "${gate_path}")"
+          if [[ -n "${controller_changes}" ]]; then
+            echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "validate_head_controller=false" >> "${GITHUB_OUTPUT}"
+          fi
+
           git worktree prune
 
           run_root="${RUNNER_TEMP}/forward-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -172,6 +179,7 @@ jobs:
           echo "run_comparison=true" >> "${GITHUB_OUTPUT}"
 
       - name: Build and install both revisions
+        id: build
         if: steps.revisions.outputs.run_comparison == 'true'
         run: |
           set -euo pipefail
@@ -205,6 +213,20 @@ jobs:
             --head-revision "${HEAD_SHA}" \
             --output-dir "${RESULTS_DIR}"
 
+      - name: Validate PR benchmark controller
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.revisions.outputs.validate_head_controller == 'true' }}
+        run: |
+          set -euo pipefail
+          "${HEAD_VENV}/bin/python" \
+            "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+            --base-python "${BASE_VENV}/bin/python" \
+            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --base-revision "${BASE_SHA}" \
+            --head-python "${HEAD_VENV}/bin/python" \
+            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --head-revision "${HEAD_SHA}" \
+            --output-dir "${RESULTS_DIR}/head-controller"
+
       - name: Publish summary and annotations
         if: always() && steps.revisions.outputs.run_comparison == 'true'
         run: |
@@ -214,6 +236,21 @@ jobs:
           if [[ -s "${RESULTS_DIR}/annotations.txt" ]]; then
             blocker_count="$(grep -c . "${RESULTS_DIR}/annotations.txt")"
             echo "::error::Forward-prediction performance found ${blocker_count} blocker(s); see the job summary and artifact for details."
+          fi
+
+      - name: Publish PR controller validation
+        if: always() && steps.revisions.outputs.validate_head_controller == 'true'
+        run: |
+          if [[ -f "${RESULTS_DIR}/head-controller/summary.md" ]]; then
+            {
+              echo "## PR controller validation"
+              echo
+              cat "${RESULTS_DIR}/head-controller/summary.md"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          if [[ -s "${RESULTS_DIR}/head-controller/annotations.txt" ]]; then
+            blocker_count="$(grep -c . "${RESULTS_DIR}/head-controller/annotations.txt")"
+            echo "::error::PR controller validation found ${blocker_count} blocker(s); see the job summary and artifact for details."
           fi
 
       - name: Upload benchmark artifacts

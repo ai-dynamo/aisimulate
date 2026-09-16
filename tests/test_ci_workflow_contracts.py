@@ -58,6 +58,31 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
     assert "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" in _run_commands(compare)
 
 
+def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_comparison():
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")
+    assert 'git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- "${gate_path}"' in revisions["run"]
+    assert "validate_head_controller=true" in revisions["run"]
+    assert "validate_head_controller=false" in revisions["run"]
+    base = next(step for step in steps if step.get("name") == "Run paired benchmark")
+    head = next(step for step in steps if step.get("name") == "Validate PR benchmark controller")
+    assert "!cancelled()" in head["if"]
+    assert "steps.build.outcome == 'success'" in head["if"]
+    assert "steps.revisions.outputs.validate_head_controller == 'true'" in head["if"]
+    assert next(step for step in steps if step.get("id") == "build")["name"] == "Build and install both revisions"
+    expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
+    expected = expected.replace(
+        "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+        "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+    )
+    expected = expected.replace('--output-dir "${RESULTS_DIR}"', '--output-dir "${RESULTS_DIR}/head-controller"')
+    assert head["run"] == expected
+    publish = next(step for step in steps if step.get("name") == "Publish PR controller validation")
+    assert publish["if"].startswith("always()")
+    assert "head-controller/summary.md" in publish["run"]
+    assert "head-controller/annotations.txt" in publish["run"]
+
+
 def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     pull = {
         "head": {"sha": "a" * 40},

@@ -141,6 +141,12 @@ or changed revisions fail selection; empty, incomplete, or oversized file lists
 run the benchmark conservatively. Manual dispatch forces a comparison after the
 same revision checks.
 
+If the PR changes the performance benchmark harness, the benchmark job also
+runs the PR's controller against the same base and head installations. This
+validates new matrix cases before merge and reports them separately, alongside
+the normal comparison made with the base controller. It reuses the built
+packages and requires no additional runner or manual dispatch.
+
 Ownership checks, prediction performance, E2E accuracy, and Pages run independently
 of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.
 Pages consumes qualification evidence after producer completion.
