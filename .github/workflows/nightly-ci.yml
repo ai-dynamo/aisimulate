@@ -156,6 +156,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     environment: automated-release
+    # actions:read only for the license-diff step, which downloads the prior
+    # nightly's compliance artifact.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       wheel-version: ${{ steps.verify.outputs.wheel-version }}
     container:
@@ -476,6 +481,125 @@ jobs:
             echo "smoke OK on Python ${series}"
           done
 
+      # Compliance evidence for the OSRB bug (aiperf's convention): a unified
+      # deps.csv (Python runtime closure + Rust crate graph) and a
+      # best-effort deps-diff.csv against the previous successful nightly.
+      # The GitLab nvbug:attach-license job finds this artifact by the
+      # "license" in its name and posts the CSVs to the NVBug. Only the
+      # amd64 leg generates it (arch-independent), and it is the only
+      # GitHub artifact the nightly produces — build artifacts stay in
+      # Artifactory. Logs show row counts only, never license findings.
+      - name: Generate license compliance evidence
+        if: matrix.arch == 'amd64'
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          outdir="${RUNNER_TEMP}/license-artifacts"
+          mkdir -p "${outdir}"
+          "${TOOLS_DIR}/venv-licenses/bin/pip-licenses" --with-system \
+            --format=csv > "${outdir}/python-licenses.csv"
+          cargo metadata --format-version 1 > "${outdir}/cargo-metadata.json"
+          "${TOOLS_DIR}/venv-build/bin/python" - "${outdir}" <<'EOF'
+          import csv, io, json, os, sys, urllib.request, zipfile
+
+          outdir = sys.argv[1]
+          rows = []
+          with open(f"{outdir}/python-licenses.csv", newline="") as f:
+              for r in csv.DictReader(f):
+                  rows.append({"dependency_type": "python", "name": r["Name"],
+                               "version": r["Version"], "spdx_license": r["License"]})
+          meta = json.load(open(f"{outdir}/cargo-metadata.json"))
+          workspace = set(meta.get("workspace_members") or [])
+          for p in meta["packages"]:
+              if p.get("id") in workspace:
+                  continue
+              rows.append({"dependency_type": "crate", "name": p["name"],
+                           "version": p["version"],
+                           "spdx_license": p.get("license") or "UNKNOWN"})
+          rows.sort(key=lambda r: (r["dependency_type"], r["name"], r["version"]))
+          fields = ["dependency_type", "name", "version", "spdx_license"]
+          with open(f"{outdir}/deps.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader()
+              w.writerows(rows)
+
+          def prior_deps():
+              token = os.environ["GH_API_TOKEN"]
+              repo = os.environ["GITHUB_REPOSITORY"]
+              current = os.environ["GITHUB_RUN_ID"]
+              def get(url):
+                  req = urllib.request.Request(url, headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json"})
+                  return urllib.request.urlopen(req, timeout=30)
+              runs = json.load(get(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/"
+                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10"))
+              for run in runs.get("workflow_runs", []):
+                  if str(run["id"]) == current:
+                      continue
+                  arts = json.load(get(run["artifacts_url"]))
+                  for a in arts.get("artifacts", []):
+                      if "license" not in a["name"] or a.get("expired"):
+                          continue
+                      data = get(a["archive_download_url"]).read()
+                      with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                          for n in zf.namelist():
+                              if os.path.basename(n) == "deps.csv":
+                                  reader = csv.DictReader(
+                                      io.TextIOWrapper(zf.open(n)))
+                                  return {(r["dependency_type"], r["name"]): r
+                                          for r in reader}
+              return None
+
+          try:
+              prior = prior_deps()
+          except Exception as exc:
+              print(f"prior-artifact lookup failed ({exc}); "
+                    "diff lists everything as added")
+              prior = None
+          prior = prior or {}
+          current = {(r["dependency_type"], r["name"]): r for r in rows}
+          dfields = ["change"] + fields + ["prior_version", "prior_spdx_license"]
+          drows = []
+          for key in sorted(set(current) | set(prior)):
+              c, p = current.get(key), prior.get(key)
+              if c and not p:
+                  drows.append({"change": "added", **c,
+                                "prior_version": "", "prior_spdx_license": ""})
+              elif p and not c:
+                  drows.append({"change": "removed",
+                                "dependency_type": p["dependency_type"],
+                                "name": p["name"], "version": "",
+                                "spdx_license": "",
+                                "prior_version": p["version"],
+                                "prior_spdx_license": p["spdx_license"]})
+              elif (c["version"] != p["version"]
+                    or c["spdx_license"] != p["spdx_license"]):
+                  drows.append({"change": "changed", **c,
+                                "prior_version": p["version"],
+                                "prior_spdx_license": p["spdx_license"]})
+          with open(f"{outdir}/deps-diff.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=dfields)
+              w.writeheader()
+              w.writerows(drows)
+          print(f"deps.csv: {len(rows)} rows; deps-diff.csv: {len(drows)} rows")
+          EOF
+
+      # Constant name + overwrite so a re-run replaces the evidence instead
+      # of failing on a duplicate (or, across a UTC midnight, leaving two
+      # "license" artifacts that would abort the OSRB attach's auto-select).
+      - name: Upload license compliance artifact
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: license-artifacts
+          path: ${{ runner.temp }}/license-artifacts/deps*.csv
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: true
+
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
   # fires the internal pipeline that scans them. Scan findings stay inside
@@ -503,10 +627,37 @@ jobs:
     timeout-minutes: 10
     environment: automated-release
     steps:
+      # Start the nightly Slack thread; the GitLab pipeline's slack jobs
+      # reply to it via the forwarded SLACK_THREAD_TS/SLACK_CHANNEL_ID
+      # (dynamo's pattern). Best-effort: a Slack outage must not block the
+      # security pipeline — GitLab then starts its own thread.
+      - name: Start the Slack thread
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+        run: |
+          set -euo pipefail
+          SLACK_THREAD_TS=""
+          if [ -n "${SLACK_BOT_TOKEN}" ] && [ -n "${SLACK_CHANNEL_ID}" ]; then
+            payload=$(jq -n --arg channel "${SLACK_CHANNEL_ID}" \
+              --arg text ":crescent_moon: *AISimulate nightly* \`${WHEEL_VERSION}\` — artifacts built, smoked, and staged; internal security pipeline starting. <${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|GitHub run>" \
+              '{channel: $channel, text: $text}')
+            SLACK_THREAD_TS=$(curl -sS --max-time 15 --retry 2 \
+              -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              --data "${payload}" | jq -r '.ts // empty' || true)
+            [ -n "${SLACK_THREAD_TS}" ] || \
+              echo "::warning::Slack thread start failed; GitLab will start its own thread"
+          fi
+          echo "SLACK_THREAD_TS=${SLACK_THREAD_TS}" >> "${GITHUB_ENV}"
+
       - name: Trigger internal security scan
         env:
           GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
           GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_SHA: ${{ github.sha }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
@@ -533,6 +684,87 @@ jobs:
             -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
             -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
             -F "variables[COMMIT_SHA]=${GH_SHA}" \
+            -F "variables[SLACK_THREAD_TS]=${SLACK_THREAD_TS}" \
+            -F "variables[SLACK_CHANNEL_ID]=${SLACK_CHANNEL_ID}" \
             -F "variables[DRY_RUN]=true" \
             "${GITLAB_PIPELINE_URL}"
           echo "internal security pipeline triggered"
+
+  # Failure-only alert to the automation Slack channel, modeled on dynamo's
+  # notify-slack.yml. Mentions come from the SLACK_NOTIFY_MENTIONS repo
+  # variable: comma-separated Slack IDs — U*/W* member IDs become <@id>,
+  # S* usergroup IDs become <!subteam^id>, anything else is passed through.
+  # The webhook is a repo-level secret (not an environment secret) so the
+  # alert still fires when an environment-gated job failed or never ran.
+  notify-slack:
+    name: Notify Slack
+    if: always()
+    needs: [changes-guard, manual-approval, build-artifacts, trigger-gitlab-security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Collect failed jobs
+        id: failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MENTION_IDS: ${{ vars.SLACK_NOTIFY_MENTIONS }}
+        run: |
+          set -euo pipefail
+          curl -sS --fail --retry 3 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            > jobs.json
+          FAILED_JOBS=$(jq -r '(.jobs // [])[]
+            | select(.conclusion == "failure")
+            | ":failed: " + .name + "\\n"' jobs.json | tr -d '\n')
+          {
+            echo "FAILED_JOBS<<EOF"
+            echo "${FAILED_JOBS}"
+            echo "EOF"
+          } >> "${GITHUB_ENV}"
+          mentions=""
+          IFS=',' read -ra ids <<< "${MENTION_IDS:-}"
+          for id in "${ids[@]:-}"; do
+            id="$(echo "${id}" | tr -d '[:space:]')"
+            [ -n "${id}" ] || continue
+            case "${id}" in
+              U*|W*) mentions="${mentions} <@${id}>" ;;
+              S*)    mentions="${mentions} <!subteam^${id}>" ;;
+              *)     mentions="${mentions} ${id}" ;;
+            esac
+          done
+          echo "MENTION_TEXT=${mentions:+${mentions} }please investigate and drive to closure." >> "${GITHUB_ENV}"
+          if [ -n "$(echo "${FAILED_JOBS}" | tr -d '[:space:]')" ]; then
+            echo "has_failures=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_failures=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Notify Slack
+        if: steps.failed.outputs.has_failures == 'true'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_NOTIFY_NIGHTLY_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            blocks:
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: ":alert: *AISimulate Nightly CI Failure*"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow Summary>"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "${{ env.FAILED_JOBS }}"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "${{ env.MENTION_TEXT }}"
