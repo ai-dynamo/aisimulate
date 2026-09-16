@@ -118,8 +118,6 @@ def test_incomplete_new_source_run_preserves_the_previous_successful_curve(statu
         ("multinode", "multinode"),
         ("gpu_limit", "multinode"),
         ("missing_latency", "missing_mean_latency"),
-        ("null_decode_gpus", "invalid_gpu_count"),
-        ("null_prefill_gpus", "invalid_gpu_count"),
     ],
 )
 def test_new_ineligible_measurements_do_not_age_out_eligible_evidence(change, reason):
@@ -138,13 +136,23 @@ def test_new_ineligible_measurements_do_not_age_out_eligible_evidence(change, re
         newer["is_multinode"] = True
     elif change == "gpu_limit":
         newer["num_decode_gpu"] = 9
-    elif change == "null_decode_gpus":
-        newer["num_decode_gpu"] = None
-    elif change == "null_prefill_gpus":
-        newer.update(disagg=True, num_prefill_gpu=None)
     points, stats = campaign.select_points(data, 30)
     assert {point["benchmark"]["id"] for point in points} == {1}
     assert stats["excluded"] == {reason: 2}
+
+
+@pytest.mark.parametrize("field", ["num_decode_gpu", "num_prefill_gpu"])
+@pytest.mark.parametrize("value", [None, True, 1.5, -1])
+def test_invalid_gpu_counts_retain_the_older_eligible_curve(field, value):
+    data = tables()
+    data["configs"][0].update(hardware="h200", num_decode_gpu=1, num_prefill_gpu=1, disagg=True)
+    data["configs"].append({**data["configs"][0], "id": 2, field: value})
+    data["benchmark_results"][0]["date"] = "2026-07-01"
+    for row in data["benchmark_results"][1:]:
+        row["config_id"] = 2
+    points, stats = campaign.select_points(data, 30)
+    assert {point["benchmark"]["id"] for point in points} == {1}
+    assert stats["excluded"] == {"invalid_gpu_count": 2}
 
 
 @pytest.mark.parametrize(
@@ -616,10 +624,10 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
         ("2026-09-15T11:00:00+02:00", "2026-09-15T09:00:00.500000+00:00", True),
         ("2026-09-15T09:00:00.000000+00:00", "2026-09-15T09:00:00+00:00", False),
         (None, "2026-09-15T09:00:00+00:00", True),
-        ("2026-09-15", "2026-09-15T09:00:00+00:00", None),
-        ("2026-09-15T09:00:00", "2026-09-15T09:00:00+00:00", None),
-        ("not-a-date", "2026-09-15T09:00:00+00:00", None),
-        ("", "2026-09-15T09:00:00+00:00", None),
+        ("2026-09-15", "2026-09-15T09:00:00+00:00", False),
+        ("2026-09-15T09:00:00", "2026-09-15T09:00:00+00:00", False),
+        ("not-a-date", "2026-09-15T09:00:00+00:00", False),
+        ("", "2026-09-15T09:00:00+00:00", False),
     ],
 )
 def test_same_commit_publication_compares_completion_times(
@@ -651,10 +659,6 @@ def test_same_commit_publication_compares_completion_times(
         publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
     )
     output = tmp_path / "prepared"
-    if should_publish is None:
-        with pytest.raises(ValueError, match="completion timestamp"):
-            publish.prepare(ROOT, output)
-        return
     publish.prepare(ROOT, output)
     files = list(output.glob("*.json"))
     assert bool(files) == should_publish
@@ -762,6 +766,25 @@ def test_failed_release_does_not_block_successful_main_publication(artifact, tmp
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
     assert prepared_snapshots(output) == {"main": summary}
+
+
+@pytest.mark.parametrize("previous_time", ["not-a-date", "2026-09-15T09:00:00"])
+def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp_path, monkeypatch, previous_time):
+    summary, run = artifact
+    release = branch_snapshot(summary, "release/0.12.0", "e" * 40)
+    publication_api(monkeypatch, run, [summary, release])
+    previous = deepcopy(summary)
+    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    monkeypatch.setattr(
+        publish.subprocess,
+        "run",
+        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
+        if args[-1].startswith("origin/main:")
+        else SimpleNamespace(returncode=1),
+    )
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {"release/0.12.0": release}
 
 
 def test_failed_job_retry_preserves_successful_prior_attempt_with_exact_provenance(artifact, tmp_path, monkeypatch):

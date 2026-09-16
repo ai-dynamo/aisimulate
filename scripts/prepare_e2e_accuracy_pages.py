@@ -486,9 +486,14 @@ def prepare(repo: Path, output: Path) -> None:
                 if (
                     current["commit_sha"] == revision["commit_sha"]
                     and previous.get("aisimulate_completed_at") is not None
-                    and completion_time(previous["aisimulate_completed_at"]) >= completion_time(current["completed_at"])
                 ):
-                    continue
+                    try:
+                        previous_time = completion_time(previous["aisimulate_completed_at"])
+                    except ValueError as exc:
+                        print(f"Keeping committed accuracy snapshot for {branch}: {exc}")
+                        continue
+                    if previous_time >= completion_time(current["completed_at"]):
+                        continue
         (output / (artifact_key(branch) + ".json")).write_text(
             json.dumps(summary, sort_keys=True, allow_nan=False) + "\n"
         )
