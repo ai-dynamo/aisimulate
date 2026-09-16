@@ -147,6 +147,14 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         await self.page.route(delayed_csv, delay)
         await self.page.goto(self.url + "?branch=release%2F0.13.0")
         await expect(self.page.get_by_text("Fixture/ReleaseAlpha", exact=True)).to_be_visible()
+        await self.page.evaluate("""() => {
+            const originalParse = Papa.parse;
+            Papa.parse = (text, ...args) => {
+                const result = originalParse(text, ...args);
+                if (text.includes('Fixture/ReleaseBeta')) window.delayedCsvParsed = true;
+                return result;
+            };
+        }""")
         await self.page.get_by_label("Branch:").select_option("release/0.14.0")
         await asyncio.wait_for(requested.wait(), timeout=30)
         await expect(self.page.locator("tbody tr")).to_have_count(0)
@@ -155,7 +163,9 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         async with self.page.expect_response(delayed_csv) as response:
             await pending["route"].fulfill(body=self.csvs["release/0.14.0"], content_type="text/csv")
         self.assertEqual((await (await response.value).body()).decode(), self.csvs["release/0.14.0"])
-        # Let fetch continuations and React's render finish after the delayed body arrives.
+        # The browser must consume and parse its body; Playwright reading it is insufficient.
+        await self.page.wait_for_function("window.delayedCsvParsed === true")
+        # Drain the page's promise continuations and allow React to render their result.
         await self.page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
         await expect(self.page.get_by_label("Branch:")).to_have_value("release/0.13.0")
         await expect(self.page.get_by_text("Fixture/ReleaseAlpha", exact=True)).to_be_visible()
