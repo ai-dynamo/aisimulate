@@ -5,19 +5,22 @@
 //!
 //! The public loader validates the exported descriptor before it copies the
 //! vtable, and the resulting policy keeps the shared library alive until after
-//! its opaque instance is destroyed. The adapter deliberately supports only
-//! replay's `NoEngineEvents`/unit metadata boundary; callers with concrete
-//! engine-observation DTOs must use an adapter that encodes those DTOs rather
-//! than dropping them at this boundary.
+//! its opaque instance is destroyed. The adapter carries Replay's routing-safe
+//! admission metadata but deliberately supports only the `NoEngineEvents`
+//! observation boundary; callers with concrete engine-observation DTOs must
+//! use an adapter that encodes those DTOs rather than dropping them here.
 
 use std::path::Path;
 
 use aisimulate_placement_abi::{
-    AdmissionDecisionV1, ByteSliceV1, PlacementAdmissionV1, PlacementBatchResultV1,
+    AdmissionDecisionV1, AdmissionMetadataFormatV1, BlockHashSliceV1, ByteSliceV1,
+    MAX_ADMISSION_METADATA_BYTES_V1, MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1,
+    MAX_ADMISSION_PROMPT_TOKEN_IDS_V1, PlacementAdmissionV1, PlacementBatchResultV1,
     PlacementCacheSampleV1, PlacementCreateRequestV1, PlacementDiagnosticSliceV1,
-    PlacementHandleV1, PlacementLimitsV1, PlacementMutationKindV1, PlacementMutationPayloadV1,
-    PlacementMutationSliceV1, PlacementMutationV1, PlacementResultSliceV1, PlacementSliceV1,
-    PlacementV1, PluginEntryV1, PluginVTableV1, RequestLifecycleV1, SchedulerIdSliceV1, StatusV1,
+    PlacementHandleV1, PlacementLimitsV1, PlacementMetadataV1, PlacementMutationKindV1,
+    PlacementMutationPayloadV1, PlacementMutationSliceV1, PlacementMutationV1,
+    PlacementResultSliceV1, PlacementSliceV1, PlacementV1, PluginEntryV1, PluginVTableV1,
+    PromptIdentityV1, RequestLifecycleV1, SchedulerIdSliceV1, StatusV1, TokenIdSliceV1,
     WorkerCapacityV1, WorkerTopologySliceV1, WorkerTopologyV1, validate_create_request_v1,
     validate_descriptor_v1,
 };
@@ -25,12 +28,12 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use libloading::Library;
 use uuid::Uuid;
 
-use super::components::NoReplayMetadata;
+use super::components::ReplayAdmissionMetadata;
 use super::core::{
     Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
     WorkerTopology,
 };
-use super::loadgen::ReplayRequestPayload;
+use super::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
 
 /// Fixed export name every V1 placement plugin must provide.
 const PLACEMENT_PLUGIN_ENTRY_V1: &[u8] = b"aisimulate_placement_plugin_v1\0";
@@ -48,6 +51,35 @@ pub struct DynamicPlacementConfig {
     pub provider_options: Vec<u8>,
     /// Host-selected bounds for provider outputs.
     pub limits: PlacementLimitsV1,
+}
+
+/// Replay admission metadata retained by the dynamic placement adapter.
+///
+/// The admission queue supplies precomputed hashes here, including for
+/// deferred trace payloads. Keeping them separate from the payload preserves
+/// Replay's compact queue representation while making both hash forms
+/// available to a dynamic KV-aware placement policy.
+#[derive(Debug, Clone, Default)]
+pub struct DynamicPlacementMetadata {
+    replay_hashes: Option<ReplayRequestHashes>,
+}
+
+impl ReplayAdmissionMetadata for DynamicPlacementMetadata {
+    fn from_hashes(replay_hashes: Option<ReplayRequestHashes>) -> Self {
+        Self { replay_hashes }
+    }
+
+    fn for_prefill(self) -> Self {
+        self
+    }
+
+    fn max_output_tokens_override(&self) -> Option<usize> {
+        None
+    }
+
+    fn into_hashes(self) -> Option<ReplayRequestHashes> {
+        self.replay_hashes
+    }
 }
 
 /// A loaded placement plugin that has not yet created its one policy instance.
@@ -349,13 +381,13 @@ impl DynamicPlacementPolicy {
 }
 
 impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
-    type Metadata = NoReplayMetadata;
+    type Metadata = DynamicPlacementMetadata;
     type Observation = ();
 
     fn place(
         &mut self,
         request: &ReplayRequestPayload,
-        _metadata: Self::Metadata,
+        metadata: Self::Metadata,
         session_id: Option<String>,
         now_ms: f64,
     ) -> Result<PlacementEffects> {
@@ -367,6 +399,29 @@ impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
             session_id.is_none(),
             "dynamic placement V1 cannot encode a session ID until its admission flag is defined"
         );
+        let prompt_identity = admission_prompt_identity(request, metadata.replay_hashes.as_ref())?;
+        let metadata_bytes = request
+            .metadata()
+            .replay_context
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .context("serializing dynamic placement admission metadata")?;
+        if let Some(metadata_bytes) = metadata_bytes.as_ref() {
+            ensure!(
+                metadata_bytes.len() <= MAX_ADMISSION_METADATA_BYTES_V1 as usize,
+                "dynamic placement admission metadata exceeds the ABI limit of {} bytes",
+                MAX_ADMISSION_METADATA_BYTES_V1
+            );
+        }
+        let admission_metadata = metadata_bytes
+            .as_deref()
+            .map(|metadata_bytes| PlacementMetadataV1 {
+                format: AdmissionMetadataFormatV1::JSON_UTF8,
+                flags: 0,
+                bytes: bytes(metadata_bytes),
+            })
+            .unwrap_or(PlacementMetadataV1::EMPTY);
         let result = self.apply(PlacementMutationV1 {
             struct_size: std::mem::size_of::<PlacementMutationV1>() as u32,
             kind: PlacementMutationKindV1::ADMIT,
@@ -380,7 +435,8 @@ impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
                     priority: request.metadata().priority,
                     prompt_tokens: request.input_length() as u64,
                     max_output_tokens: request.metadata().effective_max_output_tokens() as u64,
-                    metadata: ByteSliceV1::EMPTY,
+                    prompt_identity,
+                    metadata: admission_metadata,
                     session_id: ByteSliceV1::EMPTY,
                 },
             },
@@ -576,6 +632,51 @@ fn validate_initial_topology(
         );
     }
     Ok(())
+}
+
+fn admission_prompt_identity(
+    request: &ReplayRequestPayload,
+    replay_hashes: Option<&ReplayRequestHashes>,
+) -> Result<PromptIdentityV1> {
+    let mut identity = PromptIdentityV1::OMITTED;
+    if let Some(tokens) = request.materialized_tokens() {
+        ensure!(
+            tokens.len() <= MAX_ADMISSION_PROMPT_TOKEN_IDS_V1 as usize,
+            "dynamic placement materialized prompt has {} token IDs, exceeding the ABI limit of {}",
+            tokens.len(),
+            MAX_ADMISSION_PROMPT_TOKEN_IDS_V1
+        );
+        identity.flags |= PromptIdentityV1::MATERIALIZED_TOKEN_IDS_PRESENT;
+        identity.materialized_token_ids = TokenIdSliceV1 {
+            data: tokens.as_ptr(),
+            len: tokens.len() as u64,
+        };
+    }
+    if let Some(replay_hashes) = replay_hashes {
+        ensure!(
+            replay_hashes.local_block_hashes.len() == replay_hashes.sequence_hashes.len(),
+            "dynamic placement received mismatched local ({}) and sequence ({}) replay hash counts",
+            replay_hashes.local_block_hashes.len(),
+            replay_hashes.sequence_hashes.len()
+        );
+        ensure!(
+            replay_hashes.local_block_hashes.len() <= MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1 as usize,
+            "dynamic placement received {} local block hashes, exceeding the ABI limit of {}",
+            replay_hashes.local_block_hashes.len(),
+            MAX_ADMISSION_PROMPT_BLOCK_HASHES_V1
+        );
+        identity.flags |= PromptIdentityV1::LOCAL_BLOCK_HASHES_PRESENT;
+        identity.local_block_hashes = BlockHashSliceV1 {
+            data: replay_hashes.local_block_hashes.as_ptr(),
+            len: replay_hashes.local_block_hashes.len() as u64,
+        };
+        identity.flags |= PromptIdentityV1::SEQUENCE_BLOCK_HASHES_PRESENT;
+        identity.sequence_block_hashes = BlockHashSliceV1 {
+            data: replay_hashes.sequence_hashes.as_ptr(),
+            len: replay_hashes.sequence_hashes.len() as u64,
+        };
+    }
+    Ok(identity)
 }
 
 fn bytes(value: &[u8]) -> ByteSliceV1 {

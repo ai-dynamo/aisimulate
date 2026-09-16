@@ -124,7 +124,8 @@ pub use core::{
     RequestIdentity, WorkerTopology,
 };
 pub use dynamic_placement::{
-    DynamicPlacementConfig, DynamicPlacementPlugin, DynamicPlacementPolicy,
+    DynamicPlacementConfig, DynamicPlacementMetadata, DynamicPlacementPlugin,
+    DynamicPlacementPolicy,
 };
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;
