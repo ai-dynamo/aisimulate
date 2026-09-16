@@ -218,6 +218,25 @@ pub struct KvEventV1 {
     pub payload: KvEventPayloadV1,
 }
 
+/// A borrowed ordered sequence of lossless KV observation packets.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KvEventSliceV1 {
+    /// Start of packets, or null only when `len` is zero.
+    pub data: *const KvEventV1,
+    /// Number of packets in producer order.
+    pub len: u64,
+}
+
+impl From<&[KvEventV1]> for KvEventSliceV1 {
+    fn from(value: &[KvEventV1]) -> Self {
+        Self {
+            data: value.as_ptr(),
+            len: value.len() as u64,
+        }
+    }
+}
+
 impl KvEventV1 {
     /// Stored-event parent hash is present.
     pub const HAS_PARENT_HASH: u32 = 1 << 0;
@@ -1033,12 +1052,37 @@ pub struct PluginVTableV1 {
     pub last_error: Option<unsafe extern "C" fn(PlacementHandleV1, *mut ByteSliceV1) -> StatusV1>,
     /// Destroys one placement instance.
     pub destroy: Option<unsafe extern "C" fn(PlacementHandleV1)>,
+    /// Applies an ordered lossless KV-observation packet sequence.
+    ///
+    /// This compatible-minor tail is required only when the provider advertises
+    /// [`CAPABILITY_LOSSLESS_KV_EVENTS_V1`].
+    pub apply_kv_events: Option<
+        unsafe extern "C" fn(
+            PlacementHandleV1,
+            KvEventSliceV1,
+            f64,
+            *mut PlacementBatchResultV1,
+        ) -> StatusV1,
+    >,
 }
 
 impl PluginVTableV1 {
     /// Bytes a consumer must be able to read for every V1 operation.
-    pub const REQUIRED_SIZE: usize = std::mem::size_of::<Self>();
+    pub const REQUIRED_SIZE: usize = std::mem::offset_of!(Self, apply_kv_events);
+    /// Bytes a consumer must be able to read when lossless KV observations are
+    /// advertised.
+    pub const LOSSLESS_KV_EVENTS_REQUIRED_SIZE: usize = std::mem::size_of::<Self>();
+
+    /// Reports whether this table includes the optional lossless-KV callback.
+    #[must_use]
+    pub fn supports_lossless_kv_events(&self) -> bool {
+        (self.struct_size as usize) >= Self::LOSSLESS_KV_EVENTS_REQUIRED_SIZE
+            && self.apply_kv_events.is_some()
+    }
 }
+
+/// Provider capability for the lossless router-visible KV observation callback.
+pub const CAPABILITY_LOSSLESS_KV_EVENTS_V1: u64 = 1 << 0;
 
 /// Why a loaded V1 plugin descriptor cannot be used by a host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

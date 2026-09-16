@@ -45,6 +45,32 @@ fn lossless_kv_observation_records_store_and_remove_identity() {
 }
 
 #[test]
+fn lossless_kv_capability_requires_the_appended_callback() {
+    let table = PluginVTableV1 {
+        struct_size: std::mem::size_of::<PluginVTableV1>() as u32,
+        flags: 0,
+        create: None,
+        apply_batch: None,
+        release_results: None,
+        release_bytes: None,
+        last_error: None,
+        destroy: None,
+        apply_kv_events: Some(apply_kv_events_fixture),
+    };
+
+    assert!(table.supports_lossless_kv_events());
+}
+
+unsafe extern "C" fn apply_kv_events_fixture(
+    _handle: aisimulate_placement_abi::PlacementHandleV1,
+    _events: aisimulate_placement_abi::KvEventSliceV1,
+    _now_ms: f64,
+    _result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    StatusV1::OK
+}
+
+#[test]
 fn placement_batch_preserves_lifecycle_order_and_all_effects() {
     let mutation = PlacementMutationV1::topology_settled(42.0);
     let placement = PlacementV1 {
@@ -117,6 +143,7 @@ fn descriptor_validator_rejects_a_missing_lifecycle_batch_operation() {
         release_bytes: None,
         last_error: None,
         destroy: None,
+        apply_kv_events: None,
     };
     let descriptor = PluginDescriptorV1 {
         abi_major: PluginDescriptorV1::ABI_MAJOR,
@@ -143,6 +170,7 @@ fn descriptor_validator_rejects_a_provider_before_the_identity_minor() {
         release_bytes: None,
         last_error: None,
         destroy: None,
+        apply_kv_events: None,
     };
     let descriptor = PluginDescriptorV1 {
         abi_major: PluginDescriptorV1::ABI_MAJOR,
