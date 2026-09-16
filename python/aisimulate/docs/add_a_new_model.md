@@ -11,6 +11,10 @@ All paths below are relative to the repository root unless linked otherwise.
 The `aiconfigurator_core` source namespace is retained inside the `aisimulate`
 wheel; installing or rebuilding a separate AIConfigurator package is unnecessary.
 
+For whole-forward FPM onboarding, use the [FPM model-integration procedure](fpm/model-integration.md)
+alongside this guide. It covers pre-collection construction, memory, and analytical
+checks; per-operation GPU timing collection is not required for that workflow.
+
 ## Choose the smallest extension
 
 | What changed? | Start here |

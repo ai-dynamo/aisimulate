@@ -11,6 +11,10 @@ parallelism, then consumes the newly collected data from an external directory.
 It assumes an existing, working GPU collection environment. Fill in the
 collection inputs from that environment before executing GPU steps.
 
+For a new model, first complete the [model-integration procedure](model-integration.md):
+reuse or add its analytical model class, verify memory and FPM SOL support on
+CPU, and install the reviewed integration before planning GPU collection.
+
 ```text
 Freeze plan -> GPU smoke -> GPU collection -> validate and publish pair
                                                 |
