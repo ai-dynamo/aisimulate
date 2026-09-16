@@ -9,6 +9,9 @@ output into AIC perf rows and optionally samples representative GPU power while
 each collective size is measured.
 """
 
+import math
+import os
+import re
 import subprocess
 import sys
 from argparse import ArgumentParser
@@ -19,6 +22,25 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from helper import PowerMonitor, log_perf
+
+
+def parse_nccl_latency(stdout: str, stderr: str, size: int, expected_version: str) -> float:
+    """Accept only the requested size and the actual expected NCCL runtime."""
+    versions = set(re.findall(r"NCCL version\s+(\d+\.\d+\.\d+)", stdout + "\n" + stderr))
+    if versions != {expected_version}:
+        raise RuntimeError(f"nccl-tests runtime version {sorted(versions)} does not match {expected_version}")
+    timings = []
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 13 or not fields[0].isdigit() or int(fields[0]) != size:
+            continue
+        latency_ms = float(fields[5]) * 1e-3
+        if not math.isfinite(latency_ms) or latency_ms <= 0:
+            raise RuntimeError(f"Invalid nccl-tests latency: {fields[5]}")
+        timings.append(latency_ms)
+    if len(timings) != 1:
+        raise RuntimeError(f"Expected one nccl-tests row for {size} bytes, got {len(timings)}")
+    return timings[0]
 
 
 def nccl_benchmark(
@@ -83,17 +105,30 @@ def nccl_benchmark(
         if power_monitor:
             power_monitor.start_sampling()
 
-        result = subprocess.run(cmd_args, capture_output=True, text=True)
+        benchmark_error = None
+        try:
+            result = subprocess.run(
+                cmd_args,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, "NCCL_DEBUG": "VERSION"},
+            )
+        except BaseException as error:
+            benchmark_error = error
+            raise
+        finally:
+            if power_monitor:
+                try:
+                    power_stats = power_monitor.stop_sampling()
+                except Exception as cleanup_error:
+                    if benchmark_error is None:
+                        raise
+                    # Do not replace the original process failure with a
+                    # secondary sampling-cleanup failure.
+                    print(f"Warning: power sampling cleanup also failed: {cleanup_error}", file=sys.stderr)
 
-        # Stop power monitoring after benchmark
-        if power_monitor:
-            power_stats = power_monitor.stop_sampling()
-
-        print_lines = result.stdout.split("\n")
-        for index_line in range(len(print_lines)):
-            if "time" in print_lines[index_line]:
-                break
-        latency = float(print_lines[index_line + 2].split()[5]) * 1e-3  # us to ms
+        latency = parse_nccl_latency(result.stdout, result.stderr, size, nccl_version)
 
         print(nccl_test_bin, f"{size=}, {latency=}")
         if power_stats:
@@ -108,7 +143,7 @@ def nccl_benchmark(
                     "latency": latency,
                 }
             ],
-            framework="TRTLLM",
+            framework="NCCL",
             version=nccl_version,
             device_name=torch.cuda.get_device_name(),
             op_name=nccl_op,

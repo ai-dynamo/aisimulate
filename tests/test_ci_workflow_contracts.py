@@ -1658,3 +1658,109 @@ def test_parallel_native_preparation_propagates_either_build_failure(tmp_path, f
     )
     assert (result.returncode == 0) == (failed == "neither")
     assert set((tmp_path / "completed").read_text().splitlines()) == {"package", "rust"}
+
+
+def test_pages_release_completion_still_executes_main_checkout():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/pages.yml").read_text())
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["workflow_run"]["branches"] == ["main", "release/**"]
+    checkout = workflow["jobs"]["build"]["steps"][0]
+    assert checkout["with"]["ref"] == "${{ github.event_name == 'pull_request' && github.ref || 'main' }}"
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["persist-credentials"] is False
+    watched_workflows = trigger["workflow_run"]["workflows"]
+    for producer in ("fpe-support-matrix.yml", "nightly-ci.yml", "release-nightly-ci.yml"):
+        assert _workflow(producer)["name"] in watched_workflows
+    assert "Nightly CI" in watched_workflows  # Runs started before the main workflow rename.
+
+
+def test_release_nightly_discovers_versions_and_bounds_total_concurrency():
+    workflow = _workflow("release-nightly-ci.yml")
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["schedule"] == [{"cron": "23 9 * * *"}]
+    assert "workflow_dispatch" in trigger
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {"group": "release-nightly-ci", "cancel-in-progress": "false"}
+    discover = workflow["jobs"]["discover"]
+    assert discover["if"] == "github.ref == 'refs/heads/main'"
+    checkout = discover["steps"][0]["with"]
+    assert checkout == {"ref": "${{ github.sha }}", "fetch-depth": "0", "persist-credentials": "false"}
+    assert "run_release_fpe.py list-releases" in _run_commands(discover)
+    releases = workflow["jobs"]["releases"]
+    assert releases["needs"] == "discover"
+    assert releases["if"] == "needs.discover.outputs.releases != '[]'"
+    assert releases["strategy"] == {
+        "fail-fast": "false",
+        "max-parallel": "1",
+        "matrix": {"release": "${{ fromJSON(needs.discover.outputs.releases) }}"},
+    }
+    assert releases["uses"] == "./.github/workflows/fpe-release-qualify.yml"
+    assert releases["with"] == {
+        "release": "${{ matrix.release.version }}",
+        "source_sha": "${{ matrix.release.source_sha }}",
+    }
+
+
+def test_release_qualification_pins_source_and_tooling_across_all_jobs():
+    workflow = _workflow("fpe-release-qualify.yml")
+    assert set(workflow["on"]) == {"workflow_call"}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["env"] == {
+        "FPE_BRANCH": "release/${{ inputs.release }}",
+        "FPE_SOURCE_SHA": "${{ inputs.source_sha }}",
+        "FPE_TOOLING_SHA": "${{ github.sha }}",
+    }
+    jobs = workflow["jobs"]
+    assert jobs["prepare"]["if"] == "github.ref == 'refs/heads/main'"
+    assert jobs["generate"]["needs"] == "prepare"
+    assert set(jobs["qualify"]["needs"]) == {"prepare", "generate"}
+    for job in jobs.values():
+        checkouts = [step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+        assert len(checkouts) == 2
+        assert checkouts[0]["ref"] == "${{ github.sha }}"
+        assert checkouts[1]["ref"] == "${{ inputs.source_sha }}"
+        assert checkouts[1]["path"] == "release-source"
+        assert all(step["persist-credentials"] == "false" for step in checkouts)
+    prepare = _run_commands(jobs["prepare"])
+    assert "maturin build --release --locked" in prepare
+    assert "run_release_fpe.py record-wheel" in prepare
+    assert "run_release_fpe.py discover" in prepare
+    assert "uv sync --project release-source/python/aisimulate --locked --no-install-project --no-dev" in prepare
+    generate = _run_commands(jobs["generate"])
+    assert "run_release_fpe.py probe" in generate
+    assert "--max-workers 8" in generate
+    assert "--max-topologies-per-role" not in generate
+    assert jobs["generate"]["strategy"]["max-parallel"] == "20"
+    assert "run_release_fpe.py package" in _run_commands(jobs["qualify"])
+    upload = jobs["qualify"]["steps"][-1]
+    assert upload["with"]["name"] == "fpe-support-matrix-web-release-${{ inputs.release }}"
+    assert upload["with"]["retention-days"] == "90"
+    assert "if" not in upload  # Never publish a partially failed qualification.
+
+
+def test_release_artifact_handoffs_cannot_mix_versions():
+    import fnmatch
+
+    jobs = _workflow("fpe-release-qualify.yml")["jobs"]
+    wheel = jobs["prepare"]["steps"][-1]["with"]["name"]
+    for name in ("generate", "qualify"):
+        download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+        assert download["with"]["name"] == wheel
+    assert wheel == "fpe-release-wheel-${{ inputs.release }}"
+    upload = jobs["generate"]["steps"][-1]["with"]["name"]
+    pattern = next(s["with"]["pattern"] for s in jobs["qualify"]["steps"] if "pattern" in s.get("with", {}))
+    versions = ["0.12.0", "0.13.0", "0.13.0-rc1", "0.13.0--preview"]
+    for selected in versions:
+        selected_pattern = pattern.replace("${{ inputs.release }}", selected)
+        for version in versions:
+            name = (
+                upload.replace("${{ inputs.release }}", version)
+                .replace("${{ matrix.shard.system }}", "h200_sxm")
+                .replace("${{ matrix.shard.backend }}", "vllm")
+            )
+            assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
