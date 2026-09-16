@@ -80,7 +80,7 @@ pytestmark = pytest.mark.integration
 #            Fallback-MLA path and the sglang perf tables.
 #   trtllm : gpt-oss-20b (MoE -> exercises the `TrtllmAlltoall` flavor +
 #            trtllm comm quant + trtllm MoE) and Nemotron-Super-49B (dense,
-#            CustomAllReduce-heavy), both b200_sxm/trtllm/1.3.0rc10. The MoE
+#            CustomAllReduce-heavy), both b200_sxm/trtllm/current (1.3.0rc20). The MoE
 #            case is the load-bearing one: it is the only subset member that
 #            hits the trtllm dispatch-flavor branch.
 _SUBSET_IDS_BY_BACKEND = {
@@ -101,12 +101,13 @@ _SUBSET_IDS_BY_BACKEND = {
     ],
 }
 
-# Subset members on power-carrying database identities: their per-op goldens
-# must carry nonzero energy_wms, so the energy comparison branch is proven to
-# execute (anti-vacuous guard in TestCompileEnginePerOpParity). EMPTY since
-# the 2026-08 prune removed the last engine-step-complete power identity —
-# repopulate when a current-slot power collection lands.
-_POWER_SUBSET_IDS: set[str] = set()
+# The B200 TRT-LLM current slot carries imported 1.3.0rc20 power data.
+# Require a nonzero energy comparison for both covered subset members so a
+# future all-zero golden refresh cannot make energy parity pass vacuously.
+_POWER_SUBSET_IDS = {
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2",
+    "nemotron-nas-b200-trtllm-isl1024-osl2",
+}
 
 # Preserve the per-backend ordering (vllm, then sglang, then trtllm) so the
 # parametrize ids group readably and the determinism sweep covers vllm first.

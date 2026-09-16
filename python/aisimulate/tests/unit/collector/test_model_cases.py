@@ -869,12 +869,13 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
 
     # Base gemm sweep expansion, then model_case_values.gemm rows. Qwen3.8-Max
     # adds two output widths across the base token-count grid.
-    assert len(cases) == 37444
+    # PR #219's DeepSeek-V4 shared-expert shapes add 74 default and 21 XPU cases.
+    assert len(cases) == 37518
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 9660
+    assert len(xpu_cases) == 9681
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
