@@ -146,6 +146,33 @@ def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
     assert "42.00" not in active_power_row
 
 
+def test_b200_power_survives_native_json_and_runner_normalization() -> None:
+    # Pin the measured-data identity and workload from migration section 4.11.
+    report = _run(
+        {
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1024, "output_tokens": 128},
+                "load": {"type": "concurrency", "concurrency": 64},
+                "stop": {"requests": 100},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "meta-llama/Meta-Llama-3.1-8B",
+                "hardware": "b200_sxm",
+                "backend": "trtllm",
+                "backend_version": "1.3.0rc20",
+                "workers": {"aggregated": {"parallelism": {"tensor": 2, "replicas": 1}}},
+            },
+        }
+    )
+
+    assert report.metrics["completed_requests"] == 100
+    native_summary = report.metadata["native_report"]
+    for name, expected in {"power_w": 655.9411158961074, "power_coverage": 0.9070317503277924}.items():
+        assert native_summary[name] == pytest.approx(expected)
+        assert report.metrics[name] == native_summary[name]
+
+
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     report = _run(
         {
