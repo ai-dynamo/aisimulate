@@ -309,8 +309,23 @@ pub(crate) enum EngineCore {
 
 impl EngineCore {
     pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
-        if let Self::Vllm(core) = self {
-            core.prepare_group_pass(wave_step, dp_size);
+        match self {
+            Self::Vllm(core) => core.prepare_group_pass(wave_step, dp_size),
+            Self::Sglang(core) => core.prepare_group_pass(),
+        }
+    }
+
+    pub(crate) fn prefill_in_pass(&self) -> bool {
+        matches!(self, Self::Sglang(core) if core.prefill_in_pass())
+    }
+
+    pub(crate) fn model_work_in_pass(&self) -> bool {
+        matches!(self, Self::Sglang(core) if core.model_work_in_pass())
+    }
+
+    pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        if let Self::Sglang(core) = self {
+            core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
         }
     }
 
