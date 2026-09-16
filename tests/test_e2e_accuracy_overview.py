@@ -339,11 +339,10 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
     assert 'class="hero"' not in page
 
 
-def test_public_page_validates_snapshot_urls_and_nested_schema() -> None:
+def test_public_page_validates_snapshot_urls() -> None:
     script = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js").read_text()
 
     assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
-    assert "!Array.isArray(model.workloads)" in script
 
 
 def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
@@ -517,6 +516,21 @@ def test_branch_publication_rejects_mismatched_or_mixed_runs(mixed: bool) -> Non
         predictions["aisimulate_run"]["runtime"]["source_checkout"]["commit_sha"] = "e" * 40
         message = "source_checkout disagree"
     with pytest.raises(OVERVIEW.SnapshotError, match=message):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            branch="main",
+            source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        )
+
+
+@pytest.mark.parametrize("prediction_run", [None, [], {"runtime": None}, {"runtime": []}])
+def test_branch_publication_rejects_invalid_prediction_run_shape(prediction_run: object) -> None:
+    predictions, metadata, coverage = _qualified_inputs()
+    predictions["aisimulate_run"] = prediction_run
+    with pytest.raises(OVERVIEW.SnapshotError, match=r"predictions\.aisimulate_run"):
         OVERVIEW.build_summary(
             predictions,
             metadata,

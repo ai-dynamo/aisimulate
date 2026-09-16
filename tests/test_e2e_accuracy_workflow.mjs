@@ -109,7 +109,7 @@ test("manual evaluation emits only the requested full SHA and branch", async () 
 test("Pages accepts failed accuracy matrices while preserving other producer gates", () => {
   const pages = readFileSync(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8");
   const expression = pages.match(/  build:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
-  for (const name of ["E2E Accuracy Matrix", "FPE Support Matrix", "Nightly CI"]) {
+  for (const name of ["E2E Accuracy Matrix", "FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]) {
     for (const conclusion of ["success", "failure", "cancelled"]) {
       for (const repository of ["ai-dynamo/aisimulate", "foreign/repo"]) {
         const github = {

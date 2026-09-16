@@ -202,6 +202,10 @@ input {
   font-weight: 800;
 }
 
+.scope-check[hidden] {
+  display: none;
+}
+
 .identity-line {
   margin: 0 0 13px;
   color: var(--muted);
@@ -656,7 +660,7 @@ button:focus-visible,
 .error-bars { display: grid; gap: 12px; margin: 20px 0; }
 .error-bar { display: grid; grid-template-columns: 125px minmax(40px, 1fr) 55px; gap: 8px; align-items: center; font-size: 11px; }
 .error-bar strong { text-align: right; font-variant-numeric: tabular-nums; }
-.bar-track { height: 8px; background: var(--bg); border-radius: 2px; }
+.bar-track { height: 8px; background: var(--elevated); border-radius: 2px; }
 .bar { display: block; height: 8px; border-radius: 2px; }
 .bar.aisimulate { background: var(--aisimulate); }
 .bar.aic { background: var(--aic); }

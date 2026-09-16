@@ -423,11 +423,18 @@ def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, t
     fpe = tmp_path / "qualified-fpe"
     fpe.mkdir()
     fpe_index = {"files": ["example.csv"], "snapshot": {"source_sha": "a" * 40}}
+    fpe_catalog = {
+        "schema_version": 1,
+        "default": "main",
+        "branches": [{"name": "main", "path": ".", "status": "available"}],
+    }
     (fpe / "index.json").write_text(json.dumps(fpe_index))
+    (fpe / "branches.json").write_text(json.dumps(fpe_catalog))
     (fpe / "example.csv").write_text("System,Status\nh200_sxm,PASS\n")
     pages.build_site(ROOT, output, fpe_data_dir=fpe, accuracy_artifacts=artifacts)
     published_fpe = output / "data/fpe-support-matrix"
     assert json.loads((published_fpe / "index.json").read_text()) == fpe_index
+    assert json.loads((published_fpe / "branches.json").read_text()) == fpe_catalog
     assert (published_fpe / "example.csv").read_bytes() == (fpe / "example.csv").read_bytes()
     assert json.loads((output / "e2e-accuracy/summary.json").read_text()) == summary
     catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
@@ -471,6 +478,8 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     pages_workflow = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(pages_workflow["on"]["workflow_run"]["workflows"]) == {
         "FPE Support Matrix",
+        "Main branch nightly CI",
+        "Release branch nightly CI",
         "Nightly CI",
         "E2E Accuracy Matrix",
     }

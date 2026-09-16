@@ -79,6 +79,50 @@ def _copy_dataset(source: Path, destination: Path) -> None:
         _copy_file(csv_path, destination / filename)
 
 
+def _copy_fpe_branches(source: Path, destination: Path, *, require_catalog: bool = False) -> None:
+    """Copy only cataloged branch datasets, retaining the legacy main data path."""
+    catalog_path = source / "branches.json"
+    if require_catalog and not catalog_path.is_file():
+        raise PagesBuildError("prepared FPE data requires branches.json")
+    catalog = (
+        json.loads(catalog_path.read_text())
+        if catalog_path.is_file()
+        else {
+            "schema_version": 1,
+            "default": "main",
+            "preview": True,
+            "branches": [{"name": "main", "path": ".", "status": "available"}],
+        }
+    )
+    if catalog.get("schema_version") != 1 or catalog.get("default") != "main":
+        raise PagesBuildError("invalid FPE branch catalog")
+    if require_catalog and catalog.get("preview"):
+        raise PagesBuildError("prepared FPE data cannot be a repository preview")
+    branches = catalog.get("branches")
+    if not isinstance(branches, list) or not branches:
+        raise PagesBuildError("empty FPE branch catalog")
+    names = set()
+    for branch in branches:
+        name = branch.get("name", "")
+        if (
+            not isinstance(name, str)
+            or name in names
+            or not (name == "main" or re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._-]*", name))
+        ):
+            raise PagesBuildError("invalid or duplicate FPE branch name")
+        names.add(name)
+        if branch.get("status") == "unavailable" and name != "main" and "path" not in branch:
+            continue
+        path = "." if name == "main" else f"branches/{name}"
+        if branch.get("status") != "available" or branch.get("path") != path:
+            raise PagesBuildError("invalid FPE branch dataset path or status")
+        if name != "main":
+            _copy_dataset(source / path, destination / path)
+    if "main" not in names:
+        raise PagesBuildError("FPE branch catalog must include main")
+    (destination / "branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
+
+
 def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
     """Describe the copied legacy data without treating a commit date as a test run."""
     index_path = destination / "index.json"
@@ -121,7 +165,11 @@ def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
 
 def _git(repo_root: Path, *args: str) -> str:
     try:
-        return subprocess.check_output(["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE, timeout=10
+        ).strip()
+    except subprocess.TimeoutExpired as exc:
+        raise PagesBuildError("timed out reading accuracy branch evidence") from exc
     except subprocess.CalledProcessError as exc:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
 
@@ -318,7 +366,10 @@ def _build_accuracy_catalog(
             source = repo_root / relative_path
             if source.is_symlink():
                 raise PagesBuildError("accuracy summary cannot be a symlink")
-            content = source.read_text()
+            try:
+                content = source.read_text()
+            except FileNotFoundError as exc:
+                raise PagesBuildError(f"accuracy summary is missing: {source}") from exc
             if include_refs:
                 entry["published_from_commit"] = _git(repo_root, "rev-parse", "HEAD")
         else:
@@ -394,7 +445,13 @@ def build_site(
                 else repo_root / SYSTEMS_ROOT / dataset_name,
                 output_dir / "data" / public_name,
             )
-            if public_name == "support-matrix":
+            if public_name == "fpe-support-matrix":
+                _copy_fpe_branches(
+                    fpe_data_dir if fpe_data_dir is not None else repo_root / SYSTEMS_ROOT / dataset_name,
+                    output_dir / "data" / public_name,
+                    require_catalog=fpe_data_dir is not None,
+                )
+            elif public_name == "support-matrix":
                 _record_legacy_snapshot(repo_root, output_dir / "data" / public_name)
 
     _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)

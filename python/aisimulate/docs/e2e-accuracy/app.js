@@ -19,6 +19,8 @@ const summaryGrid = document.getElementById("summary-grid");
 const matrixBody = document.getElementById("matrix-body");
 const identityLine = document.getElementById("identity-line");
 const releaseLabel = document.getElementById("release-label");
+const scopeControl = document.getElementById("scope-control");
+const scopeCheck = document.getElementById("scope-check");
 const multinodeLabel = document.getElementById("multinode-label");
 const measurementSourceLink = document.getElementById("measurement-source-link");
 const scopeClaim = document.getElementById("scope-claim");
@@ -112,7 +114,12 @@ function renderSnapshot() {
     throw new Error("unsafe measurement source URL");
   }
   releaseLabel.textContent = `Measurements: ${snapshot.release_tag}`;
-  multinodeLabel.textContent = scope.multinode === "included"
+  const includesMultinode = scope.multinode === "included";
+  scopeCheck.hidden = includesMultinode;
+  scopeControl.title = includesMultinode
+    ? "This snapshot includes multi-node predictions."
+    : "This snapshot includes single-node predictions only.";
+  multinodeLabel.textContent = includesMultinode
     ? "Multi-node predictions included"
     : `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
@@ -485,53 +492,68 @@ function branchOption(entry) {
 
 function validateSummary(data) {
   const statuses = ["success", "unsupported", "failed", "unknown"];
-  const metrics = (item) => item && Number.isInteger(item.points) && item.points >= 0 &&
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const strings = (value) => Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
+  const children = (items, parent, valid) => Array.isArray(items) && items.length > 0 && items.every(valid) &&
+    items.reduce((sum, item) => sum + item.rows, 0) === parent.rows;
+  const metrics = (item, rows) => object(item) && Number.isInteger(item.points) && item.points >= 0 && item.points <= rows &&
     ["ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"]
       .every((key) => item[key] === null || (Number.isFinite(item[key]) && item[key] >= 0));
   const aggregate = (item) => {
-    if (!item || !metrics(item.aic) || !metrics(item.aisimulate) ||
-      !Number.isInteger(item.rows) || item.rows <= 0 || !item.aisimulate.status_counts) return false;
+    if (!object(item) || !metrics(item.aic, item.rows) || !metrics(item.aisimulate, item.rows) ||
+      !Number.isInteger(item.rows) || item.rows <= 0 || !object(item.aisimulate.status_counts)) return false;
     const counts = item.aisimulate.status_counts;
     return statuses.every((key) => Number.isInteger(counts[key]) && counts[key] >= 0) &&
       counts.success === item.aisimulate.points && Object.values(counts).reduce((sum, count) => sum + count, 0) === item.rows;
   };
   const topologyValid = (topology) => {
-    if (!topology || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
-      !topology.parallelism || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
+    if (!object(topology) || typeof topology.id !== "string" || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
+      !object(topology.parallelism) || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
     let previous = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
-      if (!Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
+      if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
         !["success", "unsupported", "failed"].includes(point.status)) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
-      return ["measured", "aic", "aisimulate"].every((name) => ["ttft", "tpot"].every((metric) => {
+      return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
         const missing = name === "aisimulate" && point.status !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
-    }) && statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
+    }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
+      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
   };
-  if (!data || data.schema_version !== 1 || !data.snapshot || !data.scope || !data.totals ||
-    !isSafeHttpsUrl(data.snapshot.measurement_source_url) || !aggregate(data.totals) ||
-    !Array.isArray(data.models) || data.models.some((model) =>
-      !aggregate(model) || typeof model.model !== "string" || !Array.isArray(model.workloads) ||
-      model.workloads.some((workload) => !aggregate(workload) || typeof workload.identity !== "string" ||
-        !Array.isArray(workload.gpus) || workload.gpus.some((gpu) => !aggregate(gpu) || typeof gpu.gpu !== "string" ||
-          (gpu.topologies !== undefined && (!Array.isArray(gpu.topologies) || !gpu.topologies.every(topologyValid))))))) {
+  if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
+    typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
+      `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}` ||
+    !object(data.snapshot.aisimulate_packages) ||
+    !["measurement_date_through", "aisimulate_completed_at"].every((key) =>
+      data.snapshot[key] == null || typeof data.snapshot[key] === "string") ||
+    !["included", "excluded"].includes(data.scope.multinode) ||
+    !Number.isInteger(data.scope.excluded_multinode_rows) || data.scope.excluded_multinode_rows < 0 ||
+    typeof data.scope.claim !== "string" || !aggregate(data.totals) ||
+    !strings(data.totals.gpu_skus) || !strings(data.totals.precisions) ||
+    !children(data.models, data.totals, (model) => aggregate(model) && typeof model.model === "string" &&
+      strings(model.gpu_skus) && strings(model.precisions) &&
+      children(model.workloads, model, (workload) => aggregate(workload) && typeof workload.identity === "string" &&
+        typeof workload.label === "string" && strings(workload.gpu_skus) && strings(workload.precisions) &&
+        children(workload.gpus, workload, (gpu) => aggregate(gpu) && typeof gpu.gpu === "string" &&
+          strings(gpu.precisions) && (gpu.topologies === undefined || children(gpu.topologies, gpu, topologyValid))))) ||
+    data.models.length !== data.totals.models) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
-  if (revision != null && !validRevision(revision)) {
+  if (revision != null && (!object(revision) || !validRevision(revision))) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
-  if ((revision != null || aicSource !== undefined) && (!aicSource ||
+  if ((revision != null || aicSource !== undefined) && (!object(aicSource) ||
     aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
-    !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
+    typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
     throw new Error("invalid legacy AIC CLI source");
