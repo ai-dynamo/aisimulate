@@ -19,9 +19,15 @@ def normalize_power_summary(summary: Mapping[str, object]) -> dict[str, float | 
         if value is None:
             result[name] = None
             continue
-        if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+        if isinstance(value, bool) or not isinstance(value, Real):
             raise ValueError(f"{name} must be a finite number or null")
-        result[name] = float(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{name} must be a finite number or null") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{name} must be a finite number or null")
+        result[name] = number
     watts, coverage = result["power_w"], result["power_coverage"]
     if coverage is not None and not 0.0 <= coverage <= 1.0:
         raise ValueError("power_coverage must be within [0, 1]")

@@ -4,6 +4,7 @@
 """Engine-only implementation of the canonical Sweeper Runner contract."""
 
 import json
+import math
 import pickle
 
 import pytest
@@ -1264,6 +1265,14 @@ def test_memory_detail_with_explicit_blocks_does_not_guess_components():
         (None, -0.1),
         (True, 1.0),
         (None, True),
+        (math.nan, 1.0),
+        (math.inf, 1.0),
+        (-math.inf, 1.0),
+        (None, math.nan),
+        (None, math.inf),
+        (None, -math.inf),
+        (10**400, 1.0),
+        (None, 10**400),
     ],
 )
 def test_runner_rejects_invalid_power_publication(watts, coverage):
@@ -1271,3 +1280,10 @@ def test_runner_rejects_invalid_power_publication(watts, coverage):
 
     with pytest.raises(InvalidRunnerError):
         _normalize_engine_replay_report({"power_w": watts, "power_coverage": coverage}, include_native_report=False)
+
+
+def test_runner_rejects_overflowing_ordinary_metric():
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
+        _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)

@@ -1539,7 +1539,10 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     def add(name: str, value: object) -> None:
         if isinstance(value, bool) or not isinstance(value, Real):
             return
-        number = float(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InvalidRunnerError(f"engine replay metric {name!r} is not finite") from exc
         if not math.isfinite(number):
             raise InvalidRunnerError(f"engine replay metric {name!r} is not finite")
         metrics[name] = number
