@@ -466,7 +466,10 @@ def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
 
 
 @pytest.mark.parametrize("target", ["throughput", "ttft", "e2e_latency", "pareto"])
-def test_agentic_warmup_rejection_exports_evidence_without_ranking(tmp_path: Path, target: str) -> None:
+@pytest.mark.parametrize("output_format", ["json", "table"])
+def test_agentic_warmup_rejection_exports_evidence_without_ranking(
+    tmp_path: Path, target: str, output_format: str
+) -> None:
     config = yaml.safe_load(
         (_REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml").read_text()
     )
@@ -506,9 +509,10 @@ def test_agentic_warmup_rejection_exports_evidence_without_ranking(tmp_path: Pat
         "--output-dir",
         str(prediction_output),
         "--format",
-        "json",
+        output_format,
         expected_returncode=1,
     )
+    assert predicted.stdout == ""
     assert "agentic preparation aborted" in predicted.stderr
     prediction = json.loads((prediction_output / "prediction.json").read_text())
     assert prediction["agentic_phases"] == phases

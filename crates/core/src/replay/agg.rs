@@ -999,6 +999,11 @@ where
 
         // The preparation ledger owns these measurements. Keep the same live
         // engines, router and cache while beginning an empty profile epoch.
+        // Discard preparation evidence with its measurements; profile
+        // pressure/lifecycle ordinals and KV digests start here.
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
+        self.collector
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.take_report(self.now_ms);
         self.collector
             .set_g3_profile_baseline(self.engine.g3_stats());
@@ -1766,6 +1771,111 @@ mod agentic_warmup_tests {
             assert_eq!(report.request_counts.completed_requests, 1);
             assert_eq!(report.request_counts.total_output_tokens, 1);
         }
+    }
+
+    #[test]
+    fn preparation_barrier_starts_new_runtime_evidence_ordinals_and_digests() {
+        use crate::engine::{PressureEvent, PressureKind, PressureState};
+
+        let record = |replay: &mut Runtime, uuid, cause| {
+            replay.evidence.record_native_pressure(
+                &mut replay.collector,
+                WorkerPool::Agg,
+                0,
+                0,
+                PressureEvent {
+                    at_ms: replay.now_ms,
+                    kind: PressureKind::VllmPreemption,
+                    request_id: uuid,
+                    state_before: PressureState::default(),
+                    state_after: PressureState::default(),
+                    request_active_blocks_before: 1,
+                    logical_available_blocks_before: Some(0),
+                    required_blocks_before: Some(1),
+                },
+            );
+            replay.evidence.record_lifecycle_operation(
+                replay.now_ms,
+                WorkerPool::Agg,
+                cause,
+                None,
+                None,
+                vec![WorkerLifecycleTransition {
+                    worker_id: 0,
+                    transition: WorkerLifecycleTransitionKind::WorkerReady,
+                    prior_state: Some("starting"),
+                    state: "active",
+                    reason: None,
+                    origin_operation_ordinal: None,
+                }],
+                replay.lifecycle_state(),
+                Vec::new(),
+            );
+            replay
+                .evidence
+                .record_kv_ingest(
+                    WorkerPool::Agg,
+                    KvIngestBoundary::PassEnd,
+                    replay.now_ms,
+                    0,
+                    |_| Ok(()),
+                )
+                .unwrap();
+        };
+        let options = ReplayCaptureOptions {
+            capture_per_request: true,
+            capture_lifecycle_evidence: true,
+            capture_canonical_evidence: true,
+            ..Default::default()
+        };
+        let mut replay = runtime(Backend::Vllm, 64, 10.0).with_capture_options(options);
+        replay.step().unwrap();
+        let primer = replay.admission.agentic_phase_evidence().unwrap().requests[0].uuid;
+        // Feed each optional evidence boundary while native preparation is
+        // live. These records must not become evidence of measured traffic.
+        record(&mut replay, primer, "preparation_fixture");
+        while replay.admission.is_agentic_preparing() {
+            replay.step().unwrap();
+        }
+        assert_eq!(replay.evidence.options(), options);
+        while replay.requests.is_empty() {
+            replay.step().unwrap();
+        }
+        let profile_uuid = *replay.requests.keys().next().unwrap();
+        let profile_at_ms = replay.now_ms;
+        record(&mut replay, profile_uuid, "profile_fixture");
+        let (collector, _) = replay.run().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.per_request[0].pressure_record_ordinals, vec![0]);
+        let evidence = report.runtime_evidence;
+        let pressure = evidence.pressure.unwrap();
+        assert_eq!(pressure.vllm_preemptions_total, 1);
+        assert_eq!(pressure.records.len(), 1);
+        assert_eq!(pressure.records[0].request_uuid, profile_uuid.to_string());
+        assert_eq!(pressure.records[0].pressure_ordinal, 0);
+        assert_eq!(pressure.records[0].at_ms, profile_at_ms);
+        assert_eq!(evidence.lifecycle_operations.len(), 1);
+        assert_eq!(evidence.lifecycle_operations[0].cause, "profile_fixture");
+        assert_eq!(evidence.lifecycle_operations[0].operation_ordinal, 0);
+        assert_eq!(
+            evidence.lifecycle_operations[0].transitions[0].origin_operation_ordinal,
+            Some(0)
+        );
+        let kv = evidence.kv_ingest.unwrap();
+        assert_eq!(kv.batches, 1);
+        assert_eq!(kv.boundaries["pass_end"].first_at_ms, profile_at_ms);
+        assert_eq!(kv.boundaries["pass_end"].last_at_ms, profile_at_ms);
+        let mut reference = ReplayEvidenceCollector::new(options);
+        reference
+            .record_kv_ingest(
+                WorkerPool::Agg,
+                KvIngestBoundary::PassEnd,
+                profile_at_ms,
+                0,
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(kv, reference.finish().kv_ingest.unwrap());
     }
 
     #[test]

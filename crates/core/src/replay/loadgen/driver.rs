@@ -276,6 +276,27 @@ impl PromptTokens {
     }
 }
 
+pub(super) fn deferred_request_with_hashes(
+    metadata: DirectRequest,
+    input_length: usize,
+    hash_ids: Vec<u32>,
+    trace_block_size: usize,
+    engine_block_size: Option<u32>,
+) -> (ReplayRequestPayload, Option<ReplayRequestHashes>) {
+    let request =
+        ReplayRequestPayload::deferred(metadata, input_length, hash_ids, trace_block_size);
+    // The router needs engine-block hashes at arrival, but it does not need to
+    // retain the expanded prompt. Materialize transiently for hashing, then
+    // keep only the compact payload until worker admission.
+    // TODO: Derive engine-block hashes directly from compact trace blocks so
+    // immediate dispatch does not materialize once for routing and again for
+    // admission. Preserve `ReplayRequestHashes::from_tokens` semantics when
+    // trace and engine block sizes differ.
+    let replay_hashes = engine_block_size
+        .map(|block_size| ReplayRequestHashes::from_tokens(&request.prompt_tokens(), block_size));
+    (request, replay_hashes)
+}
+
 #[derive(Debug)]
 struct TurnRuntime {
     request_id: Option<String>,
@@ -1639,26 +1660,13 @@ impl WorkloadDriver {
                         policy_class: turn.policy_class.clone(),
                         replay_context: replay_context.clone(),
                     };
-                    let request = ReplayRequestPayload::deferred(
+                    deferred_request_with_hashes(
                         request_metadata,
                         input_length,
                         hash_ids,
                         self.trace_block_size,
-                    );
-                    // The router needs engine-block hashes at arrival, but it
-                    // does not need to retain the expanded prompt. Materialize
-                    // once transiently for hashing, then keep only the compact
-                    // payload until a worker admission.
-                    // TODO: Derive engine-block hashes directly from the compact
-                    // trace blocks so immediate dispatch does not materialize
-                    // the prompt once for routing and again for admission.
-                    // Preserve `ReplayRequestHashes::from_tokens` semantics when
-                    // trace and engine block sizes differ.
-                    let replay_hashes = self.include_replay_hashes.then(|| {
-                        let request_tokens = request.prompt_tokens();
-                        ReplayRequestHashes::from_tokens(&request_tokens, self.engine_block_size)
-                    });
-                    (request, replay_hashes)
+                        self.include_replay_hashes.then_some(self.engine_block_size),
+                    )
                 }
                 PromptMode::DeltaCumulative => {
                     session
@@ -2450,16 +2458,24 @@ mod tests {
 
     #[test]
     fn compact_dispatch_does_not_retain_materialized_prompt() {
-        let mut driver = WorkloadDriver::new_trace(two_session_trace(), 1).unwrap();
+        for include_hashes in [false, true] {
+            let mut driver = if include_hashes {
+                WorkloadDriver::new_trace(two_session_trace(), 1)
+            } else {
+                WorkloadDriver::new_trace_without_replay_hashes(two_session_trace(), 1, false)
+            }
+            .unwrap();
+            let mut ready = driver.pop_ready_compact(0.0, 1);
 
-        let mut ready = driver.pop_ready_compact(0.0, 1);
-
-        assert_eq!(ready.len(), 1);
-        let request = ready.pop().expect("one compact request").request;
-        assert_eq!(request.input_length(), 2);
-        assert!(request.metadata().tokens.is_empty());
-        assert!(request.materialized_tokens().is_none());
-        assert_eq!(request.into_direct_request().tokens, vec![1, 2]);
+            assert_eq!(ready.len(), 1);
+            let ready = ready.pop().expect("one compact request");
+            assert_eq!(ready.replay_hashes.is_some(), include_hashes);
+            let request = ready.request;
+            assert_eq!(request.input_length(), 2);
+            assert!(request.metadata().tokens.is_empty());
+            assert!(request.materialized_tokens().is_none());
+            assert_eq!(request.into_direct_request().tokens, vec![1, 2]);
+        }
     }
 
     #[test]

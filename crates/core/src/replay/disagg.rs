@@ -2720,6 +2720,10 @@ where
 
         // Source release and destination quiescence precede this boundary;
         // retain both live KV pools and clear only the measurement windows.
+        // The profile evidence has its own ordinal and KV digest scope.
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
+        self.collector
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.take_report(self.now_ms);
         self.collector.set_agentic_phases(
             self.admission

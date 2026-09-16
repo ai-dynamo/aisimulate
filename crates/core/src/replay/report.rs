@@ -40,10 +40,13 @@ pub struct ReplayReport {
     pub agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     /// Preparation is audited separately from the profile measurements.
     pub agentic_phases: Option<AgenticPhaseEvidence>,
-    /// Canonical driver lifecycle evidence. The compact JSON report publishes
-    /// only its digest and event count; conformance tests can inspect all events.
+    /// Canonical driver lifecycle evidence on the absolute runtime clock. The
+    /// compact JSON report publishes only its digest and event count;
+    /// conformance tests can inspect all events.
     pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
     /// One explicit completed, failed, or incomplete result per authored play.
+    /// Timestamps share the measured per-request clock (relative to the profile
+    /// barrier when preparation succeeded).
     pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
@@ -802,6 +805,8 @@ pub struct PerRequestRecord {
     pub metadata: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agentic: Option<AgenticRuntimeIdentity>,
+    /// Profile attribution for warmed runs. Preparation records live only in
+    /// `agentic_phases`; cold runs retain the existing absent field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agentic_phase: Option<AgenticReplayPhase>,
     pub uuid: String,
@@ -946,8 +951,10 @@ impl SlaThresholds {
 pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     requests: FxHashMap<Uuid, TraceRequestStats>,
-    /// Simulated timestamp at which this reporting epoch began. Request
-    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    /// Absolute simulated timestamp at which this reporting epoch began.
+    /// Collection uses the runtime clock; aggregate rates use elapsed epoch
+    /// time. Warmed reports rebase measured request and play outcome timestamps
+    /// to the profile barrier when building the report.
     report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
@@ -1204,8 +1211,9 @@ impl TraceCollector {
         self.agentic_snapshots = Some(snapshots);
     }
 
-    /// Preparation evidence uses the absolute runtime clock. Measured request
-    /// timestamps use the profile barrier as their origin.
+    /// Preparation and lifecycle evidence use the absolute runtime clock.
+    /// Measured request and play outcome timestamps use the profile barrier
+    /// as their origin when preparation succeeded.
     pub fn set_agentic_phases(&mut self, phases: AgenticPhaseEvidence) {
         self.agentic_phases = Some(phases);
     }
@@ -1658,7 +1666,20 @@ impl TraceCollector {
         let agentic_snapshots = self.agentic_snapshots;
         let agentic_phases = self.agentic_phases;
         let agentic_lifecycle = self.agentic_lifecycle;
-        let agentic_play_outcomes = self.agentic_play_outcomes;
+        let mut agentic_play_outcomes = self.agentic_play_outcomes;
+        if let Some(origin) = agentic_phases
+            .as_ref()
+            .and_then(|phases| phases.profile_start_ms)
+        {
+            for outcome in agentic_play_outcomes.iter_mut().flatten() {
+                for time in [&mut outcome.causal_terminal_ms, &mut outcome.settled_at_ms]
+                    .into_iter()
+                    .flatten()
+                {
+                    *time -= origin;
+                }
+            }
+        }
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -2153,6 +2174,24 @@ mod tests {
         collector.on_token(profile, 130.0);
         collector.on_token(profile, 140.0);
         collector.on_terminal(profile, 140.0, ReplayTerminalStatus::Completed);
+        collector.set_agentic_play_outcomes(vec![
+            AgenticPlayOutcome {
+                play_id: "play".into(),
+                status: super::super::loadgen::AgenticPlayStatus::Completed,
+                causal_terminal_ms: Some(140.0),
+                settled_at_ms: Some(145.0),
+                failure_request_id: None,
+                failure_status: None,
+            },
+            AgenticPlayOutcome {
+                play_id: "still-running".into(),
+                status: super::super::loadgen::AgenticPlayStatus::Incomplete,
+                causal_terminal_ms: None,
+                settled_at_ms: None,
+                failure_request_id: None,
+                failure_status: None,
+            },
+        ]);
         let report = collector.finish();
         assert_eq!(report.request_counts.num_requests, 1);
         assert_eq!(report.request_counts.completed_requests, 1);
@@ -2175,6 +2214,14 @@ mod tests {
         assert_eq!(record.ttft_ms, Some(20.0));
         assert_eq!(record.e2e_latency_ms, Some(30.0));
         assert_eq!(record.itl_ms, Some(10.0));
+        let outcomes = report.agentic_play_outcomes.as_ref().unwrap();
+        assert_eq!(
+            outcomes[0].causal_terminal_ms,
+            Some(record.terminal_time_ms)
+        );
+        assert_eq!(outcomes[0].settled_at_ms, Some(45.0));
+        assert_eq!(outcomes[1].causal_terminal_ms, None);
+        assert_eq!(outcomes[1].settled_at_ms, None);
         assert_eq!(
             serde_json::to_value(&report).unwrap()["agentic_phases"]["profile_start_ms"],
             100.0

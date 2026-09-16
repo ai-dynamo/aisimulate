@@ -16,8 +16,8 @@ use crate::replay::{
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        AgenticReplayPhase, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
-        LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
+        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
@@ -1540,13 +1540,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }),
         );
     }
-    if !report.per_request.is_empty()
-        || (record_per_request
-            && report
-                .agentic_phases
-                .as_ref()
-                .is_some_and(|phases| phases.phase == AgenticReplayPhase::Aborted))
-    {
+    if record_per_request || !report.per_request.is_empty() {
         let object = report_json
             .as_object_mut()
             .context("AISimulate replay report did not serialize as an object")?;
@@ -2477,7 +2471,7 @@ mod tests {
 
     #[test]
     fn json_bindings_share_report_and_retain_request_correlation() {
-        let spec = ReplaySpec {
+        let mut spec = ReplaySpec {
             version: 1,
             topology: ReplayTopology::Aggregated {
                 workers: WorkerPoolSpec::default(),
@@ -2544,5 +2538,28 @@ mod tests {
             captured["artifacts"]["requests"][0]["request_id"],
             captured["report"]["per_request"][0]["uuid"]
         );
+
+        spec.requests.clear();
+        for record_per_request in [false, true] {
+            spec.record_per_request = record_per_request;
+            let payload = serde_json::to_string(&spec).unwrap();
+            for capture_artifacts in [false, true] {
+                let output: serde_json::Value =
+                    serde_json::from_str(&execute_json(&payload, capture_artifacts).unwrap())
+                        .unwrap();
+                let report = if capture_artifacts {
+                    &output["report"]
+                } else {
+                    &output
+                };
+                assert_eq!(report["completed_requests"], 0);
+                assert!(report.get("agentic_phases").is_none());
+                if record_per_request {
+                    assert_eq!(report["per_request"], serde_json::json!([]));
+                } else {
+                    assert!(report.get("per_request").is_none());
+                }
+            }
+        }
     }
 }

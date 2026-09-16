@@ -9,9 +9,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::driver::AgenticRuntimeFeedback;
+use super::driver::{AgenticRuntimeFeedback, deferred_request_with_hashes};
 use super::{AgenticPlaySnapshot, CompactReadyTurn, PreparedAgenticSnapshots};
-use super::{ReplayRequestHashes, ReplayRequestPayload};
 use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
 use crate::replay::{AgenticRuntimeIdentity, ReplayTerminalStatus};
 
@@ -44,7 +43,10 @@ pub struct AgenticPhaseRequest {
     pub identity: AgenticRuntimeIdentity,
     pub input_length: usize,
     pub max_output_tokens: usize,
-    /// Cacheable complete prompt blocks, not a claim of resident KV or a hit.
+    /// Tokens covered by cacheable complete prompt blocks, not resident KV or a hit.
+    /// Same-length admission recomputes the final input token, so its reuse is
+    /// at most `floor((input_length - 1) / engine_block_size) * engine_block_size`
+    /// for nonempty inputs, even if every complete prompt block is cached.
     pub expected_full_block_tokens: usize,
     pub dispatched_at_ms: Option<f64>,
     pub terminal_status: Option<ReplayTerminalStatus>,
@@ -294,17 +296,15 @@ impl AgenticPreparation {
                 }),
                 ..Default::default()
             };
-            let request = ReplayRequestPayload::deferred(
+            let (request, replay_hashes) = deferred_request_with_hashes(
                 metadata,
                 source.input_length,
                 lane.snapshot
                     .token_ids(source_index)
                     .expect("validated preparation token identities"),
                 lane.snapshot.context.graph.block_size,
+                self.include_replay_hashes.then_some(self.engine_block_size),
             );
-            let replay_hashes = self.include_replay_hashes.then(|| {
-                ReplayRequestHashes::from_tokens(&request.prompt_tokens(), self.engine_block_size)
-            });
             evidence.dispatched_at_ms = Some(now_ms);
             lane.in_flight = Some(evidence.uuid);
             lane.next += 1;
@@ -696,9 +696,13 @@ mod tests {
         for ordinal in 0..12 {
             let now = ordinal as f64;
             assert_eq!(driver.next_ready_time_ms(), Some(now));
-            let ready = driver.pop_ready(now, 100);
+            let ready = driver.pop_ready_compact(now, 100);
             assert_eq!(ready.len(), 2);
             for (lane, ready) in ready.into_iter().enumerate() {
+                assert!(ready.request.metadata().tokens.is_empty());
+                assert!(ready.request.materialized_tokens().is_none());
+                assert!(ready.replay_hashes.is_some());
+                let ready = ready.into_ready_turn();
                 assert!(uuids.insert(ready.request_uuid));
                 assert!(ready.request_uuid.as_u128() >= PREPARATION_UUID_BASE);
                 let source = if ordinal % 2 == 0 {

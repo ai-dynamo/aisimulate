@@ -59,7 +59,7 @@ vLLM and SGLang aggregated Engine replay. For example:
 
 ```yaml
 traffic:
-  source: {type: trace, format: weka, path: trace.json}
+  source: {type: trace, format: weka, paths: [trace.json]}
   load:
     type: trace_timestamps
     agentic_lanes: 4
@@ -71,12 +71,24 @@ Offline disaggregation is qualified
 separately by AIC-1895.
 
 `agentic_phases` records per-lane completion, request phase/source identity,
-input length, expected cacheable tokens, actual first-admission reuse, terminal
-and settlement times, and barrier state. Expected prefix size is not evidence
-that tokens stayed resident: eviction and disabled caching can reduce realized
-reuse. Router overlap is not an actual cache-hit measurement. Preparation timestamps
-and runtime artifacts use the absolute runtime clock; measured per-request
-timestamps start at the barrier, whose absolute `profile_start_ms` is recorded.
+input length, cacheable complete-block tokens (`expected_full_block_tokens`),
+actual first-admission reuse, terminal and settlement times, and barrier state.
+The cacheable token count describes full prompt blocks, not expected admission
+reuse. Both engines recompute the final input token, so same-length admission
+of a nonempty input can reuse at most
+`floor((input_length - 1) / block_size) * block_size` tokens.
+For a 128-token input with 64-token blocks, 128 tokens cover complete blocks
+while at most 64 tokens are reused. Eviction and disabled caching can reduce
+reuse further. Router overlap is not an actual cache-hit measurement.
+
+Measured per-request timestamps and `agentic_play_outcomes` terminal/settlement
+times start at the barrier, whose absolute `profile_start_ms` is recorded.
+All measured request records in a warmed run have `agentic_phase: profile`;
+primer and warmup records live in the separate preparation ledger.
+Preparation timestamps, `agentic_lifecycle`, and native runtime artifacts use
+the absolute runtime clock. Profile `runtime_evidence` excludes preparation
+records and restarts its ordinal/digest scope at the barrier; its event
+timestamps retain the absolute runtime clock for correlation with artifacts.
 G3 counters cover the profile time window while residency gauges describe the
 preserved cache at the end of that window. `wall_time_ms` remains the host
 execution time for the complete run, including preparation; it is not the
