@@ -2479,4 +2479,154 @@ mod tests {
         let lat_swapped = query(&cfg_swapped, &swapped, &[64.0, 4096.0, 200.0]).unwrap();
         assert!((lat - lat_swapped).abs() <= 1e-12 * lat.abs());
     }
+
+    #[test]
+    fn indexed_hold_matches_exhaustive_with_query_specific_validity() {
+        fn table(dims: usize, ragged: bool) -> Node {
+            let mut node = Node::branch();
+            for ordinal in 0..6usize.pow(dims as u32) {
+                let mut digits = ordinal;
+                let path: Vec<u32> = (0..dims)
+                    .map(|_| {
+                        let coordinate = [0, 1, 2, 4, 8, 16][digits % 6];
+                        digits /= 6;
+                        coordinate
+                    })
+                    .collect();
+                if ragged && ordinal % 7 == 0 {
+                    continue;
+                }
+                let latency = match ordinal % 13 {
+                    0 => 0.0,
+                    1 => -1.0,
+                    2 => f64::NAN,
+                    3 => f64::INFINITY,
+                    _ => 1.0 + ordinal as f64 / 17.0,
+                };
+                node.insert_value(
+                    &path,
+                    LeafValue::with_power(latency, 100.0 + ordinal as f64),
+                );
+            }
+            node
+        }
+
+        let positive_sol = |c: &[f64]| 1.0 + c.iter().sum::<f64>();
+        let sparse_sol = |c: &[f64]| {
+            if c[0] < 8.0 { 0.0 } else { positive_sol(c) }
+        };
+        let invalid_sol = |_: &[f64]| f64::NAN;
+        for axes in [
+            &["a", "b"][..],
+            &["a", "b", "c"][..],
+            &["a", "b", "c", "d"][..],
+        ] {
+            for ragged in [false, true] {
+                let prepared = PreparedGrid::new(table(axes.len(), ragged));
+                let index = prepared
+                    .hold_index
+                    .get_or_init(|| FlatHoldIndex::build(prepared.node()));
+                for sol in [
+                    &positive_sol as &dyn Fn(&[f64]) -> f64,
+                    &sparse_sol,
+                    &invalid_sol,
+                ] {
+                    let mut cfg = OpInterpConfig::grid(axes, sol);
+                    for width in [1, 4, 8, index.len() + 1] {
+                        cfg.resolver = Resolver::Grid {
+                            k_tail: 1,
+                            nn_leaves: width,
+                        };
+                        for ordinal in 0..20 {
+                            let mut query: Vec<f64> = (0..axes.len())
+                                .map(|axis| ((ordinal * 17 + axis * 11) % 31) as f64 / 2.0)
+                                .collect();
+                            // Force a boundary hold, including beyond ragged rows.
+                            *query.last_mut().unwrap() = 32.0 + ordinal as f64 / 7.0;
+                            if ordinal == 18 {
+                                query[0] = f64::INFINITY;
+                            }
+                            if ordinal == 19 {
+                                query[0] = f64::NAN;
+                            }
+                            let q_log: Vec<f64> =
+                                query.iter().map(|v| v.max(1e-12).log2()).collect();
+                            let actual = hold_anchor_weights_prepared(&cfg, index, &query, width);
+                            // This is the unchanged exhaustive selector from the baseline,
+                            // independent of the new tree and candidate heap.
+                            let expected =
+                                hold_anchor_weights_exhaustive(&cfg, index, &query, width, &q_log);
+                            match (actual, expected) {
+                                (Ok(actual), Ok(expected)) => {
+                                    assert_eq!(actual.len(), expected.len());
+                                    for (a, b) in actual.iter().zip(&expected) {
+                                        assert_eq!(a.coords, b.coords);
+                                        for (x, y) in [
+                                            (a.latency, b.latency),
+                                            (a.power, b.power),
+                                            (a.sol, b.sol),
+                                            (a.weight, b.weight),
+                                        ] {
+                                            assert_eq!(x.to_bits(), y.to_bits());
+                                        }
+                                    }
+                                    if ordinal < 18 {
+                                        if !(sol(&query).is_finite() && sol(&query) > 0.0) {
+                                            assert!(prepared.query_value(&cfg, &query).is_err());
+                                            continue;
+                                        }
+                                        let wsum: f64 = expected.iter().map(|a| a.weight).sum();
+                                        let util: f64 = expected
+                                            .iter()
+                                            .map(|a| a.weight * (a.sol / a.latency))
+                                            .sum();
+                                        let power: f64 =
+                                            expected.iter().map(|a| a.weight * a.power).sum();
+                                        let latency = sol(&query) / (util / wsum);
+                                        let power = power / wsum;
+                                        let value = prepared.query_value(&cfg, &query).unwrap();
+                                        assert_eq!(value.latency.to_bits(), latency.to_bits());
+                                        assert_eq!(value.power.to_bits(), power.to_bits());
+                                        assert_eq!(
+                                            value.energy.to_bits(),
+                                            (power * latency).to_bits()
+                                        );
+                                    }
+                                }
+                                (Err(actual), Err(expected)) => {
+                                    assert_eq!(actual.to_string(), expected.to_string())
+                                }
+                                _ => panic!("indexed and exhaustive hold disagree"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_interior_and_one_axis_queries_do_not_prepare_hold_index() {
+        let sol = |_: &[f64]| 1.0;
+        let mut node = Node::branch();
+        for x in [1, 4] {
+            for y in [1, 4] {
+                node.insert(&[x, y], f64::from(x + y));
+            }
+        }
+        let prepared = PreparedGrid::new(node);
+        let cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+        prepared.query_value(&cfg, &[1.0, 1.0]).unwrap();
+        prepared.query_value(&cfg, &[2.0, 2.0]).unwrap();
+        assert!(prepared.hold_index.get().is_none());
+
+        let mut node = Node::branch();
+        node.insert(&[1], 1.0);
+        node.insert(&[4], 4.0);
+        let prepared = PreparedGrid::new(node);
+        prepared
+            .query_value(&OpInterpConfig::grid(&["x"], &sol), &[8.0])
+            .unwrap();
+        assert!(prepared.hold_index.get().is_none());
+    }
 }
