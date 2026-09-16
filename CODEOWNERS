@@ -89,7 +89,6 @@
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                      @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
-/tests/test_power_qualification.py                   @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
 
@@ -163,7 +162,6 @@
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitattributes                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pyproject.toml                    @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/tests/test_power_qualification.py                   @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/Cargo.toml                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.coderabbit.yaml                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/eslint.config.js                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

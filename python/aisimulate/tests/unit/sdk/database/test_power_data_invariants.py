@@ -6,10 +6,11 @@
 Policy (2026-08): power/energy tests pin no values and bind to no specific
 backend version. They assert query-surface invariants over WHATEVER power
 data is currently shipped: every parquet that carries power columns must
-satisfy the energy model's input contract (finite, non-negative power;
-positive power limit, or a typed paired 0.0/0.0 unavailable sentinel). The energy MATH is anchored by the rust synthetic
-oracles on power-carrying fixtures (``energy_test_fixtures`` tests in
-``operators/{gemm,attention}.rs``); this test guards the shipped data plane
+satisfy the energy model's input contract (finite positive power and power
+limit, or a typed paired 0.0/0.0 unavailable sentinel). The energy MATH is
+anchored by the rust synthetic oracles on power-carrying fixtures
+(``energy_test_fixtures`` tests in ``operators/{gemm,attention}.rs``); this
+test guards the shipped data plane
 those models consume. If no power-carrying parquet is shipped at all, the
 suite records that state explicitly instead of passing vacuously.
 """
@@ -20,9 +21,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import aiconfigurator_core
+
 pytestmark = pytest.mark.unit
 
-_DATA_ROOT = Path(__file__).resolve().parents[4] / "src" / "aiconfigurator_core" / "systems" / "data"
+_DATA_ROOT = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
 _POWER_COLUMNS = ("power", "power_limit")
 
 
@@ -57,22 +60,20 @@ def test_power_columns_satisfy_energy_model_input_contract():
         mismatched = (frame["power"] == 0.0) != (frame["power_limit"] == 0.0)
         if mismatched.any():
             problems.append(f"{rel}: unpaired zero power sentinel")
-        if "power" in frame:
-            bad = (
-                frame["power"].isna()
-                | (frame["power"] == float("inf"))
-                | (frame["power"] == float("-inf"))
-                | (frame["power"] < 0)
-            )
-            if bad.any():
-                problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/negative power")
-        if "power_limit" in frame:
-            bad = (
-                frame["power_limit"].isna()
-                | (frame["power_limit"] == float("inf"))
-                | (frame["power_limit"] == float("-inf"))
-                | ((frame["power_limit"] <= 0) & ~sentinel)
-            )
-            if bad.any():
-                problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/non-positive power_limit")
+        bad = (
+            frame["power"].isna()
+            | (frame["power"] == float("inf"))
+            | (frame["power"] == float("-inf"))
+            | (frame["power"] < 0)
+        )
+        if bad.any():
+            problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/negative power")
+        bad = (
+            frame["power_limit"].isna()
+            | (frame["power_limit"] == float("inf"))
+            | (frame["power_limit"] == float("-inf"))
+            | ((frame["power_limit"] <= 0) & ~sentinel)
+        )
+        if bad.any():
+            problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/non-positive power_limit")
     assert not problems, "power data violates the energy-model input contract:\n" + "\n".join(problems)
