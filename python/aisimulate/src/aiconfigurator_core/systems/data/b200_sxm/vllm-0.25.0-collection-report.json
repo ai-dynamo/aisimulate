@@ -2186,7 +2186,7 @@
     "historical_runs_used_campaign_manifest_overrides": true,
     "historical_collector_refs_preserved": true,
     "future_runs_require_clean_matching_source_checkout": true,
-    "note": "Historical data were not recollected or relabeled by the review fix. Their collector refs identify the original code; runtime declarations and legacy source overrides are separate evidence. The new clean runner requires a source revision containing the runtime-manifest environment interface.",
+    "note": "Historical data were not recollected or relabeled. Original collector refs, runtime declarations and patch hashes remain unchanged. Optional campaign orchestration has been removed; its runtime declaration and legacy patches are identified by artifact_location. The generic hash-checked runtime-manifest interface remains available to external collection tools. This report does not claim that the current checkout contains a campaign runner.",
     "historical_source_overrides": [
       {
         "campaign": "campaign-v2",
@@ -2236,7 +2236,14 @@
         "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
         "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-final-v1.patch"
       }
-    ]
+    ],
+    "artifact_location": {
+      "kind": "historical_git_tree",
+      "repository": "ai-dynamo/aisimulate",
+      "commit": "54b073e140219b6e923a57a09acd05e96797a901",
+      "path_base": "python/aisimulate",
+      "note": "runtime_manifest and historical_source_overrides[].patch_path refer to this immutable historical tree, not the current checkout. Campaign orchestration was removed from the current PR scope; a source backup is retained locally, not republished as a GitHub archive."
+    }
   },
   "metadata_compatibility": {
     "schema_version": 2,

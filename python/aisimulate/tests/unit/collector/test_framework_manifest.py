@@ -802,26 +802,53 @@ def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
     assert _check_compat(declaration, version) is accepted
 
 
+@pytest.fixture
+def explicit_vllm_025_manifest(tmp_path):
+    """Synthetic loader fixture, not a shipped image or collection declaration."""
+    path = tmp_path / "runtime.yaml"
+    manifest = {
+        "schema_version": 2,
+        "frameworks": {
+            "vllm": {
+                "source_repo": "https://github.com/vllm-project/vllm.git",
+                "default": {
+                    "version": "0.25.0",
+                    "source_commit": "a" * 40,
+                    "images": {"default": "fixture/vllm@sha256:" + "b" * 64},
+                },
+                "families": {
+                    "kda": {
+                        "version": "0.1.dev19262",
+                        "images": {"default": "fixture/kda@sha256:" + "c" * 64},
+                    },
+                },
+            },
+        },
+    }
+    path.write_text(yaml.safe_dump(manifest))
+    return path
+
+
 @pytest.mark.parametrize("entry", [entry for entry in VLLM_REGISTRY if entry.op != "kda"], ids=lambda entry: entry.op)
-def test_committed_b200_025_runtime_resolves_all_collected_ops(entry, monkeypatch):
+def test_explicit_vllm_025_runtime_resolves_all_collected_ops(entry, monkeypatch, explicit_vllm_025_manifest):
     import hashlib
 
     from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV
 
-    path = COLLECTOR_ROOT / "campaigns/runtime_manifests/vllm-0.25.0-b200.yaml"
+    path = explicit_vllm_025_manifest
     monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
     monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
     runtime = require_collector_runtime("vllm", "0.25.0", requested_ops={entry.op})
     assert runtime.version == "0.25.0"
-    assert runtime.source_commit == "dd10e03f95f94edbea1975c67ace3a35ec9a8a40"
+    assert runtime.source_commit == "a" * 40
 
 
-def test_committed_runtime_keeps_kda_on_preview(monkeypatch):
+def test_explicit_runtime_keeps_kda_on_preview(monkeypatch, explicit_vllm_025_manifest):
     import hashlib
 
     from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV
 
-    path = COLLECTOR_ROOT / "campaigns/runtime_manifests/vllm-0.25.0-b200.yaml"
+    path = explicit_vllm_025_manifest
     monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
     monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
     with pytest.raises(RuntimeError, match="0.1.dev19262"):
@@ -829,13 +856,12 @@ def test_committed_runtime_keeps_kda_on_preview(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["missing_digest", "missing_path", "bad_digest", "changed_file"])
-def test_campaign_runtime_override_fails_closed(tmp_path, monkeypatch, failure):
+def test_runtime_override_fails_closed(tmp_path, monkeypatch, failure, explicit_vllm_025_manifest):
     import hashlib
 
     from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV, load_manifest
 
-    path = tmp_path / "runtime.yaml"
-    path.write_bytes((COLLECTOR_ROOT / "campaigns/runtime_manifests/vllm-0.25.0-b200.yaml").read_bytes())
+    path = explicit_vllm_025_manifest
     monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
     monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
     if failure == "missing_digest":

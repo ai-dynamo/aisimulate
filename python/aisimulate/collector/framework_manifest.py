@@ -54,8 +54,8 @@ class CollectorRuntime:
 def load_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
     manifest_path = Path(path)
     expected_digest = None
-    # Explicit non-default API paths stay authoritative. The campaign runner supplies an
-    # attested, committed declaration to the otherwise unchanged collector CLI.
+    # Explicit non-default API paths stay authoritative. External collection tools
+    # can supply a hash-bound declaration to the unchanged collector CLI.
     if manifest_path == MANIFEST_PATH:
         override = os.environ.get(RUNTIME_MANIFEST_ENV)
         expected_digest = os.environ.get(RUNTIME_MANIFEST_SHA256_ENV)
@@ -67,7 +67,7 @@ def load_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
             manifest_path = Path(override)
     content = manifest_path.read_bytes()
     if expected_digest is not None and hashlib.sha256(content).hexdigest() != expected_digest:
-        raise ValueError("Runtime manifest SHA-256 differs from the campaign declaration")
+        raise ValueError("Runtime manifest SHA-256 differs from the supplied declaration")
     manifest = yaml.safe_load(content) or {}
     if not isinstance(manifest, dict):
         raise TypeError("collector framework manifest must be a mapping")

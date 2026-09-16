@@ -26,6 +26,27 @@ The data belong to the vLLM 0.25.0 image with source commit
   checkpoint failure records. The frozen source archive is SHA-256 identified in
   the report; original raw records and clock traces remain preserved in that archive.
 
+## Historical environment evidence
+
+The optional multi-node campaign runner and Slurm completion hook are no longer
+part of this PR. They are not needed for normal prediction or direct
+`collect.py` use. Their matching source/configuration/tests were archived
+locally for future reuse; no new GitHub archive branch or package is published.
+
+The report's `reproduction.artifact_location` identifies the immutable Git tree
+`54b073e140219b6e923a57a09acd05e96797a901`. Its `runtime_manifest` and each
+`historical_source_overrides[].patch_path` are relative to `python/aisimulate`
+**in that historical tree**, not paths in the current checkout. Their SHA-256
+values and the original measurement refs are unchanged. For example, retrieve
+an evidence file with `git show COMMIT:python/aisimulate/PATH_FROM_REPORT` from
+a clone containing that commit, and verify it against the report's digest.
+The local archive contains the same bytes independently of Git history.
+
+The generic hash-checked runtime-manifest interface remains available for direct
+collection with an explicitly supplied declaration. The fleet default has not
+been switched to 0.25.0; the removed campaign's runtime choice is not applied
+automatically. This scope change neither remeasures nor requalifies the data.
+
 ## Frequency policy
 
 The user approved Slurm `--gpu-freq=1965` plus observed clock sampling, matching
