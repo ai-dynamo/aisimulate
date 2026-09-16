@@ -90,6 +90,8 @@ Pages also consumes validated artifacts from the **E2E Accuracy Matrix** workflo
 That workflow runs daily for `main` and every `release/*` branch, using one exact
 amd64 wheel per branch for both predictors. Completed matrix runs trigger Pages,
 which publishes only successfully qualified branch campaigns.
+The matrix supports at most 255 discovered release branches alongside `main`
+and fails explicitly if that limit is exceeded.
 The daily Pages build itself only republishes available evidence.
 
 ## Automated accuracy campaigns

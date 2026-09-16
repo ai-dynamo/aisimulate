@@ -346,7 +346,7 @@ def _build_accuracy_catalog(
     for branch, ref in sources:
         entry = {"branch": branch, "summary_path": None, "published_from_commit": None}
         qualified = artifacts / (hashlib.sha256(branch.encode()).hexdigest()[:16] + ".json") if artifacts else None
-        if qualified is not None and qualified.exists():
+        if qualified is not None and (qualified.exists() or qualified.is_symlink()):
             if qualified.is_symlink():
                 raise PagesBuildError("qualified accuracy summary cannot be a symlink")
             content = qualified.read_text()

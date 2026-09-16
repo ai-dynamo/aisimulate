@@ -21,6 +21,37 @@ from pathlib import Path
 
 TABLES = {"configs", "benchmark_results", "workflow_runs"}
 RELEASE_ROOT = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/download/"
+POLICY = "latest-complete-config-run-v1"
+
+
+def validate_manifest(manifest: dict) -> None:
+    fields = {"schema_version", "release_tag", "selection_policy", "max_age_days", "minimum_free_bytes", "parts"}
+    if not isinstance(manifest, dict) or set(manifest) != fields:
+        raise ValueError("invalid measurement manifest fields")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+        raise ValueError("unsupported measurement manifest schema_version")
+    tag = manifest["release_tag"]
+    if not isinstance(tag, str) or not re.fullmatch(r"db-dump/\d{4}-\d{2}-\d{2}", tag):
+        raise ValueError("invalid pinned measurement release")
+    if manifest["selection_policy"] != POLICY:
+        raise ValueError("unknown cohort selection policy")
+    for field, minimum in (("max_age_days", 0), ("minimum_free_bytes", 1)):
+        if type(manifest[field]) is not int or manifest[field] < minimum:
+            raise ValueError(f"invalid measurement manifest {field}")
+    parts = manifest["parts"]
+    if not isinstance(parts, list) or not parts:
+        raise ValueError("measurement manifest requires dump parts")
+    for index, part in enumerate(parts):
+        if not isinstance(part, dict) or set(part) != {"name", "sha256", "size"}:
+            raise ValueError("invalid pinned dump part fields")
+        if (
+            part["name"] != f"inferencex-{tag.split('/')[1]}.dump.zst.part{index:02d}"
+            or not isinstance(part["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", part["sha256"])
+            or type(part["size"]) is not int
+            or part["size"] <= 0
+        ):
+            raise ValueError("invalid pinned dump part")
 
 
 def digest(path: Path) -> str:
@@ -114,9 +145,8 @@ def read_copy(stream):
 
 
 def fetch(manifest: dict, output: Path) -> Path:
+    validate_manifest(manifest)
     tag = manifest["release_tag"]
-    if not re.fullmatch(r"db-dump/\d{4}-\d{2}-\d{2}", tag):
-        raise ValueError("invalid pinned measurement release")
     output.mkdir(parents=True, exist_ok=True)
     compressed = output / "measurements.dump.zst"
     # Avoid filling small runner disks. The pinned release is ~25 GB compressed.
@@ -124,9 +154,6 @@ def fetch(manifest: dict, output: Path) -> Path:
         raise ValueError("insufficient disk for the pinned measurement dump")
     with compressed.open("wb") as target:
         for index, part in enumerate(manifest["parts"]):
-            expected_name = f"inferencex-{tag.split('/')[1]}.dump.zst.part{index:02d}"
-            if part["name"] != expected_name or not re.fullmatch(r"[0-9a-f]{64}", part["sha256"]):
-                raise ValueError("invalid pinned dump part")
             sha = hashlib.sha256()
             size = 0
             with urllib.request.urlopen(RELEASE_ROOT + tag + "/" + part["name"], timeout=120) as response:

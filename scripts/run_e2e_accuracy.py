@@ -32,10 +32,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
 from build_pages_site import _accuracy_summary
-from fetch_accuracy_measurements import digest
+from fetch_accuracy_measurements import POLICY, digest, validate_manifest
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
-POLICY = "latest-complete-config-run-v1"
 
 
 def encoded(value) -> bytes:
@@ -373,10 +372,9 @@ def campaign(args) -> None:
         raise ValueError("expected full source commit")
     if not 1 <= args.workers <= 8:
         raise ValueError("workers must be in 1..8")
-    identity = wheel_identity(args.wheel)
     manifest = json.loads(args.manifest.read_text())
-    if manifest["selection_policy"] != POLICY:
-        raise ValueError("unknown cohort selection policy")
+    validate_manifest(manifest)
+    identity = wheel_identity(args.wheel)
     points, selection = select_points(json.loads(args.tables.read_text()), manifest["max_age_days"])
     started = datetime.now(UTC).isoformat()
     results = []

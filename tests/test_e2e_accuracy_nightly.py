@@ -208,6 +208,87 @@ def test_copy_reader_rejects_incomplete_or_ambiguous_data(text):
         fetch.read_copy(io.StringIO(text))
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"schema_version": 2},
+        {"schema_version": True},
+        {"schema_version": None},
+        {"unexpected": 1},
+        {"selection_policy": "unknown"},
+        {"release_tag": "../other"},
+        {"max_age_days": -1},
+        {"max_age_days": True},
+        {"minimum_free_bytes": 0},
+        {"parts": []},
+        {"parts": {}},
+    ],
+)
+def test_manifest_rejected_before_downloading_or_loading_runtime(tmp_path, change):
+    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    manifest.update(change)
+    output = tmp_path / "download"
+    with pytest.raises(ValueError):
+        fetch.fetch(manifest, output)
+    assert not output.exists()
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        campaign.campaign(SimpleNamespace(branch="main", commit="a" * 40, workers=1, manifest=path))
+
+
+@pytest.mark.parametrize("change", [{"name": "../other"}, {"sha256": "bad"}, {"size": True}, {"size": -1}])
+def test_manifest_validates_every_part_before_starting_downloads(tmp_path, change):
+    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    manifest["parts"][-1].update(change)
+    with pytest.raises(ValueError, match="pinned dump part"):
+        fetch.fetch(manifest, tmp_path / "download")
+    assert not (tmp_path / "download").exists()
+
+
+def test_fetch_verifies_pinned_bytes_and_extracts_only_measurement_tables(tmp_path, monkeypatch):
+    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    payload = b"pinned compressed fixture"
+    manifest["parts"] = [dict(manifest["parts"][0], size=len(payload), sha256=hashlib.sha256(payload).hexdigest())]
+    manifest["minimum_free_bytes"] = 1
+    calls = []
+
+    def download(url, *, timeout):
+        calls.append(url)
+        return io.BytesIO(payload)
+
+    class Decompressor:
+        def __init__(self, command, **kwargs):
+            assert command == ["zstd", "-dc", str(tmp_path / "measurements.dump.zst")]
+            self.stdout = io.BytesIO(b"archive fixture")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def wait(self):
+            return 0
+
+    def restore(command, **kwargs):
+        assert command[:4] == ["pg_restore", "--data-only", "--no-owner", "--no-privileges"]
+        assert command[4:-2] == [flag for table in sorted(fetch.TABLES) for flag in ("--table", table)]
+        assert kwargs["check"] is True
+        Path(command[-1]).write_text(
+            "".join(f"COPY public.{table} (id) FROM stdin;\n1\n\\.\n" for table in sorted(fetch.TABLES))
+        )
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", download)
+    monkeypatch.setattr(fetch.subprocess, "Popen", Decompressor)
+    monkeypatch.setattr(fetch.subprocess, "run", restore)
+    result = fetch.fetch(manifest, tmp_path)
+    assert json.loads(result.read_text()) == {table: [{"id": 1}] for table in fetch.TABLES}
+    assert calls == [fetch.RELEASE_ROOT + manifest["release_tag"] + "/" + manifest["parts"][0]["name"]]
+    assert not (tmp_path / "measurements.dump.zst").exists()
+    assert not (tmp_path / "measurements.copy").exists()
+
+
 def test_missing_overlapping_and_crashed_points_fail_qualification():
     points = [{"id": "a"}, {"id": "b"}]
     success = {
@@ -247,15 +328,7 @@ def artifact(tmp_path, monkeypatch):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "release_tag": "db-dump/2026-09-14",
-                "selection_policy": campaign.POLICY,
-                "max_age_days": 30,
-            }
-        )
-    )
+    manifest.write_text((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
@@ -445,6 +518,18 @@ def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, t
     assert json.loads((output / "e2e-accuracy" / entry["summary_path"]).read_text()) == summary
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_qualified_artifact_symlinks_never_fall_back_to_committed_data(tmp_path, dangling):
+    artifacts = tmp_path / "qualified"
+    artifacts.mkdir()
+    target = tmp_path / "target.json"
+    if not dangling:
+        target.write_text("{}")
+    (artifacts / (publish.artifact_key("main") + ".json")).symlink_to(target)
+    with pytest.raises(pages.PagesBuildError, match="qualified accuracy summary cannot be a symlink"):
+        pages.build_site(ROOT, tmp_path / "site", accuracy_artifacts=artifacts)
+
+
 def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_raw_artifacts():
     workflow = yaml.load(
         (ROOT / ".github/workflows/e2e-accuracy.yml").read_text(),
@@ -460,6 +545,9 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     assert matrix["uses"] == "./.github/workflows/e2e-accuracy-branch.yml"
     workflow = yaml.load((ROOT / matrix["uses"]).read_text(), Loader=yaml.BaseLoader)
     assert set(workflow["on"]) == {"workflow_call"}
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    for job in workflow["jobs"].values():
+        assert job.get("permissions", workflow["permissions"]) == {"contents": "read", "actions": "read"}
     assert "continue-on-error" not in workflow["jobs"]["campaign"]
     assert workflow["jobs"]["campaign"]["needs"] == "wheel"
     assert workflow["jobs"]["campaign"]["name"] == "Qualify E2E accuracy (${{ inputs.artifact_key }})"
@@ -498,6 +586,10 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
         ("2026-09-15T11:00:00+02:00", "2026-09-15T09:00:00.500000+00:00", True),
         ("2026-09-15T09:00:00.000000+00:00", "2026-09-15T09:00:00+00:00", False),
         (None, "2026-09-15T09:00:00+00:00", True),
+        ("2026-09-15", "2026-09-15T09:00:00+00:00", None),
+        ("2026-09-15T09:00:00", "2026-09-15T09:00:00+00:00", None),
+        ("not-a-date", "2026-09-15T09:00:00+00:00", None),
+        ("", "2026-09-15T09:00:00+00:00", None),
     ],
 )
 def test_same_commit_publication_compares_completion_times(
@@ -529,6 +621,10 @@ def test_same_commit_publication_compares_completion_times(
         publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
     )
     output = tmp_path / "prepared"
+    if should_publish is None:
+        with pytest.raises(ValueError, match="completion timestamp"):
+            publish.prepare(ROOT, output)
+        return
     publish.prepare(ROOT, output)
     files = list(output.glob("*.json"))
     assert bool(files) == should_publish

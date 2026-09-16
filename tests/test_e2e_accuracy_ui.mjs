@@ -137,6 +137,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   for (const change of [
     { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
     { advisory: false }, { published: data.totals.rows + 1 },
+    { selection_policy: undefined }, { selection_policy: "unknown-policy" },
     ...[[], { adapter_unsupported: -1 }, { adapter_unsupported: "1" }, { adapter_unsupported: true }]
       .map(exclusion_reasons => ({ exclusion_reasons })),
   ]) {

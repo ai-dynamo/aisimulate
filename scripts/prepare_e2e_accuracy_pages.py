@@ -79,6 +79,16 @@ def keys(value, allowed):
         raise ValueError("unexpected public artifact fields")
 
 
+def completion_time(value):
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid accuracy completion timestamp") from exc
+    if parsed.utcoffset() is None:
+        raise ValueError("accuracy completion timestamp requires a timezone")
+    return parsed
+
+
 def public_contract(summary):
     """Apply a recursive allowlist before the existing semantic validator."""
     keys(summary, {"schema_version", "title", "snapshot", "scope", "totals", "models"})
@@ -200,6 +210,7 @@ def unpack_artifact(archive: bytes) -> dict:
     if qualification != summary["snapshot"]["campaign"]:
         raise ValueError("summary and qualification disagree")
     q = qualification
+    completion_time(q["completed_at"])
     if (
         q["schema_version"] != 1
         or q["status"] != "complete"
@@ -439,7 +450,7 @@ def prepare(repo: Path, output: Path) -> None:
             if prior:
                 old = prior["snapshot"]["campaign"]
                 if commit == old["commit_sha"]:
-                    if datetime.fromisoformat(q["completed_at"]) <= datetime.fromisoformat(old["completed_at"]):
+                    if completion_time(q["completed_at"]) <= completion_time(old["completed_at"]):
                         continue
                 elif ancestor(repo, commit, old["commit_sha"]):
                     continue
@@ -473,9 +484,8 @@ def prepare(repo: Path, output: Path) -> None:
                     continue
                 if (
                     current["commit_sha"] == revision["commit_sha"]
-                    and previous.get("aisimulate_completed_at")
-                    and datetime.fromisoformat(previous["aisimulate_completed_at"])
-                    >= datetime.fromisoformat(current["completed_at"])
+                    and previous.get("aisimulate_completed_at") is not None
+                    and completion_time(previous["aisimulate_completed_at"]) >= completion_time(current["completed_at"])
                 ):
                     continue
         (output / (artifact_key(branch) + ".json")).write_text(

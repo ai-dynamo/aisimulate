@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  # Download the wheel artifact produced by the wheel job in this run.
   actions: read
 
 jobs:
@@ -29,6 +30,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+      # Download the cross-run nightly-dist-amd64 artifact.
       actions: read
     container:
       # Same manylinux builder as the FPE matrix.

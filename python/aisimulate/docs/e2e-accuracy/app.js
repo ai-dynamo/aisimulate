@@ -569,6 +569,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
+    campaign.selection_policy !== "latest-complete-config-run-v1" ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }
