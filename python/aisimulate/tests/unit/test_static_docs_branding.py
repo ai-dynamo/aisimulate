@@ -54,8 +54,10 @@ def test_fpe_support_matrix_uses_packaged_pages_data():
     assert "api.github.com/repos/ai-dynamo/aisimulate" not in page
     assert "matching-refs/heads/release" not in page
     assert 'href="../">AISimulate</a>' in page
-    assert "Data:</span>" in page
-    assert ">main</code>" in page
+    assert 'htmlFor="fpe-branch"' in page
+    assert "Branch:</label>" in page
+    assert '<select id="fpe-branch"' in page
+    assert "${DEPLOYED_SUPPORT_MATRIX_PATH}/branches.json" in page
 
 
 def test_package_readme_only_exposes_current_static_page_entrypoints():

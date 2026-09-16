@@ -6,16 +6,21 @@ on:
     # Refresh committed release snapshots; prediction campaigns run separately.
     - cron: "17 9 * * *"
   workflow_run:
-    workflows: ["FPE Support Matrix", "Nightly CI"]
+    # Retain the old main workflow name for runs started before the rename.
+    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]
     types: [completed]
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
       - "scripts/prepare_fpe_pages.py"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/release-nightly-ci.yml"
+      - ".github/workflows/fpe-release-qualify.yml"
       - "tests/test_pages_site.py"
+      - "scripts/check_fpe_support_matrix_browser.py"
       - "tests/test_e2e_accuracy_overview.py"
       - "tests/test_e2e_accuracy_ui.mjs"
       - "python/aisimulate/docs/index.html"
@@ -31,6 +36,10 @@ on:
       - "scripts/build_pages_site.py"
       - "scripts/build_e2e_accuracy_overview.py"
       - "scripts/prepare_fpe_pages.py"
+      - "scripts/check_fpe_support_matrix_browser.py"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/release-nightly-ci.yml"
+      - ".github/workflows/fpe-release-qualify.yml"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -71,7 +80,7 @@ jobs:
           python-version: "3.12"
       - name: Fetch release snapshot refs
         run: git fetch --no-tags --prune origin "+refs/heads/release/*:refs/remotes/origin/release/*"
-      - name: Prepare newest qualified main FPE snapshot
+      - name: Prepare qualified main and release FPE snapshots
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,6 +101,11 @@ jobs:
           node-version: "22"
       - name: Test accuracy UI state
         run: node --test tests/test_e2e_accuracy_ui.mjs
+      - name: Test FPE branch selection in Chromium
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+          python scripts/check_fpe_support_matrix_browser.py
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

@@ -15,6 +15,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
@@ -119,12 +120,21 @@ class FpePagesTest(unittest.TestCase):
 
         with patch.object(FPE.subprocess, "check_output", return_value=f"{NEW_SHA}\n{OLD_SHA}\n"):
             snapshot = FPE.prepare(REPOSITORY, ROOT, output, api=api)
+        (output / "branches.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "default": "main",
+                    "branches": [{"name": "main", "path": ".", "status": "available"}],
+                }
+            )
+        )
         return snapshot, output
 
     def test_qualified_data_is_published_without_artifact_code(self):
         snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive()})
         self.assertEqual(snapshot["source_sha"], NEW_SHA)
-        self.assertEqual({p.name for p in output.iterdir()}, {"index.json", "b200_sxm.csv"})
+        self.assertEqual({p.name for p in output.iterdir()}, {"index.json", "b200_sxm.csv", "branches.json"})
         self.assertEqual(json.loads((output / "index.json").read_text())["snapshot"], snapshot)
         with tempfile.TemporaryDirectory() as temporary:
             site = Path(temporary) / "site"
@@ -524,6 +534,268 @@ class FpePagesTest(unittest.TestCase):
                 FPE.qualified_files(qualified_archive(index_files=files), NEW_SHA)
 
 
+class FpeBranchesTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repository = self.root / "repo"
+        self.repository.mkdir()
+        self.git("init", "-b", "main")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "root")
+        self.common = self.git("rev-parse", "HEAD").strip()
+        self.git("switch", "-c", "release/0.12.0")
+        self.git(
+            "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "release"
+        )
+        self.release_sha = self.git("rev-parse", "HEAD").strip()
+        self.git("update-ref", "refs/remotes/origin/release/0.12.0", self.release_sha)
+        self.git("switch", "main")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "main")
+        self.main_sha = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.repository, text=True, stderr=subprocess.DEVNULL)
+
+    def prepare(
+        self,
+        release_sha=None,
+        *,
+        expired=False,
+        malformed=False,
+        hosted=False,
+        run_updates=None,
+        report_updates=None,
+        named=False,
+    ):
+        artifacts = [artifact(1, self.main_sha)]
+        runs = {1: run(self.main_sha)}
+        archives = {1: qualified_archive(self.main_sha)}
+        if release_sha:
+            artifacts.append(
+                artifact(
+                    2,
+                    release_sha,
+                    expired=expired,
+                    workflow_run={"id": 2, "head_branch": "release/0.12.0", "head_sha": release_sha},
+                )
+            )
+            runs[2] = run(release_sha, head_branch="release/0.12.0")
+            qualification = {"shard_count": 0} if malformed else {}
+            if hosted:
+                artifacts[-1]["workflow_run"] = {"id": 2, "head_branch": "main", "head_sha": self.main_sha}
+                runs[2] = run(self.main_sha, path=FPE.RELEASE_WORKFLOW, event="schedule")
+                qualification.update(source_branch="release/0.12.0", tooling_sha=self.main_sha)
+            if named:
+                artifacts[-1]["name"] = "fpe-support-matrix-web-release-0.12.0"
+            runs[2].update(run_updates or {})
+            qualification.update(report_updates or {})
+            archives[2] = qualified_archive(release_sha, report_updates=qualification)
+        calls = []
+
+        def api(repository, endpoint):
+            self.assertEqual(repository, REPOSITORY)
+            calls.append(endpoint)
+            if endpoint.startswith("actions/artifacts?"):
+                name = parse_qs(urlsplit(endpoint).query)["name"][0]
+                return json.dumps({"artifacts": [a for a in artifacts if a["name"] == name]}).encode()
+            if endpoint.startswith("actions/runs/"):
+                return json.dumps(runs[int(endpoint.split("/")[-1])]).encode()
+            return archives[int(endpoint.split("/")[-2])]
+
+        data = self.root / "data"
+        catalog = FPE.prepare_branches(REPOSITORY, self.repository, data, api=api)
+        self.assertEqual(sum(endpoint.startswith("actions/artifacts?") for endpoint in calls), 2)
+        site = self.root / "site"
+        PAGES.build_site(ROOT, site, fpe_data_dir=data)
+        return catalog, site / "data/fpe-support-matrix"
+
+    def test_main_and_release_use_separate_histories_and_packaged_data(self):
+        catalog, data = self.prepare(self.release_sha)
+        self.assertEqual([entry["name"] for entry in catalog["branches"]], ["main", "release/0.12.0"])
+        for branch, sha, directory in [
+            ("main", self.main_sha, data),
+            ("release/0.12.0", self.release_sha, data / "branches/release/0.12.0"),
+        ]:
+            index = json.loads((directory / "index.json").read_text())
+            self.assertEqual(index["snapshot"]["source_sha"], sha)
+            self.assertEqual(index["snapshot"]["branch"], branch)
+            self.assertIn(sha, (directory / "b200_sxm.csv").read_text())
+        self.assertEqual(json.loads((data / "branches.json").read_text()), catalog)
+        self.assertFalse(list(data.rglob("*.html")))
+
+    def test_release_can_use_its_own_run_on_shared_ancestor(self):
+        catalog, data = self.prepare(self.common)
+        self.assertEqual(catalog["branches"][1]["status"], "available")
+        self.assertIn(self.common, (data / "branches/release/0.12.0/b200_sxm.csv").read_text())
+
+    def test_no_release_run_never_borrows_main_data(self):
+        catalog, data = self.prepare()
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertNotIn("path", catalog["branches"][1])
+        self.assertFalse((data / "branches").exists())
+
+    def test_versioned_artifact_requires_matching_release_producer_and_identity(self):
+        catalog, data = self.prepare(self.release_sha, hosted=True, named=True)
+        self.assertEqual(catalog["branches"][1]["status"], "available")
+        self.assertIn(self.release_sha, (data / "branches/release/0.12.0/b200_sxm.csv").read_text())
+        shutil.rmtree(self.root / "data")
+        with self.assertRaisesRegex(ValueError, "artifact name"):
+            self.prepare(self.release_sha, hosted=True, named=True, report_updates={"source_branch": "release/0.13.0"})
+        shutil.rmtree(self.root / "data")
+        shutil.rmtree(self.root / "site")
+        catalog, _ = self.prepare(self.release_sha, named=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_future_releases_in_one_run_publish_separate_data_and_provenance(self):
+        self.git("update-ref", "refs/remotes/origin/release/0.13.0", self.main_sha)
+        self.git("update-ref", "refs/remotes/origin/release/0.14.0", self.main_sha)
+        artifacts = [artifact(1, self.main_sha)]
+        archives = {1: qualified_archive(self.main_sha)}
+        runs = {1: run(self.main_sha), 2: run(self.main_sha, path=FPE.RELEASE_WORKFLOW, event="schedule")}
+        for identifier, version, sha in [(2, "0.12.0", self.release_sha), (3, "0.13.0", self.main_sha)]:
+            artifacts.append(
+                artifact(
+                    identifier,
+                    self.main_sha,
+                    name=f"fpe-support-matrix-web-release-{version}",
+                    workflow_run={"id": 2, "head_branch": "main", "head_sha": self.main_sha},
+                )
+            )
+            archives[identifier] = qualified_archive(
+                sha,
+                report_updates={
+                    "source_branch": f"release/{version}",
+                    "tooling_sha": self.main_sha,
+                },
+                row_updates={"HuggingFaceID": f"example/model-{version}"},
+            )
+        calls = []
+
+        def api(repository, endpoint):
+            calls.append(endpoint)
+            if endpoint.startswith("actions/artifacts?"):
+                name = parse_qs(urlsplit(endpoint).query)["name"][0]
+                return json.dumps({"artifacts": [a for a in artifacts if a["name"] == name]}).encode()
+            if endpoint.startswith("actions/runs/"):
+                return json.dumps(runs[int(endpoint.split("/")[-1])]).encode()
+            return archives[int(endpoint.split("/")[-2])]
+
+        data = self.root / "data"
+        catalog = FPE.prepare_branches(REPOSITORY, self.repository, data, api=api)
+        self.assertEqual(
+            [(b["name"], b["status"]) for b in catalog["branches"]],
+            [
+                ("main", "available"),
+                ("release/0.12.0", "available"),
+                ("release/0.13.0", "available"),
+                ("release/0.14.0", "unavailable"),
+            ],
+        )
+        site = self.root / "site"
+        PAGES.build_site(ROOT, site, fpe_data_dir=data)
+        for version, sha in [("0.12.0", self.release_sha), ("0.13.0", self.main_sha)]:
+            branch_data = site / f"data/fpe-support-matrix/branches/release/{version}"
+            snapshot = json.loads((branch_data / "index.json").read_text())["snapshot"]
+            self.assertEqual(snapshot["source_sha"], sha)
+            self.assertEqual(snapshot["branch"], f"release/{version}")
+            self.assertEqual(snapshot["tooling_sha"], self.main_sha)
+            self.assertEqual(snapshot["run_url"], f"https://github.com/{REPOSITORY}/actions/runs/2")
+            rows = list(csv.DictReader(io.StringIO((branch_data / "b200_sxm.csv").read_text())))
+            self.assertEqual([r["HuggingFaceID"] for r in rows], [f"example/model-{version}"])
+        self.assertFalse((site / "data/fpe-support-matrix/branches/release/0.14.0").exists())
+        self.assertEqual(sum(c.startswith("actions/artifacts?") for c in calls), 4)
+        self.assertEqual(calls.count("actions/runs/1"), 1)
+        self.assertEqual(calls.count("actions/runs/2"), 1)
+
+    def test_main_only_commit_cannot_be_published_as_release(self):
+        catalog, _ = self.prepare(self.main_sha)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_expired_release_is_explicitly_unavailable(self):
+        catalog, _ = self.prepare(self.release_sha, expired=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertIn("expired", catalog["branches"][1]["reason"])
+
+    def test_malformed_release_fails_the_build(self):
+        with self.assertRaisesRegex(ValueError, "invalid FPE qualification"):
+            self.prepare(self.release_sha, malformed=True)
+
+    def test_main_hosted_release_run_publishes_distinct_source_and_tooling(self):
+        catalog, data = self.prepare(self.release_sha, hosted=True)
+        self.assertEqual(catalog["branches"][1]["status"], "available")
+        snapshot = json.loads((data / "branches/release/0.12.0/index.json").read_text())["snapshot"]
+        self.assertEqual(snapshot["source_sha"], self.release_sha)
+        self.assertEqual(snapshot["tooling_sha"], self.main_sha)
+        self.assertEqual(snapshot["run_url"], f"https://github.com/{REPOSITORY}/actions/runs/2")
+        self.assertEqual(json.loads((data / "index.json").read_text())["snapshot"]["artifact_id"], 1)
+
+    def test_release_producer_cannot_misidentify_tooling(self):
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self.prepare(self.release_sha, hosted=True, report_updates={"tooling_sha": self.common})
+
+    def test_release_producer_requires_explicit_release_identity(self):
+        for branch in ["main", "feature/test", "release/../escape", ""]:
+            with self.subTest(branch=branch):
+                # Each attempted preparation may already have prepared main.
+                shutil.rmtree(self.root / "data", ignore_errors=True)
+                with self.assertRaises(ValueError):
+                    self.prepare(self.release_sha, hosted=True, report_updates={"source_branch": branch})
+
+    def test_release_artifact_cannot_be_relabelled_as_another_release(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, report_updates={"source_branch": "release/other"})
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_main_hosted_source_must_still_belong_to_release_history(self):
+        catalog, _ = self.prepare(self.main_sha, hosted=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_main_hosted_release_expiry_does_not_publish_old_manual_data(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, expired=True)
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+        self.assertFalse((ROOT / ".github/fpe-manual-snapshots").exists())
+
+    def test_failed_release_retry_preserves_existing_site(self):
+        with self.assertRaisesRegex(ValueError, "retried without success"):
+            self.prepare(self.release_sha, hosted=True, run_updates={"run_attempt": 2, "conclusion": "failure"})
+
+    def test_untrusted_release_producer_cannot_publish(self):
+        catalog, _ = self.prepare(self.release_sha, hosted=True, run_updates={"event": "pull_request"})
+        self.assertEqual(catalog["branches"][1]["status"], "unavailable")
+
+    def test_unsafe_and_feature_branch_names_are_rejected(self):
+        for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/", "release/a/b"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                FPE.branch_path(name)
+
+    def test_catalog_discovery_rejects_nested_release_refs_before_fetching_artifacts(self):
+        self.git("update-ref", "refs/remotes/origin/release/a/b", self.release_sha)
+        with (
+            patch.object(FPE, "list_artifacts", side_effect=AssertionError("invalid ref reached artifact lookup")),
+            self.assertRaisesRegex(ValueError, "unsupported FPE branch"),
+        ):
+            FPE.prepare_branches(REPOSITORY, self.repository, self.root / "data")
+
+    def test_builder_rejects_unsafe_or_duplicate_catalog_entries(self):
+        source = self.root / "source"
+        output = self.root / "output"
+        source.mkdir()
+        output.mkdir()
+        main = {"name": "main", "path": ".", "status": "available"}
+        for entry in [
+            main,
+            {"name": "release/0.12.0", "path": "../../private", "status": "available"},
+            {"name": "release/../private", "path": "branches/release/../private", "status": "available"},
+            {"name": "release/a/b", "status": "unavailable"},
+            {"name": "feature/test", "status": "unavailable"},
+        ]:
+            (source / "branches.json").write_text(
+                json.dumps({"schema_version": 1, "default": "main", "branches": [main, entry]})
+            )
+            with self.subTest(entry=entry), self.assertRaises(PAGES.PagesBuildError):
+                PAGES._copy_fpe_branches(source, output)
+
+
 class LegacySnapshotTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -633,6 +905,23 @@ class LegacySnapshotTest(unittest.TestCase):
 
 
 class PagesSiteTest(unittest.TestCase):
+    def test_prepared_input_requires_a_branch_catalog(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(PAGES.PagesBuildError, "requires branches.json"),
+        ):
+            PAGES.build_site(
+                ROOT, Path(temporary) / "site", fpe_data_dir=ROOT / PAGES.SYSTEMS_ROOT / "fpe_support_matrix"
+            )
+
+    def test_prepared_input_cannot_enable_preview_exemption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "data"
+            source.mkdir()
+            (source / "branches.json").write_text(json.dumps({"schema_version": 1, "default": "main", "preview": True}))
+            with self.assertRaisesRegex(PAGES.PagesBuildError, "cannot be a repository preview"):
+                PAGES._copy_fpe_branches(source, Path(temporary) / "site", require_catalog=True)
+
     def test_public_pages_artifact_is_allowlisted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory) / "site"
