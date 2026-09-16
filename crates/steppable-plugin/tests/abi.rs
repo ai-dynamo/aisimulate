@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use aiperf_steppable_abi::{
-    ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventV1,
-    PLUGIN_ABI_MAJOR_V1, ReplayContextV1, ReplayHandleV1, ReplayStateV1, RequestIdMutSliceV1,
-    SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
-    validate_descriptor_v1,
+    ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
+    EngineEventV1, PLUGIN_ABI_MAJOR_V1, REQUEST_FLAG_UUID, ReplayContextV1, ReplayHandleV1,
+    ReplayStateV1, RequestIdMutSliceV1, RequestIdSliceV1, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1,
+    StepRequestV1, StepResultV1, U32SliceV1, validate_descriptor_v1,
 };
 
 #[test]
@@ -32,7 +32,7 @@ fn backend_creates_and_destroys_a_default_replay() {
             create(
                 CreateRequestV1 {
                     struct_size: std::mem::size_of::<CreateRequestV1>() as u32,
-                    flags: 0,
+                    flags: REQUEST_FLAG_UUID,
                     provider_payload: ByteSliceV1 {
                         data: payload.as_ptr(),
                         len: payload.len() as u64,
@@ -101,14 +101,14 @@ fn backend_creates_and_destroys_a_default_replay() {
                 handle,
                 DirectRequestV1 {
                     struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
-                    flags: 0,
+                    flags: REQUEST_FLAG_UUID,
                     tokens: U32SliceV1 {
                         data: tokens.as_ptr(),
                         len: tokens.len() as u64,
                     },
                     output_token_ids: U32SliceV1::EMPTY,
                     max_output_tokens: 1,
-                    uuid: [0; 16],
+                    uuid: [9; 16],
                     dp_rank: 0,
                     preferred_dp_rank: 0,
                     preferred_prefill_dp_rank: 0,
@@ -123,7 +123,7 @@ fn backend_creates_and_destroys_a_default_replay() {
         },
         StatusV1::OK
     );
-    assert_ne!(request_id, [0; 16]);
+    assert_eq!(request_id, [9; 16]);
     assert_eq!(
         unsafe { vtable.state.unwrap()(handle, &raw mut state) },
         StatusV1::OK
@@ -191,6 +191,26 @@ fn backend_creates_and_destroys_a_default_replay() {
     assert_eq!(cancellation.request_id, batch_ids[0]);
     assert_ne!(cancellation.flags & (1 << 1), 0);
 
+    let mut canceled_batch = EngineEventSliceV1 {
+        data: std::ptr::null(),
+        len: 0,
+    };
+    assert_eq!(
+        unsafe {
+            vtable.cancel_batch.unwrap()(
+                handle,
+                RequestIdSliceV1 {
+                    data: batch_ids[1..].as_ptr(),
+                    len: 1,
+                },
+                &raw mut canceled_batch,
+            )
+        },
+        StatusV1::OK
+    );
+    assert_eq!(canceled_batch.len, 1);
+    unsafe { vtable.release_events.unwrap()(canceled_batch) };
+
     let mut stepped = StepResultV1::EMPTY;
     assert_eq!(
         unsafe {
@@ -210,6 +230,43 @@ fn backend_creates_and_destroys_a_default_replay() {
     assert!(stepped.request_facts.len > 0);
     unsafe { vtable.release_events.unwrap()(stepped.events) };
     unsafe { vtable.release_request_facts.unwrap()(stepped.request_facts) };
+
+    for _ in 0..16 {
+        assert_eq!(
+            unsafe { vtable.state.unwrap()(handle, &raw mut state) },
+            StatusV1::OK
+        );
+        if state.is_idle != 0 {
+            break;
+        }
+        let mut more = StepResultV1::EMPTY;
+        assert_eq!(
+            unsafe {
+                vtable.step.unwrap()(
+                    handle,
+                    StepRequestV1 {
+                        struct_size: std::mem::size_of::<StepRequestV1>() as u32,
+                        flags: 0,
+                        until_ms: f64::INFINITY,
+                    },
+                    &raw mut more,
+                )
+            },
+            StatusV1::OK
+        );
+        unsafe { vtable.release_events.unwrap()(more.events) };
+        unsafe { vtable.release_request_facts.unwrap()(more.request_facts) };
+    }
+    assert_ne!(state.is_idle, 0);
+
+    let mut report = ByteSliceV1::EMPTY;
+    assert_eq!(
+        unsafe { vtable.take_report.unwrap()(handle, 1.0, &raw mut report) },
+        StatusV1::OK
+    );
+    let report_json = unsafe { std::slice::from_raw_parts(report.data, report.len as usize) };
+    assert!(serde_json::from_slice::<serde_json::Value>(report_json).is_ok());
+    unsafe { vtable.release_bytes.unwrap()(report) };
 
     unsafe { vtable.destroy.unwrap()(handle) };
 }

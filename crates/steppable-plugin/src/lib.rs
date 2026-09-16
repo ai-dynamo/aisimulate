@@ -12,10 +12,10 @@ use std::ffi::c_char;
 use aiperf_steppable_abi::{
     ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
     EngineEventV1, PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION,
-    REQUEST_FACT_FLAG_LATENCIES, REQUEST_FACT_FLAG_OUTPUT_LENGTH, ReplayHandleV1, ReplayStateV1,
-    RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
-    SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
-    StepResultV1, U32SliceV1,
+    REQUEST_FACT_FLAG_LATENCIES, REQUEST_FACT_FLAG_OUTPUT_LENGTH, REQUEST_FLAG_UUID,
+    ReplayHandleV1, ReplayStateV1, RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1,
+    RequestIdSliceV1, RequestIdV1, SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1,
+    StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
     SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
@@ -115,7 +115,7 @@ unsafe fn direct_request(request: DirectRequestV1) -> Result<DirectRequest, Stat
         tokens,
         max_output_tokens: request.max_output_tokens as usize,
         output_token_ids: (!output_token_ids.is_empty()).then_some(output_token_ids),
-        uuid: None,
+        uuid: (request.flags & REQUEST_FLAG_UUID != 0).then_some(Uuid::from_bytes(request.uuid)),
         dp_rank: request.dp_rank,
         preferred_dp_rank: None,
         preferred_prefill_dp_rank: None,
@@ -331,11 +331,58 @@ unsafe extern "C" fn cancel(
 }
 
 unsafe extern "C" fn cancel_batch(
-    _handle: ReplayHandleV1,
-    _request_ids: RequestIdSliceV1,
-    _events: *mut EngineEventSliceV1,
+    handle: ReplayHandleV1,
+    request_ids: RequestIdSliceV1,
+    events: *mut EngineEventSliceV1,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    if events.is_null()
+        || request_ids.len > usize::MAX as u64
+        || (request_ids.data.is_null() && request_ids.len != 0)
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let request_ids = if request_ids.len == 0 {
+        &[]
+    } else {
+        // Safety: non-empty input batch is valid for this FFI call.
+        unsafe { std::slice::from_raw_parts(request_ids.data, request_ids.len as usize) }
+    };
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    let mut terminals = Vec::new();
+    for request_id in request_ids {
+        match replay.engine.cancel(Uuid::from_bytes(*request_id)) {
+            Ok(Some(terminal)) => {
+                let terminal_status = match terminal.terminal_status {
+                    Some(ReplayTerminalStatus::Completed) => 1,
+                    Some(ReplayTerminalStatus::Rejected) => 2,
+                    Some(ReplayTerminalStatus::Canceled) => 3,
+                    Some(ReplayTerminalStatus::Failed) => 4,
+                    None => 0,
+                };
+                terminals.push(EngineEventV1 {
+                    request_id: *terminal.uuid.as_bytes(),
+                    flags: 1 << 1,
+                    token_id: terminal.token_id.unwrap_or_default(),
+                    terminal_status,
+                    reserved: 0,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                replay.last_error = error.to_string();
+                return StatusV1::REJECTED;
+            }
+        }
+    }
+    let terminals = terminals.into_boxed_slice();
+    let len = terminals.len() as u64;
+    let data = Box::into_raw(terminals).cast::<EngineEventV1>();
+    // Safety: validated non-null output pointer.
+    unsafe { *events = EngineEventSliceV1 { data, len } };
+    StatusV1::OK
 }
 
 unsafe extern "C" fn step(
@@ -456,11 +503,34 @@ unsafe extern "C" fn step(
 }
 
 unsafe extern "C" fn take_report(
-    _handle: ReplayHandleV1,
-    _wall_ms: f64,
-    _report: *mut ByteSliceV1,
+    handle: ReplayHandleV1,
+    wall_ms: f64,
+    report: *mut ByteSliceV1,
 ) -> StatusV1 {
-    StatusV1::UNSUPPORTED
+    if report.is_null() || !wall_ms.is_finite() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    let report_value = match replay.engine.take_report(wall_ms) {
+        Ok(report_value) => report_value,
+        Err(error) => {
+            replay.last_error = error.to_string();
+            return StatusV1::REJECTED;
+        }
+    };
+    let encoded = match serde_json::to_string(&report_value) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            replay.last_error = error.to_string();
+            return StatusV1::INTERNAL;
+        }
+    };
+    // Safety: validated non-null output pointer.
+    unsafe { *report = allocated_bytes(encoded) };
+    StatusV1::OK
 }
 
 unsafe extern "C" fn release_bytes(bytes: ByteSliceV1) {
