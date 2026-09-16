@@ -16,6 +16,7 @@ mod capture;
 pub(crate) mod components;
 pub(crate) mod core;
 mod disagg;
+mod dynamic_placement;
 mod engine;
 mod error;
 pub(crate) mod events;
@@ -121,6 +122,9 @@ pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
     Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
     RequestIdentity, WorkerTopology,
+};
+pub use dynamic_placement::{
+    DynamicPlacementConfig, DynamicPlacementPlugin, DynamicPlacementPolicy,
 };
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;

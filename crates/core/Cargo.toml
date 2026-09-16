@@ -24,6 +24,7 @@ ddsketchy = "0.1.7"
 derive_builder = { workspace = true }
 flate2 = { workspace = true }
 indicatif = "0.18"
+libloading = "0.8"
 log = "0.4"
 parquet = { version = "55", default-features = false, features = ["zstd", "snap"] }
 pep440_rs = "0.7.3"
@@ -43,6 +44,7 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 xxhash-rust = { workspace = true }
+aisimulate-placement-abi = { path = "../placement-abi" }
 
 [features]
 default = []
@@ -50,6 +52,7 @@ python = ["dep:pyo3"]
 extension-module = ["python", "pyo3/extension-module"]
 embed-python = ["python", "pyo3/auto-initialize"]
 replay-bench = []
+placement-test-fixture = []
 
 [dev-dependencies]
 rstest = "0.18.2"
