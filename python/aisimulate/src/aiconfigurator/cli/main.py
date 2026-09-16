@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/cli/main.py
 
 import argparse
 import logging
@@ -196,11 +198,49 @@ def _parse_nextn(value: str) -> int | str:
     return parsed
 
 
+def _speculative_block_from_args(args) -> dict | None:
+    """Assemble the Task ``speculative:`` block from --spec-* flags.
+
+    Returns None when --spec-method is absent; Task-level validation owns the
+    consistency rules (acceptance bound, nextn mutual exclusion, key checks).
+    """
+    method = getattr(args, "spec_method", None)
+    if not method:
+        for flag in ("spec_draft_model_path", "spec_num_draft_tokens", "spec_accepted_tokens"):
+            if getattr(args, flag, None) is not None:
+                raise SystemExit(f"--{flag.replace('_', '-')} requires --spec-method.")
+        return None
+    params: dict = {}
+    if getattr(args, "spec_num_draft_tokens", None) is not None:
+        if method == "mtp":
+            token_key = "depth"
+        elif method in ("ngram", "draft_model", "eagle3"):
+            token_key = "num_speculative_tokens"
+        else:
+            token_key = "num_draft_tokens"
+        params[token_key] = args.spec_num_draft_tokens
+    block: dict = {"method": method, "params": params}
+    if getattr(args, "spec_draft_model_path", None):
+        block["draft_model_path"] = args.spec_draft_model_path
+    if getattr(args, "spec_accepted_tokens", None) is not None:
+        block["accepted_tokens"] = args.spec_accepted_tokens
+    return block
+
+
 def _resolve_and_validate_nextn(args) -> None:
     """Fail fast on inconsistent MTP input; resolve --nextn auto to the checkpoint depth.
 
     Mutates ``args.nextn`` in place so everything downstream sees a plain int.
     """
+    speculative = _speculative_block_from_args(args)
+    if speculative is not None:
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        try:
+            resolution = resolve_speculative_block(speculative, nextn=args.nextn, nextn_accepted=args.nextn_accepted)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        args.nextn, args.nextn_accepted = resolution.nextn, resolution.nextn_accepted
     if args.nextn == "auto":
         try:
             resolved = resolve_nextn_auto(args.model_path)
@@ -455,6 +495,16 @@ def _add_default_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
+    )
     parser.add_argument(
         "--disable-encoder-dp",
         action="store_true",
@@ -682,6 +732,16 @@ def _add_recommend_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
+    )
     parser.add_argument(
         "--ttft",
         type=float,
@@ -819,6 +879,33 @@ def _add_generate_mode_arguments(parser):
     )
 
 
+def _add_speculative_scheme_arguments(parser):
+    """Speculation scheme flags for the single-point estimate command."""
+    parser.add_argument(
+        "--spec-method",
+        default=None,
+        help="Speculative decoding method (ngram, draft_model, eagle3, dflash, dspark, or mtp). "
+        "Non-MTP methods support agg/static estimates and require --spec-accepted-tokens.",
+    )
+    parser.add_argument(
+        "--spec-draft-model-path",
+        default=None,
+        help="Draft checkpoint (Hugging Face repo or local path) providing the draft config.json.",
+    )
+    parser.add_argument(
+        "--spec-num-draft-tokens",
+        type=int,
+        default=None,
+        help="Drafted tokens per round (MTP depth for --spec-method mtp).",
+    )
+    parser.add_argument(
+        "--spec-accepted-tokens",
+        type=float,
+        default=None,
+        help="Measured average accepted draft tokens per round; no built-in acceptance assumption.",
+    )
+
+
 def _add_estimate_mode_arguments(parser):
     """Add arguments for the estimate mode (single-point TTFT/TPOT/power estimation)."""
     parser.add_argument(
@@ -913,6 +1000,16 @@ def _add_estimate_mode_arguments(parser):
     )
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
+    )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--disable-encoder-dp",
@@ -1287,6 +1384,7 @@ def _add_estimate_mode_arguments(parser):
         "there is no built-in acceptance assumption — use a measured value from "
         "your deployment.",
     )
+    _add_speculative_scheme_arguments(parser)
     parser.add_argument(
         "--stride",
         type=int,
@@ -1642,6 +1740,11 @@ def build_default_tasks(
     afd_max_a_batch_size: int = 1024,
     afd_max_candidates: int = 10_000,
     afd_candidate_overflow: str = "error",
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
 ) -> dict[str, Task]:
     """Build task configs for the selected default-mode serving modes.
 
@@ -1656,6 +1759,12 @@ def build_default_tasks(
         database_mode: Database mode for performance estimation.
         isl: Input sequence length.
         osl: Output sequence length.
+        video_height: Video frame height in pixels.
+        video_width: Video frame width in pixels.
+        video_frames: Frames per video.
+        num_videos: Number of videos per request.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames``; zero derives the token count from dimensions.
         ttft: Time to first token target in ms.
         tpot: Time per output token target in ms.
         request_latency: Optional end-to-end request latency target (ms).
@@ -1842,6 +1951,12 @@ def build_default_tasks(
         global_kwargs["image_height"] = image_height
         global_kwargs["image_width"] = image_width
         global_kwargs["num_images_per_request"] = num_images
+    if video_height or video_width or video_frames or num_videos or num_video_tokens:
+        global_kwargs["video_height"] = video_height
+        global_kwargs["video_width"] = video_width
+        global_kwargs["video_frames"] = video_frames
+        global_kwargs["num_videos_per_request"] = num_videos
+        global_kwargs["num_video_tokens"] = num_video_tokens
     if not enable_encoder_dp:
         global_kwargs["enable_encoder_dp"] = False
 
@@ -2613,6 +2728,7 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
         forward_model=args.forward_model,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
     )
     workload.update({name: getattr(args, name) for name in _QUANT_ENUM_TABLES if getattr(args, name, None)})
     encoder_kwargs = dict(
@@ -2770,6 +2886,11 @@ def _run_estimate_mode(args):
         image_height=args.image_height,
         image_width=args.image_width,
         num_images=args.num_images,
+        video_height=args.video_height,
+        video_width=args.video_width,
+        video_frames=args.video_frames,
+        num_videos=args.num_videos,
+        num_video_tokens=args.num_video_tokens,
         enable_encoder_dp=not args.disable_encoder_dp,
         batch_size=args.batch_size,
         ctx_tokens=args.ctx_tokens,
@@ -2791,6 +2912,7 @@ def _run_estimate_mode(args):
         prefix=args.prefix,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
         stride=args.stride,
     )
 
@@ -2861,6 +2983,19 @@ def _run_estimate_mode(args):
     print(f"  OSL:              {result.osl}")
     if args.image_height > 0 and args.image_width > 0 and args.num_images > 0:
         print(f"  Images:           {args.num_images} x {args.image_height}x{args.image_width}")
+        print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
+    has_video_dimensions = args.video_height > 0 and args.video_width > 0
+    if args.video_frames > 0 and args.num_videos > 0 and (has_video_dimensions or args.num_video_tokens > 0):
+        if has_video_dimensions:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.video_height}x{args.video_width}"
+            )
+        else:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.num_video_tokens} tokens/video"
+            )
         print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
 
     # ``--prefix`` and ``--nextn`` are common parameters applied to every
@@ -3084,6 +3219,11 @@ def _run_recommend(args) -> None:
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             ttft=args.ttft,
             tpot=args.tpot,
             request_latency=args.request_latency,
@@ -3251,6 +3391,11 @@ def main(args):
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             enable_encoder_dp=not args.disable_encoder_dp,
             enable_epd=args.enable_epd,
             encoder_tp=args.encoder_tp,

@@ -13,6 +13,7 @@ instructions, see the [application README](python/aisimulate/README.md).
 
 ## Quick Links
 
+- [CI guide: workflows, code review, and required checks](docs/ci.md)
 - [Good first issues](https://github.com/ai-dynamo/aisimulate/labels/good-first-issue)
 - [Help wanted](https://github.com/ai-dynamo/aisimulate/labels/help-wanted)
 - [Open an issue](https://github.com/ai-dynamo/aisimulate/issues/new)
@@ -88,6 +89,12 @@ You may type this line yourself when writing your commit messages. If your
 `user.name` and `user.email` are set in your Git configuration, you can use
 `-s` or `--signoff` to add the `Signed-off-by` line to the end of the commit
 message.
+
+For example:
+
+```bash
+git commit -s -m "Describe your change"
+```
 
 By contributing, you agree that your contributions will be licensed under the
 [Apache 2.0 License](https://github.com/ai-dynamo/aisimulate/blob/main/LICENSE).

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Release branch nightly CI
+
+on:
+  schedule:
+    - cron: "23 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-nightly-ci
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Discover release branches and record their commit SHAs
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      releases: ${{ steps.releases.outputs.releases }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: releases
+        run: python3 scripts/run_release_fpe.py list-releases
+
+  releases:
+    name: FPE Support Matrix (release/${{ matrix.release.version }})
+    needs: discover
+    if: needs.discover.outputs.releases != '[]'
+    strategy:
+      fail-fast: false
+      # Each release may run 20 shard jobs; do not multiply that limit.
+      max-parallel: 1
+      matrix:
+        release: ${{ fromJSON(needs.discover.outputs.releases) }}
+    uses: ./.github/workflows/fpe-release-qualify.yml
+    with:
+      release: ${{ matrix.release.version }}
+      source_sha: ${{ matrix.release.source_sha }}

@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/py.rs
 
 //! PyO3 bindings for the compiled-engine core.
 //!
@@ -40,7 +42,7 @@ use crate::perfmodel::engine::runtime::{
     DEFAULT_STATIC_STRIDE, Engine, PerOpSolValue, PerOpValue, PerOpValueWithMetadata,
     RuntimeConfig, StaticMode, StaticResult,
 };
-use crate::{BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION};
+use crate::{BackendKind, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION};
 
 /// Trivial smoke export: returns the engine-config schema version so callers
 /// can confirm the extension built and imported correctly.
@@ -752,6 +754,33 @@ impl AicEngine {
         .map_err(aic_to_py)
     }
 
+    /// Evaluate context-attention kernels without fused RoPE/KV-write extras.
+    #[pyo3(signature = (ops_json, batch_size, s, prefix=0, imbalance_correction_scale=1.0, visual_block_upper_triangle=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_context_attention_kernels_json(
+        &self,
+        py: Python<'_>,
+        ops_json: &str,
+        batch_size: u32,
+        s: u32,
+        prefix: u32,
+        imbalance_correction_scale: f64,
+        visual_block_upper_triangle: bool,
+    ) -> PyResult<Vec<PerOpValue>> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.evaluate_context_attention_kernels_json(
+                ops_json,
+                batch_size,
+                s,
+                prefix,
+                imbalance_correction_scale,
+                visual_block_upper_triangle,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     /// `evaluate_ops_json` under the SOL_FULL view: every op is forced onto
     /// its analytic SOL branch and the roofline decomposition is kept.
     /// Returns ``(name, sol_time_ms, sol_math_ms, sol_mem_ms)`` tuples
@@ -1001,6 +1030,10 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    database_mode: Option<String>,
+    shared_layer: Option<bool>,
+    transfer_policy: Option<Vec<String>>,
+    strict_provenance: Option<bool>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -1041,6 +1074,10 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                database_mode: None,
+                shared_layer: None,
+                transfer_policy: None,
+                strict_provenance: None,
             },
         }
     }
@@ -1049,6 +1086,30 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Select the performance-database lookup mode. Unset keeps SILICON.
+    pub fn database_mode(mut self, database_mode: DatabaseMode) -> Self {
+        self.request.database_mode = Some(database_mode.as_str().to_owned());
+        self
+    }
+
+    /// Control sibling/cross-version performance-data reuse.
+    pub fn shared_layer(mut self, enabled: bool) -> Self {
+        self.request.shared_layer = Some(enabled);
+        self
+    }
+
+    /// Limit empirical calibration transfers to the supplied kind tokens.
+    pub fn transfer_policy(mut self, transfer_policy: Vec<String>) -> Self {
+        self.request.transfer_policy = Some(transfer_policy);
+        self
+    }
+
+    /// Enable fail-closed performance-data provenance validation.
+    pub fn strict_provenance(mut self, enabled: bool) -> Self {
+        self.request.strict_provenance = Some(enabled);
         self
     }
 
@@ -1159,6 +1220,10 @@ mod builder_tests {
         assert!(builder.request.moe_ep_size.is_none());
         assert!(builder.request.attention_backend.is_none());
         assert!(builder.request.kv_block_size.is_none());
+        assert!(builder.request.database_mode.is_none());
+        assert!(builder.request.shared_layer.is_none());
+        assert!(builder.request.transfer_policy.is_none());
+        assert!(builder.request.strict_provenance.is_none());
     }
 
     #[test]
@@ -1170,6 +1235,10 @@ mod builder_tests {
             .attention_dp_size(4)
             .moe_parallelism(Some(1), Some(8))
             .attention_backend("fa3")
+            .database_mode(DatabaseMode::Empirical)
+            .shared_layer(true)
+            .transfer_policy(vec!["xshape".to_owned(), "xquant".to_owned()])
+            .strict_provenance(true)
             .speculative_decoding(2)
             .kv_block_size(16)
             .systems_path("/tmp/systems");
@@ -1182,12 +1251,67 @@ mod builder_tests {
             (Some(1), Some(8))
         );
         assert_eq!(builder.request.attention_backend.as_deref(), Some("fa3"));
+        assert_eq!(builder.request.database_mode.as_deref(), Some("EMPIRICAL"));
+        assert_eq!(builder.request.shared_layer, Some(true));
+        assert_eq!(
+            builder.request.transfer_policy.as_deref(),
+            Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
+        );
+        assert_eq!(builder.request.strict_provenance, Some(true));
         assert_eq!(builder.request.nextn, 2);
         assert_eq!(builder.request.kv_block_size, Some(16));
         assert_eq!(
             builder.request.systems_path.as_deref(),
             Some("/tmp/systems")
         );
+    }
+
+    #[test]
+    fn forward_pass_config_retains_database_policy() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "model_name": "model",
+            "system_name": "system",
+            "backend": "vllm",
+            "backend_version": "0.25.1",
+            "kv_block_size": null,
+            "tp_size": 4,
+            "pp_size": 1,
+            "attention_dp_size": 1,
+            "weight_dtype": null,
+            "moe_dtype": null,
+            "activation_dtype": null,
+            "kv_cache_dtype": null,
+            "database_mode": "EMPIRICAL",
+            "enable_shared_layer": true,
+            "transfer_policy": ["xshape", "xquant"],
+            "strict_provenance": true,
+            "extra": {}
+        }))
+        .expect("deserialize engine config");
+
+        let request = engine_build_request(&config, None);
+
+        assert_eq!(request.database_mode.as_deref(), Some("EMPIRICAL"));
+        assert_eq!(request.shared_layer, Some(true));
+        assert_eq!(
+            request.transfer_policy.as_deref(),
+            Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
+        );
+        assert_eq!(request.strict_provenance, Some(true));
+    }
+
+    #[test]
+    fn builder_rejects_sol_full_as_database_default() {
+        let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+            .database_mode(DatabaseMode::SolFull)
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
     }
 }
 
@@ -1204,6 +1328,12 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
+        return Err(AicError::InvalidEngineConfig(
+            "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
+                .to_string(),
+        ));
+    }
     let systems_root = resolve_systems_root(request.systems_path.as_deref())
         .map_err(|e| AicError::DataRoot(format!("resolve systems path: {e}")))?;
     let systems_root_str = systems_root.to_str().ok_or_else(|| {
@@ -1228,6 +1358,10 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("database_mode", request.database_mode.as_deref())?;
+        kwargs.set_item("shared_layer", request.shared_layer)?;
+        kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
+        kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
@@ -1268,12 +1402,16 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
+    compile_engine_from_request(engine_build_request(config, systems_path))
+}
+
+fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> EngineBuildRequest {
     let nextn = config
         .speculative
         .as_ref()
         .and_then(|s| s.nextn)
         .unwrap_or(0);
-    compile_engine_from_request(EngineBuildRequest {
+    EngineBuildRequest {
         model_path: config.model_name.clone(),
         system: config.system_name.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -1298,7 +1436,11 @@ pub(crate) fn compile_engine_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
-    })
+        database_mode: Some(config.database_mode.as_str().to_owned()),
+        shared_layer: config.enable_shared_layer,
+        transfer_policy: config.transfer_policy.clone(),
+        strict_provenance: Some(config.strict_provenance),
+    }
 }
 
 /// `DataType` → `GEMMQuantMode` enum name. `None` (auto-infer) for DataTypes
@@ -1618,6 +1760,7 @@ mod tests {
                 use_qk_norm: false,
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+                apply_rope: true,
             }),
         ]
     }
@@ -1642,6 +1785,9 @@ mod tests {
                 window_size: 0,
                 kv_cache_dtype: KvCacheQuantMode::Fp8,
                 lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+                use_qk_norm: false,
+                scale_num_tokens: 1,
+                verify_query_tokens: 0,
             }),
         ]
     }

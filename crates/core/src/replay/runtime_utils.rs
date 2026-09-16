@@ -14,6 +14,14 @@ use crate::engine::HandoffId;
 #[cfg(test)]
 use crate::replay::protocol::DirectRequest;
 
+/// Result of advancing a replay runtime to its next settled semantic boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ReplayStepOutcome {
+    Settled { now_ms: f64 },
+    Complete,
+    TimeLimitReached { now_ms: f64 },
+}
+
 pub(super) fn next_timestamp(
     next_arrival_ms: Option<f64>,
     next_event_ms: Option<f64>,
@@ -253,6 +261,8 @@ pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::generalized::PassId;
+    use crate::replay::components::ScheduledEngineCompletion;
     use crate::replay::events::SimulationWorkerStage;
     use uuid::Uuid;
 
@@ -377,5 +387,55 @@ mod tests {
         assert_eq!(events.len(), 1);
         // pop_ready_worker_ready should succeed.
         assert!(pop_ready_worker_ready(&mut events, 10.0).is_some());
+    }
+
+    #[test]
+    fn same_timestamp_events_follow_semantic_phase_and_identity_order() {
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        push_transfer_complete(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            HandoffId::new(Uuid::from_u128(2)),
+        );
+        push_worker_ready(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            SimulationWorkerStage::Decode,
+            3,
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Decode, 4, PassId(9)),
+            },
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Prefill, 2, PassId(3)),
+            },
+        );
+
+        let first = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(first.stage, SimulationWorkerStage::Prefill);
+        assert_eq!(first.worker_id, 2);
+        let second = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(second.stage, SimulationWorkerStage::Decode);
+        assert_eq!(second.worker_id, 4);
+        assert_eq!(
+            pop_ready_worker_ready(&mut events, 10.0),
+            Some((SimulationWorkerStage::Decode, 3))
+        );
+        assert_eq!(
+            pop_ready_transfer_complete(&mut events, 10.0),
+            Some(HandoffId::new(Uuid::from_u128(2)))
+        );
     }
 }

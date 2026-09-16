@@ -44,6 +44,14 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_g3_offload(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        self.core.set_g3_offload(registry, node);
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
     }
@@ -55,6 +63,10 @@ impl SchedulerRank {
         seed_offset: u64,
     ) -> Result<Self> {
         config.validate()?;
+        ensure!(
+            config.g3_offload.is_none(),
+            "g3_offload is Replay-owned; construct it through ReplaySpec"
+        );
         ensure!(
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
             "native_host_offload supports only dp_size=1 in the initial implementation"
@@ -183,6 +195,13 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
+        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+            // A final output can be suppressed after the native scheduler has
+            // already retired its request. Replay still owns its accounting
+            // until the pass completion is observed, so publish the same
+            // retirement delta that completion would have carried.
+            effects.retired_requests.push(request_id);
+        }
         if effects.result != CoreCommandResult::Noop || suppressed_pending_output {
             self.apply_handoff_tracking_update(handoff_update);
         }
@@ -199,6 +218,23 @@ impl RankEngine for SchedulerRank {
 
     fn waiting_for_external_command(&self) -> bool {
         self.core.waiting_for_external_command()
+    }
+
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: std::num::NonZeroU32) {
+        self.core.prepare_group_pass(wave_step, dp_size.get());
+    }
+
+    fn prefill_in_pass(&self) -> bool {
+        self.core.prefill_in_pass()
+    }
+
+    fn model_work_in_pass(&self) -> bool {
+        self.core.model_work_in_pass()
+    }
+
+    fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        self.core
+            .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
     }
 
     fn execute_pass(
@@ -366,6 +402,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_model_len: config.max_model_len,
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
+        prefill_schedule_interval: config.prefill_schedule_interval,
+        prefill_decode_interval: config.prefill_decode_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,

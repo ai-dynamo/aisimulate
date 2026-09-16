@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,8 @@ from collector.op_catalog import CATALOG_PATH, family_for_perf_file, load_family
 from collector.registry_types import OpEntry
 
 MANIFEST_PATH = Path(__file__).with_name("framework_manifest.yaml")
+RUNTIME_MANIFEST_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST"
+RUNTIME_MANIFEST_SHA256_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256"
 
 _DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -49,8 +53,22 @@ class CollectorRuntime:
 
 def load_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
     manifest_path = Path(path)
-    with manifest_path.open(encoding="utf-8") as manifest_file:
-        manifest = yaml.safe_load(manifest_file) or {}
+    expected_digest = None
+    # Explicit non-default API paths stay authoritative. External collection tools
+    # can supply a hash-bound declaration to the unchanged collector CLI.
+    if manifest_path == MANIFEST_PATH:
+        override = os.environ.get(RUNTIME_MANIFEST_ENV)
+        expected_digest = os.environ.get(RUNTIME_MANIFEST_SHA256_ENV)
+        if (override is None) != (expected_digest is None):
+            raise ValueError("Runtime manifest override requires both path and SHA-256")
+        if override is not None:
+            if not override or re.fullmatch(r"[0-9a-f]{64}", expected_digest or "") is None:
+                raise ValueError("Runtime manifest override requires a non-empty path and SHA-256")
+            manifest_path = Path(override)
+    content = manifest_path.read_bytes()
+    if expected_digest is not None and hashlib.sha256(content).hexdigest() != expected_digest:
+        raise ValueError("Runtime manifest SHA-256 differs from the supplied declaration")
+    manifest = yaml.safe_load(content) or {}
     if not isinstance(manifest, dict):
         raise TypeError("collector framework manifest must be a mapping")
     validate_manifest(manifest)
@@ -155,6 +173,23 @@ def _resolve_from(
     return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=family)
 
 
+def _model_pinned_runtime(
+    manifest: dict[str, Any],
+    framework_key: str,
+    model_path: str | None,
+) -> CollectorRuntime | None:
+    """Return an exact model-scoped runtime override, when declared."""
+    if not model_path:
+        return None
+    spec = manifest["frameworks"].get(framework_key)
+    if spec is None:
+        return None
+    runtime_spec = (spec.get("models") or {}).get(model_path)
+    if runtime_spec is None:
+        return None
+    return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=None)
+
+
 def resolve_op_runtime(
     framework: str,
     op: str,
@@ -196,14 +231,17 @@ def require_collector_runtime(
     *,
     requested_ops: set[str],
     wideep_ops: set[str] | None = None,
+    model_path: str | None = None,
     path: str | Path = MANIFEST_PATH,
     catalog_path: str | Path = CATALOG_PATH,
 ) -> CollectorRuntime:
     """Resolve the single runtime the requested ops pin, and enforce it exactly.
 
-    Collector V3 semantics: every op resolves independently (family override or
-    framework default); one executor container serves exactly one runtime, so
-    any spread across versions is an error telling the caller to split the run.
+    Collector V3 semantics: every op resolves independently (model override,
+    family override, or framework default); one executor container serves
+    exactly one runtime, so any spread across versions is an error telling the
+    caller to split the run. An exact model pin overrides family/default
+    resolution for every op in that model's run.
     """
     wideep_ops = wideep_ops or set()
     manifest = load_manifest(path)
@@ -224,10 +262,11 @@ def require_collector_runtime(
             missing = ops - {e.op for e in entries}
             if missing:
                 raise KeyError(f"{key} registry has no op(s): {sorted(missing)}")
+        model_runtime = _model_pinned_runtime(manifest, key, model_path)
         by_identity: dict[tuple, CollectorRuntime] = {}
         op_runtimes: dict[str, CollectorRuntime] = {}
         for entry in entries:
-            runtime = _resolve_from(manifest, family_map, key, entry)
+            runtime = model_runtime or _resolve_from(manifest, family_map, key, entry)
             by_identity.setdefault(_runtime_identity(runtime), runtime)
             op_runtimes[entry.op] = runtime
         if len(by_identity) > 1:
@@ -340,6 +379,13 @@ def _validate_framework_spec(name: str, spec: object, frameworks: dict[str, Any]
         raise TypeError(f"frameworks.{name}.families must be a mapping")
     for family, override in families.items():
         _validate_runtime_spec(f"frameworks.{name}.families.{family}", override)
+    models = spec.get("models") or {}
+    if not isinstance(models, dict):
+        raise TypeError(f"frameworks.{name}.models must be a mapping")
+    for model_id, override in models.items():
+        if not isinstance(model_id, str) or not model_id:
+            raise ValueError(f"frameworks.{name}.models keys must be non-empty strings")
+        _validate_runtime_spec(f"frameworks.{name}.models.{model_id}", override)
 
 
 def _validate_runtime_spec(name: str, spec: object) -> None:

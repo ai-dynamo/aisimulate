@@ -5,7 +5,7 @@ import csv
 import json
 import math
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from functools import cache
 from importlib import resources as pkg_resources
@@ -153,6 +153,9 @@ class HybridMoEConfig:
     swa_num_heads: int = 0
     use_qk_norm: bool = False
     use_head_wise_attn_gate: bool = False
+    # Llama 4 is a multimodal wrapper around this hybrid text backbone. Keep
+    # the normalized vision-tower metadata beside the text layer plan.
+    vision_config: "VisionEncoderConfig | None" = None
 
 
 @dataclass(frozen=True)
@@ -176,13 +179,43 @@ class VisionEncoderConfig:
         projector_dims (tuple[tuple[int, int], ...]): Per-layer (in_dim, out_dim) pairs
             for the vision-to-LLM projector MLP. Empty tuple means no projector.
             Dimensions are absolute (unsharded); build_encoder_ops applies the
-            encoder parallelism (TP sharding, or full replicas under encoder DP).
+            encoder parallelism (TP sharding, or full replicas under encoder DP
+            or when projector_replicated is enabled).
         projector_n_instances (int): Number of projector instances to model (e.g.,
             1 + len(deepstack_visual_indexes) for Qwen3VL deepstack variants).
         partial_rotary_factor (float): Engine-side rotary-table parameter, not a
             rotated fraction — the 2-axis vision RoPE always rotates the full
             head_dim (vLLM ApplyRotaryEmb / SGLang cat([cos, cos])). Only gates
             the encoder_rope_apply op; 0.0 means no RoPE.
+        in_channels (int): Number of image/video input channels consumed by the
+            patch embedding projection.
+        qkv_hidden_size (int): Optional QKV projection width before the three-way
+            split. Zero means the vision hidden size.
+        max_temporal_patches (int): Maximum supported temporal position count;
+            zero means unbounded by the model contract.
+        projector_post_norm (bool): Whether to normalize the final projector output.
+        encoder_type (str): Architecture-specific encoder contract tag.
+        projector_pre_norm (bool): Normalize inputs before the projector's pixel shuffle.
+        image_size (int): Fixed square image-tile size in pixels. Zero denotes
+            a dynamic-resolution encoder such as Qwen3-VL.
+        has_cls_token (bool): Whether each tile appends a CLS token before the
+            transformer and removes it before pixel shuffle/projector work.
+        max_num_tiles (int): Maximum tile count selected by the checkpoint's
+            image processor. Zero means the input is not tiled.
+        resize_to_max_canvas (bool): Whether processor tiling chooses the
+            largest viable upscaling canvas instead of the smallest one.
+        add_global_tile (bool): Whether the image processor adds a global
+            thumbnail whenever the selected canvas contains multiple tiles.
+        prompt_image_tokens (int): Fixed structural tokens emitted around each
+            image by the multimodal processor.
+        prompt_tokens_per_local_tile (int): Separator tokens emitted per local
+            tile when a tiled prompt also contains a global tile.
+        final_norm (bool): Whether the vision tower applies a final norm after
+            its transformer blocks.
+        pool_temporal (bool): Whether the merger pools temporal patches before
+            producing the visual tokens injected into the language model.
+        video_attention_type (str): Declared video-attention topology retained
+            for architecture validation and reporting.
     """
 
     depth: int
@@ -197,6 +230,60 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
+    in_channels: int = 3
+    image_size: int = 0
+    has_cls_token: bool = False
+    max_num_tiles: int = 0
+    resize_to_max_canvas: bool = False
+    add_global_tile: bool = False
+    prompt_image_tokens: int = 0
+    prompt_tokens_per_local_tile: int = 0
+    # Keep new defaults appended: generated bindings and legacy callers may use
+    # this dataclass positionally.
+    final_norm: bool = False
+    pool_temporal: bool = False
+    video_attention_type: str = ""
+    # Processor geometry: Kimi resizes to patch budgets, then pads to the
+    # patch/merge stride. Qwen retains its existing nearest-stride behavior.
+    resize_mode: str = "qwen"
+    image_max_patches: int = 0
+    video_max_patches: int = 0
+    max_patches_per_side: int = 0
+    max_video_frames: int = 0
+    # Some towers use replicated projector linear layers even with encoder TP.
+    projector_replicated: bool = False
+    # Keyword-only additions preserve positional callers of this config and
+    # existing subclasses such as Gemma4VisionEncoderConfig.
+    qkv_hidden_size: int = field(default=0, kw_only=True)
+    max_temporal_patches: int = field(default=0, kw_only=True)
+    projector_post_norm: bool = field(default=False, kw_only=True)
+    encoder_type: str = field(default="", kw_only=True)
+    projector_pre_norm: bool = field(default=True, kw_only=True)
+
+
+@dataclass(frozen=True)
+class Gemma4VisionEncoderConfig(VisionEncoderConfig):
+    """Gemma 4 ``gemma4_vision`` encoder and soft-token contract.
+
+    Gemma 4 deliberately has its own configuration instead of being flattened
+    into the Qwen3-VL PatchMerger assumptions carried by
+    :class:`VisionEncoderConfig`.  Its ViT uses full two-dimensional RoPE and a
+    gated MLP, then performs position-aware ``pooling_kernel_size`` square
+    average pooling, standardizes the pooled features, and applies a single
+    projection into the language hidden size.
+
+    The inherited ``spatial_merge_size`` is set to ``pooling_kernel_size`` so
+    the shared encoder runtime can still express pre/post-pooling token counts;
+    it does *not* imply pixel-shuffle concatenation for this subclass.
+    """
+
+    num_key_value_heads: int = 0
+    head_dim: int = 0
+    pooling_kernel_size: int = 0
+    position_embedding_size: int = 0
+    soft_tokens_per_image: int = 0
+    supported_soft_token_budgets: tuple[int, ...] = (70, 140, 280, 560, 1120)
+    standardize: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,16 +309,37 @@ class Gemma4MixConfig:
     global_head_dim: int  # Q/K/V head dim on full_attention layers
     sliding_window_size: int  # token window for sliding_attention layers
     attention_k_eq_v: bool = False  # true means global layers reuse K as V (no v_proj)
+    # Gemma 4 multimodal prefill makes each contiguous vision-token block
+    # bidirectional inside sliding-attention layers. Global layers stay causal.
+    use_bidirectional_vision_attention: bool = False
+    # Present on multimodal Gemma 4 checkpoints; None preserves the existing
+    # text-only/dense Gemma 4 path.
+    vision_config: Gemma4VisionEncoderConfig | None = None
+
+
+@dataclass(frozen=True)
+class MuseGlimmerConfig:
+    """Muse Glimmer hybrid-attention layout (dense model, uniform head geometry).
+
+    Per-layer kind comes from ``layer_types`` ("sliding_attention" or
+    "full_attention"); only the window layout differs between layer kinds.
+    """
+
+    layer_types: tuple[str, ...]
+    sliding_window_size: int
 
 
 @dataclass(frozen=True)
 class Qwen35Config:
-    """Config for Qwen3.5 hybrid GDN + full-attention model (dense and MoE).
+    """Config for Qwen3.5's multimodal hybrid model (dense and MoE).
 
     layer_types: per-layer tuple of "linear_attention" (GDN) or "full_attention" (standard GQA)
     linear_*: GDN layer dimensions (linear_key_head_dim=128, linear_value_head_dim=128,
               linear_conv_kernel_dim=4, linear_num_key_heads=16 across all current models)
     MoE fields default to 0 for the dense 27B; populated for 35B-A3B and 397B-A17B.
+    vision_config: the separate Qwen3-VL-derived ViT + single patch-merger contract.
+    image_token_id/video_token_id: top-level multimodal token identities retained
+        when the nested text_config is unwrapped.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (GDN) or "full_attention"
@@ -245,6 +353,9 @@ class Qwen35Config:
     num_experts: int = 0
     moe_inter_size: int = 0
     shared_expert_inter_size: int = 0
+    vision_config: VisionEncoderConfig | None = None
+    image_token_id: int = 0
+    video_token_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -262,6 +373,9 @@ class KimiK3Config:
     (7168 -> 3584 down proj, experts at 3584/3072, 3584 -> 7168 up proj); the
     num_shared_experts shared experts run in the full hidden space.
     attn_res_block_size: AttnRes cross-layer residual block size (elementwise only).
+    vision_config: optional MoonViT3D and PatchMergerV2 geometry. Retained for
+                   visual context sizing on language-only workers, which omit
+                   encoder execution and memory allocation.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (KDA) or "full_attention" (MLA)
@@ -281,6 +395,7 @@ class KimiK3Config:
     first_k_dense_replace: int = 0
     dense_inter_size: int = 0
     attn_res_block_size: int = 0
+    vision_config: VisionEncoderConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -617,6 +732,9 @@ DefaultHFModels = {
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    # Qwen3.8-Max Models
+    "Qwen/Qwen3.8-2.4T-A95B",
+    "Qwen/Qwen3.8-2.4T-A95B-FP8",
     # MiMo Models
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-Base",
@@ -633,6 +751,8 @@ DefaultHFModels = {
     "nvidia/Nemotron-H-56B-Base-8K",
     # Google Gemma 4 Models
     "google/gemma-4-26B-A4B",
+    # Meta Muse Glimmer
+    "meta-models/Muse-Glimmer-30B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -702,6 +822,7 @@ ModelFamily = {
     "QWEN3VL_MOE",
     "GEMMA4MIX",
     "MINIMAXM3",
+    "MUSEGLIMMER",
     "STEP3P7",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
@@ -740,7 +861,11 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Llama4ForConditionalGeneration": "HYBRIDMOE",
     "Qwen3_5ForConditionalGeneration": "QWEN35",
     "Qwen3_5MoeForConditionalGeneration": "QWEN35",
+    # Qwen3.8-Max: FLAT config (no text_config nesting) -- do NOT add to
+    # MULTIMODAL_TEXT_CONFIG_KEY below, unlike the two VLM classes above.
+    "Qwen3_5MoeForCausalLM": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
+    "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -757,6 +882,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3_5ForConditionalGeneration": "text_config",
     "Qwen3_5MoeForConditionalGeneration": "text_config",
     "Gemma4ForConditionalGeneration": "text_config",
+    "MuseGlimmerForConditionalGeneration": "text_config",
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",

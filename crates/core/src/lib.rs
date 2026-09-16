@@ -24,7 +24,10 @@ pub mod perfmodel;
 mod python;
 pub mod replay;
 
-pub use engine::{EngineConfig as ReplayEngineConfig, TimingModel, TimingModelConfig};
+pub use engine::{
+    EngineConfig as ReplayEngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+};
 pub use replay::{ReplayReport, ReplaySpec, Replayer};
 
 // Preserve the former published AIC crate-root surface. Replay's conflicting
@@ -32,13 +35,13 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
-    AicError, BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION,
-    EstimateSource, FPM_VERSION, ForwardPassMetrics, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    ForwardPassWorkerType, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
-    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
-    ParallelMapping, QuantizationConfig, QueuedRequestMetrics, ScheduledRequestMetrics,
-    SpeculativeConfig,
+    AicError, BackendKind, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
+    ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, FPM_VERSION, ForwardPassMetrics,
+    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassWorkerType, KvCacheEstimate,
+    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
+    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    QueuedRequestMetrics, ScheduledRequestMetrics, SpeculativeConfig,
 };
 
 #[cfg(feature = "python")]

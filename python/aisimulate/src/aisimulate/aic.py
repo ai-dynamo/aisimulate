@@ -27,7 +27,9 @@ _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
 
 
-def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
+def materialize_aic_num_gpu_blocks(
+    raw: dict[str, Any], *, memory_diagnostics: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Return engine arguments with rank-local AIC KV capacity materialized."""
 
     lowered = dict(raw)
@@ -85,6 +87,8 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
         systems_path=lowered.get("systems_path"),
+        cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
+        **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return lowered
 
@@ -112,6 +116,8 @@ def estimate_num_gpu_blocks(
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
     systems_path: str | None = None,
+    cuda_graph_reserved_bytes: int = 0,
+    diagnostics: dict[str, Any] | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -167,6 +173,8 @@ def estimate_num_gpu_blocks(
             kvcache_quant_mode=_quant_mode_name("kvcache", kv_cache_dtype),
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
             systems_path=systems_path,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+            **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )
 

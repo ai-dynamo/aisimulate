@@ -425,6 +425,8 @@ def test_mixed_and_decode_helpers_pass_raw_step_args(monkeypatch) -> None:
         "component_latency_ms": {"shared_non_attention": 5.0, "context_attention": 2.0, "decode_attention": 1.5},
         "component_energy_wms": {"shared_non_attention": 50.0, "context_attention": 20.0, "decode_attention": 15.0},
         "per_op_latency_ms": {"context_mlp": 5.0, "context_attention (scaled)": 2.0, "generation_attention": 1.5},
+        "per_op_energy_wms": {"context_mlp": 50.0, "context_attention (scaled)": 20.0, "generation_attention": 15.0},
+        "covered_latency_ms": 8.5,
         "per_op_source": {
             "context_mlp": "estimated",
             "context_attention (scaled)": "silicon",
@@ -551,6 +553,10 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
             calls.append(("json", ops_json, kwargs))
             return entries
 
+        def evaluate_context_attention_kernels_json(self, ops_json, **kwargs):
+            calls.append(("attention_kernels", ops_json, kwargs))
+            return entries
+
         def last_provenance(self):
             return None
 
@@ -595,6 +601,40 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
         ops_json,
         {"is_context": True, "batch_size": 3, "s": 32, "prefix": 0, "imbalance_correction_scale": 1.0, "x": None},
     )
+
+    result = rust_engine_step.evaluate_context_attention_kernels_with_rust(
+        model,
+        database,
+        ops_json=ops_json,
+        batch_size=6,
+        s=280,
+        imbalance_correction_scale=0.0,
+        visual_block_upper_triangle=True,
+    )
+    assert result is entries
+    assert calls[3] == (
+        "attention_kernels",
+        ops_json,
+        {"batch_size": 6, "s": 280, "imbalance_correction_scale": 0.0, "visual_block_upper_triangle": True},
+    )
+
+
+@pytest.mark.parametrize("tier", [None, "silicon", "xop"])
+def test_attention_kernel_helper_forwards_provenance(monkeypatch, tier) -> None:
+    from aiconfigurator.sdk.operations import util_empirical
+
+    handle = SimpleNamespace(
+        evaluate_context_attention_kernels_json=lambda *args, **kwargs: [],
+        last_provenance=lambda: tier,
+    )
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda model, database: handle)
+
+    with util_empirical.capture_provenance() as tags:
+        rust_engine_step.evaluate_context_attention_kernels_with_rust(
+            object(), object(), ops_json="[]", batch_size=1, s=280
+        )
+
+    assert tags == ({"xop"} if tier == "xop" else set())
 
 
 def test_rust_provenance_tier_forwarded_into_python_capture(monkeypatch) -> None:
@@ -1675,6 +1715,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import get_database
 
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     rust_engine_step._engine_handle_cache_clear()
     try:
         captured_results = []
@@ -1991,3 +2032,66 @@ def test_default_config_wideep_mla_spec_survives_the_real_bincode_decode():
     # The JSON -> bincode conversion is NOT schema-gated (the version check lives
     # in `from_bincode`), so this exercises field validation on today's tree.
     assert len(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)) > 0
+
+
+def test_mixed_energy_coverage_keeps_missing_contributions_with_repeated_names(monkeypatch):
+    class Handle:
+        def _mixed_step_breakdown_per_op_with_metadata(self, *args, **kwargs):
+            return ([("draft", 3.0, 30.0, "silicon")], [("draft", 7.0, 0.0, "missing")], [])
+
+        def last_provenance(self):
+            return None
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *_: Handle())
+    values = rust_engine_step.estimate_mixed_step_breakdown_with_rust(
+        _dense_model(),
+        SimpleNamespace(),
+        ctx_tokens=128,
+        gen_tokens=0,
+        isl=128,
+        osl=4,
+        prefix=0,
+    )
+    assert values["per_op_latency_ms"]["draft"] == 10.0
+    assert values["per_op_energy_wms"]["draft"] == 30.0
+    assert values["covered_latency_ms"] == 3.0
+
+
+def test_decode_estimate_retains_energy_and_partial_coverage(monkeypatch):
+    class Handle:
+        def _decode_step_per_op_with_metadata(self, *args, **kwargs):
+            return [("covered", 3.0, 30.0, "silicon"), ("missing", 7.0, 0.0, "empirical")]
+
+        def last_provenance(self):
+            return None
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *_: Handle())
+    value = rust_engine_step._estimate_decode_step_with_rust(
+        _dense_model(),
+        SimpleNamespace(),
+        gen_tokens=4,
+        isl=128,
+        osl=4,
+    )
+    assert value.latency_ms == 10.0
+    assert value.energy_wms == 30.0
+    assert value.covered_latency_ms == 3.0
+    assert value.per_op_energy_wms == {"covered": 30.0, "missing": 0.0}
+
+
+@pytest.mark.parametrize("entrypoint", ["_estimate_decode_step_with_rust", "estimate_decode_step_breakdown_with_rust"])
+@pytest.mark.parametrize("perf_miss", [True, False])
+def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, perf_miss):
+    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+
+    error = ValueError("perf database error: missing data" if perf_miss else "invalid engine configuration")
+
+    class FailingHandle:
+        def _decode_step_per_op_with_metadata(self, *args, **kwargs):
+            raise error
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *args: FailingHandle())
+    expected = PerfDataNotAvailableError if perf_miss else ValueError
+    with pytest.raises(expected, match=str(error)) as caught:
+        getattr(rust_engine_step, entrypoint)(None, None, gen_tokens=1, isl=8, osl=4)
+    assert (caught.value.__cause__ if perf_miss else caught.value) is error

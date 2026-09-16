@@ -23,7 +23,9 @@ search_space:
 ```
 
 Sweeper enumerates legal parallel configurations, removes unsupported runner topologies, and adds
-the active engine-role knobs to the optimizer study.
+the active engine-role knobs to the optimizer study. If the runner rejects every configured
+backend/topology pair, preflight raises the public `aisimulate.sweeper.RunnerIncompatibleError`
+before optimizer trials begin. The exception identifies each rejected deployment mode and backend.
 
 ## 2. Define One Workload and Goal
 

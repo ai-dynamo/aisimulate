@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Nightly CI
+name: Main branch nightly CI
 
 # Nightly build of the approved AISimulate release artifacts — the
-# `aisimulate` wheel and the `aisimulate-core` crate — via
+# `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
+# FPE support-matrix refresh at the same source SHA. The GitLab publish
+# trigger waits for the matrix refresh, and a failed refresh fails the run,
+# so consumers (who resolve the newest successful run) never advance to a
+# nightly whose matrix did not refresh. Release artifacts are built via
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. Each arch job builds, runs the compliance checks, stages the
 # artifacts to internal Artifactory, then smoke-tests the wheel fetched back
@@ -37,9 +41,6 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
-  # TEMPORARY: remove before merge.
-  push:
-    branches: ["pull-request/59"]
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
@@ -600,6 +601,21 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  # Refresh strict-native op-level FPE coverage at the exact nightly source
+  # SHA. Runs without a wheel_artifact input, so the reusable workflow builds
+  # its own qualification wheel — no build artifact is ever stored in GitHub.
+  # The GitLab publish trigger below requires this to succeed, and a failed
+  # refresh fails the run, so consumers never advance to it.
+  fpe-support-matrix:
+    name: FPE Support Matrix (main)
+    needs: [changes-guard, build-artifacts]
+    if: needs.changes-guard.outputs.should-build == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fpe-support-matrix.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
   # fires the internal pipeline that scans them. Scan findings stay inside
@@ -608,15 +624,15 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: [manual-approval, build-artifacts]
+    needs: [manual-approval, build-artifacts, fpe-support-matrix]
     # Same unattended-vs-approved split as build-artifacts, so re-running
-    # only this job cannot fire an unapproved publish.
-    # TEMPORARY: drop the push arm before merge.
+    # only this job cannot fire an unapproved publish. The FPE refresh must
+    # have succeeded before anything advances to the internal pipeline.
     if: >-
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
-      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'push') &&
+      needs.fpe-support-matrix.result == 'success' &&
+      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
       ((github.event_name == 'schedule' && github.run_attempt == '1') ||
       needs.manual-approval.result == 'success') &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
@@ -671,12 +687,9 @@ jobs:
           # The response is discarded: it names internal pipeline URLs.
           # Preflight requires a dated NIGHTLY_TAG for nightly runs.
           nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
-          # ref is TEMPORARY: revert to main once the onboarding MR merges.
-          # DRY_RUN=true is TEMPORARY: publish rehearsal only — remove
-          # before merge so nightlies publish for real.
           curl -q --fail --silent --show-error --retry 3 --output /dev/null \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
-            -F "ref=pvijayakrish/onboard-aisimulate-nightly" \
+            -F "ref=main" \
             -F "variables[PROJECT]=aisimulate" \
             -F "variables[PIPELINE_TYPE]=security" \
             -F "variables[RELEASE_TYPE]=nightly" \
@@ -686,7 +699,7 @@ jobs:
             -F "variables[COMMIT_SHA]=${GH_SHA}" \
             -F "variables[SLACK_THREAD_TS]=${SLACK_THREAD_TS}" \
             -F "variables[SLACK_CHANNEL_ID]=${SLACK_CHANNEL_ID}" \
-            -F "variables[DRY_RUN]=true" \
+            -F "variables[DRY_RUN]=false" \
             "${GITLAB_PIPELINE_URL}"
           echo "internal security pipeline triggered"
 
@@ -699,7 +712,7 @@ jobs:
   notify-slack:
     name: Notify Slack
     if: always()
-    needs: [changes-guard, manual-approval, build-artifacts, trigger-gitlab-security]
+    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, trigger-gitlab-security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

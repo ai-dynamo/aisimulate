@@ -2,7 +2,7 @@
 
 <!--
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: CC-BY-4.0
+SPDX-License-Identifier: Apache-2.0
 -->
 
 Use these configurations as preflight and qualification seeds for AI Simulate's built-in

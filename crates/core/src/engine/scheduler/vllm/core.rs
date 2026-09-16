@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::engine::HostOffloadObserver;
 use crate::engine::common::protocols::{
-    DirectRequest, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode, PrefillCost,
-    SchedulingPolicy, WorkerType,
+    DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode,
+    PrefillCost, SchedulingPolicy, WorkerType,
 };
 use crate::engine::common::speculative::{
     SpeculativeDecodeSampler, normalize_conditional_accept_rates,
@@ -313,6 +313,27 @@ impl SchedulerState {
         self.mark_materialized_waiting(uuid);
     }
 
+    fn skip_connector_request(
+        &mut self,
+        uuid: Uuid,
+        until_progress: bool,
+        skipped: &mut Vec<(Uuid, bool)>,
+    ) {
+        // A sleeping connector waiter retains its FCFS position even when its
+        // redundant probe is skipped. New waiters join behind existing ones.
+        if !self.connector_waiting_members.contains(&uuid) {
+            self.remove_from_waiting(uuid);
+            self.connector_waiting_members.insert(uuid);
+            self.connector_waiting.push_back(uuid);
+        }
+        self.connector_deadline_waiting_members.insert(uuid);
+        self.mark_materialized_waiting(uuid);
+        if !until_progress {
+            // Retry becomes eligible at pass end without moving its position.
+            skipped.push((uuid, false));
+        }
+    }
+
     fn wake_connector_deadline_waiters(&mut self) {
         self.connector_deadline_waiting_members.clear();
     }
@@ -577,6 +598,9 @@ pub(crate) struct VllmCore {
     retain_local_hashes: bool,
     emit_token_ids: bool,
     native_host_offload: Option<VllmHostOffloadAdapter>,
+    wave_step: u64,
+    attention_dp_size: u32,
+    prefill_capacity_bound: bool,
 }
 
 struct HeldVllmPrefill {
@@ -619,6 +643,17 @@ impl ReservedVllmDecode {
 }
 
 impl VllmCore {
+    pub(crate) fn set_g3_offload(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        self.native_host_offload
+            .as_mut()
+            .expect("G3 requires G2")
+            .set_g3(registry, node);
+    }
+
     pub(crate) fn set_host_offload_observer(
         &mut self,
         observer: std::sync::Arc<dyn HostOffloadObserver>,
@@ -709,7 +744,15 @@ impl VllmCore {
             retain_local_hashes,
             emit_token_ids,
             native_host_offload,
+            wave_step: 0,
+            attention_dp_size: 1,
+            prefill_capacity_bound: false,
         }
+    }
+
+    pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
+        self.wave_step = wave_step;
+        self.attention_dp_size = dp_size;
     }
 
     #[cfg(test)]
@@ -1548,8 +1591,24 @@ impl VllmCore {
     ) -> anyhow::Result<EnginePassResult> {
         #[cfg(test)]
         let requests_before = self.state.requests.len();
+        let g3_epoch_before = self.native_host_offload.as_ref().and_then(|a| a.g3_epoch());
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
+        let cadence_step = self.wave_step.is_multiple_of(
+            u64::try_from(self.args.prefill_schedule_interval)
+                .expect("prefill schedule interval fits in u64"),
+        );
+        let has_running_decode = self.state.running.iter().any(|uuid| {
+            self.state
+                .requests
+                .get(uuid)
+                .is_some_and(VllmRequestState::prompt_is_prebuilt)
+        });
+        let defer_prefills = self.attention_dp_size > 1
+            && self.args.engine_type == EngineType::Vllm
+            && !cadence_step
+            && !self.prefill_capacity_bound
+            && has_running_decode;
         let waiting_capacity_hint = self
             .state
             .waiting_members
@@ -1572,6 +1631,16 @@ impl VllmCore {
         let mut req_index = 0usize;
         while req_index < self.state.running.len() && token_budget > 0 {
             let uuid = self.state.running[req_index];
+            if defer_prefills
+                && self
+                    .state
+                    .requests
+                    .get(&uuid)
+                    .is_some_and(|request| !request.prompt_is_prebuilt())
+            {
+                req_index += 1;
+                continue;
+            }
             match self.schedule_request(
                 uuid,
                 false,
@@ -1627,10 +1696,22 @@ impl VllmCore {
                 AdmissionStage::PendingDestinationHead
             );
             let prioritize_connector_waiting = self.native_host_offload.is_some();
-            let Some(uuid) = self
-                .state
-                .next_waiting_uuid(prefer_materialized, prioritize_connector_waiting)
-            else {
+            let g1_owner = g3_epoch_before.and_then(|_| {
+                self.state.connector_waiting.iter().copied().find(|uuid| {
+                    self.state.connector_waiting_members.contains(uuid)
+                        && !self.state.connector_deadline_waiting_members.contains(uuid)
+                        && self
+                            .state
+                            .requests
+                            .get(uuid)
+                            .and_then(|r| r.host_offload.as_deref())
+                            .is_some_and(|h| h.reserved_blocks() > 0)
+                })
+            });
+            let Some(uuid) = g1_owner.or_else(|| {
+                self.state
+                    .next_waiting_uuid(prefer_materialized, prioritize_connector_waiting)
+            }) else {
                 break;
             };
             let request_reservation_before = self
@@ -1660,42 +1741,44 @@ impl VllmCore {
             }
 
             let mut host_hit = None;
-            let raw_prefill_cost =
-                if !reject_for_model_len && matches!(admission_stage, AdmissionStage::FreshKv) {
-                    let request = self
-                        .state
-                        .requests
-                        .get_mut(&uuid)
-                        .expect("waiting request missing from state");
-                    let mut cost = request.sequence.prefill_cost(&self.kv_manager);
-                    if let (Some(adapter), Some(host)) = (
-                        self.native_host_offload.as_mut(),
-                        request.host_offload.as_deref_mut(),
+            let raw_prefill_cost = if !reject_for_model_len
+                && matches!(admission_stage, AdmissionStage::FreshKv)
+            {
+                let request = self
+                    .state
+                    .requests
+                    .get_mut(&uuid)
+                    .expect("waiting request missing from state");
+                let mut cost = request.sequence.prefill_cost(&self.kv_manager);
+                if let (Some(adapter), Some(host)) = (
+                    self.native_host_offload.as_mut(),
+                    request.host_offload.as_deref_mut(),
+                ) {
+                    cost = VllmHostOffloadAdapter::freeze_activated_cost(
+                        host,
+                        cost,
+                        self.args.block_size,
+                    );
+                    match adapter.lookup(
+                        host,
+                        &request.sequence.sequence,
+                        &cost,
+                        self.args.block_size,
+                        now_ms,
                     ) {
-                        cost = VllmHostOffloadAdapter::freeze_activated_cost(
-                            host,
-                            cost,
-                            self.args.block_size,
-                        );
-                        match adapter.lookup(
-                            host,
-                            &request.sequence.sequence,
-                            &cost,
-                            self.args.block_size,
-                        ) {
-                            HostLookup::Miss => {}
-                            HostLookup::Hit(hit) => host_hit = Some(hit),
-                            HostLookup::Deferred => {
-                                self.state.remove_from_waiting(uuid);
-                                host_step_skipped.push((uuid, true));
-                                continue;
-                            }
+                        HostLookup::Miss => {}
+                        HostLookup::Hit(hit) => host_hit = Some(hit),
+                        HostLookup::Deferred => {
+                            self.state
+                                .skip_connector_request(uuid, true, &mut host_step_skipped);
+                            continue;
                         }
                     }
-                    Some(cost)
-                } else {
-                    None
-                };
+                }
+                Some(cost)
+            } else {
+                None
+            };
 
             let decision = {
                 let (held_completion_blocks, activated_waiting_completion_blocks) =
@@ -1817,22 +1900,30 @@ impl VllmCore {
                             uuid,
                             request_reservation_before,
                         );
-                        self.state.remove_from_waiting(uuid);
-                        host_step_skipped.push((uuid, true));
+                        self.state
+                            .skip_connector_request(uuid, true, &mut host_step_skipped);
                         continue;
                     }
                     StartLoad::Deferred => {
-                        self.state.remove_from_waiting(uuid);
-                        host_step_skipped.push((uuid, true));
+                        self.state
+                            .skip_connector_request(uuid, true, &mut host_step_skipped);
                         continue;
                     }
                     StartLoad::Retry => {
-                        self.state.remove_from_waiting(uuid);
-                        host_step_skipped.push((uuid, false));
+                        self.state
+                            .skip_connector_request(uuid, false, &mut host_step_skipped);
                         continue;
                     }
                     StartLoad::CapacityBlocked => break,
                 }
+            }
+
+            // Match vLLM's cadence check at the local-compute admission site.
+            // Connector loads above and materialized/near-total prefix hits
+            // continue on throttled steps; only requests needing more than the
+            // final token of local prefill work remain queued.
+            if defer_prefills && prefill_cost.new_tokens > 1 {
+                break;
             }
 
             let outcome = self.schedule_request(
@@ -1880,6 +1971,10 @@ impl VllmCore {
                 self.state
                     .restore_connector_waiting_front(uuid, deadline_only);
             }
+        }
+
+        if !defer_prefills && !preempted_any {
+            self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
         }
 
         if let Some(adapter) = self.native_host_offload.as_mut() {
@@ -1938,7 +2033,16 @@ impl VllmCore {
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
             end_ms,
-            same_timestamp_retry: crate::engine::generalized::SameTimestampRetry::NotApplicable,
+            same_timestamp_retry: if g3_epoch_before.is_some()
+                && end_ms == now_ms
+                && self.native_host_offload.as_ref().is_some_and(|a| {
+                    a.g3_epoch() != g3_epoch_before
+                        || a.next_deadline().is_some_and(|d| d <= now_ms)
+                }) {
+                crate::engine::generalized::SameTimestampRetry::Retry
+            } else {
+                crate::engine::generalized::SameTimestampRetry::NotApplicable
+            },
             #[cfg(test)]
             completed_requests: requests_before.saturating_sub(self.state.requests.len()),
             output_signals,
@@ -2808,23 +2912,18 @@ fn scale_decode_time(decode_ms: f64, args: &MockEngineArgs) -> anyhow::Result<Du
 
 #[cfg(test)]
 mod waiting_queue_tests {
+    //! Native-matched deferred queue contract; no timing or I/O model.
+    //! Behavioral reference: vllm-project/vllm@6e448d0ea9bf3d88d898b65449ca6dc2aec170ac,
+    //! vllm/v1/core/sched/{scheduler,request_queue}.py (Apache-2.0).
+    //! Independently written Rust fixtures; see THIRD_PARTY_NOTICES.md.
+
     use super::*;
     use crate::engine::NativeHostOffloadConfig;
 
     #[test]
     fn connector_queue_is_fifo_without_scanning_or_shifting_ordinary_waiters() {
         const ORDINARY: usize = 64;
-        let args = MockEngineArgs::builder()
-            .num_gpu_blocks(8)
-            .block_size(4)
-            .max_num_seqs(Some(8))
-            .max_num_batched_tokens(Some(32))
-            .enable_prefix_caching(true)
-            .kv_cache_bytes_per_token(Some(250_000))
-            .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
-            .build()
-            .unwrap();
-        let mut core = VllmCore::new(args);
+        let mut core = core(8);
         let ids = (0..ORDINARY + 2)
             .map(|index| Uuid::from_u128(100_000 + index as u128))
             .collect::<Vec<_>>();
@@ -2841,9 +2940,7 @@ mod waiting_queue_tests {
         for uuid in connector {
             core.state.remove_from_waiting(uuid);
         }
-        for uuid in connector.into_iter().rev() {
-            core.state.restore_connector_waiting_front(uuid, false);
-        }
+        finish(&mut core, connector.map(|uuid| (uuid, false)).to_vec());
 
         assert_eq!(core.state.waiting.len(), ORDINARY + 2);
         let queued = core.compute_fpm(&FxHashMap::default(), 0.0);
@@ -2870,17 +2967,7 @@ mod waiting_queue_tests {
 
     #[test]
     fn deadline_only_connector_waiters_sleep_until_transfer_progress() {
-        let args = MockEngineArgs::builder()
-            .num_gpu_blocks(8)
-            .block_size(4)
-            .max_num_seqs(Some(8))
-            .max_num_batched_tokens(Some(32))
-            .enable_prefix_caching(true)
-            .kv_cache_bytes_per_token(Some(250_000))
-            .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
-            .build()
-            .unwrap();
-        let mut core = VllmCore::new(args);
+        let mut core = core(8);
         let deadline_waiter = Uuid::from_u128(100_100);
         core.receive(DirectRequest {
             tokens: vec![1, 2, 3, 4],
@@ -2912,5 +2999,215 @@ mod waiting_queue_tests {
             Some(deadline_waiter)
         );
         assert_eq!(core.connector_waiting_selections(), selections + 1);
+    }
+
+    fn core(blocks: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .num_gpu_blocks(blocks)
+                .block_size(4)
+                .max_num_seqs(Some(8))
+                .max_num_batched_tokens(Some(blocks * 4))
+                .enable_prefix_caching(true)
+                .kv_cache_bytes_per_token(Some(250_000))
+                .native_host_offload(Some(NativeHostOffloadConfig::new(blocks)))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn add(core: &mut VllmCore, value: u128) -> Uuid {
+        let uuid = Uuid::from_u128(value);
+        core.receive(DirectRequest {
+            tokens: vec![value as u32; 17],
+            max_output_tokens: 1,
+            uuid: Some(uuid),
+            arrival_timestamp_ms: Some(0.0),
+            ..DirectRequest::default()
+        });
+        assert_eq!(
+            core.state.requests[&uuid]
+                .sequence
+                .lease
+                .resident_block_count(),
+            0
+        );
+        assert_eq!(
+            core.state.requests[&uuid]
+                .host_offload
+                .as_deref()
+                .unwrap()
+                .reserved_blocks(),
+            0
+        );
+        uuid
+    }
+
+    fn finish(core: &mut VllmCore, skipped: Vec<(Uuid, bool)>) {
+        for (uuid, deadline) in skipped.into_iter().rev() {
+            if core.state.requests.contains_key(&uuid) {
+                core.state.restore_connector_waiting_front(uuid, deadline);
+            }
+        }
+    }
+
+    fn defer(core: &mut VllmCore, uuid: Uuid) {
+        let mut skipped = Vec::new();
+        core.state.skip_connector_request(uuid, true, &mut skipped);
+        finish(core, skipped);
+    }
+
+    fn order(core: &VllmCore) -> Vec<Uuid> {
+        let mut seen = FxHashSet::default();
+        core.state
+            .connector_waiting
+            .iter()
+            .copied()
+            .filter(|id| core.state.connector_waiting_members.contains(id) && seen.insert(*id))
+            .collect()
+    }
+
+    #[test]
+    fn newer_deferred_request_preserves_native_older_sleeper_order() {
+        let mut core = core(32);
+        let p = add(&mut core, 10);
+        defer(&mut core, p);
+        let q = add(&mut core, 20);
+        assert_eq!(order(&core), [p]);
+        let selections = core.state.connector_waiting_selections();
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(q));
+        assert_eq!(
+            core.state.connector_waiting_selections(),
+            selections,
+            "P remains unprobed"
+        );
+        defer(&mut core, q);
+        assert_eq!(
+            order(&core),
+            [p, q],
+            "native actual Scheduler keeps P before Q"
+        );
+        core.state.wake_connector_deadline_waiters();
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(p));
+    }
+
+    #[test]
+    fn several_sleepers_and_new_requests_keep_connector_order() {
+        let mut core = core(32);
+        let p = add(&mut core, 40);
+        defer(&mut core, p);
+        let q = add(&mut core, 30);
+        defer(&mut core, q);
+        let r = add(&mut core, 20);
+        let s = add(&mut core, 10);
+        let mut skipped = Vec::new();
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(r));
+        core.state.skip_connector_request(r, true, &mut skipped);
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(s));
+        core.state.skip_connector_request(s, true, &mut skipped);
+        finish(&mut core, skipped);
+        assert_eq!(order(&core), [p, q, r, s]);
+    }
+
+    #[test]
+    fn partial_pass_does_not_move_visited_waiter_ahead_of_older_sleeper() {
+        let mut core = core(32);
+        let ids = [add(&mut core, 10), add(&mut core, 20), add(&mut core, 30)];
+        let mut skipped = Vec::new();
+        for id in ids {
+            core.state.skip_connector_request(id, true, &mut skipped);
+        }
+        finish(&mut core, skipped);
+        core.state
+            .connector_deadline_waiting_members
+            .remove(&ids[1]);
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(ids[1]));
+        defer(&mut core, ids[1]);
+        assert_eq!(order(&core), ids);
+    }
+
+    #[test]
+    fn cancelled_and_activated_waiters_do_not_reappear_after_wakeup() {
+        let mut core = core(32);
+        let p = add(&mut core, 10);
+        defer(&mut core, p);
+        let q = add(&mut core, 20);
+        defer(&mut core, q);
+        let r = add(&mut core, 30);
+        defer(&mut core, r);
+        core.drop_request_at(q, None, None);
+        core.state.transition_to_running(p);
+        core.state.wake_connector_deadline_waiters();
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(r));
+        assert_eq!(order(&core), [r]);
+        assert!(core.state.running_members.contains(&p));
+        assert!(!core.state.requests.contains_key(&q));
+    }
+
+    #[test]
+    fn same_timestamp_new_waiters_keep_arrival_order_without_global_uuid_sort() {
+        let mut core = core(32);
+        let p = add(&mut core, 90);
+        let q = add(&mut core, 10);
+        let mut skipped = Vec::new();
+        core.state.skip_connector_request(p, true, &mut skipped);
+        core.state.skip_connector_request(q, true, &mut skipped);
+        finish(&mut core, skipped);
+        assert_eq!(order(&core), [p, q]);
+    }
+
+    #[test]
+    fn retry_restore_does_not_cross_older_sleepers_or_repeat_within_pass() {
+        let mut core = core(32);
+        let p = add(&mut core, 10);
+        defer(&mut core, p);
+        let q = add(&mut core, 20);
+        let mut skipped = Vec::new();
+        core.state.skip_connector_request(q, false, &mut skipped);
+        assert_eq!(
+            core.state.next_waiting_uuid(false, true),
+            None,
+            "retry waits until pass end"
+        );
+        finish(&mut core, skipped);
+        assert_eq!(order(&core), [p, q]);
+        assert_eq!(
+            core.state.next_waiting_uuid(false, true),
+            Some(q),
+            "P still sleeps until progress"
+        );
+        core.state.wake_connector_deadline_waiters();
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(p));
+    }
+
+    #[test]
+    fn active_queue_slots_stay_unique_across_retry_cancel_and_requeue() {
+        let mut core = core(32);
+        let p = add(&mut core, 10);
+        defer(&mut core, p);
+        let q = add(&mut core, 20);
+        defer(&mut core, q);
+        let r = add(&mut core, 30);
+        defer(&mut core, r);
+        core.drop_request_at(q, None, None);
+        assert!(!core.state.connector_waiting_members.contains(&q));
+        // A cancelled middle UUID may remain as a legitimate inactive raw slot.
+        assert!(core.state.connector_waiting.contains(&q));
+        core.state.transition_to_running(r);
+        let s = add(&mut core, 40);
+        defer(&mut core, s);
+        for _ in 0..4 {
+            let mut live = FxHashSet::default();
+            for id in &core.state.connector_waiting {
+                if core.state.connector_waiting_members.contains(id) {
+                    assert!(live.insert(*id), "duplicate slot for the same live request");
+                }
+            }
+            assert_eq!(live.len(), core.state.connector_waiting_members.len());
+            assert_eq!(order(&core), [p, s]);
+            core.state.wake_connector_deadline_waiters();
+            assert_eq!(core.state.next_waiting_uuid(false, true), Some(p));
+            defer(&mut core, p);
+        }
     }
 }

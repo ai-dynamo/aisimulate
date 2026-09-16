@@ -80,7 +80,7 @@ pytestmark = pytest.mark.integration
 #            Fallback-MLA path and the sglang perf tables.
 #   trtllm : gpt-oss-20b (MoE -> exercises the `TrtllmAlltoall` flavor +
 #            trtllm comm quant + trtllm MoE) and Nemotron-Super-49B (dense,
-#            CustomAllReduce-heavy), both b200_sxm/trtllm/1.3.0rc10. The MoE
+#            CustomAllReduce-heavy), both b200_sxm/trtllm/current (1.3.0rc20). The MoE
 #            case is the load-bearing one: it is the only subset member that
 #            hits the trtllm dispatch-flavor branch.
 _SUBSET_IDS_BY_BACKEND = {
@@ -101,12 +101,13 @@ _SUBSET_IDS_BY_BACKEND = {
     ],
 }
 
-# Subset members on power-carrying database identities: their per-op goldens
-# must carry nonzero energy_wms, so the energy comparison branch is proven to
-# execute (anti-vacuous guard in TestCompileEnginePerOpParity). EMPTY since
-# the 2026-08 prune removed the last engine-step-complete power identity —
-# repopulate when a current-slot power collection lands.
-_POWER_SUBSET_IDS: set[str] = set()
+# The B200 TRT-LLM current slot carries imported 1.3.0rc20 power data.
+# Require a nonzero energy comparison for both covered subset members so a
+# future all-zero golden refresh cannot make energy parity pass vacuously.
+_POWER_SUBSET_IDS = {
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2",
+    "nemotron-nas-b200-trtllm-isl1024-osl2",
+}
 
 # Preserve the per-backend ordering (vllm, then sglang, then trtllm) so the
 # parametrize ids group readably and the determinism sweep covers vllm first.
@@ -230,10 +231,10 @@ class TestOpTransferRoundTrip:
         )
         spec = json.loads(spec_json)
 
-        # Vision is decomposed into encoder child ops; for these text-only
-        # models `encoder_ops` is empty, so context_ops count is exact.
-        encoder_ops = list(getattr(model, "encoder_ops", []) or [])
-        expected_ctx = len(encoder_ops) + len(model.context_ops)
+        # The encoder runs separately through the ad-hoc operation FFI, even
+        # when a model (such as Kimi K2.5) hosts a vision tower. The compiled
+        # context phase contains only the language-model operations.
+        expected_ctx = len(model.context_ops)
         expected_gen = len(model.generation_ops)
 
         assert len(spec["context_ops"]) == expected_ctx, (
@@ -251,9 +252,9 @@ class TestOpTransferRoundTrip:
             assert tag != "Vision", "compiled spec must never contain a Vision op"
 
         # The op names round-trip through the wire in order: spec op name ==
-        # the Python op `_name` for each list (after the encoder prefix).
+        # the Python op `_name` for each language-model phase.
         spec_ctx_names = [next(iter(d.values()))["name"] for d in spec["context_ops"]]
-        py_ctx_names = [op._name for op in encoder_ops] + [op._name for op in model.context_ops]
+        py_ctx_names = [op._name for op in model.context_ops]
         assert spec_ctx_names == py_ctx_names, "context op names/order drifted"
 
         spec_gen_names = [next(iter(d.values()))["name"] for d in spec["generation_ops"]]
@@ -401,6 +402,40 @@ _ACCEPTED_SOURCE_TAG_DIVERGENCES = {
 
 
 class TestCompileEnginePerOpParity:
+    @pytest.mark.parametrize("case", _SUBSET_CASES)
+    @pytest.mark.parametrize("phase", ["prefill", "decode"])
+    def test_phase_per_op_matches_scalar_prediction(self, case: EngineStepParityCase, phase: str) -> None:
+        """Replay's evidence path must preserve the original scalar latency."""
+        handle = _compile_handle(case)
+        prefill = phase == "prefill"
+        # Match AicTimingModel's per-phase inputs, including one decode step
+        # and its default stride. The scalar helpers call run_static with
+        # these same coordinates; no golden values are regenerated here.
+        prefix = case.prefix if prefill else 0
+        ctx_entries, gen_entries = handle.run_static_per_op(
+            batch_size=case.batch_size,
+            beam_width=1,
+            isl=case.isl,
+            osl=1 if prefill else 2,
+            prefix=prefix,
+            seq_imbalance_correction_scale=1.0,
+            gen_seq_imbalance_correction_scale=1.0,
+            mode="static_ctx" if prefill else "static_gen",
+            stride=32,
+        )
+        if prefill:
+            scalar_ms = handle.predict_prefill_latency(case.batch_size, case.isl, prefix)
+            entries = ctx_entries
+            assert not gen_entries
+        else:
+            scalar_ms = handle.predict_decode_latency(case.batch_size, case.isl, 2)
+            entries = gen_entries
+            assert not ctx_entries
+        assert entries and scalar_ms > 0.0
+        # Permit only floating-point reduction-order roundoff, rather than
+        # the wider cross-implementation tolerance used for frozen goldens.
+        assert sum(entry[1] for entry in entries) == pytest.approx(scalar_ms, rel=1e-12, abs=1e-12)
+
     @pytest.mark.parametrize("case", _SUBSET_CASES)
     def test_static_per_op_matches_golden(self, case: EngineStepParityCase) -> None:
         case_id = _SUBSET_CASE_IDS[case]

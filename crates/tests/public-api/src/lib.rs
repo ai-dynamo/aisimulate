@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/tests/public-api/src/lib.rs
 
 //! Compile-time contract tests from an external crate's point of view.
 
 use std::path::Path;
 
 use aiconfigurator_core::{
-    AicEngine, AicEngineBuilder, AicError, BackendKind, EngineConfig, ForwardPassPerfModel,
-    ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
+    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
+    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -23,6 +25,10 @@ pub fn configured_builder() -> AicEngineBuilder {
         .kvcache_quant_mode("bfloat16")
         .fmha_quant_mode("bfloat16")
         .comm_quant_mode("bfloat16")
+        .database_mode(DatabaseMode::Empirical)
+        .shared_layer(true)
+        .transfer_policy(vec!["xshape".to_owned()])
+        .strict_provenance(true)
         .speculative_decoding(0)
         .kv_block_size(16)
         .systems_path("/tmp/systems")
@@ -83,7 +89,8 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aiconfigurator_core::{
-        ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ForwardPassMetrics, TimingEvidenceSource, TimingEvidenceSummary, TimingOperationEvidence,
+        TimingPhaseEvidence, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 
     #[test]
@@ -111,9 +118,76 @@ mod tests {
         // v15: Context/GenerationAttentionOp gained lane_order (AIC-1715/1716;
         //     renumbered from its own branch's concurrent v8/v9/v10/v12/v14
         //     claims at merge with #1503/#1461/issue #1498/PR-6/#1533).
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 15);
+        // v16: GenerationAttentionOp gained use_qk_norm (Muse Glimmer
+        //     continuation) — a positional bincode op-layout change.
+        // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
+        //     follow-up) — a positional bincode op-layout change.
+        // v18: speculative attention width fields and FpmForward verify_width.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 18);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
+    }
+
+    struct LatencyOnlyProvider;
+
+    impl aiconfigurator_core::TimingModel for LatencyOnlyProvider {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(2.0)
+        }
+    }
+
+    #[test]
+    fn external_latency_only_provider_needs_no_energy_implementation() {
+        use aiconfigurator_core::TimingModel;
+        assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
+        assert_eq!(LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn timing_evidence_types_are_public() {
+        let operation = TimingOperationEvidence::new(
+            "gemm",
+            2.0,
+            Some(900.0),
+            TimingEvidenceSource::Silicon,
+        )
+        .unwrap();
+        let phase = TimingPhaseEvidence::from_operations(vec![operation]);
+        let summary = TimingEvidenceSummary {
+            prefill: phase,
+            decode: TimingPhaseEvidence::default(),
+        };
+        assert_eq!(summary.prefill.energy_wms, Some(900.0));
+    }
+
+    #[test]
+    fn power_statistics_require_validated_public_construction() {
+        use aiconfigurator_core::replay::TracePowerStats;
+
+        let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
+        assert_eq!(available.power_w(), Some(500.0));
+        assert_eq!(available.coverage(), 0.9);
+        let withheld = TracePowerStats::new(None, 0.42).unwrap();
+        assert_eq!(withheld.power_w(), None);
+        assert_eq!(withheld.coverage(), 0.42);
+        assert!(TracePowerStats::new(None, 1.0).is_ok());
+
+        for (watts, coverage) in [
+            (Some(500.0), 0.9_f64.next_down()),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            assert!(TracePowerStats::new(watts, coverage).is_err());
+        }
     }
 
     #[test]

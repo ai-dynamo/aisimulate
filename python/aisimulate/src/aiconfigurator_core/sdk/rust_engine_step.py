@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/rust_engine_step.py
 
 """Thin facade over the compiled Rust engine (``aiconfigurator_core``).
 
@@ -25,6 +27,7 @@ from typing import Any
 
 from aiconfigurator_core.sdk.config import RuntimeConfig
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
+from aiconfigurator_core.sdk.step_estimate import StepEstimate
 
 logger = logging.getLogger(__name__)
 ENGINE_STEP_BACKEND_ENV = "AICONFIGURATOR_ENGINE_STEP_BACKEND"
@@ -623,11 +626,11 @@ def estimate_mixed_step_breakdown_with_rust(
 
     Same three-pass composition as ``estimate_mixed_step_latency_with_rust``
     (``latency_ms`` is the identical sum), reported per pass AND per op so
-    ``run_mixed`` builds the same ``StepEstimate`` shape as the Python step:
-    non-attention ops under their raw names plus the two literal keys
-    ``"context_attention (scaled)"`` (pass 2, already divided by
-    ``ceil(isl/ctx)``) and ``"generation_attention"`` (pass 3) — mirroring
-    ``base_backend.run_mixed``'s Python branch key-for-key, energies included.
+    ``run_mixed`` retains native operation names, including draft work in
+    either phase, while preserving the legacy ``"context_attention (scaled)"``
+    and ``"generation_attention"`` keys. Context values are already divided
+    by ``ceil(isl/ctx)``. FPM retains its prefill/decode component split and separate draft rows, with
+    the target decode operation reported under ``"generation_attention"``.
     """
     handle = _cached_engine_handle(model, database)
     try:
@@ -644,27 +647,30 @@ def estimate_mixed_step_breakdown_with_rust(
         _reraise_engine_error(exc)
     _note_rust_provenance(handle)
 
-    shared_latency, shared_energy, shared_source, shared_fallbacks = _fold_per_op(shared_ops)
-    ctx_latency, ctx_energy, ctx_source, ctx_fallbacks = _fold_per_op(ctx_attn_ops)
-    dec_latency, dec_energy, dec_source, dec_fallbacks = _fold_per_op(decode_attn_ops)
+    shared_latency, shared_energy, _, _ = _fold_per_op(shared_ops)
+    ctx_latency, ctx_energy, _, _ = _fold_per_op(ctx_attn_ops)
+    dec_latency, dec_energy, _, _ = _fold_per_op(decode_attn_ops)
 
-    # Pass 2/3 fold to (at most) the single filtered attention key; missing
-    # passes report 0.0 under the Python branch's default "silicon" source
-    # (mirrors `.get("context_attention", ...)` / `.get(..., "silicon")`).
+    # Fold across phases too: draft operations can share a name (e.g. EAGLE
+    # feature projection), so both their values and sources must accumulate.
+    public_names = {
+        "context_attention": "context_attention (scaled)",
+        "fpm_forward_decode": "generation_attention",
+    }
+    per_op_latency_ms, per_op_energy_wms, per_op_source, fallbacks = _fold_per_op(
+        (public_names.get(entry[0], entry[0]), *entry[1:])
+        for group in (shared_ops, ctx_attn_ops, decode_attn_ops)
+        for entry in group
+    )
+    for name in ("context_attention (scaled)", "generation_attention"):
+        per_op_latency_ms.setdefault(name, 0.0)
+        per_op_energy_wms.setdefault(name, 0.0)
+        per_op_source.setdefault(name, "silicon")
+
     ctx_attention_latency = sum(ctx_latency.values())
     ctx_attention_energy = sum(ctx_energy.values())
     dec_attention_latency = sum(dec_latency.values())
     dec_attention_energy = sum(dec_energy.values())
-    per_op_latency_ms: dict[str, float] = {
-        **shared_latency,
-        "context_attention (scaled)": ctx_attention_latency,
-        "generation_attention": dec_attention_latency,
-    }
-    per_op_source: dict[str, str] = {
-        **shared_source,
-        "context_attention (scaled)": ctx_source.get("context_attention", "silicon"),
-        "generation_attention": dec_source.get("generation_attention", "silicon"),
-    }
     component_latency_ms = {
         "shared_non_attention": sum(shared_latency.values()),
         "context_attention": ctx_attention_latency,
@@ -681,8 +687,12 @@ def estimate_mixed_step_breakdown_with_rust(
         "component_latency_ms": component_latency_ms,
         "component_energy_wms": component_energy_wms,
         "per_op_latency_ms": per_op_latency_ms,
+        "per_op_energy_wms": per_op_energy_wms,
+        "covered_latency_ms": sum(
+            entry[1] for group in (shared_ops, ctx_attn_ops, decode_attn_ops) for entry in group if entry[2] > 0
+        ),
         "per_op_source": per_op_source,
-        "moe_comm_fallbacks": merge_moe_comm_fallbacks(shared_fallbacks, ctx_fallbacks, dec_fallbacks),
+        "moe_comm_fallbacks": fallbacks,
     }
 
 
@@ -734,16 +744,49 @@ def estimate_decode_step_breakdown_with_rust(
     Python step, with real op names and per-op energies folded from the
     compiled engine's per-op results.
     """
-    handle = _cached_engine_handle(model, database)
-    entries = handle._decode_step_per_op_with_metadata(
-        int(gen_tokens),
-        int(isl),
-        int(osl),
-        gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+    estimate = _estimate_decode_step_with_rust(
+        model,
+        database,
+        gen_tokens=gen_tokens,
+        isl=isl,
+        osl=osl,
+        gen_seq_imbalance_correction_scale=gen_seq_imbalance_correction_scale,
     )
+    return (*estimate.legacy_tuple(), estimate.moe_comm_fallbacks)
+
+
+def _estimate_decode_step_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    gen_tokens: int,
+    isl: int,
+    osl: int,
+    gen_seq_imbalance_correction_scale: float = 1.0,
+) -> StepEstimate:
+    """Retain native decode energy and covered latency for aggregate reporting."""
+    handle = _cached_engine_handle(model, database)
+    try:
+        entries = handle._decode_step_per_op_with_metadata(
+            int(gen_tokens),
+            int(isl),
+            int(osl),
+            gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+        )
+    except ValueError as exc:
+        _reraise_engine_error(exc)
     _note_rust_provenance(handle)
     latency, energy, source, fallbacks = _fold_per_op(entries)
-    return sum(latency.values()), sum(energy.values()), latency, source, fallbacks
+    return StepEstimate(
+        latency_ms=sum(latency.values()),
+        energy_wms=sum(energy.values()),
+        per_op_latency_ms=latency,
+        per_op_energy_wms=energy,
+        per_op_source=source,
+        moe_comm_fallbacks=fallbacks,
+        covered_latency_ms=sum(entry[1] for entry in entries if entry[2] > 0),
+        num_decode_requests=gen_tokens,
+    )
 
 
 def evaluate_context_ops_with_rust(
@@ -836,6 +879,29 @@ def evaluate_ops_json_with_rust(
         prefix=int(prefix or 0),
         imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
         x=x,
+    )
+    _note_rust_provenance(handle)
+    return result
+
+
+def evaluate_context_attention_kernels_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    ops_json: str,
+    batch_size: int,
+    s: int,
+    imbalance_correction_scale: float = 1.0,
+    visual_block_upper_triangle: bool = False,
+) -> list[PerOpValue]:
+    """Evaluate visual-mask attention kernels with the model's compiled database policy."""
+    handle = _cached_engine_handle(model, database)
+    result = handle.evaluate_context_attention_kernels_json(
+        ops_json,
+        batch_size=int(batch_size),
+        s=int(s),
+        imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
+        visual_block_upper_triangle=visual_block_upper_triangle,
     )
     _note_rust_provenance(handle)
     return result
@@ -978,6 +1044,16 @@ def _cached_engine_handle(model: Any, database: Any) -> Any:
     return handle
 
 
+def _speculation_identity(model_config: Any) -> str | None:
+    spec = getattr(model_config, "speculation", None)
+    if spec is None or getattr(spec, "kind", "none") in ("none", "mtp"):
+        return None  # mtp rides the nextn key itself (legacy contract)
+    try:
+        return spec.identity_hash()
+    except Exception:
+        return repr(spec)
+
+
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
@@ -1003,6 +1079,10 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "kv_cache_dtype": _quant_to_dtype(getattr(model_config, "kvcache_quant_mode", None)),
         "kv_block_size": None,
         "nextn": int(nextn) if nextn is not None else None,
+        # Scheme-based speculation materializes draft ops into the op lists:
+        # two schemes with the same verify width (same nextn channel) still
+        # compile DIFFERENT engines, so the content identity must be keyed.
+        "speculation": _speculation_identity(model_config),
         # An op_level and an fpm model with identical parallel/quant configs
         # compile to DIFFERENT engines (granular op list vs one whole-model op
         # per phase); without this key they would share a cached handle and
