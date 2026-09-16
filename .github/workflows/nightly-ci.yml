@@ -10,10 +10,10 @@ name: Main branch nightly CI
 # so consumers (who resolve the newest successful run) never advance to a
 # nightly whose matrix did not refresh. Release artifacts are built via
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
-# entry point. Each arch job builds, runs the compliance checks, stages the
-# artifacts to internal Artifactory, then smoke-tests the wheel fetched back
-# from Artifactory on every supported Python — proving the staged bytes, not
-# just the local build. Nothing is ever uploaded as a GitHub artifact.
+# entry point. Isolated compliance jobs gate the build/staging jobs. Each
+# arch job then builds, stages to Artifactory, and smoke-tests the downloaded
+# wheel on every supported Python. Release artifacts stay in Artifactory;
+# GitHub retains only dependency inventories and license evidence here.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
@@ -119,21 +119,90 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: manual-release-approver
+    outputs:
+      approved-attempt: ${{ steps.approval.outputs.run-attempt }}
     steps:
       - name: Record approval
-        run: echo "approved (event ${GITHUB_EVENT_NAME}, attempt ${GITHUB_RUN_ATTEMPT})"
+        id: approval
+        run: |
+          echo "approved (event ${GITHUB_EVENT_NAME}, attempt ${GITHUB_RUN_ATTEMPT})"
+          echo "run-attempt=${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+
+  python-compliance:
+    name: Python Dependency Licenses (${{ matrix.arch }})
+    # No release environment or build artifacts are available to dependency
+    # build hooks. Both architectures must pass before staging can start.
+    needs: changes-guard
+    if: needs.changes-guard.outputs.should-build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      # License gate for the wheel's runtime dependency closure — the Python
+      # counterpart of cargo-deny's license check. Installs only the
+      # dependencies (not the package, which would need a Rust build) and
+      # fails on any license outside the allow list. Findings are not
+      # printed (run logs may become public); reproduce locally by running
+      # pip-licenses without the redirect.
+      - name: Check Python dependency licenses
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          python -c "
+          import tomllib
+          deps = tomllib.load(open('python/aisimulate/pyproject.toml', 'rb'))
+          deps = deps['project']['dependencies']
+          deps = [d for d in deps if not d.lower().startswith('aisimulate-core')]
+          open('runtime-deps.txt', 'w').write('\n'.join(deps))
+          "
+          python -m venv "${RUNNER_TEMP}/venv-licenses"
+          "${RUNNER_TEMP}/venv-licenses/bin/python" -m pip install --quiet -r runtime-deps.txt pip-licenses==5.5.5
+          # --with-system: pip-licenses excludes its own dependencies by
+          # default, but prettytable and wcwidth are also runtime deps.
+          if ! "${RUNNER_TEMP}/venv-licenses/bin/pip-licenses" --with-system --allow-only "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;Apache Software License;Apache-2.0 OR BSD-2-Clause;Apache Software License; BSD License;BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;MPL-2.0 AND MIT;PSF-2.0;Python Software Foundation License" >/dev/null 2>&1; then
+            echo "::error::a Python dependency license is outside the allow list — run pip-licenses locally for details"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/python-inventory"
+          "${RUNNER_TEMP}/venv-licenses/bin/pip-licenses" --with-system --format=csv \
+            > "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-3.12.csv"
+      - name: Preserve the dependency inventory as data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-python-inventory-${{ matrix.arch }}
+          path: ${{ runner.temp }}/python-inventory/*.csv
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
 
   build-artifacts:
     name: Build artifacts (${{ matrix.arch }})
-    needs: [changes-guard, manual-approval]
+    needs: [changes-guard, manual-approval, python-compliance]
     # Runs unattended only on a scheduled first attempt; otherwise requires
     # an explicit approval. "Re-run failed jobs" cannot revive a skipped
     # approval, so it fails closed — use "Re-run all jobs" to get the gate.
     if: >-
       !cancelled() &&
       needs.changes-guard.outputs.should-build == 'true' &&
+      needs.python-compliance.result == 'success' &&
       ((github.event_name == 'schedule' && github.run_attempt == '1') ||
-      needs.manual-approval.result == 'success')
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
     strategy:
       fail-fast: false
       matrix:
@@ -157,11 +226,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     environment: automated-release
-    # actions:read only for the license-diff step, which downloads the prior
-    # nightly's compliance artifact.
     permissions:
       contents: read
-      actions: read
     outputs:
       wheel-version: ${{ steps.verify.outputs.wheel-version }}
     container:
@@ -325,28 +391,19 @@ jobs:
           echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
           echo "wheel OK: ${wheel} (version ${version})"
 
-      # Same dependency-license gate as ci.yml's python-compliance job, run
-      # here so a disallowed license blocks staging. Findings are not
-      # printed (logs may become public).
-      - name: Check dependency licenses
-        run: |
-          set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" - <<'EOF'
-          import os, tomllib
-          deps = tomllib.load(open('python/aisimulate/pyproject.toml', 'rb'))
-          deps = deps['project']['dependencies']
-          deps = [d for d in deps if not d.lower().startswith('aisimulate-core')]
-          with open(os.environ['TOOLS_DIR'] + '/runtime-deps.txt', 'w') as f:
-              f.write('\n'.join(deps))
-          EOF
-          uv venv --python "${PYTHON_SERIES}" "${TOOLS_DIR}/venv-licenses"
-          uv pip install --quiet --python "${TOOLS_DIR}/venv-licenses/bin/python" \
-            --requirements "${TOOLS_DIR}/runtime-deps.txt" pip-licenses==5.5.5
-          if ! "${TOOLS_DIR}/venv-licenses/bin/pip-licenses" --with-system --allow-only "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;Apache Software License;Apache-2.0 OR BSD-2-Clause;Apache Software License; BSD License;BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;MPL-2.0 AND MIT;PSF-2.0;Python Software Foundation License" >/dev/null 2>&1; then
-            echo "::error::a Python dependency license is outside the allow list — run pip-licenses locally for details"
-            exit 1
-          fi
-          echo "dependency licenses OK"
+      # Capture trusted crate metadata before smoke dependencies execute.
+      - name: Capture the locked crate inventory
+        if: matrix.arch == 'amd64'
+        run: cargo metadata --locked --format-version 1 > "${RUNNER_TEMP}/cargo-metadata.json"
+      - name: Preserve crate inventory for compliance evidence
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-crate-inventory
+          path: ${{ runner.temp }}/cargo-metadata.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
 
       # This leg's wheel; the amd64 leg also uploads the crate (it is
       # arch-independent source, one canonical copy).
@@ -482,34 +539,45 @@ jobs:
             echo "smoke OK on Python ${series}"
           done
 
-      # Compliance evidence for the OSRB bug (aiperf's convention): a unified
-      # deps.csv (Python runtime closure + Rust crate graph) and a
-      # best-effort deps-diff.csv against the previous successful nightly.
-      # The GitLab nvbug:attach-license job finds this artifact by the
-      # "license" in its name and posts the CSVs to the NVBug. Only the
-      # amd64 leg generates it (arch-independent), and it is the only
-      # GitHub artifact the nightly produces — build artifacts stay in
-      # Artifactory. Logs show row counts only, never license findings.
+  # Read dependency inventories as data in a fresh job; no runtime imports
+  # share a process or filesystem with the GitHub token used for the prior diff.
+  license-evidence:
+    name: License compliance evidence
+    needs: [build-artifacts, python-compliance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nightly-python-inventory-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/license-artifacts/python
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-crate-inventory
+          path: ${{ runner.temp }}/license-artifacts
       - name: Generate license compliance evidence
-        if: matrix.arch == 'amd64'
         env:
           GH_API_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           outdir="${RUNNER_TEMP}/license-artifacts"
           mkdir -p "${outdir}"
-          "${TOOLS_DIR}/venv-licenses/bin/pip-licenses" --with-system \
-            --format=csv > "${outdir}/python-licenses.csv"
-          cargo metadata --format-version 1 > "${outdir}/cargo-metadata.json"
-          "${TOOLS_DIR}/venv-build/bin/python" - "${outdir}" <<'EOF'
-          import csv, io, json, os, sys, urllib.request, zipfile
+          python3 - "${outdir}" <<'EOF'
+          import csv, glob, io, json, os, sys, urllib.request, zipfile
 
           outdir = sys.argv[1]
           rows = []
-          with open(f"{outdir}/python-licenses.csv", newline="") as f:
-              for r in csv.DictReader(f):
-                  rows.append({"dependency_type": "python", "name": r["Name"],
-                               "version": r["Version"], "spdx_license": r["License"]})
+          for filename in sorted(glob.glob(f"{outdir}/python/*.csv")):
+              with open(filename, newline="") as f:
+                  for r in csv.DictReader(f):
+                      rows.append({"dependency_type": "python", "name": r["Name"],
+                                   "version": r["Version"], "spdx_license": r["License"]})
+          if not rows:
+              raise SystemExit("missing Python dependency inventories")
           meta = json.load(open(f"{outdir}/cargo-metadata.json"))
           workspace = set(meta.get("workspace_members") or [])
           for p in meta["packages"]:
@@ -518,7 +586,16 @@ jobs:
               rows.append({"dependency_type": "crate", "name": p["name"],
                            "version": p["version"],
                            "spdx_license": p.get("license") or "UNKNOWN"})
-          rows.sort(key=lambda r: (r["dependency_type"], r["name"], r["version"]))
+          def identity(row):
+              return row["dependency_type"], row["name"], row["version"]
+
+          inventory = {}
+          for row in rows:
+              key = identity(row)
+              if key in inventory and inventory[key] != row:
+                  raise SystemExit("conflicting license metadata for one dependency version")
+              inventory[key] = row
+          rows = [inventory[key] for key in sorted(inventory)]
           fields = ["dependency_type", "name", "version", "spdx_license"]
           with open(f"{outdir}/deps.csv", "w", newline="") as f:
               w = csv.DictWriter(f, fieldnames=fields)
@@ -550,8 +627,7 @@ jobs:
                               if os.path.basename(n) == "deps.csv":
                                   reader = csv.DictReader(
                                       io.TextIOWrapper(zf.open(n)))
-                                  return {(r["dependency_type"], r["name"]): r
-                                          for r in reader}
+                                  return {identity(r): r for r in reader}
               return None
 
           try:
@@ -561,7 +637,7 @@ jobs:
                     "diff lists everything as added")
               prior = None
           prior = prior or {}
-          current = {(r["dependency_type"], r["name"]): r for r in rows}
+          current = {identity(r): r for r in rows}
           dfields = ["change"] + fields + ["prior_version", "prior_spdx_license"]
           drows = []
           for key in sorted(set(current) | set(prior)):
@@ -592,8 +668,7 @@ jobs:
       # of failing on a duplicate (or, across a UTC midnight, leaving two
       # "license" artifacts that would abort the OSRB attach's auto-select).
       - name: Upload license compliance artifact
-        if: matrix.arch == 'amd64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: license-artifacts
           path: ${{ runner.temp }}/license-artifacts/deps*.csv
@@ -624,7 +699,7 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: [manual-approval, build-artifacts, fpe-support-matrix]
+    needs: [manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
@@ -632,9 +707,11 @@ jobs:
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
       needs.fpe-support-matrix.result == 'success' &&
+      needs.license-evidence.result == 'success' &&
       github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
       ((github.event_name == 'schedule' && github.run_attempt == '1') ||
-      needs.manual-approval.result == 'success') &&
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
     # gitlab-master is on-prem and unreachable (even for DNS) from the
     # AWS-hosted repo runners; these on-prem runners are the sanctioned path.
@@ -712,7 +789,7 @@ jobs:
   notify-slack:
     name: Notify Slack
     if: always()
-    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, trigger-gitlab-security]
+    needs: [changes-guard, manual-approval, python-compliance, build-artifacts, license-evidence, fpe-support-matrix, trigger-gitlab-security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -732,7 +809,7 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
             > jobs.json
           FAILED_JOBS=$(jq -r '(.jobs // [])[]
-            | select(.conclusion == "failure")
+            | select(.conclusion == "failure" or .conclusion == "timed_out")
             | ":failed: " + .name + "\\n"' jobs.json | tr -d '\n')
           {
             echo "FAILED_JOBS<<EOF"
