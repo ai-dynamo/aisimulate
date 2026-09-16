@@ -647,7 +647,7 @@ aisimulate predict --config prediction.yaml --detail summary,memory,time \
 | `summary` | Existing serving prediction metrics. |
 | `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
 | `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
-| `all` | The three supported sections above, when evidence exists. |
+| `all` | The three sections above plus the [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
 
 **Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
 implementation, 2026-09-15; simulation results, latency/throughput rounded):
@@ -664,7 +664,8 @@ implementation, 2026-09-15; simulation results, latency/throughput rounded):
 | `memory` | Estimated GPU blocks per rank | 29,486 |
 
 Memory has `stage: before_native_capacity_adjustments`. Both ranks use the same estimate;
-the table does not sum capacity across TP=2. No power/energy or per-operation report is emitted.
+the table does not sum capacity across TP=2. The command selects summary, memory, and time;
+an energy breakdown is requested separately as shown in [section 4.11](#411-power-and-energy-analysis).
 For terminal and JSON examples, including a skipped memory section, see
 [Captured detail output](user-guide.md#captured-detail-output).
 
@@ -674,7 +675,8 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
 Analytical EPD retains available language-worker estimates and identifies the missing encoder
 component breakdown; it does not claim a complete EPD memory report.
-`energy` and `source` are unsupported selectors and are rejected; `all` does not request them.
+`source` remains unsupported and is rejected. `energy` is supported, and `all` includes it;
+see [section 4.11](#411-power-and-energy-analysis) for energy evidence and availability.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).
 
