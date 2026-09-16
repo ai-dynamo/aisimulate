@@ -233,7 +233,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     summary = prediction_summary(native)
-    summary.update(normalize_power_summary(summary))
+    summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:
         native = {**native, "summary": summary}
     else:
