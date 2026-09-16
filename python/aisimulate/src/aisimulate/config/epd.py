@@ -102,6 +102,7 @@ def _language_execution(spec: ReplaySpec) -> dict:
         )
         rank = engine["rank"]
         rank.setdefault("prefill_schedule_interval", SchedulerPredictionConfig().prefill_schedule_interval)
+        rank.setdefault("prefill_decode_interval", SchedulerPredictionConfig().prefill_decode_interval)
         timing = rank["timing_model"]["config"]
         timing["backend_version"] = resolve_query_version(
             timing["system"],
