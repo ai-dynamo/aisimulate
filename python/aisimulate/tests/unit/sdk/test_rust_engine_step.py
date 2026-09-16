@@ -742,6 +742,9 @@ def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
             calls["diag"] += 1
             return json.dumps({"source": "fallback_regression", "readiness": "insufficient_data"})
 
+        def regression_store_diagnostics(self):
+            return json.dumps([{"workload_kind": "pure_prefill", "ready": False, "retained_observations": 0}])
+
         def min_correction_factor(self):
             return None
 
@@ -765,7 +768,58 @@ def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
     assert calls["tune"][1] == [[single_fpm, single_fpm]]
 
     assert model.diagnostics()["source"] == "fallback_regression"
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": "pure_prefill", "ready": False, "retained_observations": 0}
+    ]
     assert model.get_min_correction_factor() is None
+
+
+@pytest.mark.integration
+def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
+    """The public compiled API keeps each full-rank workload fit independent."""
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    model = RustForwardPassPerfModel.from_regression("aggregated")
+    kinds = ["pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill"]
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": kind, "ready": False, "retained_observations": 0} for kind in kinds
+    ]
+
+    def iteration(kind: str, scale: int) -> list[dict[str, object]]:
+        prefill = {"num_prefill_requests": 1, "sum_prefill_tokens": scale}
+        decode = {"num_decode_requests": scale, "sum_decode_kv_tokens": 100 * scale}
+        scheduled = {
+            "pure_decode": [decode],
+            "contains_locally_mixed": [prefill | decode],
+            "cross_rank_aggregated": [decode, prefill],
+            "pure_prefill": [prefill],
+        }[kind]
+        # Latency is affine in the existing attention feature for each kind,
+        # with deliberately different intercepts to expose accidental pooling.
+        attention = scale * (scale + 1) / 2 if kind == "pure_prefill" else 100 * scale
+        if kind == "contains_locally_mixed":
+            attention += scale * (scale + 1) / 2
+        latency_ms = 10 * (kinds.index(kind) + 1) + attention / 100
+        return [
+            {"worker_id": "worker", "dp_rank": rank, "scheduled_requests": fields, "wall_time": latency_ms / 1000}
+            for rank, fields in enumerate(scheduled)
+        ]
+
+    for trained_count, kind in enumerate(kinds, 1):
+        query = iteration(kind, 3)
+        assert model.estimate_forward_pass_time_ms(query) is None
+        for scale in range(1, 6):
+            sample = iteration(kind, scale)
+            assert model.estimate_forward_pass_time_ms(sample) is None
+            model.tune_with_fpms(sample)
+        assert model.estimate_forward_pass_time_ms(query) == pytest.approx(query[0]["wall_time"] * 1000, rel=1e-5)
+        stores = model.regression_store_diagnostics()
+        assert sum(store["retained_observations"] for store in stores) == 5 * trained_count
+        assert model.diagnostics()["retained_observations"] == 5 * trained_count
+        assert model.diagnostics()["readiness"] == "ready"
+        assert [store["ready"] for store in stores] == [index < trained_count for index in range(4)]
+        for cold_kind in kinds[trained_count:]:
+            assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
 def test_forward_pass_perf_model_constructors_forward_exact_worker_type(monkeypatch) -> None:

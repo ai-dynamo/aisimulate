@@ -35,6 +35,7 @@ pub use perfmodel::{
     AicError, BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION,
     EstimateSource, FPM_VERSION, ForwardPassMetrics, ForwardPassPerfDiagnostics,
     ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness, ForwardPassPerfSource,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
     ForwardPassWorkerType, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
     KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
     ParallelMapping, QuantizationConfig, QueuedRequestMetrics, ScheduledRequestMetrics,

@@ -114,8 +114,12 @@ fall back. This strict-native constructor does not take `worker_type`.
 
 Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
 `ForwardPassPerfModel::from_regression(worker_type, options)` for a
-regression-only model. It owns one two-dimensional retained sample set and one
-fit for the engine's fixed role. Its axes are consistently ordered as
+regression-only model. The caller creates one instance per worker and passes
+its fixed regression role. Prefill and Decode each own one retained sample
+bucket and fit; Aggregated owns four buckets selected from the workload across
+all active ranks. The default limit of 64 observations and minimum of five
+apply independently to each bucket, for at most 256 retained observations in
+an Aggregated predictor. Its feature axes are consistently ordered as
 `[critical attention, global FFN/MoE]`; bucket retention uses `log1p` of those
 raw features, while fitting uses standardized raw features. The optional
 regression weights below default to `1.0` and must be finite and strictly
@@ -136,8 +140,14 @@ three fields, while `from_regression` and a fallback `best_available` reject a
 decoded nonfinite value with the corresponding field-specific error. Other
 strings and value types remain invalid.
 
-The formulas, role-compatibility rules, and fitting pipeline are specified in
-the [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md).
+Use `regression_store_diagnostics()` to inspect each bucket's label, readiness,
+and retained count. Summary `diagnostics()` reports the total count and whether
+any bucket has a fit; a query for a different, cold bucket can still return
+`None`. Native models return an empty list from the new method.
+
+The ownership model, routing examples, capacity semantics, formulas, and
+compatibility rules are explained in the
+[FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md).
 
 `AicEngineBuilder` serves a different purpose: it constructs the strict native
 Rust engine for direct public prefill and decode latency calls. It does not

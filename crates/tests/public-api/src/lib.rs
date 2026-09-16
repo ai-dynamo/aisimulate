@@ -7,7 +7,8 @@ use std::path::Path;
 
 use aiconfigurator_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, EngineConfig, ForwardPassPerfModel,
-    ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
+    ForwardPassPerfOptions, ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType,
+    KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -38,6 +39,13 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
 /// Compile the forward-pass model's public constructor and telemetry type.
 pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
     ForwardPassPerfModel::from_regression(ForwardPassWorkerType::Aggregated, regression_options())
+}
+
+/// Per-store diagnostics remain accessible without changing the summary type.
+pub fn regression_stores(
+    model: &ForwardPassPerfModel,
+) -> Vec<ForwardPassRegressionStoreDiagnostics> {
+    model.regression_store_diagnostics()
 }
 
 /// Construct and expose every public regression-weight option from an external crate.
@@ -83,7 +91,8 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aiconfigurator_core::{
-        ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ForwardPassMetrics, ForwardPassRegressionWorkloadKind, ENGINE_CONFIG_SCHEMA_VERSION,
+        ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 
     #[test]
@@ -123,7 +132,16 @@ mod tests {
 
     #[test]
     fn regression_constructor_is_environment_independent() {
-        let _model = regression_model().expect("construct regression model");
+        let model = regression_model().expect("construct regression model");
+        let stores = regression_stores(&model);
+        assert_eq!(stores.len(), 4);
+        assert_eq!(
+            stores[0].workload_kind,
+            ForwardPassRegressionWorkloadKind::PureDecode
+        );
+        assert!(stores
+            .iter()
+            .all(|store| !store.ready && store.retained_observations == 0));
         let _roles = [
             ForwardPassWorkerType::Prefill,
             ForwardPassWorkerType::Decode,

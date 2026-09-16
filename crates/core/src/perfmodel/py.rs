@@ -1493,6 +1493,14 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
     }
 
+    /// Regression store labels, readiness and retained counts as JSON.
+    /// Includes cold stores; native AIC models return an empty list.
+    fn regression_store_diagnostics(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.regression_store_diagnostics()).map_err(|e| {
+            PyValueError::new_err(format!("regression store diagnostics serialize: {e}"))
+        })
+    }
+
     /// Smallest ready native correction factor; `None` until a bucket is ready.
     fn min_correction_factor(&self) -> Option<f64> {
         self.inner.min_correction_factor()
