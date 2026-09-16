@@ -44,6 +44,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert aggregated.engine.workers.aggregated.scheduler.max_batched_tokens == 8192
     assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
     assert aggregated.engine.workers.aggregated.scheduler.prefill_schedule_interval == 1
+    assert aggregated.engine.workers.aggregated.scheduler.prefill_decode_interval == 0
 
     disaggregated = CorePredictionConfig.model_validate(
         {
@@ -59,9 +60,11 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.prefill.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.prefill.scheduler.max_sequences == 1
     assert disaggregated.engine.workers.prefill.scheduler.prefill_schedule_interval == 1
+    assert disaggregated.engine.workers.prefill.scheduler.prefill_decode_interval == 0
     assert disaggregated.engine.workers.decode.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
     assert disaggregated.engine.workers.decode.scheduler.prefill_schedule_interval == 1
+    assert disaggregated.engine.workers.decode.scheduler.prefill_decode_interval == 0
 
     programmatic = WorkersPredictionConfig(prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig())
     assert programmatic.prefill is not None
@@ -75,6 +78,59 @@ def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
     engine["workers"]["aggregated"] = {"scheduler": {"prefill_schedule_interval": 0}}
 
     with pytest.raises(ValidationError, match="prefill_schedule_interval"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("value", [0, 1, 20])
+def test_prediction_accepts_sglang_prefill_decode_interval(value: int) -> None:
+    engine = _engine()
+    engine["backend"] = "sglang"
+    engine["workers"]["aggregated"] = {"scheduler": {"prefill_decode_interval": value}}
+
+    config = CorePredictionConfig.model_validate({"engine": engine})
+
+    assert config.engine.workers.aggregated.scheduler.prefill_decode_interval == value
+    assert config.engine.workers.aggregated.scheduler.prefill_schedule_interval == 1
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "20"])
+def test_prediction_rejects_invalid_prefill_decode_interval(value) -> None:
+    engine = _engine()
+    engine["backend"] = "sglang"
+    engine["workers"]["aggregated"] = {"scheduler": {"prefill_decode_interval": value}}
+
+    with pytest.raises(ValidationError, match="prefill_decode_interval"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_prediction_accepts_neutral_backend_scheduler_defaults(backend: str) -> None:
+    engine = _engine()
+    engine["backend"] = backend
+    engine["workers"]["aggregated"] = {"scheduler": {"prefill_schedule_interval": 1, "prefill_decode_interval": 0}}
+
+    CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize(
+    "backend,field,value,required_backend",
+    [
+        ("vllm", "prefill_decode_interval", 1, "sglang"),
+        ("trtllm", "prefill_decode_interval", 1, "sglang"),
+        ("sglang", "prefill_schedule_interval", 2, "vllm"),
+        ("trtllm", "prefill_schedule_interval", 2, "vllm"),
+    ],
+)
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_prediction_rejects_wrong_backend_scheduler_interval(backend, field, value, required_backend, role) -> None:
+    engine = _engine()
+    engine["backend"] = backend
+    if role != "aggregated":
+        engine["mode"] = "disaggregated"
+        engine["workers"] = {"prefill": {}, "decode": {}}
+    engine["workers"][role] = {"scheduler": {field: value}}
+
+    with pytest.raises(ValidationError, match=rf"workers.{role}.scheduler.{field}.*backend={required_backend}"):
         CorePredictionConfig.model_validate({"engine": engine})
 
 

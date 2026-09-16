@@ -41,7 +41,7 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
+| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#55-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
 | `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
@@ -873,7 +873,13 @@ compatibility command or SDK when power is a required analysis result.
 
 ### 5.5 Deployment artifacts
 
-Keep `generate` when you need deployment files:
+#### 5.5.1 Standalone `generate` command: not planned
+
+`aiconfigurator cli generate` is a fast shortcut for a basic deployment configuration without
+search or SLA optimization. We do not plan to add an equivalent standalone `aisimulate generate`
+command. The AIC command remains available in the bundled compatibility CLI.
+
+For a quick basic deployment configuration with the AIC shortcut:
 
 ```bash
 aiconfigurator cli generate \
@@ -882,10 +888,19 @@ aiconfigurator cli generate \
   --deployment-target dynamo-j2 --save-dir ./deployment
 ```
 
-**Result to inspect:** `deployment/` contains a basic deployment configuration, generated without
-search or SLA optimization. AISimulate's `recommendations/*.yaml` files are inputs to `predict`, not launch
-manifests. For programmatic generation from supported agg/disagg candidates, see the
-[generator SDK](../../python/aisimulate/docs/generator_overview.md). Generation does not support
+**Result to inspect:** `deployment/` contains a basic deployment configuration generated without
+search or SLA optimization.
+
+#### 5.5.2 Deployment files: not yet available in the AISimulate CLI
+
+`aisimulate recommend` does not yet create deployment files, such as launch scripts or Kubernetes
+manifests. It saves the setups it recommends in `recommendations/*.yaml`. Pass one of these files
+to `aisimulate predict` to simulate that setup again.
+
+To create deployment files today, use the bundled AIC commands or the
+[generator SDK](../../python/aisimulate/docs/generator_overview.md). AIC's normal `default` and
+`exp` workflows generate deployment files for supported configurations when `--save-dir` is supplied;
+a separate `generate` command is not required. Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
 <a id="experiment-files-and-support-queries"></a>

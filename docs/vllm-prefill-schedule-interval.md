@@ -45,6 +45,10 @@ prefill token remaining can still advance. Throttling is temporarily released
 when a non-preempting aligned step left queued requests due to scheduler
 capacity.
 
+SGLang has a separate
+[`prefill_decode_interval`](sglang-prefill-decode-interval.md), defaulting to zero.
+Nondefault values of either field on the wrong backend fail validation.
+
 The shared counter resets as soon as AISimulate observes that the full DP group
 has drained, including after cancellation and internal-work transitions. vLLM
 checks global unfinished state every 32 steps and may run a dummy tail before
