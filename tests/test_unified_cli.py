@@ -571,6 +571,12 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert withheld_candidate["metrics"]["power_w"] is None
     assert withheld_candidate["metrics"]["power_coverage"] == 0.42
     assert withheld_candidate["provenance"]["power"]["publication_status"] == "withheld"
+    assert withheld_candidate["provenance"]["power"]["scope"] == "active_forward_pass_per_gpu"
+    assert withheld_candidate["provenance"]["power"]["power_w_unit"] == "W"
+    assert withheld_candidate["provenance"]["power"]["coverage_gate"] == 0.9
+    assert withheld_candidate["provenance"]["power"]["source"] == "modeled"
+    assert withheld_candidate["provenance"]["power"]["power_coverage"] == 0.42
+    assert withheld_candidate["provenance"]["power"]["power_w"] is None
     with (withheld_output / "recommendation.csv").open() as csv_file:
         withheld_csv = list(csv.DictReader(csv_file))[0]
     assert withheld_csv["power_w"] == ""
@@ -828,6 +834,38 @@ def _detail_config(tmp_path):
         )
     )
     return path
+
+
+@pytest.mark.parametrize("nested", [True, False], ids=["nested-native", "flat-native"])
+@pytest.mark.parametrize("native_power", [{}, {"power_w": 999.0, "power_coverage": 1.0}], ids=["missing", "stale"])
+@pytest.mark.parametrize("watts,coverage", [(487.5, 0.95), (None, 0.42), (None, None)])
+def test_predict_uses_validated_power_metrics_over_raw_metadata(
+    tmp_path, monkeypatch, capsys, nested, native_power, watts, coverage
+):
+    class RawMetadataRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            native = report.metadata["native_report"]
+            summary = native["summary"]
+            summary.pop("power_w", None)
+            summary.pop("power_coverage", None)
+            summary.update(native_power)
+            if not nested:
+                report.metadata["native_report"] = summary
+            return report
+
+    runner = RawMetadataRunner(power_w=watts, power_coverage=coverage)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    output = tmp_path / "out"
+    assert (
+        cli.main(["predict", "-c", str(_detail_config(tmp_path)), "--output-dir", str(output), "--format", "json"]) == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((output / "prediction.json").read_text())
+    saved_summary = saved["summary"] if nested else saved
+    for summary in (stdout, saved_summary):
+        assert summary["power_w"] == watts
+        assert summary["power_coverage"] == coverage
 
 
 @pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "energy", "source", "power"])
