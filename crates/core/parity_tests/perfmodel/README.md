@@ -175,7 +175,8 @@ in `AGENTS.md`. Later PR heads require their own CI results; the linked run
 records the verified revision rather than certifying future changes.
 
 The two identity-merged B200 attention tables include pinned upstream artifacts
-in `power_upstream/*.parquet.source`. The provenance validator checks their
-upstream SHA-256, every imported identity and measurement, and the paired-zero
+in `power_upstream/*.parquet.source`. Focused tests in
+`python/aisimulate/tests/unit/tools/test_power_data.py` check their upstream
+SHA-256, every imported schema, identity and measurement, and the paired-zero
 sentinel on local-only identities. These evidence files are excluded from
 `*.parquet` runtime-table discovery.

@@ -42,9 +42,12 @@ power measurements derived from AIConfigurator commit
 unmodified, byte-identical copies. The context-attention and
 generation-attention tables are modified derivatives: AISimulate preserves
 newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
-to those local-only identities. Exact per-file source paths, source and
-packaged SHA-256 digests, row counts, and measured coverage are recorded in
-`src/aiconfigurator_core/systems/data/b200_sxm/power_data_provenance.json`.
+to those local-only identities. Source paths, row counts, measured coverage,
+and merge details are recorded in
+`src/aiconfigurator_core/systems/data/b200_sxm/README.md`. The two unmodified
+upstream attention copies under
+`src/aiconfigurator_core/systems/data/b200_sxm/power_upstream/` support focused
+import regression tests, which pin source and packaged SHA-256 digests.
 
 The corresponding energy expectations in the repository-root file
 `crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated

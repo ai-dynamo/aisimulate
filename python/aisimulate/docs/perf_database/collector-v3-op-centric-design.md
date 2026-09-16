@@ -497,12 +497,12 @@ and evidence rules. Their numeric storage checks run through the existing
   measurement-quality threshold requires evidence and review through the existing
   policy in §9.
 
-The B200 TRT-LLM `power_data_provenance.json` records a specific upstream import:
-the immutable source revision, file hashes, row counts, and retained local
-identities. Its validator checks that the packaged values match that record.
-This import record supplements `collection_meta.yaml`; it does not replace
-collection provenance, approve reuse, or qualify hardware accuracy. The import
-adds no separate approval process, waiver mechanism, or release gate.
+The B200 TRT-LLM import records its source revision, attribution, row counts,
+and attention-merge details in the adjacent data README and existing third-party
+notices. Focused import tests pin file hashes and compare the two merged attention
+tables against upstream copies. Collection provenance remains in
+`collection_meta.yaml`; import checks do not approve reuse or qualify hardware
+accuracy.
 
 ## 9. Evidence policy
 
