@@ -103,7 +103,7 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
         "fpm_plan_local": fpm_cli_args(request, output_dir=root, plan_only=True),
         "fpm_run_local": [
             "aisimulate",
-            "support",
+            "onboard",
             "collect-fpm",
             "--config",
             str(root / "request.yaml"),
@@ -235,11 +235,11 @@ def plan_lock(root: Path) -> Iterator[None]:
     descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError(f"support lock must be a regular file: {lock}")
+            raise ValueError(f"onboarding lock must be a regular file: {lock}")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise ValueError(f"another support operation holds {lock}") from exc
+            raise ValueError(f"another onboarding operation holds {lock}") from exc
         yield
     finally:
         os.close(descriptor)
@@ -270,7 +270,9 @@ def check_plan(request: SupportRequest, root: Path) -> None:
     try:
         prior = json.loads((root / "support-plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise ValueError(f"a readable support plan is required in {root}; run support plan first") from exc
+        raise ValueError(
+            f"a readable onboarding plan is required in {root}; run aisimulate onboard plan first"
+        ) from exc
     if not isinstance(prior, dict) or prior.get("request_id") != request_id(request):
         raise ValueError(f"refusing to mix a different request identity in {root}; choose a new output directory")
     try:
@@ -303,7 +305,18 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
                 raise ValueError(f"refusing symlinked plan output {destination}")
             if not destination.exists():
                 pending[relative] = content
-            elif destination.read_bytes() != content:
+            else:
+                existing = destination.read_bytes()
+                if existing == content:
+                    continue
+                if relative == Path("commands.json"):
+                    # Preserve exact pre-rename commands; the support alias still
+                    # enters the same guarded collector. Accept no other edits.
+                    legacy_commands = json.loads(content)
+                    legacy_commands["fpm_run_local"][1] = "support"
+                    legacy_content = (json.dumps(legacy_commands, indent=2, sort_keys=True) + "\n").encode()
+                    if existing == legacy_content:
+                        continue
                 raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
         (root / "systems/data").mkdir(parents=True, exist_ok=True)
         for relative, content in pending.items():

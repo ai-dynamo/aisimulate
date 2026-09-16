@@ -23,15 +23,20 @@ from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, Supp
 
 
 def add_support_parser(subparsers: Any) -> None:
-    support = subparsers.add_parser(
-        "support",
-        help="Set up a model and GPU allocation for local FPM collection.",
-        description="Create an onboarding request, generate a plan, and preview or execute local FPM collection.",
+    onboard = subparsers.add_parser(
+        "onboard",
+        aliases=("support",),
+        help="Onboard a model for FPM simulation on a target hardware platform.",
+        description=(
+            "Onboard a model for FPM simulation on a target hardware platform. "
+            "Declare the model and hardware, generate a plan, and preview or execute FPM collection. "
+            "The previous command name 'support' remains a compatibility alias."
+        ),
     )
-    actions = support.add_subparsers(dest="support_action", required=True)
+    actions = onboard.add_subparsers(dest="support_action", required=True)
     init = actions.add_parser(
         "init",
-        help="Create an onboarding request with prompts or scripted options.",
+        help="Declare a model, target hardware, and FPM pilot workload.",
         description=(
             "Use --interactive for terminal prompts. Scripted setup requires --model, --model-revision, "
             "--model-kind, --framework-version, --gpu, --gpu-count, and --interconnect. "
@@ -45,7 +50,7 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--model-kind", choices=("dense", "moe"))
     init.add_argument("--framework", choices=("vllm",), help="Collection runtime (default: vllm).")
     init.add_argument("--framework-version", help="Pinned vLLM version in the collection environment.")
-    init.add_argument("--gpu", help="GPU system name, for example h200_sxm.")
+    init.add_argument("--gpu", help="Target GPU system name, for example h200_sxm.")
     init.add_argument("--gpu-count", type=int, help="Total GPUs available.")
     init.add_argument("--node-count", type=int, help="Number of nodes (default: 1).")
     init.add_argument("--gpus-per-node", type=int, help="GPUs available per node; defaults to gpu-count on one node.")
@@ -72,17 +77,21 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--output", default="support-request.yaml")
     init.add_argument("--overwrite", action="store_true")
 
-    plan = actions.add_parser("plan", help="Write ordinary predict/recommend configs and local collector commands.")
+    plan = actions.add_parser(
+        "plan", help="Plan FPM collection and write predict/recommend configs for the target hardware."
+    )
     plan.add_argument("-c", "--config", required=True)
     plan.add_argument("--output-dir", default="./aisimulate-support")
     plan.add_argument("--overwrite", action="store_true")
     plan.add_argument("--format", choices=("table", "json"), default="table")
 
-    collect = actions.add_parser("collect-fpm", help="Preview the local collector command, or run with --execute.")
+    collect = actions.add_parser(
+        "collect-fpm", help="Preview FPM collection on the target hardware, or run with --execute."
+    )
     collect.add_argument("-c", "--config", required=True)
     collect.add_argument("--output-dir", default="./aisimulate-support")
     collect.add_argument(
-        "--execute", action="store_true", help="Execute collection using a matching saved support plan."
+        "--execute", action="store_true", help="Execute collection using a matching saved onboarding plan."
     )
     collect.add_argument(
         "--smoke", action="store_true", help="Diagnostic smoke collection; does not publish formal data."
@@ -121,14 +130,14 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
 def _request_target(path: str | Path, *, overwrite: bool) -> Path:
     target = Path(path).expanduser().absolute()
     if target.exists() and not target.is_file():
-        raise ValueError(f"support request {target} must be a file path")
+        raise ValueError(f"onboarding request {target} must be a file path")
     if (target.exists() or target.is_symlink()) and not overwrite:
-        raise ValueError(f"support request {target} exists; pass --overwrite to replace it")
+        raise ValueError(f"onboarding request {target} exists; pass --overwrite to replace it")
     parent = target.parent
     while not parent.exists() and not parent.is_symlink():
         parent = parent.parent
     if not parent.is_dir() or not os.access(parent, os.W_OK):
-        raise ValueError(f"support request parent {parent} must be a writable directory")
+        raise ValueError(f"onboarding request parent {parent} must be a writable directory")
     return target
 
 
@@ -165,7 +174,7 @@ _PROMPTS = {
     "model_revision": ("Pinned model revision (not main/latest)", str),
     "model_kind": ("Model kind (dense/moe)", str),
     "framework_version": ("Pinned vLLM version", str),
-    "gpu": ("GPU system name (for example h200_sxm)", str),
+    "gpu": ("Target GPU system name (for example h200_sxm)", str),
     "gpu_count": ("Total GPUs available", int),
     "interconnect": ("GPU interconnect (for example nvswitch, pcie, or none)", str),
     "tensor_parallel": ("GPUs per pure-TP worker", int),
@@ -219,9 +228,10 @@ def _prompt(args: argparse.Namespace, name: str) -> None:
 def _guided_request(args: argparse.Namespace) -> SupportRequest:
     if not sys.stdin.isatty():
         raise ValueError(
-            "--interactive requires a terminal; for automation supply options (aisimulate support init --help)"
+            "--interactive requires a terminal; for automation supply options (aisimulate onboard init --help)"
         )
-    print("FPM onboarding: a pure-TP worker and a small synthetic workload on vLLM.")
+    print("Onboard a model for FPM simulation on a target hardware platform.")
+    print("Start with a pure-TP worker and a small synthetic workload on vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if getattr(args, name) is None:
@@ -255,7 +265,8 @@ def _init(args: argparse.Namespace) -> int:
         return 130
     workload = request.workload
     print(
-        f"Scope: {request.identity.model_kind} model, vLLM {request.identity.framework_version}, "
+        f"Scope: FPM simulation for {request.identity.model} ({request.identity.model_kind}), "
+        f"vLLM {request.identity.framework_version}, "
         f"{request.identity.gpu_count} {request.identity.gpu} GPU(s) on {request.identity.node_count} node(s); "
         f"TP{request.search.tensor_parallel}, {workload.input_tokens}/{workload.output_tokens} tokens, "
         f"concurrency {workload.concurrency}, {workload.request_count} requests, "
@@ -269,7 +280,7 @@ def _init(args: argparse.Namespace) -> int:
         {
             "request_id": request_id(request),
             "request": str(path),
-            "next": shlex.join(["aisimulate", "support", "plan", "--config", str(path)]),
+            "next": shlex.join(["aisimulate", "onboard", "plan", "--config", str(path)]),
         }
     )
     return 0
@@ -290,7 +301,7 @@ def _plan(args: argparse.Namespace) -> int:
             "next": shlex.join(
                 [
                     "aisimulate",
-                    "support",
+                    "onboard",
                     "collect-fpm",
                     "--config",
                     plan["outputs"]["request"],
@@ -320,4 +331,4 @@ def run_support_command(args: argparse.Namespace) -> int:
             checkpoint_dir=args.checkpoint_dir,
             deployment=FPMDeployment(**_values(args, FPMDeployment)),
         )
-    raise AssertionError(f"unhandled support action {args.support_action!r}")
+    raise AssertionError(f"unhandled onboarding action {args.support_action!r}")

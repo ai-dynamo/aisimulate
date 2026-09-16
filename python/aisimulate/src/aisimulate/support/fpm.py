@@ -157,5 +157,5 @@ def run_fpm(
         try:
             return fpm_main(command[3:])
         except Exception as exc:
-            print(f"aisimulate support collect-fpm failed: {exc}", file=sys.stderr)
+            print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
             return 1

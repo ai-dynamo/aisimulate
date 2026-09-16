@@ -43,7 +43,7 @@ _PILOT = {
 
 def _init_args(output: Path, *, full: bool = False, **changes) -> list[str]:
     options = {**_REQUIRED, **(_PILOT if full else {}), **changes}
-    return ["support", "init", "--output", str(output)] + [
+    return ["onboard", "init", "--output", str(output)] + [
         part
         for name, value in options.items()
         if value is not None
@@ -70,6 +70,17 @@ def _terminal(monkeypatch, answers=()) -> list[str]:
     return prompts
 
 
+@pytest.mark.parametrize("command", [[], ["onboard"], ["support"]])
+def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> None:
+    with pytest.raises(SystemExit) as result:
+        cli.main([*command, "--help"])
+
+    assert result.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Onboard a model for FPM simulation on a target hardware platform." in output
+    assert "aisimulate" in output
+
+
 def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatch, capsys) -> None:
     guided = tmp_path / "guided request.yaml"
     scripted = tmp_path / "scripted.yaml"
@@ -78,7 +89,7 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
         ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "4", "nvswitch", "2"] + [""] * 6,
     )
 
-    assert cli.main(["support", "init", "--interactive", "--output", str(guided)]) == 0
+    assert cli.main(["onboard", "init", "--interactive", "--output", str(guided)]) == 0
     assert cli.main(_init_args(scripted, tensor_parallel=2)) == 0
 
     assert SupportRequest.from_yaml(guided) == SupportRequest.from_yaml(scripted)
@@ -181,7 +192,7 @@ def test_cancelled_setup_preserves_files_and_creates_no_partial_request(
         output.write_text("existing contents\n")
     _terminal(monkeypatch, ["example/unintegrated-model", interruption()])
 
-    assert cli.main(["support", "init", "--interactive", "--output", str(output), "--overwrite"]) == 130
+    assert cli.main(["onboard", "init", "--interactive", "--output", str(output), "--overwrite"]) == 130
 
     if existing:
         assert output.read_text() == "existing contents\n"
@@ -197,7 +208,7 @@ def test_interactive_requires_a_terminal_without_reading_input(tmp_path, monkeyp
     output = tmp_path / "request.yaml"
 
     with pytest.raises(SystemExit) as error:
-        cli.main(["support", "init", "--interactive", "--output", str(output)])
+        cli.main(["onboard", "init", "--interactive", "--output", str(output)])
 
     assert error.value.code == 2
     assert "requires a terminal" in capsys.readouterr().err
@@ -218,7 +229,7 @@ def test_invalid_output_is_rejected_before_prompting(tmp_path, monkeypatch, targ
         target = parent / "request.yaml"
 
     with pytest.raises(SystemExit) as error:
-        cli.main(["support", "init", "--interactive", "--output", str(target)])
+        cli.main(["onboard", "init", "--interactive", "--output", str(target)])
 
     assert error.value.code == 2
 
@@ -262,7 +273,7 @@ def test_init_next_command_quotes_the_request_path(tmp_path, capsys) -> None:
     next_command = next(
         line.removeprefix("next: ") for line in capsys.readouterr().out.splitlines() if line.startswith("next: ")
     )
-    assert shlex.split(next_command) == ["aisimulate", "support", "plan", "--config", str(output)]
+    assert shlex.split(next_command) == ["aisimulate", "onboard", "plan", "--config", str(output)]
 
 
 def test_next_command_handles_a_relative_filename_starting_with_a_dash(tmp_path, monkeypatch, capsys) -> None:
@@ -285,7 +296,7 @@ def test_printed_plan_next_command_runs_in_a_shell(tmp_path, monkeypatch, capsys
     request = tmp_path / "request.yaml"
     assert cli.main(_init_args(request)) == 0
     capsys.readouterr()
-    assert cli.main(["support", "plan", "-c", str(request), f"--output-dir={output_dir}", "--format", "json"]) == 0
+    assert cli.main(["onboard", "plan", "-c", str(request), f"--output-dir={output_dir}", "--format", "json"]) == 0
     summary = json.loads(capsys.readouterr().out)
 
     result = subprocess.run(
@@ -304,9 +315,10 @@ def test_printed_plan_next_command_runs_in_a_shell(tmp_path, monkeypatch, capsys
     assert "--plan-only" in result.stdout
 
 
+@pytest.mark.parametrize("command", ["onboard", "support"])
 @pytest.mark.parametrize("model_kind", ["dense", "moe"])
 def test_init_plan_and_preview_use_real_public_configs_without_launching_collection(
-    tmp_path, monkeypatch, capsys, model_kind
+    tmp_path, monkeypatch, capsys, model_kind, command
 ) -> None:
     def unexpected_launch(*args, **kwargs):
         pytest.fail("setup, plan, and preview must not launch a collector")
@@ -316,12 +328,11 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     monkeypatch.setattr(cli, "resolve_runner_factory", unexpected_launch)
     request_path = tmp_path / "request 'quoted'.yaml"
     output = tmp_path / "plan 'quoted'"
-    assert cli.main(_init_args(request_path, model_kind=model_kind, tensor_parallel=2)) == 0
+    assert cli.main([command, *_init_args(request_path, model_kind=model_kind, tensor_parallel=2)[1:]]) == 0
     capsys.readouterr()
 
     assert (
-        cli.main(["support", "plan", "--config", str(request_path), "--output-dir", str(output), "--format", "json"])
-        == 0
+        cli.main([command, "plan", "--config", str(request_path), "--output-dir", str(output), "--format", "json"]) == 0
     )
     summary = json.loads(capsys.readouterr().out)
     plan = json.loads((output / "support-plan.json").read_text())
@@ -336,8 +347,8 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     assert prediction.traffic.source.input_tokens == 1024
 
     next_command = shlex.split(summary["next"])
-    assert next_command[:3] == ["aisimulate", "support", "collect-fpm"]
-    assert cli.main(next_command[1:]) == 0
+    assert next_command[:3] == ["aisimulate", "onboard", "collect-fpm"]
+    assert cli.main([command, *next_command[2:]]) == 0
     preview = capsys.readouterr().out
     assert "collector.fpm_forward" in preview
     assert "--fpm-max-gpus 2 --fpm-gpu-counts 2" in preview
@@ -355,12 +366,12 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     request_path = tmp_path / "request.yaml"
     output = tmp_path / "plan"
     assert cli.main(_init_args(request_path, tensor_parallel=2)) == 0
-    assert cli.main(["support", "plan", "-c", str(request_path), "--output-dir", str(output)]) == 0
+    assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(output)]) == 0
 
     assert (
         cli.main(
             [
-                "support",
+                "onboard",
                 "collect-fpm",
                 "-c",
                 str(request_path),
@@ -405,8 +416,8 @@ def _local_collection_command(tmp_path):
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
     assert cli.main(_init_args(request_path, model=model)) == 0
-    assert cli.main(["support", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
-    return ["support", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+    assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
+    return ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
 
 def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
@@ -535,7 +546,7 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
     assert cli.main(_init_args(request_path)) == 0
-    assert cli.main(["support", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
+    assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     capsys.readouterr()
 
     def fail(*args, **kwargs):
@@ -544,7 +555,7 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     monkeypatch.setattr(collector_cli, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
     monkeypatch.setattr(collector_cli, "resolve_run_inputs", fail if stage == "input" else lambda *args: None)
     monkeypatch.setattr(collector_cli, "run_resolved", fail)
-    command = ["support", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+    command = ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
     if error_type is KeyboardInterrupt:
         assert cli.main(command) == 130
@@ -557,7 +568,7 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     stderr = capsys.readouterr().err
     assert "Traceback" not in stderr
     if stage == "execution" and error_type is not KeyboardInterrupt:
-        assert "aisimulate support collect-fpm failed: test collection failure" in stderr
+        assert "aisimulate onboard collect-fpm failed: test collection failure" in stderr
 
 
 def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection(tmp_path, capsys):
@@ -616,7 +627,7 @@ def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection
 
     assert resumed.returncode == 1, resumed.stderr
     assert "Traceback" not in resumed.stderr
-    assert "aisimulate support collect-fpm failed:" in resumed.stderr
+    assert "aisimulate onboard collect-fpm failed:" in resumed.stderr
     assert checkpoint.read_bytes() == original
     assert not launch_marker.exists()
     assert not list((root / "fpm-artifacts").rglob("*.yaml"))
@@ -628,7 +639,7 @@ def test_bad_request_yaml_is_reported_without_a_traceback(tmp_path, capsys, cont
     request.write_text(contents)
 
     with pytest.raises(SystemExit) as error:
-        cli.main(["support", "plan", "--config", str(request), "--output-dir", str(tmp_path / "plan")])
+        cli.main(["onboard", "plan", "--config", str(request), "--output-dir", str(tmp_path / "plan")])
 
     assert error.value.code == 2
     assert "Traceback" not in capsys.readouterr().err

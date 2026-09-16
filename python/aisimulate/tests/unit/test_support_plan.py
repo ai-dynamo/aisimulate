@@ -373,6 +373,31 @@ def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tm
     assert data.read_bytes() == b"timings"
 
 
+@pytest.mark.parametrize("modified_command", [False, True])
+def test_pre_onboard_plan_repairs_only_exact_legacy_commands(tmp_path, modified_command):
+    request = _request()
+    plan = create_plan(request, tmp_path)
+    command_file = tmp_path / "commands.json"
+    commands = json.loads(command_file.read_text())
+    commands["fpm_run_local"][1] = "support"
+    if modified_command:
+        commands["fpm_run_local"].remove("--execute")
+    command_file.write_text(json.dumps(commands, indent=2, sort_keys=True) + "\n")
+    _seed_campaign(tmp_path)
+    original = _file_contents(tmp_path)
+    prediction = tmp_path / "predict/pilot.yaml"
+    prediction.unlink()
+    before_repair = _file_contents(tmp_path)
+
+    if modified_command:
+        with pytest.raises(ValueError, match="generated plan input .*commands.json was modified"):
+            create_plan(request, tmp_path, overwrite=True)
+        assert _file_contents(tmp_path) == before_repair
+    else:
+        assert create_plan(request, tmp_path, overwrite=True) == plan
+        assert _file_contents(tmp_path) == original
+
+
 def test_new_gpu_is_rejected_before_creating_outputs(tmp_path):
     root = tmp_path / "new-plan"
     with pytest.raises(ValueError, match="packaged.*system|system specification"):
@@ -450,14 +475,16 @@ def _reject_collector_import(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_collector_import)
 
 
-def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("command_name", ["onboard", "support"])
+def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys, command_name):
     from aisimulate.main import main
 
     create_plan(_request(), tmp_path)
     _seed_campaign(tmp_path)
     before = _file_contents(tmp_path)
     command = json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"]
-    assert command[:3] == ["aisimulate", "support", "collect-fpm"]
+    assert command[:3] == ["aisimulate", "onboard", "collect-fpm"]
+    command[1] = command_name
     _reject_collector_import(monkeypatch)
 
     with pytest.raises(SystemExit) as error:
@@ -642,7 +669,7 @@ def test_plan_lock_recovers_after_owner_exit_and_preserves_existing_files(tmp_pa
     try:
         assert select.select([process.stdout], [], [], 10)[0], "lock owner did not become ready"
         assert process.stdout.readline().strip() == "locked"
-        with pytest.raises(ValueError, match="another support operation"):
+        with pytest.raises(ValueError, match="another onboarding operation"):
             create_plan(request, tmp_path, overwrite=True)
         if kill_owner:
             process.kill()
@@ -664,7 +691,7 @@ def test_plan_lock_does_not_unlink_the_inode_used_by_a_waiting_process(tmp_path)
         with plan_lock(tmp_path):
             pass
         fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(ValueError, match="another support operation"):
+        with pytest.raises(ValueError, match="another onboarding operation"):
             create_plan(_request(), tmp_path, overwrite=True)
 
 
