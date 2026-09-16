@@ -181,3 +181,26 @@ The final platform-wheel check invokes the package verifier with
 repository generator and Git checkout; its subprocess runs from an unrelated
 temporary directory against the installed wheel. The reduced Docker build
 context runs the package/runtime verifier without the repository-only FPE flag.
+
+## Legacy AIC snapshot provenance
+
+The Legacy AIC Support Matrix displays a **Historical snapshot** and
+**Qualification not recorded**. Its **Latest data change** timestamp is the
+commit time of the most recent change to its index or an indexed CSV, with a
+link to that data commit. It is not the website build time or evidence of a
+complete matrix rerun. No full-matrix generation time or qualification report
+was recorded for the retained legacy data.
+
+The Pages builder adds this provenance to the packaged
+`data/support-matrix/index.json`. Website-only changes do not refresh the data
+date. A build with modified/untracked data, a shallow Git history, or no Git
+history leaves the date unavailable. Direct source-tree previews also show the
+missing-date state because the committed legacy index contains no provenance.
+
+To reproduce the browser checks, install Chromium with
+`uv run --python 3.12 --with playwright playwright install chromium`, then run
+`uv run --python 3.12 --with playwright python scripts/check_legacy_support_matrix_browser.py`.
+The script builds a temporary site and verifies real data, commit links, missing
+and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
+Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
+`--screenshot /path/to/preview.png` to capture the real page before test fixtures.
