@@ -8,6 +8,7 @@
 //! data-plane records.
 
 use std::ffi::c_char;
+use std::path::PathBuf;
 
 use aiperf_steppable_abi::{
     ByteSliceV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
@@ -18,11 +19,14 @@ use aiperf_steppable_abi::{
     StatusV1, StepRequestV1, StepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
-    SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
+    DynPlacement, SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
 };
 use aisimulate_core::replay::{
-    DirectRequest, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
+    DirectRequest, DynamicPlacementConfig, DynamicPlacementMetadata, DynamicPlacementPlugin,
+    NoEngineEvents, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
+    WorkerTopology,
 };
+use aisimulate_placement_abi::{PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -33,10 +37,72 @@ pub enum BackendTopology {
     /// One aggregate worker using the single-worker steppable engine.
     #[default]
     Single,
-    /// One or more aggregate workers using round-robin placement.
+    /// One or more aggregate workers using the selected placement policy.
     Aggregated,
     /// Separate round-robin prefill and decode pools.
     Disaggregated,
+}
+
+/// Explicit location and creation inputs for a dynamic placement provider.
+///
+/// The backend never searches the environment, working directory, or plugin
+/// registry for a placement provider. Selecting one always requires this
+/// complete, provider-owned configuration in the create payload.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicPlacementLocator {
+    /// Shared library containing the V1 placement provider.
+    pub library_path: PathBuf,
+    /// Deterministic selector seed supplied to the provider.
+    #[serde(default)]
+    pub selector_seed: [u8; 32],
+    /// Namespace identifying the provider's opaque options format.
+    #[serde(default)]
+    pub options_namespace: Vec<u8>,
+    /// Provider-defined options in `options_namespace`.
+    #[serde(default)]
+    pub provider_options: Vec<u8>,
+    /// Host-selected bounds for provider batch results.
+    #[serde(default)]
+    pub limits: DynamicPlacementLimits,
+}
+
+/// JSON representation of the output limits negotiated with a placement provider.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DynamicPlacementLimits {
+    /// Maximum mutations permitted in one provider batch.
+    pub max_mutations: u64,
+    /// Maximum admission decisions returned in one provider result.
+    pub max_admission_results: u64,
+    /// Maximum released placements returned in one provider result.
+    pub max_released: u64,
+    /// Maximum diagnostic bytes returned in one provider result.
+    pub max_diagnostic_bytes: u64,
+}
+
+impl Default for DynamicPlacementLimits {
+    fn default() -> Self {
+        // The neutral adapter calls the V1 provider once per replay mutation,
+        // so a one-record result bound is enough for the built-in composition.
+        Self {
+            max_mutations: 1,
+            max_admission_results: 1,
+            max_released: 1,
+            max_diagnostic_bytes: 0,
+        }
+    }
+}
+
+impl From<DynamicPlacementLimits> for PlacementLimitsV1 {
+    fn from(value: DynamicPlacementLimits) -> Self {
+        Self {
+            max_mutations: value.max_mutations,
+            max_admission_results: value.max_admission_results,
+            max_released: value.max_released,
+            max_diagnostic_bytes: value.max_diagnostic_bytes,
+        }
+    }
 }
 
 /// Provider-owned configuration encoded in `CreateRequestV1::provider_payload`.
@@ -53,6 +119,9 @@ pub struct BackendConfig {
     pub prefill_workers: usize,
     /// Decode worker count for a disaggregated replay.
     pub decode_workers: usize,
+    /// Explicit dynamic placement provider for an aggregated replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_placement: Option<DynamicPlacementLocator>,
 }
 
 impl Default for BackendConfig {
@@ -63,8 +132,42 @@ impl Default for BackendConfig {
             workers: 1,
             prefill_workers: 1,
             decode_workers: 1,
+            dynamic_placement: None,
         }
     }
+}
+
+fn dynamic_placement_config(
+    locator: DynamicPlacementLocator,
+    engine: &ReplayEngineConfig,
+    workers: &[WorkerTopology],
+) -> anyhow::Result<DynamicPlacementConfig> {
+    let total_kv_blocks = u64::try_from(engine.rank.num_gpu_blocks)
+        .map_err(|_| anyhow::anyhow!("aggregate KV capacity does not fit the placement ABI"))?;
+    let max_running_requests = u64::try_from(engine.rank.max_num_seqs).map_err(|_| {
+        anyhow::anyhow!("aggregate request capacity does not fit the placement ABI")
+    })?;
+    let capacities = workers
+        .iter()
+        .map(|worker| {
+            Ok(WorkerCapacityV1 {
+                worker_id: u64::try_from(worker.worker_id)
+                    .map_err(|_| anyhow::anyhow!("worker ID does not fit the placement ABI"))?,
+                total_kv_blocks,
+                available_kv_blocks: total_kv_blocks,
+                max_running_requests,
+                flags: 0,
+                reserved: 0,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(DynamicPlacementConfig {
+        selector_seed: locator.selector_seed,
+        capacities,
+        options_namespace: locator.options_namespace,
+        provider_options: locator.provider_options,
+        limits: locator.limits.into(),
+    })
 }
 
 const PROVIDER_ID: &[u8] = b"aisimulate\0";
@@ -166,12 +269,53 @@ unsafe extern "C" fn create(
             return StatusV1::REJECTED;
         }
     };
+    if config.dynamic_placement.is_some() && config.topology != BackendTopology::Aggregated {
+        // The neutral V1 adapter has no encoding for concrete engine events,
+        // and the disaggregated steppable constructor has no dynamic-policy
+        // injection seam yet. Refuse rather than silently selecting the
+        // built-in routers for a configuration that asked for a provider.
+        unsafe {
+            *error = allocated_bytes(
+                "dynamic placement is supported only with aggregated topology".to_owned(),
+            )
+        };
+        return StatusV1::REJECTED;
+    }
     let factory = ReplayEngineFactory::new();
     let created: anyhow::Result<Box<dyn SteppableReplay>> = match config.topology {
         BackendTopology::Single => SteppableEngine::new(config.engine, &factory)
             .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>),
-        BackendTopology::Aggregated => SteppableAgg::new(config.engine, &factory, config.workers)
-            .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>),
+        BackendTopology::Aggregated => match config.dynamic_placement {
+            None => SteppableAgg::new(config.engine, &factory, config.workers)
+                .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>),
+            Some(locator) => {
+                if locator.library_path.as_os_str().is_empty() {
+                    Err(anyhow::anyhow!(
+                        "dynamic placement library_path must not be empty"
+                    ))
+                } else {
+                    DynamicPlacementPlugin::load(&locator.library_path).and_then(|plugin| {
+                        let engine_config = config.engine.clone();
+                        SteppableAgg::<
+                            DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
+                            NoEngineEvents,
+                            DynamicPlacementMetadata,
+                        >::with_placement(
+                            config.engine,
+                            &factory,
+                            config.workers,
+                            move |_dp_size, workers| {
+                                let placement_config =
+                                    dynamic_placement_config(locator, &engine_config, &workers)?;
+                                let policy = plugin.create(workers, placement_config)?;
+                                Ok(Box::new(policy))
+                            },
+                        )
+                        .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>)
+                    })
+                }
+            }
+        },
         BackendTopology::Disaggregated => SteppableDisagg::new(
             config.engine,
             &factory,

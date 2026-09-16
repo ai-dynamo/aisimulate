@@ -16,8 +16,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 aisimulate-core = { path = "../core" }
+aisimulate-placement-abi = { path = "../placement-abi" }
 aiperf-steppable-abi = { path = "../../../../dynamic-simulation-abi/crates/steppable-abi" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+aisimulate-core = { path = "../core", features = ["placement-test-fixture"] }

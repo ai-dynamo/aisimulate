@@ -270,3 +270,41 @@ fn backend_creates_and_destroys_a_default_replay() {
 
     unsafe { vtable.destroy.unwrap()(handle) };
 }
+
+#[test]
+fn backend_refuses_dynamic_placement_for_disaggregated_topology() {
+    let descriptor = unsafe { &*aisimulate_steppable_plugin::aiperf_steppable_plugin_v1() };
+    let vtable = unsafe { &*descriptor.vtable };
+    let payload = br#"{
+        "topology": "disaggregated",
+        "dynamic_placement": {"library_path": "/not/used/libplacement.so"}
+    }"#;
+    let mut handle = ReplayHandleV1(std::ptr::null_mut());
+    let mut error = ByteSliceV1::EMPTY;
+
+    assert_eq!(
+        unsafe {
+            vtable.create.unwrap()(
+                CreateRequestV1 {
+                    struct_size: std::mem::size_of::<CreateRequestV1>() as u32,
+                    flags: REQUEST_FLAG_UUID,
+                    provider_payload: ByteSliceV1 {
+                        data: payload.as_ptr(),
+                        len: payload.len() as u64,
+                    },
+                },
+                &raw mut handle,
+                &raw mut error,
+            )
+        },
+        StatusV1::REJECTED
+    );
+    assert!(handle.0.is_null());
+    // Safety: a rejected create returns one owned diagnostic slice.
+    let message = unsafe { std::slice::from_raw_parts(error.data, error.len as usize) };
+    assert_eq!(
+        message,
+        b"dynamic placement is supported only with aggregated topology"
+    );
+    unsafe { vtable.release_bytes.unwrap()(error) };
+}
