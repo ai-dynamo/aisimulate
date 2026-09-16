@@ -696,6 +696,10 @@ The native engine runner exports phase and operation evidence with op-level timi
 topologies. The external Dynamo Python adapter's diagnostics export is not qualified by this
 stack; missing exports receive an explicit unavailable reason.
 
+Numeric watts require qualifying operation-energy data. The B200/TRT-LLM example below
+requires the [power dataset from #212](https://github.com/ai-dynamo/aisimulate/pull/212)
+alongside the summary implementation from #142.
+
 #### 4.11.1 Summary power without energy details
 
 **Before — AIC includes power in its normal estimate summary:**
@@ -703,29 +707,82 @@ stack; missing exports receive an explicit unavailable reason.
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --system b200_sxm --backend trtllm --backend-version 1.3.0rc20 \
   --batch-size 64 --tp-size 2 --isl 1024 --osl 128
 ```
 
 **Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
 modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
 
-**After — normal AISimulate summary.** Reuse `prediction.yaml` from
-[section 3.1](#31-migrate-one-concrete-deployment) and `budget-search.yaml` from
+**After — AISimulate summary with measured operation-power data.** Save as
+`power-prediction.yaml`. This uses the same traffic shape as section 3.1, with the
+B200/TRT-LLM dataset supplied by #212:
+
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 64}
+  stop: {requests: 100}
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: b200_sxm
+  backend: trtllm
+  backend_version: "1.3.0rc20"
+  workers:
+    aggregated:
+      parallelism: {tensor: 2, replicas: 1}
+```
+
+```bash
+aisimulate predict --stack engine --config power-prediction.yaml --output-dir ./power-summary
+```
+
+**Recorded result:** a local integration of #142 at `7fdd1193` and #212 at `3db3863a`
+on September 15, 2026 produced the following excerpt from `power-summary/prediction.json`
+(values rounded):
+
+```json
+{
+  "completed_requests": 100,
+  "power_w": 655.9411,
+  "power_coverage": 0.90703175
+}
+```
+
+The terminal displays **655.94 W per GPU** and **90.70% power-data coverage**, without
+`--detail`. This is modeled active forward-pass power derived from operation profiles;
+90.70% describes latency covered by energy evidence, not prediction accuracy. The result
+requires #212's data and can change with the workload or profile revision.
+
+**Unavailable-data example.** Reuse the H200/vLLM `prediction.yaml` from
+[section 3.1](#31-migrate-one-concrete-deployment):
+
+```bash
+aisimulate predict --stack engine --config prediction.yaml --output-dir ./power-unavailable
+```
+
+At the same source revision, this completed 100 requests and returned:
+
+```json
+{"power_w": null, "power_coverage": 0.0}
+```
+
+The terminal keeps both labels visible and explains that watts are unavailable because
+energy coverage is insufficient. This distinguishes missing data from a zero-watt estimate.
+
+For recommendation summaries, reuse `budget-search.yaml` from
 [section 3.2](#32-search-with-a-fixed-gpu-budget):
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --output-dir ./power-summary
-
 aisimulate recommend --stack engine --config budget-search.yaml --output-dir ./power-search
 ```
 
-**Result to inspect:** the normal prediction summary and each displayed
-recommendation row always include `power_w` and `power_coverage` labels. Available watts are
-per GPU; coverage is displayed as a percentage. No `--detail` selector is required to calculate
-or display either summary value. JSON always includes both keys in the prediction summary and
-recommendation metrics for valid replay reports, using `null` for unavailable values under the
-publication gate below.
+Each displayed recommendation row includes `power_w` and `power_coverage`. Numeric watts
+still require qualifying data; the H200/vLLM configuration above does not gain coverage by
+running a search. No `--detail` selector is required to calculate or display either summary
+value. JSON includes both keys in prediction summaries and recommendation metrics for valid
+replay reports, using `null` for unavailable values under the publication gate below.
 
 #### 4.11.2 Summary power with an energy breakdown
 
@@ -734,7 +791,7 @@ publication gate below.
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --system b200_sxm --backend trtllm --backend-version 1.3.0rc20 \
   --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
 ```
 
@@ -742,10 +799,10 @@ aiconfigurator cli estimate \
 and per-operation energy detail. Missing energy profiles can leave the detail section without
 measurable data.
 
-**After — AISimulate energy detail**, using the same `prediction.yaml`:
+**After — AISimulate energy detail**, using the same `power-prediction.yaml`:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --detail energy \
+aisimulate predict --stack engine --config power-prediction.yaml --detail energy \
   --output-dir ./power-details
 ```
 
@@ -772,8 +829,8 @@ the commands above:
 Unavailable values include a short reason, such as insufficient coverage or an unsupported
 provider. Zero coverage is valid only when the energy-aware path can establish it; an unsupported
 path must not fabricate `0%`. JSON always returns both keys, with numbers when available and
-`null` otherwise, never placeholder strings, `NaN`, or zero watts. These examples do not guarantee
-power coverage for the selected H200/model/backend combination.
+`null` otherwise, never placeholder strings, `NaN`, or zero watts. These synthetic values do not guarantee
+power coverage for another hardware/model/backend combination.
 
 **What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
 forward passes. Their power values share the same meaning and coverage rule but need not be
