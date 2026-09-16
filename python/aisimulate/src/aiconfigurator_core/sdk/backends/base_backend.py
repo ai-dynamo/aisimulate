@@ -26,6 +26,7 @@ from aiconfigurator_core.sdk.perf_database import PerfDatabase
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aiconfigurator_core.sdk.rust_engine_step import (
     estimate_decode_step_breakdown_with_rust,
+    estimate_decode_step_with_rust,
     estimate_mixed_step_breakdown_with_rust,
     estimate_static_latency_breakdown_with_rust,
     should_use_rust_engine_step,
@@ -1490,6 +1491,8 @@ class BaseBackend:
         component_latency_ms = dict(components["component_latency_ms"])
         component_energy_wms = dict(components["component_energy_wms"])
         per_op_latency_ms = dict(components["per_op_latency_ms"])
+        per_op_energy_wms = dict(components.get("per_op_energy_wms", {}))
+        covered_latency_ms = float(components.get("covered_latency_ms", 0.0))
         per_op_source = dict(components["per_op_source"])
         latency_ms = float(components["latency_ms"])
         energy_wms = float(components["energy_wms"])
@@ -1506,6 +1509,7 @@ class BaseBackend:
             visual_energy = {name: value / visual_scale for name, value in visual_energy.items()}
             visual_latency_total = sum(visual_latency.values())
             visual_energy_total = sum(visual_energy.values())
+            covered_latency_ms += sum(value for name, value in visual_latency.items() if visual_energy[name] > 0)
             latency_ms += visual_latency_total
             energy_wms += visual_energy_total
             component_latency_ms["context_attention"] = (
@@ -1516,6 +1520,7 @@ class BaseBackend:
             )
             for name, value in visual_latency.items():
                 per_op_latency_ms[name] = per_op_latency_ms.get(name, 0.0) + value
+                per_op_energy_wms[name] = per_op_energy_wms.get(name, 0.0) + visual_energy[name]
                 per_op_source[name] = visual_source[name]
         return StepEstimate(
             latency_ms=latency_ms,
@@ -1523,6 +1528,8 @@ class BaseBackend:
             component_latency_ms=component_latency_ms,
             component_energy_wms=component_energy_wms,
             per_op_latency_ms=per_op_latency_ms,
+            per_op_energy_wms=per_op_energy_wms,
+            covered_latency_ms=covered_latency_ms,
             per_op_source=per_op_source,
             moe_comm_fallbacks=components["moe_comm_fallbacks"],
             context_tokens=step.context_tokens,
@@ -1549,6 +1556,28 @@ class BaseBackend:
             return 0.0, 0.0, {}, {}, ()
         self._require_rust_engine_step(runtime_config, database, surface="decode")
         return estimate_decode_step_breakdown_with_rust(
+            model,
+            database,
+            gen_tokens=gen_tokens,
+            isl=isl,
+            osl=osl,
+            gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
+        )
+
+    def _get_genonly_step_estimate(
+        self,
+        model: BaseModel,
+        database: PerfDatabase,
+        runtime_config: RuntimeConfig,
+        gen_tokens: int,
+        isl: int,
+        osl: int,
+    ) -> StepEstimate:
+        """Decode estimate with energy evidence retained for aggregation."""
+        if gen_tokens <= 0:
+            return StepEstimate(latency_ms=0.0, energy_wms=0.0)
+        self._require_rust_engine_step(runtime_config, database, surface="decode")
+        return estimate_decode_step_with_rust(
             model,
             database,
             gen_tokens=gen_tokens,
@@ -1750,13 +1779,16 @@ class BaseBackend:
         per_ops_data["mix_step"] = mix_per_ops
         per_ops_source["mix_step"] = mix_per_ops_src
 
+        genonly_step_estimate = self._get_genonly_step_estimate(
+            model, database, runtime_config, num_genonly_tokens, isl, osl
+        )
         (
             genonly_step_latency_ms,
             genonly_step_energy_wms,
             genonly_per_ops,
             genonly_per_ops_src,
             genonly_moe_comm_fallbacks,
-        ) = self._get_genonly_step_latency(model, database, runtime_config, num_genonly_tokens, isl, osl)
+        ) = (*genonly_step_estimate.legacy_tuple(), genonly_step_estimate.moe_comm_fallbacks)
         if genonly_per_ops:
             per_ops_data["genonly_step"] = genonly_per_ops
             per_ops_source["genonly_step"] = genonly_per_ops_src
@@ -1948,6 +1980,38 @@ class BaseBackend:
         summary.set_encoder_power_avg(encoder_energy_wms / encoder_latency_ms if encoder_latency_ms > 0 else 0.0)
         summary.set_encoder_source_dict(encoder_source_dict)
         summary.set_result_dict(result_dict)
+
+        # Retain operation evidence using exactly the scheduling weights used
+        # for total energy and active latency above. Mixed steps include both
+        # prefill and decode work; do not label them as pure context passes.
+        def weighted_step(estimate: StepEstimate, weight: float) -> StepEstimate:
+            return dataclasses.replace(
+                estimate,
+                latency_ms=estimate.latency_ms * weight,
+                energy_wms=estimate.energy_wms * weight,
+                covered_latency_ms=estimate.covered_latency_ms * weight,
+                per_op_latency_ms={name: value * weight for name, value in estimate.per_op_latency_ms.items()},
+                per_op_energy_wms={name: value * weight for name, value in estimate.per_op_energy_wms.items()},
+                component_latency_ms={name: value * weight for name, value in estimate.component_latency_ms.items()},
+                component_energy_wms={name: value * weight for name, value in estimate.component_energy_wms.items()},
+            )
+
+        energy_groups = {
+            "mix_step": weighted_step(mix_step_estimate, mix_efficiency * num_mix_steps),
+            "genonly_step": weighted_step(genonly_step_estimate, num_genonly_steps),
+        }
+        if encoder_latency_dict:
+            energy_groups["encoder"] = StepEstimate(
+                latency_ms=encoder_latency_ms,
+                energy_wms=encoder_energy_wms,
+                covered_latency_ms=sum(
+                    value for name, value in encoder_latency_dict.items() if encoder_energy_wms_dict[name] > 0
+                ),
+                per_op_latency_ms=dict(encoder_latency_dict),
+                per_op_energy_wms=dict(encoder_energy_wms_dict),
+                per_op_source=dict(encoder_source_dict),
+            )
+        summary.set_aggregate_energy_breakdown(energy_groups)
         if encoder_memory:
             summary.set_encoder_memory(encoder_memory)
 
