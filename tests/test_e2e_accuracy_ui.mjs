@@ -7,6 +7,8 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.js", import.meta.url), "utf8");
+const bootstrap = "initialize().catch(showError);";
+assert.ok(source.includes(bootstrap), "Application bootstrap changed; update the UI test harness before executing it.");
 const published = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
 const historical = structuredClone(published);
 // Exercise the legacy contract even after the published snapshot is refreshed.
@@ -47,7 +49,7 @@ function harness(fetch = async () => response(historical), url = "https://exampl
     history: { replaceState(_state, _title, next) { location.href = String(next); } },
     fetch, URL, Intl, console,
   });
-  vm.runInContext(source.replace("initialize().catch(showError);", ""), context);
+  vm.runInContext(source.replace(bootstrap, ""), context);
   return { element, context, location, run: (code) => vm.runInContext(code, context),
     set(name, value) { context[name] = structuredClone(value); } };
 }
@@ -242,6 +244,39 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   assert.match(html, /<td>failed<\/td>/);
   assert.equal((html.match(/<line class="curve aisimulate"/g) ?? []).length, 0);
   assert.equal((html.match(/<circle class="point aisimulate"/g) ?? []).length, 4);
+});
+
+test("changing topology updates the rendered points and shared selection in both directions", async () => {
+  const data = withTopology();
+  const model = data.models[0]; const workload = model.workloads[0]; const gpu = workload.gpus[0];
+  const first = gpu.topologies[0];
+  const second = structuredClone(first);
+  second.id = "fedcba9876543210";
+  second.parallelism = { tp_size: 4, pp_size: 2 };
+  for (const point of second.points) point.concurrency *= 8;
+  gpu.topologies.push(second);
+  for (const item of [data.totals, model, workload, gpu]) {
+    item.rows *= 2;
+    item.aic.points *= 2;
+    item.aisimulate.points *= 2;
+    for (const status of Object.keys(item.aisimulate.status_counts)) item.aisimulate.status_counts[status] *= 2;
+  }
+  const app = setup(async () => response(data)); await app.run('loadBranch("main")');
+  app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
+  assert.equal(app.run("state.topologyId"), first.id);
+  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>success<\/td>/);
+
+  for (const topology of [second, first]) {
+    app.element("topology-select").events.change({ target: { value: topology.id } });
+    assert.equal(app.run("state.topologyId"), topology.id);
+    const html = app.element("drilldown").innerHTML;
+    assert.match(html, new RegExp(`<option value="${topology.id}" selected>fp8 · vllm · aggregated · TP ${topology.parallelism.tp_size} · PP ${topology.parallelism.pp_size}`));
+    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>success</td>`));
+    const other = topology === first ? second : first;
+    assert.doesNotMatch(html, new RegExp(`<tr><td>${other.points[0].concurrency}</td>`));
+    assert.equal(new URL(app.location.href).searchParams.get("topology"), topology.id);
+    assert.equal(app.element("detail-permalink").href, app.location.href);
+  }
 });
 
 test("invalid topology values and unsafe provenance fail before rendering", () => {
