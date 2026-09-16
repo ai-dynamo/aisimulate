@@ -61,6 +61,7 @@
 /tests/test_epd_cli.py                               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                               @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_ngram_cli.py                             @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_g3_offload_cli.py                        @ai-dynamo/aisimulate-replay-codeowners
@@ -137,6 +138,7 @@
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/                             @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_ngram_cli.py                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
