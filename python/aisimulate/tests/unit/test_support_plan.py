@@ -214,7 +214,7 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
 def test_documented_recommendation_loop_attempts_every_candidate(
     tmp_path, max_candidates, missing_pilot_samples, statuses, tampered_commands
 ):
-    guide = Path(__file__).resolve().parents[4] / "docs/self-service-support.md"
+    guide = Path(__file__).resolve().parents[4] / "docs/fpm-self-service.md"
     snippet = guide.read_text().split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     workdir = tmp_path / "work with 'quotes'; $(literal)"
     workdir.mkdir()

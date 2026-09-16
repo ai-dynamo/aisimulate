@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Onboard a model for FPM simulation on a target hardware platform
+# FPM self-service
 
 `aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one pure tensor-parallel worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's existing per-worker FPM support and packaged collector. No other draft PR needs to be merged first.
 
