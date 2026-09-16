@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from .afd_artifacts import write_afd_qualification_artifacts
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
@@ -28,6 +29,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
+from .detail import build_prediction_details, parse_detail_sections, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -71,6 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].epilog = (
+        "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
+        "trace_timestamps and agentic_lanes=1. The engine stack supports aggregated "
+        "vLLM/SGLang, HBM-only, speculative decoding disabled. Results are "
+        "functional_only; benchmark warmup and profiling are not qualified."
+    )
+    subparsers.choices["predict"].add_argument(
+        "--detail",
+        type=parse_detail_sections,
+        default=(),
+        metavar="SECTIONS",
+        help="comma-separated summary,memory,time, or all; unavailable evidence is skipped",
+    )
     subparsers.choices["predict"].add_argument(
         "--online",
         action="store_true",
@@ -154,6 +169,9 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    epd = config.engine.workers.encoder is not None
+    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
+        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     adapter_specs = _compile_prediction_adapters(
         adapter_raw,
@@ -174,8 +192,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             report = runner.run(
                 spec,
                 output_requirements=ReplayOutputRequirements(
-                    include_raw_report=True,
+                    include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
+                    capture_memory_diagnostics="memory" in args.detail,
                 ),
             )
         except KeyboardInterrupt:
@@ -187,9 +206,14 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     native = report.metadata.get("native_report")
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
-    summary = native.get("summary", native)
-    if not isinstance(summary, dict):
-        raise RuntimeError("prediction report summary must be a JSON mapping")
+    if epd:
+        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
+        if "memory_diagnostics" in native["metadata"]:
+            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
+        # JSON stdout, like prediction.json, must identify the approximation.
+        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
+        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
+    summary = prediction_summary(native)
     resolved_basis = native.get("weka_nested_timestamp_basis")
     if isinstance(resolved_basis, str):
         source = config.traffic.source
@@ -204,7 +228,11 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 "INFO: validated the complete Weka corpus with configured "
                 f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
             )
+    details = build_prediction_details(native, args.detail) if args.detail else None
+    if details is not None:
+        native = {**native, "details": details}
     report_path = write_prediction_report(root, native)
+    write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):
@@ -212,7 +240,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    sys.stdout.write(format_prediction_stdout(summary, args.format))
+    sys.stdout.write(format_prediction_stdout(summary, args.format, details=details))
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")

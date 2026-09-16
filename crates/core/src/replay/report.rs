@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
 use crate::replay::PlacementCacheSample;
-use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
+use crate::replay::loadgen::{
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticTrajectorySnapshot,
+};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
@@ -24,6 +26,7 @@ const DDSKETCH_MAX_BINS: usize = 32_768;
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -31,6 +34,11 @@ pub struct ReplayReport {
     pub latency: TraceLatencyStats,
     pub trajectories: Option<TraceTrajectoryStats>,
     pub agentic_graph: Option<AgenticGraphIdentity>,
+    /// Canonical driver lifecycle evidence. The compact JSON report publishes
+    /// only its digest and event count; conformance tests can inspect all events.
+    pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    /// One explicit completed, failed, or incomplete result per authored play.
+    pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
@@ -226,7 +234,10 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(70))?;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(g3) = &self.g3_offload {
+            map.serialize_entry("g3_offload", g3)?;
+        }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -317,6 +328,16 @@ impl Serialize for ReplayReport {
         }
         if let Some(agentic_graph) = &self.agentic_graph {
             map.serialize_entry("agentic_graph", agentic_graph)?;
+        }
+        if let Some(lifecycle) = &self.agentic_lifecycle {
+            map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
+            map.serialize_entry(
+                "agentic_lifecycle_digest",
+                &lifecycle.digest().map_err(serde::ser::Error::custom)?,
+            )?;
+        }
+        if let Some(outcomes) = &self.agentic_play_outcomes {
+            map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
         serialize_rate_distribution(
@@ -747,6 +768,7 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     requests: FxHashMap<Uuid, TraceRequestStats>,
     batch_reporting: bool,
     bounded_summary: Option<bounded::BoundedSummary>,
@@ -787,6 +809,8 @@ pub struct TraceCollector {
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
+    agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
 
 impl TraceRequestStats {
@@ -877,6 +901,10 @@ impl TraceCollector {
         if !self.capture_per_request && !self.defer_token_timeline_finalization {
             self.bounded_summary = Some(bounded::BoundedSummary::default());
         }
+    }
+
+    pub(crate) fn is_batch_reporting(&self) -> bool {
+        self.batch_reporting
     }
 
     fn retire_completed(&mut self) -> anyhow::Result<()> {
@@ -1063,6 +1091,14 @@ impl TraceCollector {
 
     pub fn set_agentic_graph(&mut self, identity: AgenticGraphIdentity) {
         self.agentic_graph = Some(identity);
+    }
+
+    pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
+        self.agentic_lifecycle = Some(transcript);
+    }
+
+    pub fn set_agentic_play_outcomes(&mut self, outcomes: Vec<AgenticPlayOutcome>) {
+        self.agentic_play_outcomes = Some(outcomes);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1505,6 +1541,8 @@ impl TraceCollector {
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
+        let agentic_lifecycle = self.agentic_lifecycle;
+        let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -1612,6 +1650,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            g3_offload: self.g3_offload,
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -1658,6 +1697,8 @@ impl TraceCollector {
             },
             trajectories,
             agentic_graph,
+            agentic_lifecycle,
+            agentic_play_outcomes,
             goodput,
             per_request,
             runtime_evidence,

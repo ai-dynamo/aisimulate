@@ -645,6 +645,7 @@ fn lower_requests(
                     turn_index: request.turn_index,
                     metadata: request.metadata.clone(),
                     prompt_token_source,
+                    agentic: None,
                 }),
             })
         })
