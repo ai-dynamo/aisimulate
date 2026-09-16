@@ -77,7 +77,9 @@ function withTopology() {
     aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
-  gpu.topologies = [{ ...gpu, id: "0123456789abcdef", rows: 3, framework: "vllm", precision: "fp8", serving: "aggregated",
+  gpu.topologies = [{ ...gpu, aic: { ...gpu.aic, points: 3 }, aisimulate: { ...gpu.aisimulate, points: 2,
+    status_counts: { success: 2, unsupported: 0, failed: 1, unknown: 0 } },
+    id: "0123456789abcdef", rows: 3, framework: "vllm", precision: "fp8", serving: "aggregated",
     spec_method: "none", parallelism: { tp_size: 8, pp_size: 1 }, points: [point(1, true), point(2, false), point(4, true)] }];
   return data;
 }
@@ -202,6 +204,44 @@ test("invalid topology values and unsafe provenance fail before rendering", () =
   invalid.snapshot.measurement_source_url = "javascript:alert(1)";
   app.set("invalid", invalid);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+});
+
+test("aggregate replay counts must match rows and successful points at every level", () => {
+  const app = setup();
+  for (const select of [
+    (data) => data.totals,
+    (data) => data.models[0],
+    (data) => data.models[0].workloads[0],
+    (data) => data.models[0].workloads[0].gpus[0],
+    (data) => data.models[0].workloads[0].gpus[0].topologies[0],
+  ]) {
+    for (const corrupt of [
+      (item) => { item.aisimulate.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
+      (item) => { item.aisimulate.points = item.aisimulate.status_counts.success + 1; },
+      (item) => { item.aisimulate.status_counts.failed += 1; },
+    ]) {
+      const data = withTopology();
+      corrupt(select(data));
+      app.set("invalid", data);
+      assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+    }
+  }
+});
+
+test("topology point statuses must match otherwise consistent aggregate counts", async () => {
+  const data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  // Keep points, successes, and rows consistent, but misclassify the failed point.
+  topology.aisimulate.status_counts.failed = 0;
+  topology.aisimulate.status_counts.unsupported = 1;
+  const app = setup(async () => response(data));
+  app.set("invalid", data);
+  assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+  await app.run('loadBranch("main")');
+  assert.equal(app.run("state.data"), null);
+  assert.equal(app.element("error-banner").hidden, false);
+  assert.match(app.element("error-banner").textContent, /schema/);
+  assert.doesNotMatch(app.element("summary-grid").innerHTML, /successful replay points/);
 });
 
 test("shared links restore branch, GPU and topology; stale links fail explicitly", async () => {
