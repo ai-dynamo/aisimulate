@@ -104,31 +104,35 @@ jobs:
             }
             core.setOutput('should-build', 'true');
 
-  # Skipped on schedule so the cron nightly runs unattended; any other
-  # trigger stops here until a manual-release-approver required reviewer
-  # approves. The environment holds no secrets — it exists only as a gate.
+  # Only the FIRST attempt of a scheduled run is unattended. Any other
+  # trigger, and any re-run (run_attempt > 1, including re-runs of the
+  # cron), stops here until a manual-release-approver required reviewer
+  # (the ops team) approves. The environment holds no secrets — it exists
+  # only as a gate.
   manual-approval:
-    name: Approve manual trigger
+    name: Approve manual trigger or re-run
     needs: changes-guard
     if: >-
       needs.changes-guard.outputs.should-build == 'true' &&
-      github.event_name != 'schedule'
+      (github.event_name != 'schedule' || github.run_attempt != '1')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: manual-release-approver
     steps:
       - name: Record approval
-        run: echo "manual trigger approved"
+        run: echo "approved (event ${GITHUB_EVENT_NAME}, attempt ${GITHUB_RUN_ATTEMPT})"
 
   build-artifacts:
     name: Build artifacts (${{ matrix.arch }})
     needs: [changes-guard, manual-approval]
-    # skipped manual-approval == scheduled run (unattended path).
+    # Runs unattended only on a scheduled first attempt; otherwise requires
+    # an explicit approval. "Re-run failed jobs" cannot revive a skipped
+    # approval, so it fails closed — use "Re-run all jobs" to get the gate.
     if: >-
       !cancelled() &&
       needs.changes-guard.outputs.should-build == 'true' &&
-      (needs.manual-approval.result == 'success' ||
-      needs.manual-approval.result == 'skipped')
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      needs.manual-approval.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -480,11 +484,17 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: build-artifacts
+    needs: [manual-approval, build-artifacts]
+    # Same unattended-vs-approved split as build-artifacts, so re-running
+    # only this job cannot fire an unapproved publish.
     # TEMPORARY: drop the push arm before merge.
     if: >-
+      !cancelled() &&
+      needs.build-artifacts.result == 'success' &&
       ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
       github.event_name == 'push') &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      needs.manual-approval.result == 'success') &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
     # gitlab-master is on-prem and unreachable (even for DNS) from the
     # AWS-hosted repo runners; these on-prem runners are the sanctioned path.
