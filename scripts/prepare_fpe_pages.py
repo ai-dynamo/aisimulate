@@ -43,11 +43,7 @@ class SnapshotUnavailable(ValueError):
 def branch_path(branch: str) -> str:
     if branch == "main":
         return "."
-    if (
-        not isinstance(branch, str)
-        or not branch.startswith("release/")
-        or not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part) for part in branch.split("/"))
-    ):
+    if not isinstance(branch, str) or not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._-]*", branch):
         raise ValueError(f"unsupported FPE branch: {branch}")
     return f"branches/{branch}"
 

@@ -764,9 +764,17 @@ class FpeBranchesTest(unittest.TestCase):
         self.assertEqual(catalog["branches"][1]["status"], "unavailable")
 
     def test_unsafe_and_feature_branch_names_are_rejected(self):
-        for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/"]:
+        for name in ["feature/test", "release/..", "release/../private", "release//bad", "release/", "release/a/b"]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 FPE.branch_path(name)
+
+    def test_catalog_discovery_rejects_nested_release_refs_before_fetching_artifacts(self):
+        self.git("update-ref", "refs/remotes/origin/release/a/b", self.release_sha)
+        with (
+            patch.object(FPE, "list_artifacts", side_effect=AssertionError("invalid ref reached artifact lookup")),
+            self.assertRaisesRegex(ValueError, "unsupported FPE branch"),
+        ):
+            FPE.prepare_branches(REPOSITORY, self.repository, self.root / "data")
 
     def test_builder_rejects_unsafe_or_duplicate_catalog_entries(self):
         source = self.root / "source"
@@ -778,6 +786,7 @@ class FpeBranchesTest(unittest.TestCase):
             main,
             {"name": "release/0.12.0", "path": "../../private", "status": "available"},
             {"name": "release/../private", "path": "branches/release/../private", "status": "available"},
+            {"name": "release/a/b", "status": "unavailable"},
             {"name": "feature/test", "status": "unavailable"},
         ]:
             (source / "branches.json").write_text(

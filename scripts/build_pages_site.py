@@ -105,13 +105,7 @@ def _copy_fpe_branches(source: Path, destination: Path, *, require_catalog: bool
         if (
             not isinstance(name, str)
             or name in names
-            or not (
-                name == "main"
-                or (
-                    name.startswith("release/")
-                    and all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", p) for p in name.split("/"))
-                )
-            )
+            or not (name == "main" or re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._-]*", name))
         ):
             raise PagesBuildError("invalid or duplicate FPE branch name")
         names.add(name)
