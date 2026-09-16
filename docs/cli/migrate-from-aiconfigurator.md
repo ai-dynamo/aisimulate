@@ -711,7 +711,7 @@ aiconfigurator cli estimate \
 **Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
 modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
 
-**After — AISimulate summary with measured operation-power data.** Save as
+**After — AISimulate summary with modeled power from operation-energy evidence.** Save as
 `power-prediction.yaml`. This uses the same traffic shape as section 3.1, with the
 B200/TRT-LLM dataset supplied by #212:
 

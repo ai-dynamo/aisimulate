@@ -132,7 +132,7 @@ class ReplayReport:
                 raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
             if not math.isfinite(value):
                 raise ValueError(f"runner metric {name} must be finite")
-        normalize_power_summary(self.metrics)
+        object.__setattr__(self, "metrics", {**self.metrics, **normalize_power_summary(self.metrics)})
 
 
 @dataclass(frozen=True)
