@@ -766,12 +766,15 @@ def estimate_decode_step_with_rust(
 ) -> StepEstimate:
     """Retain native decode energy and covered latency for aggregate reporting."""
     handle = _cached_engine_handle(model, database)
-    entries = handle._decode_step_per_op_with_metadata(
-        int(gen_tokens),
-        int(isl),
-        int(osl),
-        gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
-    )
+    try:
+        entries = handle._decode_step_per_op_with_metadata(
+            int(gen_tokens),
+            int(isl),
+            int(osl),
+            gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+        )
+    except ValueError as exc:
+        _reraise_engine_error(exc)
     _note_rust_provenance(handle)
     latency, energy, source, fallbacks = _fold_per_op(entries)
     return StepEstimate(

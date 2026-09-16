@@ -29,6 +29,7 @@ def _diagnostics() -> dict:
                 "covered_latency_ms": 8.0,
                 "power_coverage": 0.8,
                 "publication_status": "withheld",
+                "power_w": None,
                 "source": "mixed",
                 "source_kind": "mixed",
                 "operations": [
@@ -156,3 +157,73 @@ def test_compatibility_diagnostics_remain_visible_with_other_details() -> None:
             power_diagnostics=diagnostics,
         )
         assert rendered.count("AISimulate active forward-pass energy diagnostics (per GPU)") == 1
+
+
+def _energy_detail_payload():
+    from aisimulate.detail import build_prediction_details
+
+    return build_prediction_details({"power_diagnostics": _diagnostics()}, ("energy",))
+
+
+def _energy_detail_validator():
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((Path(__file__).parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+def test_energy_schema_accepts_complete_measured_and_missing_operation_evidence():
+    _energy_detail_validator().validate(_energy_detail_payload())
+
+
+@pytest.mark.parametrize("value", ["invalid", 42, None, {}, ["nested"]])
+@pytest.mark.parametrize("level", ["phase", "operation"])
+def test_energy_schema_rejects_malformed_nested_records(level, value):
+    payload = _energy_detail_payload()
+    phases = payload["sections"]["energy"]["diagnostics"]["phases"]
+    if level == "phase":
+        phases[0] = value
+    else:
+        phases[0]["operations"][0] = value
+    assert not _energy_detail_validator().is_valid(payload)
+
+
+@pytest.mark.parametrize(
+    "level,field,value",
+    [
+        ("phase", "latency_ms", -1),
+        ("phase", "covered_latency_ms", -1),
+        ("phase", "power_coverage", 1.01),
+        ("phase", "power_w", 500),  # The phase has only 80% coverage.
+        ("phase", "publication_status", "invented"),
+        ("phase", "source_kind", "invented"),
+        ("phase", "unknown_field", 1),
+        ("operation", "latency_ms", True),
+        ("operation", "energy_wms", -1),
+        ("operation", "power_coverage", -0.01),
+        ("operation", "energy_contribution", 1.01),
+        ("operation", "status", "invented"),
+        ("operation", "source_kind", "invented"),
+        ("operation", "name", ""),
+        ("operation", "unknown_field", 1),
+    ],
+)
+def test_energy_schema_rejects_invalid_nested_evidence(level, field, value):
+    payload = _energy_detail_payload()
+    phase = payload["sections"]["energy"]["diagnostics"]["phases"][0]
+    record = phase if level == "phase" else phase["operations"][0]
+    record[field] = value
+    assert not _energy_detail_validator().is_valid(payload)
+
+
+@pytest.mark.parametrize("level", ["phase", "operation"])
+@pytest.mark.parametrize("field", ["latency_ms", "covered_latency_ms", "power_coverage", "source", "source_kind"])
+def test_energy_schema_requires_nested_evidence_and_provenance(level, field):
+    payload = _energy_detail_payload()
+    phase = payload["sections"]["energy"]["diagnostics"]["phases"][0]
+    record = phase if level == "phase" else phase["operations"][0]
+    del record[field]
+    assert not _energy_detail_validator().is_valid(payload)

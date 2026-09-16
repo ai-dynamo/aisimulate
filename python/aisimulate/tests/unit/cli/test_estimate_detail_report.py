@@ -201,3 +201,16 @@ def test_default_agg_energy_detail_uses_scheduled_groups(covered, power_text):
         assert "mixed_gemm" in text
     else:
         assert "<no energy data>" in text
+
+
+def test_default_agg_energy_detail_explains_zero_latency_groups():
+    from aiconfigurator.sdk.step_estimate import StepEstimate
+
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_aggregate_energy_breakdown(
+        {name: StepEstimate(latency_ms=0.0, energy_wms=0.0) for name in ("mix_step", "genonly_step", "encoder")}
+    )
+    result = _estimate_result(mode="agg", raw={}, summary=summary)
+    text = format_estimate_detail_report(result, detail="energy")
+    assert "Energy Breakdown (scheduled active work per GPU)" in text
+    assert "<no measurable energy data>" in text

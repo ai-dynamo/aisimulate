@@ -237,7 +237,10 @@
                   ]
                 },
                 "phases": {
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/energyPhase"
+                  }
                 }
               },
               "required": [
@@ -533,6 +536,161 @@
         "unavailable_reason"
       ],
       "additionalProperties": false
+    },
+    "energyOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy_wms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covered_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "power_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "measured",
+            "transferred",
+            "modeled",
+            "mixed",
+            "other",
+            "missing"
+          ]
+        },
+        "energy_contribution": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "enum": [
+            "available",
+            "partial",
+            "missing"
+          ]
+        },
+        "uncovered_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "covered_latency_ms",
+        "power_coverage",
+        "source",
+        "source_kind",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "energyPhase": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy_wms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covered_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "power_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "measured",
+            "transferred",
+            "modeled",
+            "mixed",
+            "other",
+            "missing"
+          ]
+        },
+        "publication_status": {
+          "enum": [
+            "available",
+            "withheld",
+            "unsupported",
+            "not_observed",
+            "missing"
+          ]
+        },
+        "power_w": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/energyOperation"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "covered_latency_ms",
+        "power_coverage",
+        "publication_status",
+        "power_w",
+        "source",
+        "source_kind",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "power_w": {
+            "type": "number"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "power_coverage": {
+            "type": "number",
+            "minimum": 0.9
+          }
+        }
+      }
     }
   },
   "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",

@@ -391,9 +391,11 @@ def _format_aggregate_energy_section(summary: InferenceSummary, bar_width: int, 
         return ["Energy Breakdown", "  <no energy data>"]
     titles = {"mix_step": "Mixed steps", "genonly_step": "Decode-only steps", "encoder": "Encoder"}
     lines = ["Energy Breakdown (scheduled active work per GPU)"]
+    rendered_group = False
     for name, group in groups.items():
         if group.latency_ms <= 0:
             continue
+        rendered_group = True
         coverage = group.covered_latency_ms / group.latency_ms
         power = (
             f"{group.energy_wms / group.latency_ms:.1f} W"
@@ -407,6 +409,8 @@ def _format_aggregate_energy_section(summary: InferenceSummary, bar_width: int, 
             lines.extend(_format_op_bars(group.per_op_energy_wms, top_n=top_n, bar_width=bar_width, unit="W·ms"))
         else:
             lines.append("  <no energy data>")
+    if not rendered_group:
+        lines.append("  <no measurable energy data>")
     return lines
 
 
