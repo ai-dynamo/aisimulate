@@ -15,7 +15,7 @@ Take [qwen3-32b-fp8](https://huggingface.co/Qwen/Qwen3-32B-FP8) model as an exam
 
 # All-in-one Automation process
 
-we're now supporting automate everything in one script, starting from configuring the deployment, generating the configs, preparing docker image and container, pulling model checkpoints, deploying the service, benchmarking and summarizing. Refer to [Automation](../tools/automation/README.md) for more details.
+The legacy all-in-one automation script is not included in this repository. Use the step-by-step workflow below for deployment and benchmarking, and the [current CLI user guide](../../../docs/cli/user-guide.md) for supported prediction and configuration-search workflows.
 
 # Step-by-step Manual Deployment and Performance Alignment
 

@@ -8,7 +8,7 @@ In aiconfigurator, the end-to-end latency estimation depends on operation-level 
 
 ### 1. Break Down the Model into Operations
 
-The model is broken down into operations, as shown in the source file [`models.py`](../src/aiconfigurator/sdk/models.py). A model is composed of operations such as GEMM and MoE defined in the [`operations` package](../aic-core/src/aiconfigurator_core/sdk/operations/) (see its README for the single-oracle contract).
+The model is broken down into operations, as shown in the [`models` package](../src/aiconfigurator_core/sdk/models/). A model is composed of operations such as GEMM and MoE defined in the [`operations` package](../aic-core/src/aiconfigurator_core/sdk/operations/) (see its README for the single-oracle contract).
 
 ### 2. Get Operation Latency Estimation
 
