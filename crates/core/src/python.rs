@@ -4,9 +4,12 @@
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
+use crate::engine::{
+    Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+};
 use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
@@ -248,10 +251,14 @@ impl AicTimingConfig {
     }
 }
 
+type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
+    evidence: Mutex<TimingEvidenceSummary>,
+    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
 }
 
 impl AicTimingModel {
@@ -321,8 +328,90 @@ impl AicTimingModel {
             engine,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
+            evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
         })
     }
+
+    fn predict_phase_evidence(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        mode: &str,
+    ) -> Result<TimingPhaseEvidence> {
+        let prefill = mode == "static_ctx";
+        if batch_size == 0 || (prefill && isl <= prefix) {
+            return Ok(TimingPhaseEvidence::default());
+        }
+        let key = (batch_size, isl, osl, prefix, prefill);
+        if let Some(phase) = self.phase_cache.get(&key) {
+            return Ok(phase);
+        }
+        let (context, generation) = Python::with_gil(|py| {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("batch_size", batch_size)?;
+            kwargs.set_item("beam_width", 1)?;
+            kwargs.set_item("isl", isl)?;
+            kwargs.set_item("osl", osl)?;
+            kwargs.set_item("prefix", prefix)?;
+            kwargs.set_item("seq_imbalance_correction_scale", 1.0)?;
+            kwargs.set_item("gen_seq_imbalance_correction_scale", 1.0)?;
+            kwargs.set_item("mode", mode)?;
+            kwargs.set_item("stride", 32)?;
+            self.engine
+                .bind(py)
+                .call_method("run_static_per_op", (), Some(&kwargs))?
+                .extract::<(
+                    Vec<(String, f64, f64, String)>,
+                    Vec<(String, f64, f64, String)>,
+                )>()
+        })
+        .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
+        let entries = if prefill { context } else { generation };
+        ensure!(
+            !entries.is_empty(),
+            "AIC {mode} returned empty operation evidence for nonzero work"
+        );
+        let phase = phase_evidence_from_python(entries)?;
+        self.phase_cache.insert(key, phase.clone());
+        Ok(phase)
+    }
+
+    fn record_evidence(&self, phase: TimingPhaseEvidence, prefill: bool) -> Result<()> {
+        let mut evidence = self
+            .evidence
+            .lock()
+            .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))?;
+        if prefill {
+            evidence.prefill.try_accumulate(phase)?;
+        } else {
+            evidence.decode.try_accumulate(phase)?;
+        }
+        Ok(())
+    }
+}
+
+fn phase_evidence_from_python(
+    entries: Vec<(String, f64, f64, String)>,
+) -> Result<TimingPhaseEvidence> {
+    let operations = entries
+        .into_iter()
+        .map(|(name, latency_ms, energy_wms, source)| {
+            ensure!(
+                energy_wms.is_finite() && energy_wms >= 0.0,
+                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
+            );
+            TimingOperationEvidence::new(
+                name,
+                latency_ms,
+                Some(energy_wms),
+                TimingEvidenceSource::from_provider(source),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    TimingPhaseEvidence::try_from_operations(operations)
 }
 
 impl TimingModel for AicTimingModel {
@@ -335,6 +424,13 @@ impl TimingModel for AicTimingModel {
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let mean_isl = checked_u32(mean_isl, "mean input length")?;
         let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
+        if !self.use_fpm_decode_totals {
+            let evidence =
+                self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
+            let latency_ms = evidence.latency_ms;
+            self.record_evidence(evidence, true)?;
+            return Ok(latency_ms);
+        }
         Python::with_gil(|py| {
             self.engine
                 .bind(py)
@@ -375,16 +471,18 @@ impl TimingModel for AicTimingModel {
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+        let evidence =
+            self.predict_phase_evidence(batch_size, mean_context_length, 2, 0, "static_gen")?;
+        let latency_ms = evidence.latency_ms;
+        self.record_evidence(evidence, false)?;
+        Ok(latency_ms)
+    }
+
+    fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+        if self.use_fpm_decode_totals {
+            return None;
+        }
+        self.evidence.lock().ok().map(|evidence| evidence.clone())
     }
 }
 
@@ -1294,6 +1392,62 @@ mod tests {
         }
     }
 
+    #[pyclass]
+    #[derive(Default)]
+    struct PerOpEvidenceProbe {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    type TestPerOpEvidence = (String, f64, f64, String);
+
+    #[pymethods]
+    impl PerOpEvidenceProbe {
+        #[allow(clippy::too_many_arguments)]
+        #[allow(unused_variables)]
+        fn run_static_per_op(
+            &self,
+            batch_size: u32,
+            beam_width: u32,
+            isl: u32,
+            osl: u32,
+            prefix: u32,
+            seq_imbalance_correction_scale: f64,
+            gen_seq_imbalance_correction_scale: f64,
+            mode: &str,
+            stride: u32,
+        ) -> (Vec<TestPerOpEvidence>, Vec<TestPerOpEvidence>) {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if batch_size == 99 {
+                return (Vec::new(), Vec::new());
+            }
+            match mode {
+                "static_ctx" => (
+                    vec![
+                        ("gemm".into(), 8.0, 3_200.0, "silicon".into()),
+                        ("attention".into(), 2.0, 0.0, "empirical".into()),
+                    ],
+                    Vec::new(),
+                ),
+                "static_gen" => (
+                    Vec::new(),
+                    vec![("gemm".into(), 4.0, 1_600.0, "silicon".into())],
+                ),
+                unexpected => panic!("unexpected mode {unexpected}"),
+            }
+        }
+    }
+
+    fn timing_model(engine: Py<PyAny>, use_fpm_decode_totals: bool) -> AicTimingModel {
+        AicTimingModel {
+            engine,
+            use_fpm_decode_totals,
+            fpm_decode_kv_ceiling: None,
+            evidence: Mutex::new(TimingEvidenceSummary::default()),
+            phase_cache: quick_cache::sync::Cache::new(128),
+        }
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -1423,28 +1577,21 @@ mod tests {
     fn fpm_decode_timing_queries_exact_past_kv_total() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            use_fpm_decode_totals: true,
-            fpm_decode_kv_ceiling: None,
-        };
+        let timing = timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
             .unwrap();
 
         assert_eq!(latency, 546_046.0);
+        assert_eq!(timing.evidence_summary(), None);
     }
 
     #[test]
     fn fpm_decode_timing_caps_logical_past_kv_at_physical_capacity() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            use_fpm_decode_totals: true,
-            fpm_decode_kv_ceiling: None,
-        };
+        let timing = timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_116, 15_603, 546_048)
@@ -1454,20 +1601,93 @@ mod tests {
     }
 
     #[test]
-    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+    fn op_level_timing_exposes_typed_python_evidence() {
         pyo3::prepare_freethreaded_python();
-        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            use_fpm_decode_totals: false,
-            fpm_decode_kv_ceiling: None,
-        };
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let timing = timing_model(engine, false);
 
-        let latency = timing
-            .predict_decode_ms(35, 546_081, 15_602, 546_048)
-            .unwrap();
+        assert_eq!(timing.predict_prefill_ms(2, 128, 0).unwrap(), 10.0);
+        assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
 
-        assert_eq!(latency, 546_105.0);
+        let evidence = timing.evidence_summary().unwrap();
+        assert_eq!(evidence.prefill.energy_wms, Some(3_200.0));
+        assert_eq!(evidence.prefill.latency_ms, 10.0);
+        assert_eq!(evidence.prefill.covered_latency_ms, 8.0);
+        assert_eq!(evidence.prefill.coverage(), 0.8);
+        assert_eq!(evidence.prefill.source, Some(TimingEvidenceSource::Mixed));
+        assert_eq!(evidence.prefill.operations.len(), 2);
+        assert_eq!(evidence.prefill.operations[1].energy_wms, None);
+        assert_eq!(
+            evidence.prefill.operations[1].source,
+            TimingEvidenceSource::Empirical
+        );
+        assert_eq!(evidence.decode.energy_wms, Some(1_600.0));
+        assert_eq!(evidence.decode.coverage(), 1.0);
+    }
+
+    #[test]
+    fn repeated_shapes_reuse_provider_evidence_and_accumulate_every_step() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
+        let timing = timing_model(
+            Python::with_gil(|py| engine.clone_ref(py).into_any()),
+            false,
+        );
+        for _ in 0..1_000 {
+            assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
+        }
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            )
+        });
+        assert_eq!(
+            timing.evidence_summary().unwrap().decode.energy_wms,
+            Some(1_600_000.0)
+        );
+        // Distinct coordinates must never reuse the preceding shape's result.
+        timing.predict_decode_ms(2, 260, 129, 1024).unwrap();
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            )
+        });
+    }
+
+    #[test]
+    fn empty_provider_evidence_rejects_nonzero_work() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let timing = timing_model(engine, false);
+        assert!(timing.predict_prefill_ms(99, 128, 0).is_err());
+        assert!(timing.predict_decode_ms(99, 12800, 128, 16384).is_err());
+        assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
+        assert_eq!(timing.predict_decode_ms(0, 0, 128, 16384).unwrap(), 0.0);
+        assert_eq!(timing.predict_prefill_ms(99, 128, 128).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn python_evidence_rejects_invalid_energy_before_missing_value_conversion() {
+        let error =
+            phase_evidence_from_python(vec![("bad".into(), 1.0, f64::NAN, "silicon".into())])
+                .unwrap_err();
+        assert!(error.to_string().contains("invalid energy"));
     }
 
     #[test]

@@ -42,10 +42,10 @@ are separate identities:
 
 | Field | Meaning |
 | --- | --- |
-| `branch` | The branch whose committed snapshot is being published. |
+| `branch` | The branch whose committed snapshot or qualified campaign evidence is being published. |
 | `status` | `evaluated`, `inherited`, `historical`, or `unavailable`, as defined above. |
 | `summary_path` | A site-relative `branches/<16 hex characters>/summary.json` path; `null` for unavailable evidence. A direct source preview uses `summary.json`. |
-| `published_from_commit` | The full commit from which the snapshot file was copied, or `null` in a local build without branch refs. This is publication provenance, not the evaluated revision. |
+| `published_from_commit` | The full commit from which the snapshot file was copied, or `null` for a qualified campaign artifact or a local build without branch refs. Campaign identity is recorded in `evaluated_revision`. This field is publication provenance, not the evaluated revision. |
 | `evaluated_revision` | Required for evaluated/inherited evidence: the producer-recorded `branch` and full `commit_sha`. Absent or `null` for historical/unavailable evidence. |
 
 The exporter, Pages validator, and browser restrict evaluated branch names to
@@ -86,8 +86,110 @@ successful workflow. A daily main-branch Pages build also picks up release-branc
 snapshot updates and newly created release branches. It imports **only JSON**
 from release branches, never their HTML or JavaScript. Deleted branches disappear
 from the next catalog built with freshly fetched refs.
-This daily publication job does not rerun either predictor; new accuracy results
-require a completed prediction campaign and a regenerated summary.
+Pages also consumes validated artifacts from the **E2E Accuracy Matrix** workflow.
+That workflow runs daily for `main` and every `release/*` branch, using one exact
+amd64 wheel per branch for both predictors. Completed matrix runs trigger Pages,
+which publishes only successfully qualified branch campaigns.
+The matrix supports at most 255 discovered release branches alongside `main`
+and fails explicitly if that limit is exceeded.
+The daily Pages build itself only republishes available evidence.
+
+## Automated accuracy campaigns
+
+The workflow is `.github/workflows/e2e-accuracy.yml`, scheduled at **10:17 UTC
+daily**. It evaluates the scheduled main SHA and the current head of every
+`release/*` branch discovered at the start of the run. Each matrix entry pins its
+own branch/SHA and runs the reusable `.github/workflows/e2e-accuracy-branch.yml`
+campaign, with at most **two branches at once**. A failed branch does not cancel
+other campaigns; its failure remains visible in the matrix run.
+
+Main reuses an available amd64 artifact from a successful build job at the same
+SHA, even if Nightly CI is still waiting for staging approval. Otherwise, it builds
+one wheel for that revision. Release campaigns build their own exact wheels.
+Accuracy runs independently of release staging. Each successful branch can
+publish while failed branches retain their previous validated evidence.
+
+Manual execution uses the workflow on **main**, with an explicit evaluated
+branch and full source SHA:
+
+```bash
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
+  -f branch=release/0.12.0 \
+  -f expected_sha=FULL_40_CHARACTER_COMMIT_SHA
+```
+
+The SHA must belong to `main` or the selected `release/*` branch. Manual runs build
+one wheel from that revision. Reused nightly wheels require matching checksums
+and producer provenance. The main-branch campaign code checks both the installed
+legacy CLI and native runtime against that wheel. Historical release revisions
+must support these public APIs and the manylinux builder; an incompatible revision
+fails without replacing its published evidence.
+
+### Measurement and prediction policy
+
+- `.github/e2e-accuracy-dataset.json` pins the InferenceX release, every compressed
+  dump part's size and SHA-256, and selection policy. Refresh it in a reviewed PR
+  when adopting new measurements. A nightly reruns predictions against this fixed
+  silicon dataset; it does not collect new GPU measurements.
+- The downloader verifies every part, decompresses the public PostgreSQL archive,
+  and reads only `configs`, `benchmark_results`, and `workflow_runs` via COPY text.
+  It never executes SQL from the dump. The September 14 release downloads about
+  25 GB and requires at least 35 GB of free temporary disk. Decompression streams
+  directly into the serial `pg_restore` reader, avoiding an expanded dump on disk.
+  Raw data and child logs
+  remain on the runner; they are not uploaded as Actions or Pages artifacts.
+- Policy `latest-complete-config-run-v1` selects single-turn, single-node,
+  non-offloaded points from completed successful measurement runs, with positive
+  mean TTFT/TPOT, at most 30 days older than the
+  latest measurement for that model/GPU/framework/precision/serving/speculation/
+  workload family. Families without recent measurements retain historical evidence.
+  Each topology/workload/recipe uses one latest run and
+  a consistent image; missing concurrency points are never borrowed from older
+  runs. Duplicate IDs or ambiguous curves fail validation.
+- The public InferenceX adapter supplies topology and quantization. Speculative
+  configurations requiring acceptance-rate overrides and unresolved recipe
+  fingerprints are excluded with counts. Both predictors use the bundled CLI's
+  resolved performance-database version. These versions are reported; they can
+  differ from the measured server image. Replay pins `max_num_seqs=max(256, concurrency)`,
+  `max_num_batched_tokens=8192`, `enable_prefix_caching=False`, and
+  `aic_forward_model="op_level"`, with
+  seed 0, lengths from 80–100% of nominal, and ten requests per concurrency slot.
+  This policy differs from the earlier private campaign's reviewed recipe mapping;
+  aggregate differences are not evidence of a runtime improvement.
+- Six CPU worker processes execute bounded point predictions (180 seconds each).
+  Every selected point must have one outcome. Adapter exclusions and failed AIC
+  baselines are counted before forming the comparison cohort. Replay failures in
+  that cohort remain chart gaps. Missing/duplicate outcomes, a killed/timed-out
+  worker, invalid latencies, or no successful matched predictions fail qualification.
+- Accuracy values and coverage are advisory. There is no MAPE threshold or claim
+  that a lower aggregate on a different cohort is an improvement. Campaign integrity
+  is required for publication.
+
+### Artifact and publication contract
+
+Only `summary.json` and `qualification.json` are uploaded in each
+`e2e-accuracy-web-<branch-key>` artifact, retained for 90 days. The branch key is
+the first 16 hexadecimal characters of SHA-256 of the branch name; wheel artifacts
+use the same key to keep branches isolated. They record the evaluated branch/commit, wheel/dataset/input/
+cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
+completion time. Public data contains derived errors and normalized curves.
+
+Pages runs trusted main code and accepts a branch artifact only when that branch's
+qualification job succeeded in the artifact's exact run attempt. The matrix run
+may have failed because another branch failed. Rerunning failed jobs can retain
+artifacts from already successful branches; Pages verifies each artifact against
+its original attempt's metadata and jobs. Legacy `e2e-accuracy-web` artifacts still
+require a successful whole workflow run.
+
+Pages checks the producer event/repository/workflow, branch artifact name, ZIP members,
+summary checksum, exact source ancestry, complete coverage, and recursive public
+field allowlist. Branch HTML and JavaScript never come from artifacts. Newer
+evaluated commits supersede older ones; rerunning an older release commit cannot
+roll back a newer snapshot. A missing/expired artifact falls back to that branch's
+committed evidence; malformed available artifacts fail the Pages build, preserving
+the currently deployed site. Main's legacy JSON download and branch catalog update
+together. The page's provenance section links the accuracy run and exposes wheel,
+dataset, exclusion counts, and prediction database versions.
 
 ## Drill down
 

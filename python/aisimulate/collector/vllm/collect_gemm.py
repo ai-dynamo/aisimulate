@@ -47,7 +47,16 @@ quantized-weight preparation, and selected-kernel reporting.
 # the DeepGEMM/CUTLASS-side citations (csrc/apis/layout.hpp,
 # cutlass_gemm_caller.cuh) live outside this vllm clone and were not
 # re-derived, but nothing on the vllm side suggests the upstream gap closed.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"
+# 0.25.0 collection audit against the installed official runtime, vLLM
+# dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# RowParallelLinear's class body is AST-identical to 0.24.0; Fp8LinearMethod
+# changes only type annotations. scaled_mm/flashinfer.py is byte-identical,
+# preserving its m>=32 leaf dispatch. The CUDA fp8/block-fp8 selector lists
+# append Humming after the existing candidates (kernels/linear/__init__.py:
+# 322-363); NVFP4 still uses CT's factory and records the selected kernel
+# (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
+# exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
+__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
 
 from types import SimpleNamespace
 
@@ -286,9 +295,15 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         num_warmups=3,
         num_runs=6,
         repeat_n=1,
-        use_cuda_graph=gemm_type != "fp8_block",
+        # These rows model GPU execution, including graph-replayed decode.
+        # Eager fp8_block timing includes host launch gaps and is not a valid
+        # substitute for this contract. Capture failures must remain failures.
+        allow_graph_fail=False,
+        use_cuda_graph=True,
     ) as results:
         pass
+    if results.get("used_cuda_graph") is not True:
+        raise RuntimeError("vLLM GEMM collection requires CUDA Graph replay; refusing to publish eager timing")
 
     log_perf(
         item_list=[

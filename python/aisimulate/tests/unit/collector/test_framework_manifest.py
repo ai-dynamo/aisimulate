@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from collector.framework_manifest import (
     get_collector_runtime,
     require_collector_runtime,
@@ -83,6 +82,8 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
+    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe", "collector.vllm.collect_gdn"}:
+        expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -783,3 +784,103 @@ frameworks:
     )
     with pytest.raises(ValueError, match="digest-pinned"):
         get_collector_runtime("sglang", path=manifest)
+
+
+@pytest.mark.parametrize(
+    "version,accepted",
+    [("0.24.0", True), ("0.25.0", True), ("0.25.1", False), ("0.26.0", False), ("0.27.0", False), ("0.27.1", True)],
+)
+def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
+    import ast
+
+    source = ast.parse((COLLECTOR_ROOT / "vllm" / "collect_gemm.py").read_text())
+    declaration = next(
+        node.value.value
+        for node in source.body
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__compat__" for t in node.targets)
+    )
+    assert _check_compat(declaration, version) is accepted
+
+
+@pytest.fixture
+def explicit_vllm_025_manifest(tmp_path):
+    """Synthetic loader fixture, not a shipped image or collection declaration."""
+    path = tmp_path / "runtime.yaml"
+    manifest = {
+        "schema_version": 2,
+        "frameworks": {
+            "vllm": {
+                "source_repo": "https://github.com/vllm-project/vllm.git",
+                "default": {
+                    "version": "0.25.0",
+                    "source_commit": "a" * 40,
+                    "images": {"default": "fixture/vllm@sha256:" + "b" * 64},
+                },
+                "families": {
+                    "kda": {
+                        "version": "0.1.dev19262",
+                        "images": {"default": "fixture/kda@sha256:" + "c" * 64},
+                    },
+                },
+            },
+        },
+    }
+    path.write_text(yaml.safe_dump(manifest))
+    return path
+
+
+@pytest.mark.parametrize("entry", [entry for entry in VLLM_REGISTRY if entry.op != "kda"], ids=lambda entry: entry.op)
+def test_explicit_vllm_025_runtime_resolves_all_collected_ops(entry, monkeypatch, explicit_vllm_025_manifest):
+    import hashlib
+
+    from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV
+
+    path = explicit_vllm_025_manifest
+    monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
+    monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
+    runtime = require_collector_runtime("vllm", "0.25.0", requested_ops={entry.op})
+    assert runtime.version == "0.25.0"
+    assert runtime.source_commit == "a" * 40
+
+
+def test_explicit_runtime_keeps_kda_on_preview(monkeypatch, explicit_vllm_025_manifest):
+    import hashlib
+
+    from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV
+
+    path = explicit_vllm_025_manifest
+    monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
+    monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
+    with pytest.raises(RuntimeError, match="0.1.dev19262"):
+        require_collector_runtime("vllm", "0.25.0", requested_ops={"kda"})
+
+
+@pytest.mark.parametrize("failure", ["missing_digest", "missing_path", "bad_digest", "changed_file"])
+def test_runtime_override_fails_closed(tmp_path, monkeypatch, failure, explicit_vllm_025_manifest):
+    import hashlib
+
+    from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV, load_manifest
+
+    path = explicit_vllm_025_manifest
+    monkeypatch.setenv(RUNTIME_MANIFEST_ENV, str(path))
+    monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, hashlib.sha256(path.read_bytes()).hexdigest())
+    if failure == "missing_digest":
+        monkeypatch.delenv(RUNTIME_MANIFEST_SHA256_ENV)
+    elif failure == "missing_path":
+        monkeypatch.delenv(RUNTIME_MANIFEST_ENV)
+    elif failure == "bad_digest":
+        monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, "0" * 64)
+    else:
+        path.write_text("tampered")
+    with pytest.raises(ValueError):
+        load_manifest()
+
+
+def test_explicit_nondefault_manifest_path_is_not_overridden(tmp_path, monkeypatch):
+    from collector.framework_manifest import RUNTIME_MANIFEST_ENV, RUNTIME_MANIFEST_SHA256_ENV
+
+    path = tmp_path / "explicit.yaml"
+    path.write_bytes((COLLECTOR_ROOT / "framework_manifest.yaml").read_bytes())
+    monkeypatch.setenv(RUNTIME_MANIFEST_ENV, "/missing/ambient/manifest")
+    monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, "0" * 64)
+    assert get_collector_runtime("vllm", path=path).version == "0.24.0"

@@ -41,8 +41,8 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#55-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
+| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#411-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -238,6 +238,7 @@ required result, keep the AIC command above.
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
 - [4.10 Prediction details](#410-inspect-prediction-details)
+- [4.11 Power and energy analysis (planned)](#411-power-and-energy-analysis)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -682,6 +683,112 @@ AIC's fixed-batch estimate. Its `time` section contains serving latency metrics.
 per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 [separate gaps](#detailed-diagnostics).
 
+<a id="power-and-energy-analysis"></a>
+<a id="54-power-and-energy-analysis"></a>
+
+### 4.11 Power and energy analysis
+
+**Migration status: planned.** Both summary power without `--detail` and an additional energy
+breakdown with `--detail energy` are required by the target workflow. The compatibility AIC
+commands below work today. The AISimulate commands show the intended migration: normal `predict`
+and `recommend` currently lack this modeled-power summary, and `predict --detail energy` is
+currently rejected. The supported `summary`, `memory`, and `time` details are described in
+[section 4.10](#410-inspect-prediction-details).
+
+#### 4.11.1 Summary power without energy details
+
+**Before — AIC includes power in its normal estimate summary:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128
+```
+
+**Result to inspect:** the terminal prints `Power (per GPU)` without a detail flag. It shows
+modeled watts when energy-data coverage qualifies, or `unavailable` when it does not.
+
+**After — planned normal AISimulate summary.** Reuse `prediction.yaml` from
+[section 3.1](#31-migrate-one-concrete-deployment) and `budget-search.yaml` from
+[section 3.2](#32-search-with-a-fixed-gpu-budget):
+
+```bash
+aisimulate predict --config prediction.yaml --output-dir ./power-summary
+
+aisimulate recommend --config budget-search.yaml --output-dir ./power-search
+```
+
+**Expected result after power integration:** the normal prediction summary and each displayed
+recommendation row always include `power_w` and `power_coverage` labels. Available watts are
+per GPU; coverage is displayed as a percentage. No `--detail` selector is required to calculate
+or display either summary value. JSON always includes both keys in the prediction summary and
+recommendation metrics for valid replay reports, using `null` for unavailable values under the
+publication gate below.
+
+#### 4.11.2 Summary power with an energy breakdown
+
+**Before — add energy detail to the same AIC estimate:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
+```
+
+**Result to inspect:** the normal power summary remains visible, followed by available phase
+and per-operation energy detail. Missing energy profiles can leave the detail section without
+measurable data.
+
+**After — planned AISimulate energy detail**, using the same `prediction.yaml`:
+
+```bash
+aisimulate predict --config prediction.yaml --detail energy \
+  --output-dir ./power-details
+```
+
+**Expected result after energy-detail integration:** the same summary power and coverage as the
+normal prediction, plus phase and per-operation energy evidence when available. The selector
+controls only the additional breakdown; it must not enable summary power or relax its coverage
+gate. Missing breakdown evidence must be identified as unavailable with a reason. For a selected
+recommendation, use its saved prediction YAML with `predict --detail energy`; this does not add
+a `--detail` flag to `recommend`.
+
+**Availability in both workflows.** The [modeled-power contract](../power-model.md) defines
+`power_w` as active forward-pass average watts per GPU and `power_coverage` as latency-weighted
+energy-data coverage. Human-readable summaries keep both labels visible in every availability
+state. The following values are synthetic examples of the contract, not captured output from
+the commands above:
+
+| Evidence state | CLI `power_w` | CLI `power_coverage` | JSON fields |
+| --- | --- | --- | --- |
+| Qualifying energy evidence | `450 W` | `90%` | `power_w: 450`, `power_coverage: 0.9` |
+| Measurable coverage below 90% | `unavailable` | `89%` | `power_w: null`, `power_coverage: 0.89` |
+| Energy-aware provider with no covered operations | `unavailable` | `0%` | `power_w: null`, `power_coverage: 0` |
+| Unsupported energy provider, topology, or a role without energy evidence | `unavailable` | `unavailable` | `power_w: null`, `power_coverage: null` |
+
+Unavailable values include a short reason, such as insufficient coverage or an unsupported
+provider. Zero coverage is valid only when the energy-aware path can establish it; an unsupported
+path must not fabricate `0%`. JSON always returns both keys, with numbers when available and
+`null` otherwise, never placeholder strings, `NaN`, or zero watts. These examples do not guarantee
+power coverage for the selected H200/model/backend combination.
+
+**What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
+forward passes. Their power values share the same meaning and coverage rule but need not be
+numerically equal for these different workloads. Both workflows must expose summary power
+independently of detail selection. This contract does not implement the runtime integration,
+qualify hardware accuracy, or add a power/energy optimization objective. Modeled GPU power is
+not whole-node or datacenter consumption.
+
+The unified EPD path can preserve limited encoder-power metadata in `predict --format json` and
+the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder energy data is
+available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
+is omitted. The normal terminal summary does not display these power fields. Recommendation
+artifacts can also retain this metadata for each candidate. These fields do not provide a power
+report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
+compatibility command or SDK when power is a required analysis result.
+
 ## 5. Remaining feature and performance gaps
 
 These gaps concern the unified `aisimulate predict` and `aisimulate recommend` commands. The
@@ -827,7 +934,7 @@ these additional diagnostic capabilities:
 | --- | --- |
 | Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
 | Per-operation data provenance and fallback information | `source`. |
-| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#54-power-and-energy-analysis). |
+| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#411-power-and-energy-analysis). |
 
 AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
 three supported sections. Available AIC sections depend on the estimate mode and data;
@@ -835,45 +942,11 @@ static-mode `--detail energy` can display `<no energy data>` when operation-ener
 absent. For specialized fixed-batch diagnostics, use the compatibility
 [static-estimate workflow](#531-static-estimates).
 
-<a id="power-and-energy-analysis"></a>
-
-### 5.4 Power and energy analysis
-
-AIC-style modeled power analysis remains available through the compatibility
-`aiconfigurator cli estimate` command and estimator SDK bundled with AISimulate. Unified
-`aisimulate predict` and `aisimulate recommend` do not provide an equivalent complete power report
-or power/energy optimization objective.
-
-For modeled power and per-operation energy of a decode pass, run:
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 \
-  --detail energy
-```
-
-**Result to inspect:** the terminal prints a `Power (per GPU)` summary and the per-operation energy
-section, which can show `<no measurable per-op data>` when energy profiles are missing.
-AIC reports `power_w` only when `power_coverage` reaches 90%;
-otherwise power is reported as unavailable. These are modeled GPU values and depend on energy-data
-coverage, rather than measurements of whole-node or datacenter consumption.
-
-The unified EPD path can preserve limited encoder-power metadata in `predict --format json` and
-the `summary` in `prediction.json`: `encoder_power_w` appears only when encoder energy data is
-available, alongside `encoder_power_coverage`. With no data, coverage is zero and the wattage field
-is omitted. The normal terminal summary does not display these power fields. Recommendation
-artifacts can also retain this metadata for each candidate. These fields do not provide a power
-report for the full encoder-plus-language deployment or replace AIC's power analysis. Use the
-compatibility command or SDK when power is a required analysis result.
-
 <a id="deployment-artifacts"></a>
 
-### 5.5 Deployment artifacts
+### 5.4 Deployment artifacts
 
-#### 5.5.1 Standalone `generate` command: not planned
+#### 5.4.1 Standalone `generate` command: not planned
 
 `aiconfigurator cli generate` is a fast shortcut for a basic deployment configuration without
 search or SLA optimization. We do not plan to add an equivalent standalone `aisimulate generate`
@@ -891,7 +964,7 @@ aiconfigurator cli generate \
 **Result to inspect:** `deployment/` contains a basic deployment configuration generated without
 search or SLA optimization.
 
-#### 5.5.2 Deployment files: not yet available in the AISimulate CLI
+#### 5.4.2 Deployment files: not yet available in the AISimulate CLI
 
 `aisimulate recommend` does not yet create deployment files, such as launch scripts or Kubernetes
 manifests. It saves the setups it recommends in `recommendations/*.yaml`. Pass one of these files
@@ -905,10 +978,10 @@ analytical EPD/AFD or heterogeneous P/D hardware.
 
 <a id="experiment-files-and-support-queries"></a>
 
-### 5.6 Experiment files and support queries
+### 5.5 Experiment files and support queries
 
 Existing named experiments still run with AIC. For a complete runnable input, save
-`legacy-search.yaml` from the [legacy search example](#58-legacy-search-domains-and-topology-coverage)
+`legacy-search.yaml` from the [legacy search example](#57-legacy-search-domains-and-topology-coverage)
 below, then run it and query model support:
 
 ```bash
@@ -923,7 +996,7 @@ alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
 
-### 5.7 Estimator controls and speculative decoding
+### 5.6 Estimator controls and speculative decoding
 
 Backend version and op-level/FPM selection have unified mappings. The following controls still
 require AIC or the estimator SDK.
@@ -1003,9 +1076,9 @@ The unified CLI has no speculative configuration.
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
-### 5.8 Legacy search domains and topology coverage
+### 5.7 Legacy search domains and topology coverage
 
-#### 5.8.1 Pipeline parallelism (PP)
+#### 5.7.1 Pipeline parallelism (PP)
 
 **Keep PP-dependent workflows on the AIC compatibility CLI.**
 AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
@@ -1044,7 +1117,7 @@ aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./legacy-search
 including feasible TP/PP configurations and their latency/throughput. This example requests PP=1/2
 and pins CP=1.
 
-#### 5.8.2 Context parallelism (CP)
+#### 5.7.2 Context parallelism (CP)
 
 **The unified AISimulate CLI has no CP configuration field.** AIC exposes per-role
 `agg_cp_candidates`, `prefill_cp_candidates`, and `decode_cp_candidates`. CP>1 support depends on
@@ -1052,7 +1125,7 @@ the model family and backend; the dense-model PP example above does not establis
 Keep supported CP workflows on AIC. See
 [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
 
-#### 5.8.3 GPUs per worker and parallelism search domains
+#### 5.7.3 GPUs per worker and parallelism search domains
 
 **AISimulate's default preset does not reproduce every AIC parallelism domain.** AIC's
 `*_num_gpu_candidates` lists explicit GPU counts per worker. AISimulate's default preset uses
@@ -1060,7 +1133,7 @@ Keep supported CP workflows on AIC. See
 Explicit supported parallelism configurations are a separate path. Keep AIC when you need its
 exact candidate domain; see the [default search projection](../sweeper/architecture.md#parallelism-search-projection).
 
-#### 5.8.4 Fixed batch sizes and capacity sweeps
+#### 5.7.4 Fixed batch sizes and capacity sweeps
 
 **AIC batch size has no direct mapping to regular AISimulate serving batches.** AIC can estimate
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
@@ -1069,21 +1142,21 @@ form batches from the workload: `traffic.load.concurrency` controls in-flight re
 Fixed-batch static modes are [intentionally not migrated](#531-static-estimates). Keep AIC for
 those diagnostics or its original capacity-sweep behavior.
 
-#### 5.8.5 Context and request-length sweeps
+#### 5.7.5 Context and request-length sweeps
 
 **Context length and synthetic request lengths stay fixed within one unified-CLI search.**
 `engine.context_length`, `traffic.source.input_tokens`, and `traffic.source.output_tokens` do not
 accept recommendation domains. Use separate AISimulate configurations to compare lengths, or
 keep AIC `exp` for existing named experiments with different ISL, OSL, and context limits.
 
-#### 5.8.6 Exhaustive search and legacy ranking
+#### 5.7.6 Exhaustive search and legacy ranking
 
 **AISimulate recommendation does not guarantee exhaustive coverage of a search domain.**
 Its Bayesian and random optimizers sample within `optimizer.max_trials`; increasing the budget
 does not guarantee every valid configuration is evaluated. Keep AIC when you need its enumerated
 capacity sweep and ranking semantics.
 
-#### 5.8.7 Model, backend, and topology combinations
+#### 5.7.7 Model, backend, and topology combinations
 
 **Support for one model/backend does not imply support for every topology.** Check the specific
 feature's restrictions before migrating:
