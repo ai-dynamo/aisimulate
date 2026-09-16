@@ -7,21 +7,25 @@
 //! Request, event, and measurement records use the ABI crate's fixed-layout
 //! data-plane records.
 
+use std::collections::HashMap;
 use std::ffi::c_char;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use aiperf_steppable_abi::{
-    ByteSliceV1, CAPABILITY_COMPACT_REQUEST_V1, CompactRequestV1, CreateRequestV1,
-    DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1, EngineEventV1, PluginDescriptorV1,
-    PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION, REQUEST_FACT_FLAG_LATENCIES,
+    ByteSliceV1, CAPABILITY_COMPACT_BUFFER_LEASES_V1, CAPABILITY_COMPACT_REQUEST_V1,
+    CompactRequestV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
+    EngineEventV1, HashBufferIdV1, HashBufferLeaseCallbacksV1, HashBufferRangeV1,
+    PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION, REQUEST_FACT_FLAG_LATENCIES,
     REQUEST_FACT_FLAG_OUTPUT_LENGTH, REQUEST_FLAG_UUID, ReplayHandleV1, ReplayStateV1,
     RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
     SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
     StepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
-    CompactDirectRequest, DynPlacement, SteppableAgg, SteppableDisagg, SteppableEngine,
-    SteppableReplay,
+    CompactDirectRequest, CompactHashIdsLease, DynPlacement, SteppableAgg, SteppableDisagg,
+    SteppableEngine, SteppableReplay,
 };
 use aisimulate_core::replay::{
     DirectRequest, DynamicKvEventObservation, DynamicPlacementConfig, DynamicPlacementMetadata,
@@ -188,6 +192,56 @@ const PROVIDER_ID: &[u8] = b"aisimulate\0";
 struct BackendReplay {
     engine: Box<dyn SteppableReplay>,
     last_error: String,
+    lease_callbacks: Option<HashBufferLeaseCallbacksV1>,
+    hash_buffers: HashMap<HashBufferIdV1, RegisteredHashBuffer>,
+    next_hash_buffer_id: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RegisteredHashBuffer {
+    data: *const u32,
+    len: usize,
+}
+
+/// Safe core-facing owner for one validated host buffer range. The FFI pointer
+/// never escapes this plugin: core sees only the `CompactHashIdsLease` trait.
+#[derive(Debug)]
+struct HostHashBufferLease {
+    data: *const u32,
+    len: usize,
+    buffer_id: HashBufferIdV1,
+    callbacks: HashBufferLeaseCallbacksV1,
+    accepted: AtomicBool,
+}
+
+impl CompactHashIdsLease for HostHashBufferLease {
+    fn hash_ids(&self) -> &[u32] {
+        // Safety: range validation happened before this owner was constructed.
+        // The creation callback contract keeps the immutable host buffer alive
+        // until this owner is dropped after terminal, cancellation, or replay
+        // destruction.
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    fn on_accepted(&self) {
+        self.accepted.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for HostHashBufferLease {
+    fn drop(&mut self) {
+        if !self.accepted.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let release = self
+            .callbacks
+            .release_hash_buffer
+            .expect("lease creation validated the release callback");
+        // Safety: the ABI requires this validated host callback not to panic
+        // or re-enter the plugin. A lease has one final owner, so this is its
+        // sole release call.
+        unsafe { release(self.callbacks.context, self.buffer_id) };
+    }
 }
 
 fn allocated_bytes(value: String) -> ByteSliceV1 {
@@ -257,12 +311,38 @@ unsafe fn compact_request(request: CompactRequestV1) -> Result<CompactDirectRequ
         return Err(StatusV1::INVALID_ARGUMENT);
     }
     let hash_ids = unsafe { borrowed_tokens(request.hash_ids) }?.to_vec();
-    Ok(CompactDirectRequest {
-        request: direct,
-        input_token_count: request.input_token_count as usize,
-        trace_block_size: request.trace_block_size as usize,
+    Ok(CompactDirectRequest::owned(
+        direct,
+        request.input_token_count as usize,
+        request.trace_block_size as usize,
         hash_ids,
-    })
+    ))
+}
+
+unsafe fn compact_request_from_hash_buffer_range(
+    request: CompactRequestV1,
+    lease: Arc<dyn CompactHashIdsLease>,
+) -> Result<CompactDirectRequest, StatusV1> {
+    if request.struct_size as usize != std::mem::size_of::<CompactRequestV1>()
+        || request.flags != 0
+        || request.reserved != 0
+        || request.input_token_count > usize::MAX as u64
+        || request.trace_block_size == 0
+        || request.hash_ids.len != 0
+        || !request.hash_ids.data.is_null()
+    {
+        return Err(StatusV1::INVALID_ARGUMENT);
+    }
+    let direct = unsafe { direct_request(request.request) }?;
+    if !direct.tokens.is_empty() {
+        return Err(StatusV1::INVALID_ARGUMENT);
+    }
+    Ok(CompactDirectRequest::leased(
+        direct,
+        request.input_token_count as usize,
+        request.trace_block_size as usize,
+        lease,
+    ))
 }
 
 unsafe extern "C" fn create(
@@ -400,6 +480,9 @@ unsafe extern "C" fn create(
             let replay = Box::new(BackendReplay {
                 engine,
                 last_error: String::new(),
+                lease_callbacks: None,
+                hash_buffers: HashMap::new(),
+                next_hash_buffer_id: 1,
             });
             // Safety: validated non-null output pointer.
             unsafe { *handle = ReplayHandleV1(Box::into_raw(replay).cast()) };
@@ -408,6 +491,129 @@ unsafe extern "C" fn create(
         Err(build_error) => {
             // Safety: validated non-null output pointer.
             unsafe { *error = allocated_bytes(build_error.to_string()) };
+            StatusV1::REJECTED
+        }
+    }
+}
+
+unsafe extern "C" fn create_with_hash_buffer_leases(
+    request: CreateRequestV1,
+    callbacks: HashBufferLeaseCallbacksV1,
+    handle: *mut ReplayHandleV1,
+    error: *mut ByteSliceV1,
+) -> StatusV1 {
+    if !callbacks.has_release_callback() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Safety: forwarded to the base creator, which validates and initializes
+    // the output pointers before allocating a replay.
+    let status = unsafe { create(request, handle, error) };
+    if status != StatusV1::OK {
+        return status;
+    }
+    // Safety: `create` returned a non-null replay handle on success.
+    let replay = match unsafe { backend_mut(*handle) } {
+        Ok(replay) => replay,
+        Err(_) => return StatusV1::INTERNAL,
+    };
+    replay.lease_callbacks = Some(callbacks);
+    StatusV1::OK
+}
+
+unsafe extern "C" fn register_hash_buffer(
+    handle: ReplayHandleV1,
+    hash_ids: U32SliceV1,
+    buffer_id: *mut HashBufferIdV1,
+) -> StatusV1 {
+    if buffer_id.is_null()
+        || hash_ids.len == 0
+        || hash_ids.len > usize::MAX as u64
+        || hash_ids.data.is_null()
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    if replay.lease_callbacks.is_none() {
+        return StatusV1::UNSUPPORTED;
+    }
+    let Some(next) = replay.next_hash_buffer_id.checked_add(1) else {
+        replay.last_error = "compact hash-buffer identifier space exhausted".to_owned();
+        return StatusV1::REJECTED;
+    };
+    let registered = HashBufferIdV1(replay.next_hash_buffer_id);
+    replay.next_hash_buffer_id = next;
+    replay.hash_buffers.insert(
+        registered,
+        RegisteredHashBuffer {
+            data: hash_ids.data,
+            len: hash_ids.len as usize,
+        },
+    );
+    // Safety: validated non-null output pointer.
+    unsafe { *buffer_id = registered };
+    StatusV1::OK
+}
+
+unsafe extern "C" fn submit_compact_hash_buffer_range(
+    handle: ReplayHandleV1,
+    request: CompactRequestV1,
+    range: HashBufferRangeV1,
+    request_id: *mut RequestIdV1,
+) -> StatusV1 {
+    if request_id.is_null()
+        || !range.is_valid()
+        || range.offset > usize::MAX as u64
+        || range.len > usize::MAX as u64
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    if replay.lease_callbacks.is_none() {
+        return StatusV1::UNSUPPORTED;
+    }
+    let Some(buffer) = replay.hash_buffers.get(&range.buffer_id).copied() else {
+        return StatusV1::INVALID_ARGUMENT;
+    };
+    let offset = range.offset as usize;
+    let len = range.len as usize;
+    let Some(end) = offset.checked_add(len) else {
+        return StatusV1::INVALID_ARGUMENT;
+    };
+    if end > buffer.len {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Safety: `offset..end` was proven to lie in the immutable registered
+    // host range. Its raw representation stays inside this FFI adapter; core
+    // receives an `Arc` lifecycle owner instead.
+    let data = unsafe { buffer.data.add(offset) };
+    let callbacks = replay
+        .lease_callbacks
+        .expect("lease-enabled replay checked callbacks above");
+    let lease: Arc<dyn CompactHashIdsLease> = Arc::new(HostHashBufferLease {
+        data,
+        len,
+        buffer_id: range.buffer_id,
+        callbacks,
+        accepted: AtomicBool::new(false),
+    });
+    let request = match unsafe { compact_request_from_hash_buffer_range(request, lease) } {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match replay.engine.submit_compact(request) {
+        Ok(uuid) => {
+            // Safety: validated non-null output pointer.
+            unsafe { *request_id = *uuid.as_bytes() };
+            StatusV1::OK
+        }
+        Err(error) => {
+            replay.last_error = error.to_string();
             StatusV1::REJECTED
         }
     }
@@ -945,6 +1151,9 @@ static VTABLE: PluginVTableV1 = PluginVTableV1 {
     last_error: Some(last_error),
     destroy: Some(destroy),
     submit_compact: Some(submit_compact),
+    create_with_hash_buffer_leases: Some(create_with_hash_buffer_leases),
+    register_hash_buffer: Some(register_hash_buffer),
+    submit_compact_hash_buffer_range: Some(submit_compact_hash_buffer_range),
 };
 
 static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
@@ -952,7 +1161,7 @@ static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
     abi_minor: 0,
     struct_size: std::mem::size_of::<PluginDescriptorV1>() as u32,
     flags: 0,
-    capabilities: CAPABILITY_COMPACT_REQUEST_V1,
+    capabilities: CAPABILITY_COMPACT_REQUEST_V1 | CAPABILITY_COMPACT_BUFFER_LEASES_V1,
     provider_id: PROVIDER_ID.as_ptr().cast::<c_char>(),
     vtable: &VTABLE,
 };

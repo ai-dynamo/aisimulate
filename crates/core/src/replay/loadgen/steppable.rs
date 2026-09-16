@@ -35,7 +35,8 @@
 //! batch composition must submit its known same-timestamp arrivals before it
 //! advances the steppable runtime.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -48,7 +49,8 @@ use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundR
 use crate::replay::core::{PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleFactory};
-use crate::replay::loadgen::ReplayRequestPayload;
+use crate::replay::loadgen::types::CompactHashIds;
+use crate::replay::loadgen::{CompactHashIdsLease, ReplayRequestPayload};
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{
     OfflineDisaggReplayConfig, ReplayCaptureOptions, ReplayReport, ReplayTerminalStatus,
@@ -112,7 +114,7 @@ pub struct StepOutcome {
 /// A full-prompt request in the compact representation emitted by the legacy
 /// trace compiler. `hash_ids` contains one canonical identity per trace block;
 /// token IDs are synthesized only when a worker admits the request.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CompactDirectRequest {
     /// Request metadata. Its `tokens` field must be empty.
     pub request: DirectRequest,
@@ -121,11 +123,49 @@ pub struct CompactDirectRequest {
     /// Tokens represented by each element of `hash_ids`.
     pub trace_block_size: usize,
     /// Canonical trace-block identities.
-    pub hash_ids: Vec<u32>,
+    hash_ids: CompactHashIds,
 }
 
 impl CompactDirectRequest {
-    fn into_payload(self) -> anyhow::Result<ReplayRequestPayload> {
+    /// Creates a compact request that owns its hash IDs, preserving the
+    /// copied V1 compact-submission route.
+    pub fn owned(
+        request: DirectRequest,
+        input_token_count: usize,
+        trace_block_size: usize,
+        hash_ids: Vec<u32>,
+    ) -> Self {
+        Self {
+            request,
+            input_token_count,
+            trace_block_size,
+            hash_ids: hash_ids.into(),
+        }
+    }
+
+    /// Creates a compact request backed by a provider-owned lifecycle lease.
+    ///
+    /// The replay retains this lease until the request reaches a terminal
+    /// state, is cancelled, or the replay is destroyed. This is the no-copy
+    /// route for providers that can expose their compact IDs through a safe
+    /// owner, such as an `Arc`-backed Dynamo request bundle.
+    pub fn leased(
+        request: DirectRequest,
+        input_token_count: usize,
+        trace_block_size: usize,
+        hash_ids: Arc<dyn CompactHashIdsLease>,
+    ) -> Self {
+        Self {
+            request,
+            input_token_count,
+            trace_block_size,
+            hash_ids: CompactHashIds::Leased(hash_ids),
+        }
+    }
+
+    fn into_payload(
+        self,
+    ) -> anyhow::Result<(ReplayRequestPayload, Option<Arc<dyn CompactHashIdsLease>>)> {
         anyhow::ensure!(
             self.request.tokens.is_empty(),
             "compact request must not include raw tokens"
@@ -136,17 +176,21 @@ impl CompactDirectRequest {
         );
         let expected_blocks = self.input_token_count.div_ceil(self.trace_block_size);
         anyhow::ensure!(
-            self.hash_ids.len() == expected_blocks,
+            self.hash_ids.as_slice().len() == expected_blocks,
             "compact request has {} hash ids for {} tokens at trace block size {}; expected {expected_blocks}",
-            self.hash_ids.len(),
+            self.hash_ids.as_slice().len(),
             self.input_token_count,
             self.trace_block_size,
         );
-        Ok(ReplayRequestPayload::deferred(
-            self.request,
-            self.input_token_count,
-            self.hash_ids,
-            self.trace_block_size,
+        let retained_lease = self.hash_ids.retained_lease();
+        Ok((
+            ReplayRequestPayload::deferred(
+                self.request,
+                self.input_token_count,
+                self.hash_ids,
+                self.trace_block_size,
+            ),
+            retained_lease,
         ))
     }
 }
@@ -265,11 +309,21 @@ fn steppable_mode() -> ReplayMode {
 #[derive(Default)]
 struct LiveRequests {
     uuids: HashSet<Uuid>,
+    compact_leases: HashMap<Uuid, Arc<dyn CompactHashIdsLease>>,
 }
 
 impl LiveRequests {
-    fn insert(&mut self, uuid: Uuid) {
+    fn insert(&mut self, uuid: Uuid, compact_lease: Option<Arc<dyn CompactHashIdsLease>>) {
         self.uuids.insert(uuid);
+        if let Some(compact_lease) = compact_lease {
+            compact_lease.on_accepted();
+            self.compact_leases.insert(uuid, compact_lease);
+        }
+    }
+
+    fn remove(&mut self, uuid: Uuid) {
+        self.uuids.remove(&uuid);
+        self.compact_leases.remove(&uuid);
     }
 
     fn contains(&self, uuid: Uuid) -> bool {
@@ -480,7 +534,7 @@ where
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
         let uuid = self.runtime.submit_dynamic(request)?;
-        self.live.insert(uuid);
+        self.live.insert(uuid, None);
         Ok(uuid)
     }
 
@@ -495,10 +549,11 @@ where
         {
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
+        let (payload, compact_lease) = request.into_payload()?;
         let uuid = self
             .runtime
-            .submit_dynamic_compact(request.into_payload()?, self.engine_block_size)?;
-        self.live.insert(uuid);
+            .submit_dynamic_compact(payload, self.engine_block_size)?;
+        self.live.insert(uuid, compact_lease);
         Ok(uuid)
     }
 
@@ -506,7 +561,7 @@ where
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
             self.runtime.discard_step_terminal(uuid);
-            self.live.uuids.remove(&uuid);
+            self.live.remove(uuid);
         }
         Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
     }
@@ -519,7 +574,7 @@ where
             .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
             .collect::<Vec<_>>();
         for (uuid, status) in self.runtime.take_step_terminals() {
-            self.live.uuids.remove(&uuid);
+            self.live.remove(uuid);
             events.push(EngineEvent::terminal(uuid, status));
         }
         Ok(StepOutcome { end_ms, events })
@@ -850,7 +905,7 @@ where
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
         let uuid = self.runtime.submit_dynamic(request)?;
-        self.live.insert(uuid);
+        self.live.insert(uuid, None);
         Ok(uuid)
     }
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
@@ -864,17 +919,18 @@ where
         {
             anyhow::bail!("steppable replay request {uuid} is already retained");
         }
+        let (payload, compact_lease) = request.into_payload()?;
         let uuid = self
             .runtime
-            .submit_dynamic_compact(request.into_payload()?, self.engine_block_size)?;
-        self.live.insert(uuid);
+            .submit_dynamic_compact(payload, self.engine_block_size)?;
+        self.live.insert(uuid, compact_lease);
         Ok(uuid)
     }
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
             self.runtime.discard_step_terminal(uuid);
-            self.live.uuids.remove(&uuid);
+            self.live.remove(uuid);
         }
         Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
     }
@@ -887,7 +943,7 @@ where
             .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
             .collect::<Vec<_>>();
         for (uuid, status) in self.runtime.take_step_terminals() {
-            self.live.uuids.remove(&uuid);
+            self.live.remove(uuid);
             events.push(EngineEvent::terminal(uuid, status));
         }
         Ok(StepOutcome { end_ms, events })
@@ -1215,7 +1271,7 @@ mod tests {
                 },
                 input_token_count: 32,
                 trace_block_size: 16,
-                hash_ids: vec![11, 12],
+                hash_ids: vec![11, 12].into(),
             })
             .expect("compact request submits");
 

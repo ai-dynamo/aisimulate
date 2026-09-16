@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -547,6 +548,60 @@ pub struct ReadyTurn {
 /// block. Offline replay keeps this compact form while an aggregated or
 /// prefill router queues the request and materializes tokens only when a
 /// worker admits it.
+/// Safely exposes compact trace-block IDs whose backing storage is retained
+/// until the last owner drops it.
+///
+/// The steppable runtime retains an [`Arc`] of this lease for every accepted
+/// compact request and drops it on terminal completion, cancellation, or
+/// replay destruction. Providers can therefore couple their own release
+/// action to [`Drop`] without exposing a raw pointer or an unsafe lifetime to
+/// the replay core.
+pub trait CompactHashIdsLease: std::fmt::Debug {
+    /// Immutable canonical trace-block IDs for one compact request.
+    fn hash_ids(&self) -> &[u32];
+
+    /// Records that the replay accepted this lease.
+    ///
+    /// A provider with a release action can use this hook to distinguish a
+    /// rejected submission from a retained request. The default is sufficient
+    /// for ordinary `Arc`-backed providers.
+    fn on_accepted(&self) {}
+}
+
+/// Compact trace-block IDs retained by a deferred replay request.
+///
+/// The owned form preserves the historical compact-submission path. A leased
+/// form keeps a provider-owned safe lifecycle guard alive while the replay may
+/// still need to materialize the prompt.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum CompactHashIds {
+    Owned(Vec<u32>),
+    Leased(Arc<dyn CompactHashIdsLease>),
+}
+
+impl CompactHashIds {
+    pub(crate) fn as_slice(&self) -> &[u32] {
+        match self {
+            Self::Owned(ids) => ids,
+            Self::Leased(lease) => lease.hash_ids(),
+        }
+    }
+
+    pub(crate) fn retained_lease(&self) -> Option<Arc<dyn CompactHashIdsLease>> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Leased(lease) => Some(Arc::clone(lease)),
+        }
+    }
+}
+
+impl From<Vec<u32>> for CompactHashIds {
+    fn from(value: Vec<u32>) -> Self {
+        Self::Owned(value)
+    }
+}
+
 #[doc(hidden)]
 #[derive(Debug)]
 pub enum ReplayRequestPayload {
@@ -554,7 +609,7 @@ pub enum ReplayRequestPayload {
     Deferred {
         request_metadata: DirectRequest,
         input_length: usize,
-        hash_ids: Vec<u32>,
+        hash_ids: CompactHashIds,
         trace_block_size: usize,
     },
 }
@@ -564,17 +619,17 @@ impl ReplayRequestPayload {
         Self::Materialized(request)
     }
 
-    pub fn deferred(
+    pub(crate) fn deferred(
         request_metadata: DirectRequest,
         input_length: usize,
-        hash_ids: Vec<u32>,
+        hash_ids: impl Into<CompactHashIds>,
         trace_block_size: usize,
     ) -> Self {
         debug_assert!(request_metadata.tokens.is_empty());
         Self::Deferred {
             request_metadata,
             input_length,
-            hash_ids,
+            hash_ids: hash_ids.into(),
             trace_block_size,
         }
     }
@@ -626,7 +681,11 @@ impl ReplayRequestPayload {
                 hash_ids,
                 trace_block_size,
                 ..
-            } => synthesize_validated_trace_tokens(*input_length, hash_ids, *trace_block_size),
+            } => synthesize_validated_trace_tokens(
+                *input_length,
+                hash_ids.as_slice(),
+                *trace_block_size,
+            ),
         }
     }
 
@@ -642,7 +701,7 @@ impl ReplayRequestPayload {
                 ..
             } => ReplayRequestHashes::from_trace_blocks(
                 *input_length,
-                hash_ids,
+                hash_ids.as_slice(),
                 *trace_block_size,
                 engine_block_size,
             ),
@@ -658,8 +717,11 @@ impl ReplayRequestPayload {
                 hash_ids,
                 trace_block_size,
             } => {
-                request_metadata.tokens =
-                    synthesize_validated_trace_tokens(input_length, &hash_ids, trace_block_size);
+                request_metadata.tokens = synthesize_validated_trace_tokens(
+                    input_length,
+                    hash_ids.as_slice(),
+                    trace_block_size,
+                );
                 request_metadata
             }
         }
