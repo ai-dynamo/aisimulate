@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import OrderedDict
 from pathlib import Path
@@ -550,6 +551,10 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
             calls.append(("json", ops_json, kwargs))
             return entries
 
+        def evaluate_context_attention_kernels_json(self, ops_json, **kwargs):
+            calls.append(("attention_kernels", ops_json, kwargs))
+            return entries
+
         def last_provenance(self):
             return None
 
@@ -594,6 +599,40 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
         ops_json,
         {"is_context": True, "batch_size": 3, "s": 32, "prefix": 0, "imbalance_correction_scale": 1.0, "x": None},
     )
+
+    result = rust_engine_step.evaluate_context_attention_kernels_with_rust(
+        model,
+        database,
+        ops_json=ops_json,
+        batch_size=6,
+        s=280,
+        imbalance_correction_scale=0.0,
+        visual_block_upper_triangle=True,
+    )
+    assert result is entries
+    assert calls[3] == (
+        "attention_kernels",
+        ops_json,
+        {"batch_size": 6, "s": 280, "imbalance_correction_scale": 0.0, "visual_block_upper_triangle": True},
+    )
+
+
+@pytest.mark.parametrize("tier", [None, "silicon", "xop"])
+def test_attention_kernel_helper_forwards_provenance(monkeypatch, tier) -> None:
+    from aiconfigurator.sdk.operations import util_empirical
+
+    handle = SimpleNamespace(
+        evaluate_context_attention_kernels_json=lambda *args, **kwargs: [],
+        last_provenance=lambda: tier,
+    )
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda model, database: handle)
+
+    with util_empirical.capture_provenance() as tags:
+        rust_engine_step.evaluate_context_attention_kernels_with_rust(
+            object(), object(), ops_json="[]", batch_size=1, s=280
+        )
+
+    assert tags == ({"xop"} if tier == "xop" else set())
 
 
 def test_rust_provenance_tier_forwarded_into_python_capture(monkeypatch) -> None:
@@ -767,6 +806,176 @@ def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
     assert model.get_min_correction_factor() is None
 
 
+def test_forward_pass_perf_model_constructors_forward_exact_worker_type(monkeypatch) -> None:
+    """Regression-capable constructors preserve the engine-level role and
+    reject aliases before crossing the extension boundary."""
+    import aiconfigurator_core
+
+    calls: list[tuple[str, object, object, object | None]] = []
+
+    class _FakeRawModel:
+        @staticmethod
+        def from_regression(worker_type, options_json=None):
+            calls.append(("from_regression", worker_type, options_json, None))
+            return object()
+
+        @staticmethod
+        def best_available(config_json, worker_type, options_json=None):
+            calls.append(("best_available", json.loads(config_json), worker_type, options_json))
+            return object()
+
+    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
+    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
+
+    for worker_type in ("prefill", "decode", "aggregated"):
+        rust_engine_step.RustForwardPassPerfModel.from_regression(
+            worker_type,
+            {"min_observations": 2},
+        )
+    rust_engine_step.RustForwardPassPerfModel.best_available(
+        {"schema_version": 1},
+        "aggregated",
+        {"min_observations": 3},
+    )
+
+    assert calls[:3] == [
+        ("from_regression", "prefill", '{"min_observations":2}', None),
+        ("from_regression", "decode", '{"min_observations":2}', None),
+        ("from_regression", "aggregated", '{"min_observations":2}', None),
+    ]
+    assert calls[3] == (
+        "best_available",
+        {"schema_version": 1},
+        "aggregated",
+        '{"min_observations":3}',
+    )
+
+    for invalid in ("agg", "Prefill", ""):
+        with pytest.raises(ValueError, match="invalid worker_type"):
+            rust_engine_step.RustForwardPassPerfModel.from_regression(invalid)
+        with pytest.raises(ValueError, match="invalid worker_type"):
+            rust_engine_step.RustForwardPassPerfModel.best_available({}, invalid)
+
+
+def test_forward_pass_perf_model_constructors_forward_all_regression_weights(monkeypatch) -> None:
+    """The facade preserves every public regression knob by its wire name."""
+    import aiconfigurator_core
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeRawModel:
+        @staticmethod
+        def from_regression(worker_type, options_json=None):
+            calls.append((worker_type, json.loads(options_json)))
+            return object()
+
+        @staticmethod
+        def best_available(config_json, worker_type, options_json=None):
+            calls.append((worker_type, json.loads(options_json)))
+            return object()
+
+    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
+    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
+    options = {
+        "regression_attention_kv_weight": 2.0,
+        "regression_prefill_attention_pair_weight": 3.0,
+        "regression_ffn_token_weight": 4.0,
+    }
+
+    rust_engine_step.RustForwardPassPerfModel.from_regression("aggregated", options)
+    rust_engine_step.RustForwardPassPerfModel.best_available({}, "decode", options)
+
+    assert calls == [("aggregated", options), ("decode", options)]
+
+
+def test_forward_pass_perf_model_marshals_nonfinite_weights_as_valid_json_without_mutation(
+    monkeypatch,
+) -> None:
+    """The ergonomic facade owns the float-to-sentinel transport, not its caller."""
+    import aiconfigurator_core
+
+    calls: list[str] = []
+
+    class _FakeRawModel:
+        @staticmethod
+        def from_native(config_json, options_json=None):
+            calls.append(options_json)
+            return object()
+
+        @staticmethod
+        def from_regression(worker_type, options_json=None):
+            calls.append(options_json)
+            return object()
+
+        @staticmethod
+        def best_available(config_json, worker_type, options_json=None):
+            calls.append(options_json)
+            return object()
+
+    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
+    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
+    options = {
+        "regression_attention_kv_weight": float("nan"),
+        "regression_prefill_attention_pair_weight": float("inf"),
+        "regression_ffn_token_weight": float("-inf"),
+    }
+
+    rust_engine_step.RustForwardPassPerfModel.from_native({}, options)
+    rust_engine_step.RustForwardPassPerfModel.from_regression("aggregated", options)
+    rust_engine_step.RustForwardPassPerfModel.best_available({}, "decode", options)
+
+    expected = (
+        '{"regression_attention_kv_weight":"NaN",'
+        '"regression_ffn_token_weight":"-Infinity",'
+        '"regression_prefill_attention_pair_weight":"Infinity"}'
+    )
+    assert calls == [expected, expected, expected]
+    assert math.isnan(options["regression_attention_kv_weight"])
+    assert options["regression_prefill_attention_pair_weight"] == math.inf
+    assert options["regression_ffn_token_weight"] == -math.inf
+
+
+def _supported_fpm_config() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "model_name": "Qwen/Qwen3-32B",
+        "system_name": "h200_sxm",
+        "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
+        "tp_size": 4,
+        "pp_size": 1,
+        "moe_tp_size": None,
+        "moe_ep_size": None,
+        "attention_dp_size": 1,
+        "weight_dtype": None,
+        "moe_dtype": None,
+        "activation_dtype": None,
+        "kv_cache_dtype": None,
+        "kv_block_size": None,
+        "nextn": None,
+        "extra": {},
+    }
+
+
+def _unsupported_fpm_config() -> dict[str, object]:
+    config = _supported_fpm_config()
+    config["model_name"] = "this/model-does-not-exist-xyz"
+    config["tp_size"] = 1
+    return config
+
+
+def _supported_fpm_validation_config() -> dict[str, object]:
+    """Use the current b200/vLLM slot present in the focused test checkout."""
+    config = _supported_fpm_config()
+    config.update(
+        system_name="b200_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        tp_size=1,
+    )
+    return config
+
+
 @pytest.mark.integration
 def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     """Issue #1522: the exact deployed MoE key must estimate successfully."""
@@ -847,25 +1056,7 @@ def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() 
     pytest.importorskip("aiconfigurator_core")
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    config = {
-        "schema_version": 1,
-        "model_name": "Qwen/Qwen3-32B",
-        "system_name": "h200_sxm",
-        "backend": "trtllm",
-        "backend_version": "1.3.0rc20",
-        "tp_size": 4,
-        "pp_size": 1,
-        "moe_tp_size": None,
-        "moe_ep_size": None,
-        "attention_dp_size": 1,
-        "weight_dtype": None,
-        "moe_dtype": None,
-        "activation_dtype": None,
-        "kv_cache_dtype": None,
-        "kv_block_size": None,
-        "nextn": None,
-        "extra": {},
-    }
+    config = _supported_fpm_config()
     model = RustForwardPassPerfModel.from_native(
         config,
         {
@@ -948,29 +1139,163 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
     pytest.importorskip("aiconfigurator_core")
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    config = {
-        "schema_version": 1,
-        "model_name": "this/model-does-not-exist-xyz",
-        "system_name": "h200_sxm",
-        "backend": "trtllm",
-        "backend_version": "1.3.0rc20",
-        "tp_size": 1,
-        "pp_size": 1,
-        "moe_tp_size": None,
-        "moe_ep_size": None,
-        "attention_dp_size": 1,
-        "weight_dtype": None,
-        "moe_dtype": None,
-        "activation_dtype": None,
-        "kv_cache_dtype": None,
-        "kv_block_size": None,
-        "nextn": None,
-        "extra": {},
-    }
-    model = RustForwardPassPerfModel.best_available(config, {"min_observations": 2})
+    config = _unsupported_fpm_config()
+    model = RustForwardPassPerfModel.best_available(
+        config,
+        "aggregated",
+        {"min_observations": 2},
+    )
     diag = model.diagnostics()
     assert diag["source"] == "fallback_regression"
     assert diag["last_warning"] is not None
+
+    decode_fpm = {
+        "version": 1,
+        "scheduled_requests": {
+            "num_decode_requests": 2,
+            "sum_decode_kv_tokens": 1024,
+        },
+    }
+    assert model.estimate_forward_pass_time_ms(decode_fpm) is None
+
+    prefill_model = RustForwardPassPerfModel.best_available(
+        config,
+        "prefill",
+        {"min_observations": 2},
+    )
+    with pytest.raises(ValueError, match="prefill regression worker received scheduled decode work"):
+        prefill_model.estimate_forward_pass_time_ms(decode_fpm)
+
+
+@pytest.mark.integration
+def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> None:
+    """Malformed system specs are native-data failures, not hard config errors."""
+    pytest.importorskip("aiconfigurator_core")
+    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    (systems_root / "broken.yaml").write_text("data_dir: [", encoding="utf-8")
+    config = _supported_fpm_config()
+    config.update(system_name="broken", systems_path=str(systems_root))
+
+    model = RustForwardPassPerfModel.best_available(config, "aggregated")
+    diagnostics = model.diagnostics()
+
+    assert diagnostics["source"] == "fallback_regression"
+    assert "YAML error" in diagnostics["last_warning"]
+
+
+@pytest.mark.integration
+def test_malformed_performance_yaml_remains_a_perf_database_failure(tmp_path: Path) -> None:
+    """Performance-side YAML keeps its typed error and remains fallback-safe."""
+    pytest.importorskip("aiconfigurator_core")
+    from aiconfigurator.sdk.errors import PerfDataNotAvailableError
+    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    (systems_root / "synthetic.yaml").write_text(
+        "data_dir: data\n"
+        "gpu:\n  mem_bw: 1000000000000\n"
+        "node:\n"
+        "  num_gpus_per_node: 8\n"
+        "  inter_node_bw: 100000000000\n"
+        "  intra_node_bw: 900000000000\n",
+        encoding="utf-8",
+    )
+    (systems_root / "data/gemm/trtllm/1.3.0rc20").mkdir(parents=True)
+    (systems_root / "perf_data_reuse_manifest.yaml").write_text("groups: [", encoding="utf-8")
+    config = _supported_fpm_config()
+    config.update(system_name="synthetic", systems_path=str(systems_root))
+
+    with pytest.raises(PerfDataNotAvailableError, match="perf database error"):
+        RustForwardPassPerfModel.from_native(config)
+
+    model = RustForwardPassPerfModel.best_available(config, "aggregated")
+    diagnostics = model.diagnostics()
+    assert diagnostics["source"] == "fallback_regression"
+    assert "perf database error" in diagnostics["last_warning"]
+
+
+@pytest.mark.integration
+def test_best_available_validates_regression_weights_only_after_fallback() -> None:
+    """Regression-only knobs and worker semantics apply only if native AIC is unavailable."""
+    pytest.importorskip("aiconfigurator_core")
+    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    invalid_regression_options = {"regression_attention_kv_weight": 0.0}
+    decode_fpm = {
+        "version": 1,
+        "scheduled_requests": {
+            "num_decode_requests": 2,
+            "sum_decode_kv_tokens": 1024,
+        },
+    }
+
+    native = RustForwardPassPerfModel.best_available(
+        _supported_fpm_validation_config(),
+        "prefill",
+        invalid_regression_options,
+    )
+    assert native.diagnostics()["source"] == "aic"
+    native_prediction = native.estimate_forward_pass_time_ms(decode_fpm)
+    assert native_prediction is not None and native_prediction > 0.0
+
+    with pytest.raises(ValueError, match="regression_attention_kv_weight"):
+        RustForwardPassPerfModel.best_available(
+            _unsupported_fpm_config(),
+            "prefill",
+            invalid_regression_options,
+        )
+
+
+@pytest.mark.integration
+def test_native_constructors_ignore_all_nonfinite_regression_weights() -> None:
+    """Nonfinite regression-only knobs must not block either successful Native path."""
+    pytest.importorskip("aiconfigurator_core")
+    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    options = {
+        "regression_attention_kv_weight": float("nan"),
+        "regression_prefill_attention_pair_weight": float("inf"),
+        "regression_ffn_token_weight": float("-inf"),
+    }
+    config = _supported_fpm_validation_config()
+
+    strict_native = RustForwardPassPerfModel.from_native(config, options)
+    best_native = RustForwardPassPerfModel.best_available(config, "aggregated", options)
+
+    assert strict_native.diagnostics()["source"] == "aic"
+    assert best_native.diagnostics()["source"] == "aic"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("regression_attention_kv_weight", float("nan")),
+        ("regression_prefill_attention_pair_weight", float("inf")),
+        ("regression_ffn_token_weight", float("-inf")),
+    ],
+)
+def test_regression_constructors_decode_and_reject_nonfinite_weight_sentinels(
+    field: str,
+    value: float,
+) -> None:
+    """Strict and fallback Regression retain their field-specific validation errors."""
+    pytest.importorskip("aiconfigurator_core")
+    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    options = {field: value}
+    with pytest.raises(ValueError, match=field):
+        RustForwardPassPerfModel.from_regression("aggregated", options)
+    with pytest.raises(ValueError, match=field):
+        RustForwardPassPerfModel.best_available(
+            _unsupported_fpm_config(),
+            "aggregated",
+            options,
+        )
 
 
 def test_sparse_cp_ops_emit_cp_fields_in_spec():
@@ -1205,8 +1530,12 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
             "node_num",
             "sms",
             "attention_tp_size",
+            "workload_distribution",
+            "enable_eplb",
         }
     )
+    assert a2a_spec["MoeAllToAll"]["workload_distribution"] == "power_law_1.2"
+    assert a2a_spec["MoeAllToAll"]["enable_eplb"] is False
 
     ep = MoEExpertCompute(
         "context_moe",
@@ -1258,29 +1587,11 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
     assert fields["is_gated"] is True and fields["enable_eplb"] is True
 
 
-def _h200_sglang_wideep_paths() -> list[str]:
-    from aiconfigurator.sdk.operations.base import resolve_op_data_path
-
-    return [
-        resolve_op_data_path(str(_SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", filename)
-        for filename in (
-            "wideep_deepep_normal_perf.parquet",
-            "wideep_deepep_ll_perf.parquet",
-            "wideep_context_moe_perf.parquet",
-            "wideep_generation_moe_perf.parquet",
-            "wideep_context_mla_perf.parquet",
-            "wideep_generation_mla_perf.parquet",
-        )
-    ]
-
-
-@pytest.mark.skipif(
-    not all(os.path.exists(p) for p in _h200_sglang_wideep_paths()),
-    reason="shipped h200_sxm sglang wideEP parquets not present",
-)
 def test_large_ep_op_graph_compiles_natively(caplog):
-    """AIC-1601 (PR 2.5): the large-EP ops (MoEAllToAll / MoEExpertCompute) now have
-    Rust op constructors and wire mirrors, so a large-EP model compiles
+    """Large-EP communication and measured expert compute compile natively.
+
+    Both context/HT and generation/LL retain ``MoEExpertCompute``. The large-EP
+    operations have Rust constructors and wire mirrors, so the model compiles
     into the Rust engine natively — the documented Python-step fallback this
     test used to pin is retired. A rust-routed static run must answer with
     the scalar engine-step keys and match the Python step on the same
@@ -1293,7 +1604,10 @@ def test_large_ep_op_graph_compiles_natively(caplog):
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import get_database
 
-    # A shipped-data large-EP config: DeepSeek-R1 EP32 on h200/sglang, the
+    # A shipped-data large-EP config: DeepSeek-R1 EP32 on GB200/sglang. The
+    # database resolver follows the approved moe-family reuse.yaml donors for
+    # ordinary/wide compute instead of requiring physical files in 0.5.12.
+    # It also carries the
     # per-phase comm backends + node width the enumerator would set, and the
     # legacy wideEP quant set (fp8_block MLA slices, fp8 KV cache).
     cfg = ModelConfig(
@@ -1307,13 +1621,13 @@ def test_large_ep_op_graph_compiles_natively(caplog):
         kvcache_quant_mode=common.KVCacheQuantMode.fp8,
         fmha_quant_mode=common.FMHAQuantMode.fp8_block,
         moe_comm_backend={"context": "deepep_ht", "generation": "deepep_ll"},
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
     )
     model = get_model("deepseek-ai/DeepSeek-R1", cfg, "sglang")
     # Current slot: the wideEP tables backfill from their 0.5.6.post2/0.5.9/
     # 0.5.10/0.5.12 sole-source dirs while gemm/attention resolve on the
     # primary — the production large-EP query shape.
-    database = get_database("h200_sxm", "sglang", "0.5.14")
+    database = get_database("gb200", "sglang", "0.5.14")
 
     # (1) The op graph compiles into an EngineSpec carrying the tagged
     # large-EP variants, with the per-phase comm backends the config set.
@@ -1321,7 +1635,7 @@ def test_large_ep_op_graph_compiles_natively(caplog):
         build_engine_spec_json(
             model,
             model_path="deepseek-ai/DeepSeek-R1",
-            system="h200_sxm",
+            system="gb200",
             backend="sglang",
             backend_version="0.5.14",
             kv_block_size=None,
@@ -1333,10 +1647,14 @@ def test_large_ep_op_graph_compiles_natively(caplog):
     for phase_ops, comm_backend in ((spec["context_ops"], "deepep_ht"), (spec["generation_ops"], "deepep_ll")):
         a2a_fields = [op["MoeAllToAll"] for op in phase_ops if "MoeAllToAll" in op]
         ep_fields = [op["MoeExpertCompute"] for op in phase_ops if "MoeExpertCompute" in op]
-        assert a2a_fields and ep_fields, "the compiled spec must carry the large-EP variants"
+        moe_fields = [op["Moe"] for op in phase_ops if "Moe" in op]
+        assert a2a_fields, "the compiled spec must carry the large-EP communication variants"
         assert {fields["comm_backend"] for fields in a2a_fields} == {comm_backend}
+        assert all(fields["workload_distribution"] == "power_law_1.01" for fields in a2a_fields)
+        assert all(fields["enable_eplb"] is False for fields in a2a_fields)
         # Production graphs never pin a kernel: it crosses as null and the
         # Rust op auto-resolves per backend at query time.
+        assert ep_fields and not moe_fields
         assert all(fields["kernel_source"] is None for fields in ep_fields)
 
     rust_engine_step._engine_handle_cache_clear()
@@ -1382,9 +1700,11 @@ def test_large_ep_op_graph_compiles_natively(caplog):
 
 @pytest.mark.integration
 def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_parser, monkeypatch, caplog):
-    """The production-shaped EP32/node8 request must identify the EP8/node1
-    silicon rows the Rust query actually used, while keeping generic per-op
-    source tags as ``estimated``."""
+    """The production-shaped request reports each backend's actual donor row.
+
+    DeepEP-HT keeps its historical EP8/node1 donor, while DeepEP-LL uses the
+    physical four-GPU NVLink domain represented by the GB200 node1 rows.
+    """
     import logging
 
     from aiconfigurator.cli.api import cli_estimate
@@ -1393,6 +1713,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import get_database
 
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     rust_engine_step._engine_handle_cache_clear()
     try:
         captured_results = []
@@ -1448,7 +1769,8 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
             _run_estimate_mode(args)
         result = captured_results[0]
 
-        expected = (_CONTEXT_FALLBACK, _GENERATION_FALLBACK)
+        generation_fallback = MoECommFallback("generation", "deepep_ll", 32, 8, 4, 1)
+        expected = (_CONTEXT_FALLBACK, generation_fallback)
         assert result.moe_comm_fallbacks == expected
         assert result.summary is not None
         assert result.summary.get_moe_comm_fallbacks() == expected
@@ -1457,6 +1779,10 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
         assert (
             "Estimated MoE communication latency used fallback silicon data: "
             "context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data." in caplog.messages
+        )
+        assert (
+            "Estimated MoE communication latency used fallback silicon data: "
+            "generation/deepep_ll: requested EP32/node8; using EP4/node1 silicon data." in caplog.messages
         )
 
         config = ModelConfig(
@@ -1523,7 +1849,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
 
         detail = format_estimate_detail_report(result, detail="source")
         assert "context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data" in detail
-        assert "generation/deepep_ll: requested EP32/node8; using EP8/node1 silicon data" in detail
+        assert "generation/deepep_ll: requested EP32/node8; using EP4/node1 silicon data" in detail
 
     finally:
         rust_engine_step._engine_handle_cache_clear()

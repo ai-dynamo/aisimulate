@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/rust_engine_step.py
 
 """Thin facade over the compiled Rust engine (``aiconfigurator_core``).
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from collections import OrderedDict
@@ -31,6 +34,11 @@ _MoeCommFallbackPayload = tuple[str, str, int, int, int, int]
 _MoeCommFallbackMetadata = tuple[_MoeCommFallbackPayload, list[_MoeCommFallbackPayload]]
 PerOpValue = tuple[str, float, float, str]
 _PerOpValueWithMetadata = tuple[str, float, float, str, _MoeCommFallbackMetadata | None]
+_REGRESSION_WEIGHT_FIELDS = (
+    "regression_attention_kv_weight",
+    "regression_prefill_attention_pair_weight",
+    "regression_ffn_token_weight",
+)
 
 
 # Python-step telemetry (#1357): count every remaining Python op.query() use
@@ -91,17 +99,16 @@ class RustForwardPassPerfModel:
     """Facade over the compiled Rust forward-pass perf model (PR #1152).
 
     Built on the PyO3 ``aiconfigurator_core`` extension (the compiled
-    ``Engine``). The public class name and method signatures match PR #1152 so
-    callers (the Dynamo planner / mocker) are unaffected; FPM inputs are passed
-    as Python dictionaries and marshalled to JSON for the Rust boundary.
+    ``Engine``). FPM inputs are passed as Python dictionaries and marshalled to
+    JSON for the Rust boundary.
 
     This wrapper is forward-pass-level only. It does not model TTFT, ITL, SLA,
     queueing, or engine limits. ``estimate_forward_pass_time_ms()`` takes one
     iteration as a list of FPM dictionaries, one per attention-DP rank. Single
     rank callers may pass either one FPM dictionary or a one-element list.
 
-    The Rust model infers the workload kind from each iteration's scheduled FPM
-    fields:
+    Native AIC models infer the workload kind from each iteration's scheduled
+    FPM fields:
 
     * prefill: scheduled prefill tokens and no scheduled decode work, using
       ``[sum_prefill_tokens]``
@@ -112,6 +119,12 @@ class RustForwardPassPerfModel:
     * empty: no scheduled prefill or decode work, estimates ``0.0`` and is not
       used for tuning
 
+    Regression models instead bind one immutable ``worker_type`` at
+    construction: ``"prefill"``, ``"decode"``, or ``"aggregated"``. All DP
+    ranks in an iteration use that worker type's two-dimensional critical-
+    attention/global-FFN feature schema. ``"agg"`` and other aliases are not
+    accepted.
+
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
     as a workload descriptor: scheduled request fields are used, while
@@ -119,8 +132,8 @@ class RustForwardPassPerfModel:
     telemetry: scheduled request fields are used as features and positive
     ``wall_time`` is the latency target. For tuning, ``tune_with_fpms()`` accepts
     multiple iterations as ``[[iter0_rank0, iter0_rank1], [iter1_rank0,
-    iter1_rank1]]``. Each iteration is merged using max-rank load features and
-    max positive ``wall_time`` across ranks.
+    iter1_rank1]]``. Each backend derives its own cross-rank features, and the
+    maximum positive ``wall_time`` across ranks is the latency target.
 
     Correction grids use fixed constructor-time ranges from ``options``:
     ``max_num_tokens`` bounds ``sum_prefill_tokens`` and defaults to ``8192``,
@@ -134,6 +147,14 @@ class RustForwardPassPerfModel:
     It defaults to ``2.0``, limiting learned slowdowns to ``2x``. Passing
     ``None`` for either option leaves that direction unbounded. Regression
     fallback ignores both options.
+
+    The three regression-weight options accept ordinary Python floats. To keep
+    their transport valid JSON, this facade encodes nonfinite values as the
+    exact strings ``"NaN"``, ``"Infinity"``, and ``"-Infinity"``. Raw PyO3
+    ``options_json`` callers must use those same quoted sentinels. Native models,
+    including a successful-native ``best_available()``, ignore all three
+    weights; regression construction (including fallback) decodes the sentinels
+    and rejects the resulting nonfinite value with its field-specific error.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -167,19 +188,24 @@ class RustForwardPassPerfModel:
     def best_available(
         cls,
         config: dict[str, Any],
+        worker_type: str,
         options: dict[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.best_available(config, options=None)``.
+        """API: ``best_available(config, worker_type, options=None)``.
 
         Description: create a native model when possible, otherwise fall back to
-        regression. Fallback reason is available from
-        ``diagnostics()["last_warning"]``.
+        regression bound to ``worker_type``. Fallback reason is available from
+        ``diagnostics()["last_warning"]``. ``worker_type`` must be exactly
+        ``"prefill"``, ``"decode"``, or ``"aggregated"``; a successful native
+        construction does not otherwise use it.
         """
+        worker_type = _validate_worker_type(worker_type)
         _configure_default_data_roots()
         import aiconfigurator_core
 
         inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
             _json_dumps(config),
+            worker_type,
             _optional_json_dumps(options),
         )
         return cls(inner)
@@ -187,20 +213,24 @@ class RustForwardPassPerfModel:
     @classmethod
     def from_regression(
         cls,
+        worker_type: str,
         options: dict[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.from_regression(options=None)``.
+        """API: ``from_regression(worker_type, options=None)``.
 
-        Description: create a regression-only forward-pass model. Regression
-        models return ``None`` for non-empty estimates until enough samples have
-        been provided for the inferred workload kind through
+        Description: create a regression-only forward-pass model bound to one
+        engine-level ``worker_type``. It returns ``None`` for non-empty estimates
+        until enough compatible samples have been provided through
         ``tune_with_fpms()``. Correction factor getters return ``None`` in this
-        mode.
+        mode. ``worker_type`` must be exactly ``"prefill"``, ``"decode"``, or
+        ``"aggregated"``.
         """
+        worker_type = _validate_worker_type(worker_type)
         _configure_default_data_roots()
         import aiconfigurator_core
 
         inner = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+            worker_type,
             _optional_json_dumps(options),
         )
         return cls(inner)
@@ -212,11 +242,11 @@ class RustForwardPassPerfModel:
 
         ``metrics`` represents one iteration. Pass a list of FPM dictionaries
         for attention-DP ranks, or a single FPM dictionary for a single-rank
-        convenience form. The inferred workload kind uses only
-        ``scheduled_requests``; queued fields and ``wall_time`` are ignored for
-        estimation. Regression models return ``None`` until the matching
-        inferred workload kind has enough tuned observations. Empty scheduled
-        work returns ``0.0``.
+        convenience form. Native workload inference and role-bound regression
+        feature extraction use only ``scheduled_requests``; queued fields and
+        ``wall_time`` are ignored for estimation. Regression models return
+        ``None`` until their single store has enough tuned observations. Empty
+        scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
 
@@ -276,7 +306,23 @@ def _json_dumps(value: Any) -> str:
 def _optional_json_dumps(value: dict[str, Any] | None) -> str | None:
     if value is None:
         return None
-    return _json_dumps(value)
+    wire_value = value.copy()
+    for field in _REGRESSION_WEIGHT_FIELDS:
+        weight = wire_value.get(field)
+        if isinstance(weight, float) and not math.isfinite(weight):
+            if math.isnan(weight):
+                wire_value[field] = "NaN"
+            elif weight > 0.0:
+                wire_value[field] = "Infinity"
+            else:
+                wire_value[field] = "-Infinity"
+    return _json_dumps(wire_value)
+
+
+def _validate_worker_type(worker_type: str) -> str:
+    if worker_type not in ("prefill", "decode", "aggregated"):
+        raise ValueError(f"invalid worker_type {worker_type!r}: expected 'prefill', 'decode', or 'aggregated'")
+    return worker_type
 
 
 def _normalize_tuning_iterations(iterations: dict[str, Any] | list[Any]) -> list[Any]:
@@ -579,11 +625,11 @@ def estimate_mixed_step_breakdown_with_rust(
 
     Same three-pass composition as ``estimate_mixed_step_latency_with_rust``
     (``latency_ms`` is the identical sum), reported per pass AND per op so
-    ``run_mixed`` builds the same ``StepEstimate`` shape as the Python step:
-    non-attention ops under their raw names plus the two literal keys
-    ``"context_attention (scaled)"`` (pass 2, already divided by
-    ``ceil(isl/ctx)``) and ``"generation_attention"`` (pass 3) — mirroring
-    ``base_backend.run_mixed``'s Python branch key-for-key, energies included.
+    ``run_mixed`` retains native operation names, including draft work in
+    either phase, while preserving the legacy ``"context_attention (scaled)"``
+    and ``"generation_attention"`` keys. Context values are already divided
+    by ``ceil(isl/ctx)``. FPM retains its prefill/decode component split and separate draft rows, with
+    the target decode operation reported under ``"generation_attention"``.
     """
     handle = _cached_engine_handle(model, database)
     try:
@@ -600,27 +646,29 @@ def estimate_mixed_step_breakdown_with_rust(
         _reraise_engine_error(exc)
     _note_rust_provenance(handle)
 
-    shared_latency, shared_energy, shared_source, shared_fallbacks = _fold_per_op(shared_ops)
-    ctx_latency, ctx_energy, ctx_source, ctx_fallbacks = _fold_per_op(ctx_attn_ops)
-    dec_latency, dec_energy, dec_source, dec_fallbacks = _fold_per_op(decode_attn_ops)
+    shared_latency, shared_energy, _, _ = _fold_per_op(shared_ops)
+    ctx_latency, ctx_energy, _, _ = _fold_per_op(ctx_attn_ops)
+    dec_latency, dec_energy, _, _ = _fold_per_op(decode_attn_ops)
 
-    # Pass 2/3 fold to (at most) the single filtered attention key; missing
-    # passes report 0.0 under the Python branch's default "silicon" source
-    # (mirrors `.get("context_attention", ...)` / `.get(..., "silicon")`).
+    # Fold across phases too: draft operations can share a name (e.g. EAGLE
+    # feature projection), so both their values and sources must accumulate.
+    public_names = {
+        "context_attention": "context_attention (scaled)",
+        "fpm_forward_decode": "generation_attention",
+    }
+    per_op_latency_ms, _, per_op_source, fallbacks = _fold_per_op(
+        (public_names.get(entry[0], entry[0]), *entry[1:])
+        for group in (shared_ops, ctx_attn_ops, decode_attn_ops)
+        for entry in group
+    )
+    for name in ("context_attention (scaled)", "generation_attention"):
+        per_op_latency_ms.setdefault(name, 0.0)
+        per_op_source.setdefault(name, "silicon")
+
     ctx_attention_latency = sum(ctx_latency.values())
     ctx_attention_energy = sum(ctx_energy.values())
     dec_attention_latency = sum(dec_latency.values())
     dec_attention_energy = sum(dec_energy.values())
-    per_op_latency_ms: dict[str, float] = {
-        **shared_latency,
-        "context_attention (scaled)": ctx_attention_latency,
-        "generation_attention": dec_attention_latency,
-    }
-    per_op_source: dict[str, str] = {
-        **shared_source,
-        "context_attention (scaled)": ctx_source.get("context_attention", "silicon"),
-        "generation_attention": dec_source.get("generation_attention", "silicon"),
-    }
     component_latency_ms = {
         "shared_non_attention": sum(shared_latency.values()),
         "context_attention": ctx_attention_latency,
@@ -638,7 +686,7 @@ def estimate_mixed_step_breakdown_with_rust(
         "component_energy_wms": component_energy_wms,
         "per_op_latency_ms": per_op_latency_ms,
         "per_op_source": per_op_source,
-        "moe_comm_fallbacks": merge_moe_comm_fallbacks(shared_fallbacks, ctx_fallbacks, dec_fallbacks),
+        "moe_comm_fallbacks": fallbacks,
     }
 
 
@@ -797,6 +845,29 @@ def evaluate_ops_json_with_rust(
     return result
 
 
+def evaluate_context_attention_kernels_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    ops_json: str,
+    batch_size: int,
+    s: int,
+    imbalance_correction_scale: float = 1.0,
+    visual_block_upper_triangle: bool = False,
+) -> list[PerOpValue]:
+    """Evaluate visual-mask attention kernels with the model's compiled database policy."""
+    handle = _cached_engine_handle(model, database)
+    result = handle.evaluate_context_attention_kernels_json(
+        ops_json,
+        batch_size=int(batch_size),
+        s=int(s),
+        imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
+        visual_block_upper_triangle=visual_block_upper_triangle,
+    )
+    _note_rust_provenance(handle)
+    return result
+
+
 # LRU memo of compiled ``EngineHandle`` objects, keyed by the engine identity
 # (model_path + system + backend + version + parallelism + quant + nextn +
 # kv_block_size). ``compile_engine`` rebuilds the model and loads the perf DB,
@@ -934,6 +1005,16 @@ def _cached_engine_handle(model: Any, database: Any) -> Any:
     return handle
 
 
+def _speculation_identity(model_config: Any) -> str | None:
+    spec = getattr(model_config, "speculation", None)
+    if spec is None or getattr(spec, "kind", "none") in ("none", "mtp"):
+        return None  # mtp rides the nextn key itself (legacy contract)
+    try:
+        return spec.identity_hash()
+    except Exception:
+        return repr(spec)
+
+
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
@@ -959,6 +1040,10 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "kv_cache_dtype": _quant_to_dtype(getattr(model_config, "kvcache_quant_mode", None)),
         "kv_block_size": None,
         "nextn": int(nextn) if nextn is not None else None,
+        # Scheme-based speculation materializes draft ops into the op lists:
+        # two schemes with the same verify width (same nextn channel) still
+        # compile DIFFERENT engines, so the content identity must be keyed.
+        "speculation": _speculation_identity(model_config),
         # An op_level and an fpm model with identical parallel/quant configs
         # compile to DIFFERENT engines (granular op list vs one whole-model op
         # per phase); without this key they would share a cached handle and

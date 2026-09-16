@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from .aic import (
@@ -15,7 +16,16 @@ from .aic import (
 from .config.cli import CorePredictionConfig
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
-from .sweeper.provider import AdapterReplaySpec, JSONValue
+from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
+from .sweeper.afd_perfmodel import (
+    AFDPerformanceModel,
+    AICAFDPerformanceModel,
+    attach_afd_measurements,
+)
+from .sweeper.kv_estimate import resolve_backend_version
+from .sweeper.model_hw import resolve_model_hardware
+from .sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from .sweeper.provider import AdapterReplaySpec, JSONValue, validate_router_prefill_hardware
 from .sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
 
@@ -23,26 +33,110 @@ def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
+    execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
-    deployment = _deployment(config.engine)
     workload, concurrency = _traffic(config)
+    deployment = _deployment(
+        config.engine,
+        workload=workload,
+        afd_performance_model=afd_performance_model,
+    )
+    if config.engine.mode == "disaggregated":
+        assert config.engine.workers.prefill is not None
+        for adapter in (adapter_specs or {}).values():
+            validate_router_prefill_hardware(adapter, config.engine.workers.prefill.hardware or config.engine.hardware)
+    if config.engine.workers.encoder is not None:
+        if adapter_specs or execution_mode != "offline":
+            raise ValueError("analytical EPD requires the offline engine stack without adapters")
+        deployment = replace(deployment, encoder=_prediction_encoder(config, workload))
     evaluation = config.evaluation.model_dump(mode="json", exclude_none=True)
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
+    if deployment.encoder is not None and goal["sla"] is not None:
+        goal["strict_sla"] = True
     return ReplaySpec(
         backend_deployment=deployment,
         workload=workload,
         goal=goal,
+        execution_mode=execution_mode,
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
 
 
-def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
+def _prediction_encoder(config: CorePredictionConfig, workload):
+    from .sweeper.config import EncoderSearch, Workload
+    from .sweeper.epd import resolve_encoder_pools
+
+    engine = config.engine
+    encoder = engine.workers.encoder
+    assert encoder is not None
+    shape = EncoderSearch(
+        hardware_sku=encoder.hardware,
+        backend_version=encoder.backend_version,
+        tp=[encoder.tensor],
+        batch_size=[encoder.batch_size],
+        workers=[encoder.replicas],
+        latency_correction=encoder.latency_correction,
+        rate_degradation=encoder.rate_degradation,
+    )
+    pools = resolve_encoder_pools(
+        model_name=engine.model,
+        hardware_sku=engine.hardware,
+        backends=[engine.backend],
+        backend_version=engine.backend_version,
+        context_length=(
+            resolve_model_context_length(engine.model) if engine.context_length == "max" else engine.context_length
+        ),
+        encoder=shape,
+        workload=Workload.model_validate(workload),
+    )
+    if len(pools) != 1:
+        raise ValueError("prediction requires exactly one feasible encoder pool")
+    return next(iter(pools.values()))
+
+
+def _deployment(
+    engine: EnginePredictionConfig,
+    *,
+    workload: dict[str, JSONValue],
+    afd_performance_model: AFDPerformanceModel | None,
+) -> BackendDeploymentSpec:
+    if engine.mode == "afd":
+        return _afd_deployment(
+            engine,
+            workload=workload,
+            performance_model=afd_performance_model or AICAFDPerformanceModel(),
+        )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
+    if mode == "disagg":
+        from aiconfigurator_core.sdk.perf_database import load_system_spec
+
+        workers = (engine.workers.prefill, engine.workers.decode)
+        for role, worker in zip(("prefill", "decode"), workers, strict=True):
+            if worker is not None and worker.hardware is not None and not load_system_spec(worker.hardware):
+                raise ValueError(f"unknown workers.{role}.hardware {worker.hardware!r}: no system configuration found")
+        if engine.backend_version is None and any(
+            worker is not None and worker.hardware is not None for worker in workers
+        ):
+            versions = {
+                worker.hardware or engine.hardware: resolve_backend_version(
+                    worker.hardware or engine.hardware, engine.backend
+                )
+                for worker in workers
+                if worker is not None
+            }
+            if len(set(versions.values())) != 1:
+                raise ValueError(
+                    "heterogeneous P/D hardware requires one common backend_version; "
+                    f"latest versions for backend={engine.backend!r} are {versions}. "
+                    "Set engine.backend_version to a version supported by both SKUs."
+                )
+            engine = engine.model_copy(update={"backend_version": next(iter(versions.values()))})
     common: dict[str, Any] = {
         "deployment_mode": mode,
         "backend": engine.backend,
@@ -91,6 +185,104 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
     )
 
 
+def _afd_deployment(
+    engine: EnginePredictionConfig,
+    *,
+    workload: dict[str, JSONValue],
+    performance_model: AFDPerformanceModel,
+) -> BackendDeploymentSpec:
+    afd = engine.afd
+    assert afd is not None
+    facts = resolve_model_hardware(engine.model, engine.hardware, backend=engine.backend)
+    topology = AFDTopology(
+        **afd.model_dump(mode="python"),
+        gpus_per_node=facts.gpus_per_node,
+        is_moe=facts.is_moe,
+        num_experts=facts.num_experts,
+    )
+    backend_version = engine.backend_version or resolve_backend_version(engine.hardware, engine.backend)
+    resolved_engine = engine.model_copy(update={"backend_version": backend_version})
+    companion_role = "decode" if topology.phase.value == "prefill" else "prefill"
+    companion_worker = getattr(engine.workers, companion_role) if topology.combined_with_pd else None
+    companion: ReplicaParallelConfig | None = None
+    if companion_worker is not None:
+        parallel = companion_worker.parallelism
+        companion = ReplicaParallelConfig(
+            shape=ParallelShape(
+                tp=parallel.tensor,
+                pp=parallel.pipeline,
+                dp=parallel.attention_data,
+                moe_tp=parallel.moe_tensor,
+                moe_ep=parallel.moe_expert,
+            ),
+            replicas=parallel.replicas,
+        )
+    afd_parallel = AFDParallelConfig(topology=topology, companion=companion)
+    parallel_config: dict[str, JSONValue] = {
+        "afd": topology.provenance()["topology"],
+        "afd_provenance": afd_parallel.provenance(),
+    }
+    performance_metadata: dict[str, dict[str, JSONValue]] = {
+        "afd": {
+            "provider": "unresolved",
+            "measurement_required": True,
+            "config": topology.provenance()["topology"],
+            "provenance": afd_parallel.provenance(),
+        }
+    }
+    deployment_kwargs: dict[str, Any] = {}
+    if companion_worker is not None:
+        assert companion is not None
+        prefix = f"{companion_role}_"
+        shape = companion.shape
+        parallel_config.update(
+            {
+                f"{prefix}tp": shape.tp,
+                f"{prefix}pp": shape.pp,
+                f"{prefix}attention_dp": shape.dp,
+                f"{prefix}moe_tp": shape.moe_tp,
+                f"{prefix}moe_ep": shape.moe_ep,
+                f"{prefix}strategy": shape.strategy,
+                f"{prefix}replicas": companion.replicas,
+            }
+        )
+        companion_metadata = _worker_performance_model_metadata(resolved_engine, companion_worker)
+        performance_metadata[companion_role] = companion_metadata
+        deployment_kwargs[f"{companion_role}_engine_args"] = _worker_engine_args(
+            resolved_engine,
+            companion_worker,
+            companion_role,
+            transfer_bytes_per_token=None,
+        )
+        deployment_kwargs[f"num_{companion_role}_workers"] = companion.replicas
+    deployment = BackendDeploymentSpec(
+        deployment_mode=topology.adapter_topology,
+        backend=engine.backend,
+        backend_version=backend_version,
+        parallel_config=parallel_config,
+        performance_model_metadata=performance_metadata,
+        **deployment_kwargs,
+    )
+    sample = {
+        "model_name": engine.model,
+        "hardware_sku": engine.hardware,
+        "backend": engine.backend,
+        "backend_version": backend_version,
+        "context_length": (
+            engine.context_length
+            if isinstance(engine.context_length, int)
+            else resolve_model_context_length(engine.model)
+        ),
+        "afd": topology.provenance()["topology"],
+    }
+    return attach_afd_measurements(
+        deployment,
+        sample=sample,
+        workload=workload,
+        performance_model=performance_model,
+    )
+
+
 def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     return {
@@ -113,13 +305,14 @@ def _worker_performance_model_metadata(
         "config": {
             "backend": engine.backend,
             "backend_version": engine.backend_version,
-            "system": engine.hardware,
+            "system": worker.hardware or engine.hardware,
             "model_path": engine.model,
             "tp_size": parallel.tensor,
             "attention_dp_size": parallel.attention_data,
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
+            "forward_model": worker.timing.forward_model,
         },
     }
 
@@ -145,12 +338,14 @@ def _worker_engine_args(
         "worker_type": role,
         "engine_type": backend,
         "aic_backend": backend,
-        "aic_system": engine.hardware,
+        "aic_system": worker.hardware or engine.hardware,
         "aic_model_path": engine.model,
         "aic_tp_size": parallel.tensor,
         "aic_attention_dp_size": parallel.attention_data,
         "max_num_batched_tokens": worker.scheduler.max_batched_tokens,
         "max_num_seqs": worker.scheduler.max_sequences,
+        "prefill_schedule_interval": worker.scheduler.prefill_schedule_interval,
+        "prefill_decode_interval": worker.scheduler.prefill_decode_interval,
         "block_size": block_size,
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
@@ -162,6 +357,9 @@ def _worker_engine_args(
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
+    if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
+        # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
+        payload["aic_forward_model"] = worker.timing.forward_model
     if backend == "vllm":
         payload["max_model_len"] = (
             engine.context_length
@@ -173,6 +371,7 @@ def _worker_engine_args(
         payload["num_gpu_blocks"] = capacity.blocks
     else:
         assert memory_fraction is not None
+        payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
         payload[
             {
                 "vllm": "gpu_memory_utilization",
@@ -210,6 +409,8 @@ def _worker_engine_args(
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
     if host_offload is not None:
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
+    if cache.g3_offload is not None:
+        payload["g3_offload"] = cache.g3_offload.model_dump(mode="json")
     if engine.kv_transfer is not None:
         transfer = engine.kv_transfer
         if transfer.bandwidth_gb_per_second is not None:
@@ -254,16 +455,22 @@ def _traffic(
             trace_format=source.format,
             trace_block_size=source.block_size,
         )
+        if source.nested_timestamp_basis is not None:
+            workload["weka_nested_timestamp_basis"] = source.nested_timestamp_basis
         if load.type == "concurrency":
             workload["replay_concurrency"] = load.concurrency
         else:
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
+            if load.agentic_lanes is not None:
+                workload["agentic_lanes"] = load.agentic_lanes
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None
 
     if isinstance(source, SyntheticSource):
         workload.update(isl=source.input_tokens, osl=source.output_tokens)
+        if source.images is not None:
+            workload["images"] = source.images.model_dump(mode="json")
         stop_count = stop.requests if stop is not None else None
         relative = stop.requests_per_load_unit if stop is not None else None
     else:

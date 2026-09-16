@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Small workflow example; four random trials do not establish search optimality.
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 40}
+
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  backend_version: "0.24.0"
+  workers:
+    aggregated:
+      parallelism:
+        preset:
+          - {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+          - {replicas: 1, tensor: 2, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 256}
+      kv_cache:
+        block_size: 64
+        prefix_caching: false
+        capacity: {type: default, memory_fraction: 0.9}
+
+optimization:
+  target: throughput_per_gpu
+  constraints: {max_candidate_gpus: 2}
+
+optimizer:
+  algorithm: random
+  max_trials: 4
+  parallelism: 1
+  seed: 42

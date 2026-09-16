@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.e2e, pytest.mark.build]
+# Release wheel builds on arm64 routinely approach the suite's 180-second
+# per-test limit, so keep a larger guard for this build-and-install workflow.
+pytestmark = [pytest.mark.e2e, pytest.mark.build, pytest.mark.timeout(600)]
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 APP_ROOT = REPO_ROOT / "python" / "aisimulate"
@@ -34,15 +36,20 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None, ti
 
 
 def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_assets(tmp_path):
-    wheel_dir = tmp_path / "wheel"
-    wheel_dir.mkdir()
-    _run(
-        [sys.executable, "-m", "maturin", "build", "--release", "--out", str(wheel_dir)],
-        cwd=APP_ROOT,
-        timeout=600,
-    )
-    wheels = tuple(wheel_dir.glob("aisimulate-*.whl"))
+    supplied_wheel = os.environ.get("AISIMULATE_TEST_WHEEL")
+    if supplied_wheel:
+        wheels = (Path(supplied_wheel).resolve(),)
+    else:
+        wheel_dir = tmp_path / "wheel"
+        wheel_dir.mkdir()
+        _run(
+            [sys.executable, "-m", "maturin", "build", "--release", "--out", str(wheel_dir)],
+            cwd=APP_ROOT,
+            timeout=600,
+        )
+        wheels = tuple(wheel_dir.glob("aisimulate-*.whl"))
     assert len(wheels) == 1
+    assert wheels[0].is_file()
 
     unrelated_repository = tmp_path / "unrelated-git"
     unrelated_repository.mkdir()

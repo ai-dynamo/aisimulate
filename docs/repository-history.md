@@ -52,11 +52,12 @@ The migration branch keeps the earlier path-filtered AIC core history. The
 complete upper application was initially imported as a snapshot from
 AIConfigurator source commit `13b5cf2697876692b0a52098266c81162add11fc`.
 The current synchronization boundary is source commit
-`ce2824e8abd9bef71c3b162f651e63704a0eb4c1`. It includes the initial boundary
-at `ff2be1fd434fd516474e42b77f94cd5a5f841b9b` plus the 41 first-parent commits
-in the frozen `ff2be1f..ce2824e8` range. The final tree moves the upper
-application and Python core beneath `python/aisimulate/`, and moves the AIC
-Rust core beneath `crates/core/src/perfmodel/`, without copying a second
+`c8aee02f0887547a334c3d6cd192c42757e4b40e`. It includes the initial boundary
+at `ff2be1fd434fd516474e42b77f94cd5a5f841b9b`, the 41 first-parent commits in
+the frozen `ff2be1f..ce2824e8` range, and the final worker-type-bound FPM
+regression transfer from AIConfigurator PR #1602. The final tree moves the
+upper application and Python core beneath `python/aisimulate/`, and moves the
+AIC Rust core beneath `crates/core/src/perfmodel/`, without copying a second
 buildable manifest.
 
 The imported upper tree includes the CLI, generator, SDK compatibility layer,
@@ -64,7 +65,7 @@ Collector, tests, docs, Docker/development assets, and the original inactive
 workflow definitions. Only the repository-root `.github/workflows/` directory
 is active in AISimulate.
 
-The source commit is the future synchronization boundary. With an
+The recorded source commit is the final synchronization boundary. With an
 AIConfigurator clone at the sibling `../aiconfigurator` path and its origin
 fetched, for example:
 
@@ -72,8 +73,12 @@ fetched, for example:
 git log --follow -- crates/core/src/perfmodel/mod.rs
 git log --follow -- python/aisimulate/src/aiconfigurator_core/sdk/engine.py
 git -C ../aiconfigurator fetch origin
-diff -u <(git -C ../aiconfigurator show ce2824e8abd9bef71c3b162f651e63704a0eb4c1:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
+diff -u <(git -C ../aiconfigurator show c8aee02f0887547a334c3d6cd192c42757e4b40e:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
 ```
+
+### Selective speculative-decoding migration
+
+[AIConfigurator PR #1563](https://github.com/ai-dynamo/aiconfigurator/pull/1563) is selectively adapted at source head `6290c161a354da5250c391bd43372b2e9c6f4a51` for pluggable speculation schemes and verify-on-FPM. This feature transfer does not advance the contiguous synchronization boundary above. The [migration ledger](aic-pr1563-migration.md) records the source paths, adaptations, and modeling limits.
 
 ### Bulk synchronization ledger
 

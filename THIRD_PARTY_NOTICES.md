@@ -13,7 +13,96 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## AIConfigurator
+
+The repository-root `.coderabbit.yaml` is adapted and modified from
+AIConfigurator's `.coderabbit.yaml` at commit
+`13b5cf2697876692b0a52098266c81162add11fc`. The original imported policy is
+preserved at `python/aisimulate/.coderabbit.yaml` as migration provenance.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
+
+Pinned upstream collection and preserved-file SHA-256:
+`5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
+
+AISimulate-modified root overlay SHA-256:
+`70960b92994caaad52f806bd5c618353670c9e754a4d61525962f561360d9d48`
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
+
+## NVIDIA AIConfigurator speculative decoding
+
+The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
+
+Derived AISimulate paths are under `python/aisimulate/src/aiconfigurator_core/sdk/`, `python/aisimulate/src/aiconfigurator/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aiconfigurator/cli/`, `python/aisimulate/src/aiconfigurator/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's `docs/aic-pr1563-migration.md` lists the exact original and mapped paths. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. Licensed under Apache-2.0; the original license is at:
+https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/LICENSE
+
+This records provenance for NVIDIA-authored predecessor code, without implying ownership by an unaffiliated third party.
+
+## NVIDIA AIConfigurator CI provenance
+
+Selected CI definitions and a recommendation test were adapted from NVIDIA's
+AIConfigurator repository at commit
+`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISimulate's
+unified package layout and Fast CI / Full CI execution model:
+
+- repository-root `.github/workflows/ci.yml` (selected jobs)
+- repository-root `.github/actions/build-platform-wheel/action.yml`
+- repository-root `.github/actions/setup-python-rust/action.yml`
+- repository-root `.github/workflows/collector-check.yml`
+- repository-root `.github/workflows/prediction-regression-gate.yml`
+- repository-root `.github/workflows/validate-platform-wheels.yml`
+- `tests/e2e/cli/test_cli_recommend.py`
+
+Upstream source:
+https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+
+Copyright (c) NVIDIA CORPORATION & AFFILIATES.
+
+AIConfigurator is licensed under the Apache License, Version 2.0. The full
+Apache-2.0 license text is reproduced in `LICENSE`. This section records
+cross-repository provenance for NVIDIA-authored predecessor code; it is not a
+claim that AIConfigurator is owned by an unaffiliated third party.
+
 ## vLLM
+
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
+
+The independently written Rust deferred-queue and post-lookup-touch behavior in
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
+and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at
+immutable revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`:
+[`vllm/v1/core/sched/scheduler.py`](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/core/sched/scheduler.py),
+`vllm/v1/core/sched/request_queue.py` and `vllm/v1/kv_offload/tiering/manager.py`.
+The upstream project is copyright contributors to the vLLM project and licensed
+under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
+no upstream method bodies are copied. The Rust implementation and fixtures are
+modified for simulation and do not reproduce native filesystem timing.
 
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
@@ -23,6 +112,52 @@ The following files are derived from vLLM's attention test utilities at tag
 
 Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
+
+The Gemma 4 visual-mask behavior and replicated multimodal adapter in
+`src/aiconfigurator_core/sdk/models/gemma4.py` and
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` are adapted and modified
+for performance modeling from vLLM at commit
+`d2906091bfc579cebefe3d8e8fb9077397ce9882`:
+
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4.py
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4_mm.py
+
+The Gemma 4 source preserves these upstream notices:
+
+Copyright contributors to the vLLM project.
+Copyright 2025 The vLLM team.
+Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
+
+This material is licensed under the Apache License 2.0.
+
+The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
+PatchMergerV2 adapters modeled in
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
+`src/aiconfigurator_core/sdk/utils.py`, with Kimi K3 rotary-grid validation in
+`src/aiconfigurator_core/sdk/backends/base_backend.py` and regression derivatives in
+`tests/unit/sdk/models/test_kimi_k25_vision.py` and
+`tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the
+MoonViT3D implementation that Kimi K3 reuses from Kimi K2.5 in vLLM at commit
+`d2906091bfc579cebefe3d8e8fb9077397ce9882`:
+
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25.py
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
+
+The upstream license at that revision is available at:
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/LICENSE
+
+The Llama 4 encoder operation topology in
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` is adapted (modified) from vLLM's Llama 4
+implementation at tag `v0.8.5` (commit
+`ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d`):
+
+https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/vllm/model_executor/models/mllama4.py
+
+Copyright 2025 the LLAMA4, Meta Inc., vLLM, and HuggingFace Inc. team. All rights reserved.
+
+The upstream license at that revision is available at:
+https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/LICENSE
 
 Copyright contributors to the vLLM project.
 
@@ -313,6 +448,132 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Meta Muse Glimmer model configuration
+
+`src/aiconfigurator_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+is an unmodified copy of `config.json` from the Meta Muse Glimmer model
+repository at immutable revision
+`f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
+
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/config.json
+
+Copyright owner: Meta Platforms, Inc. and affiliates.
+
+License: Apache License 2.0. The upstream license is available at:
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/LICENSE
+
+The Apache License 2.0 terms are reproduced in this distribution's `LICENSE`
+file.
+
+## Qwen3.8-Max model configuration files
+
+The following model configuration files are copied byte-for-byte from the
+named Qwen model repositories at the immutable revisions shown:
+
+| Packaged file | Upstream revision |
+| --- | --- |
+| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+
+Upstream repositories:
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B-FP8
+
+Copyright owner: Qwen. The copied files are unmodified. Both upstream
+revisions apply the same custom Qwen3.8-Max License, reproduced in full
+below:
+
+```text
+Qwen3.8-Max License
+
+Copyright (c) 2026 Qwen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software, including the model weights, parameters, configuration files, inference code and associated documentation files (collectively, the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, sell, deploy, host, fine-tune, and create derivative works from (collectively, "Use" or "Using") copies of the Software; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. If the Software (or any derivative works thereof) is Used for any of the licensee's commercial products or services that have more than 100,000,000 monthly active users or US$ 20,000,000 (or equivalent in other currencies) monthly revenue, respective model name must be prominently displayed on the user interface of such product or service; and,
+
+2. If the licensee or any of its affiliates conducts a Model as a Service or AI Work Assistant business, and the aggregate revenue of the licensee and its affiliates exceeds US$50,000,000 (or the equivalent amount in any other currencies) during any consecutive twelve (12) months, the licensee shall obtain a separate license from Qwen before Using the Software or its derivative works for any commercial purpose. The foregoing requirement shall not apply to the licensee's internal Use of the Software, provided that such Use does not make the Software, its outputs, or its underlying model capabilities available to any third party.
+
+"Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API or a hosted endpoint) in a manner that allows such third parties to exercise meaningful control over the inputs, parameters, or training data. This does not include the mere relaying of requests to models hosted by other third parties.
+“AI Work Assistant” means an independent AI-powered product primarily designed for AI-assisted coding or office productivity (e.g., Qoder and QwenWork). It does not include: (a) a single-purpose AI tool (such as an AI translation tool); (b) an AI assistant primarily designed for a domain other than coding or office productivity (such as Taobao AI Shopping Assistant or AMap AI Chat); or (c) an AI assistant that is a feature of a product whose primary purpose is not AI-assisted coding or office productivity.
+
+THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL QWEN, ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. THE USE OF THE SOFTWARE MUST COMPLY WITH APPLICABLE LAWS AND REGULATIONS, AND MUST NOT INFRINGE THE INTELLECTUAL PROPERTY RIGHTS OF ANY THIRD PARTY.
+
+For any questions regarding this license, please contact model-business@notice.qwencloud.com.
+```
+
+## Meta Llama 4
+
+The following bundled model configs are modified copies of Meta Llama 4
+checkpoint configuration files:
+
+- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
+  from revision `92f3b1597a195b523d8d9e5700e57e4fbb8f20d3`:
+  https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json
+- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
+  from revision `73d14711bcc77c16df3470856949c3764056b617`:
+  https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json
+
+Required attribution: Llama 4 is licensed under the Llama 4 Community License,
+Copyright © Meta Platforms, Inc. All Rights Reserved.
+
+The Llama 4 Community License below is reproduced from the official Meta Llama
+repository at commit `0e0b8c519242d5833d8c11bffc1232b77ad7f301`:
+
+https://github.com/meta-llama/llama-models/blob/0e0b8c519242d5833d8c11bffc1232b77ad7f301/models/llama4/LICENSE
+
+```text
+LLAMA 4 COMMUNITY LICENSE AGREEMENT
+
+Llama 4 Version Effective Date: April 5, 2025
+
+“Agreement” means the terms and conditions for use, reproduction, distribution and modification of the Llama Materials set forth herein.
+
+“Documentation” means the specifications, manuals and documentation accompanying Llama 4 distributed by Meta at https://www.llama.com/docs/overview.
+
+“Licensee” or “you” means you, or your employer or any other person or entity (if you are entering into this Agreement on such person or entity’s behalf), of the age required under applicable laws, rules or regulations to provide legal consent and that has legal authority to bind your employer or such other person or entity if you are entering in this Agreement on their behalf.
+
+“Llama 4” means the foundational large language models and software and algorithms, including machine-learning model code, trained model weights, inference-enabling code, training-enabling code, fine-tuning enabling code and other elements of the foregoing distributed by Meta at https://www.llama.com/llama-downloads.
+
+“Llama Materials” means, collectively, Meta’s proprietary Llama 4 and Documentation (and any portion thereof) made available under this Agreement.
+
+“Meta” or “we” means Meta Platforms Ireland Limited (if you are located in or, if you are an entity, your principal place of business is in the EEA or Switzerland) and Meta Platforms, Inc. (if you are located outside of the EEA or Switzerland).
+
+By clicking “I Accept” below or by using or distributing any portion or element of the Llama Materials, you agree to be bound by this Agreement.
+
+1. License Rights and Redistribution.
+
+a. Grant of Rights. You are granted a non-exclusive, worldwide, non-transferable and royalty-free limited license under Meta’s intellectual property or other rights owned by Meta embodied in the Llama Materials to use, reproduce, distribute, copy, create derivative works of, and make modifications to the Llama Materials.
+
+b. Redistribution and Use.
+
+i. If you distribute or make available the Llama Materials (or any derivative works thereof), or a product or service (including another AI model) that contains any of them, you shall (A) provide a copy of this Agreement with any such Llama Materials; and (B) prominently display “Built with Llama” on a related website, user interface, blogpost, about page, or product documentation. If you use the Llama Materials or any outputs or results of the Llama Materials to create, train, fine tune, or otherwise improve an AI model, which is distributed or made available, you shall also include “Llama” at the beginning of any such AI model name.
+
+ii. If you receive Llama Materials, or any derivative works thereof, from a Licensee as part of an integrated end user product, then Section 2 of this Agreement will not apply to you.
+
+iii. You must retain in all copies of the Llama Materials that you distribute the following attribution notice within a “Notice” text file distributed as a part of such copies: “Llama 4 is licensed under the Llama 4 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved.”
+
+iv. Your use of the Llama Materials must comply with applicable laws and regulations (including trade compliance laws and regulations) and adhere to the Acceptable Use Policy for the Llama Materials (available at https://www.llama.com/llama4/use-policy), which is hereby incorporated by reference into this Agreement.
+
+2. Additional Commercial Terms. If, on the Llama 4 version release date, the monthly active users of the products or services made available by or for Licensee, or Licensee’s affiliates, is greater than 700 million monthly active users in the preceding calendar month, you must request a license from Meta, which Meta may grant to you in its sole discretion, and you are not authorized to exercise any of the rights under this Agreement unless or until Meta otherwise expressly grants you such rights.
+
+3. Disclaimer of Warranty. UNLESS REQUIRED BY APPLICABLE LAW, THE LLAMA MATERIALS AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN “AS IS” BASIS, WITHOUT WARRANTIES OF ANY KIND, AND META DISCLAIMS ALL WARRANTIES OF ANY KIND, BOTH EXPRESS AND IMPLIED, INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE. YOU ARE SOLELY RESPONSIBLE FOR DETERMINING THE APPROPRIATENESS OF USING OR REDISTRIBUTING THE LLAMA MATERIALS AND ASSUME ANY RISKS ASSOCIATED WITH YOUR USE OF THE LLAMA MATERIALS AND ANY OUTPUT AND RESULTS.
+
+4. Limitation of Liability. IN NO EVENT WILL META OR ITS AFFILIATES BE LIABLE UNDER ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, TORT, NEGLIGENCE, PRODUCTS LIABILITY, OR OTHERWISE, ARISING OUT OF THIS AGREEMENT, FOR ANY LOST PROFITS OR ANY INDIRECT, SPECIAL, CONSEQUENTIAL, INCIDENTAL, EXEMPLARY OR PUNITIVE DAMAGES, EVEN IF META OR ITS AFFILIATES HAVE BEEN ADVISED OF THE POSSIBILITY OF ANY OF THE FOREGOING.
+
+5. Intellectual Property.
+
+a. No trademark licenses are granted under this Agreement, and in connection with the Llama Materials, neither Meta nor Licensee may use any name or mark owned by or associated with the other or any of its affiliates, except as required for reasonable and customary use in describing and redistributing the Llama Materials or as set forth in this Section 5(a). Meta hereby grants you a license to use “Llama” (the “Mark”) solely as required to comply with the last sentence of Section 1.b.i. You will comply with Meta’s brand guidelines (currently accessible at https://about.meta.com/brand/resources/meta/company-brand/). All goodwill arising out of your use of the Mark will inure to the benefit of Meta.
+
+b. Subject to Meta’s ownership of Llama Materials and derivatives made by or for Meta, with respect to any derivative works and modifications of the Llama Materials that are made by you, as between you and Meta, you are and will be the owner of such derivative works and modifications.
+
+c. If you institute litigation or other proceedings against Meta or any entity (including a cross-claim or counterclaim in a lawsuit) alleging that the Llama Materials or Llama 4 outputs or results, or any portion of any of the foregoing, constitutes infringement of intellectual property or other rights owned or licensable by you, then any licenses granted to you under this Agreement shall terminate as of the date such litigation or claim is filed or instituted. You will indemnify and hold harmless Meta from and against any claim by any third party arising out of or related to your use or distribution of the Llama Materials.
+
+6. Term and Termination. The term of this Agreement will commence upon your acceptance of this Agreement or access to the Llama Materials and will continue in full force and effect until terminated in accordance with the terms and conditions herein. Meta may terminate this Agreement if you are in breach of any term or condition of this Agreement. Upon termination of this Agreement, you shall delete and cease use of the Llama Materials. Sections 3, 4 and 7 shall survive the termination of this Agreement.
+
+7. Governing Law and Jurisdiction. This Agreement will be governed and construed under the laws of the State of California without regard to choice of law principles, and the UN Convention on Contracts for the International Sale of Goods does not apply to this Agreement. The courts of California shall have exclusive jurisdiction of any dispute arising out of this Agreement.
+```
+
 ## Hugging Face Transformers
 
 The `rotate_half` function in `collector/trtllm/collect_mla.py` is copied from
@@ -320,6 +581,54 @@ The `rotate_half` function in `collector/trtllm/collect_mla.py` is copied from
 Transformers project at tag `v4.57.1`:
 
 https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/llama/modeling_llama.py#L109-L113
+
+The Gemma 4 vision-tower graph, bidirectional visual-block mask behavior, and
+aspect-ratio-preserving processor math in these files are adapted and modified
+for performance modeling from Hugging Face
+Transformers at commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
+
+- `src/aiconfigurator_core/sdk/models/blocks/vit.py`
+- `src/aiconfigurator_core/sdk/models/gemma4.py`
+- `src/aiconfigurator_core/sdk/backends/base_backend.py`
+
+Upstream sources:
+
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/modeling_gemma4.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/image_processing_gemma4.py
+
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This Gemma 4 material is licensed under the Apache License 2.0.
+
+The Kimi K2.5 and Kimi K3 spatial-temporal vision-tower, processor, and temporal-pooling
+behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py`,
+`src/aiconfigurator_core/sdk/utils.py`, and `src/aiconfigurator_core/sdk/backends/base_backend.py`,
+with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`
+and `tests/unit/sdk/models/test_kimi_k3_vision.py`,
+are modified adaptations of Hugging Face Transformers at
+commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
+
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/modeling_kimi_k25.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+
+Copyright 2026 the HuggingFace Inc. team. All rights reserved.
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This material is licensed under the Apache License 2.0.
+
+The upstream license at that revision is available at:
+https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+The fixed-tile canvas and global-tile logic in
+`src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
+normalization in `src/aiconfigurator_core/sdk/utils.py`, are modified adaptations
+of the Llama 4 image processor (Copyright 2025 HuggingFace Inc. team. All rights
+reserved.) at tag `v4.51.0` (commit
+`0720e206c6ba28887e4d60ef60a6a089f6c1cc76`):
+
+https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
+
+The upstream license at that revision is available at:
+https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/LICENSE
 
 The Transformers `LICENSE` file at tag `v4.57.1` is reproduced verbatim below:
 

@@ -6,13 +6,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::engine::{Backend, TimingModel, TimingModelConfig};
+use crate::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
 use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver, load_agentic_mooncake,
+        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -26,7 +27,7 @@ use serde::Deserialize;
 enum ExecutionPayload {
     Configured {
         spec: ReplaySpec,
-        traffic: RuntimeTraffic,
+        traffic: Box<RuntimeTraffic>,
     },
     Legacy(ReplaySpec),
 }
@@ -35,6 +36,10 @@ enum ExecutionPayload {
 #[serde(deny_unknown_fields)]
 struct RuntimeTraffic {
     source_type: String,
+    /// Configured deployment model used to time every agentic request. Source
+    /// model labels remain provenance on the validated graph.
+    #[serde(default)]
+    execution_model: Option<String>,
     #[serde(default)]
     load_type: Option<String>,
     #[serde(default)]
@@ -46,9 +51,13 @@ struct RuntimeTraffic {
     #[serde(default)]
     trace_block_size: Option<usize>,
     #[serde(default)]
+    weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
     replay_concurrency: Option<usize>,
+    #[serde(default)]
+    agentic_lanes: Option<usize>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -78,6 +87,53 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
+}
+
+struct BuiltRuntimeInput {
+    input: ReplayRuntimeInput,
+    weka_nested_timestamp_basis: Option<WekaResolvedTimestampBasis>,
+}
+
+impl BuiltRuntimeInput {
+    fn without_weka_basis(input: ReplayRuntimeInput) -> Self {
+        Self {
+            input,
+            weka_nested_timestamp_basis: None,
+        }
+    }
+}
+
+const AGENTIC_MODEL_PROJECTION_POLICY: &str = "project_to_configured_target";
+
+fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
+    traffic
+        .execution_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .context("agentic execution requires a configured target model")
+}
+
+fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+    let ReplayRuntimeInput::Workload(driver) = input else {
+        return Ok(());
+    };
+    if !driver.is_agentic() {
+        return Ok(());
+    }
+    ensure!(
+        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
+        "agentic M1 execution supports only vLLM and SGLang backends"
+    );
+    ensure!(
+        rank.native_host_offload.is_none(),
+        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+    );
+    ensure!(
+        rank.aic_nextn.is_none(),
+        "agentic M1 execution requires speculative decoding disabled"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +174,8 @@ struct AicTimingConfig {
     mem_fraction_static: Option<f64>,
     #[serde(default)]
     free_gpu_memory_fraction: Option<f64>,
+    #[serde(default)]
+    cuda_graph_reserved_bytes: u64,
     #[serde(default)]
     systems_path: Option<String>,
     #[serde(default)]
@@ -355,6 +413,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item(
+            "cuda_graph_reserved_bytes",
+            config.cuda_graph_reserved_bytes,
+        )?;
         // Capacity intentionally omits NextN until AIC's Eagle memory model no
         // longer returns negative KV capacity. Timing compilation still uses it.
         kwargs.set_item("systems_path", config.systems_path.as_deref())?;
@@ -622,14 +684,41 @@ fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
     allow_agentic: bool,
-) -> Result<ReplayRuntimeInput> {
+) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        traffic.source_type == "trace" || traffic.agentic_lanes.is_none(),
+        "agentic_lanes requires agentic trace input"
+    );
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
+        "weka_nested_timestamp_basis requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
         let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
         let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
+        ensure!(
+            format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
+            "weka_nested_timestamp_basis requires Weka input"
+        );
+        ensure!(
+            traffic.agentic_lanes != Some(0),
+            "agentic_lanes must be greater than 0"
+        );
+        if traffic.agentic_lanes.is_some() {
+            ensure!(
+                matches!(format, "weka" | "agentic_mooncake" | "dynamo"),
+                "agentic_lanes requires weka, agentic_mooncake, or agentic Dynamo input"
+            );
+        }
         if format == "agentic_mooncake" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "agentic_mooncake requires trace_timestamps load"
+            );
             ensure!(allow_agentic, "agentic trace requires aggregated topology");
             ensure!(
                 traffic.max_sim_time_ms.is_none(),
@@ -639,18 +728,71 @@ fn build_runtime_input(
                 paths.len() == 1,
                 "agentic_mooncake requires exactly one path"
             );
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "agentic_mooncake does not support concurrency load"
+            );
             let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
                 .normalize_starts()
                 .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace(trace, engine_block_size)?,
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(WorkloadDriver::new_agentic_trace_with_options(
+                    trace,
+                    engine_block_size,
+                    true,
+                    traffic.agentic_lanes,
+                )?),
             ));
+        }
+        if format == "weka" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "weka requires trace_timestamps load"
+            );
+            ensure!(
+                allow_agentic,
+                "Weka agentic trace requires aggregated topology"
+            );
+            ensure!(
+                traffic.max_sim_time_ms.is_none(),
+                "Weka agentic trace does not support max virtual time"
+            );
+            ensure!(paths.len() == 1, "weka requires exactly one path");
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "Weka agentic trace does not support concurrency load"
+            );
+            let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
+            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+                &paths[0],
+                traffic.trace_block_size,
+                WekaImportOptions {
+                    nested_timestamp_basis: requested_basis,
+                },
+            )?;
+            let trace = trace.normalize_starts().speed_up_timing(speedup)?;
+            return Ok(BuiltRuntimeInput {
+                input: ReplayRuntimeInput::Workload(
+                    WorkloadDriver::new_agentic_trace_with_options(
+                        trace,
+                        engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
+                    )?,
+                ),
+                weka_nested_timestamp_basis: Some(resolved_basis),
+            });
         }
         if format == "dynamo" {
             let loaded =
                 DynamoRequestTrace::from_request_trace_files(&paths, traffic.trace_block_size)?;
             let driver = match loaded {
                 DynamoRequestTrace::Standard(trace) => {
+                    ensure!(
+                        traffic.agentic_lanes.is_none(),
+                        "agentic_lanes requires an agentic Dynamo trace"
+                    );
                     let trace = trace.normalize_session_starts()?.speed_up_timing(speedup)?;
                     match traffic.replay_concurrency {
                         Some(cap) => {
@@ -660,11 +802,12 @@ fn build_runtime_input(
                     }
                 }
                 DynamoRequestTrace::Agentic(trace) => {
+                    require_agentic_execution_model(&traffic)?;
                     ensure!(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
                     );
-                    WorkloadDriver::new_agentic_trace(
+                    WorkloadDriver::new_agentic_trace_with_options(
                         {
                             ensure!(
                                 allow_agentic,
@@ -677,10 +820,14 @@ fn build_runtime_input(
                             trace.normalize_starts().speed_up_timing(speedup)?
                         },
                         engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
                     )?
                 }
             };
-            return Ok(ReplayRuntimeInput::Workload(driver));
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(driver),
+            ));
         }
         ensure!(
             paths.len() == 1,
@@ -706,7 +853,9 @@ fn build_runtime_input(
             }
             (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
         };
-        return Ok(ReplayRuntimeInput::Workload(driver));
+        return Ok(BuiltRuntimeInput::without_weka_basis(
+            ReplayRuntimeInput::Workload(driver),
+        ));
     }
 
     ensure!(
@@ -755,7 +904,9 @@ fn build_runtime_input(
         (None, true) => WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?,
         (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
     };
-    Ok(ReplayRuntimeInput::Workload(driver))
+    Ok(BuiltRuntimeInput::without_weka_basis(
+        ReplayRuntimeInput::Workload(driver),
+    ))
 }
 
 fn run_with_input(
@@ -780,9 +931,22 @@ fn run_with_input(
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-            ExecutionPayload::Configured { spec, traffic } => (spec, Some(traffic)),
+            ExecutionPayload::Configured { spec, traffic } => (spec, Some(*traffic)),
             ExecutionPayload::Legacy(spec) => (spec, None),
         };
+    let agentic_input = traffic.as_ref().and_then(|traffic| {
+        traffic
+            .trace_format
+            .as_deref()
+            .filter(|format| matches!(*format, "weka" | "agentic_mooncake" | "dynamo"))
+            .map(|format| {
+                (
+                    format.to_string(),
+                    traffic.agentic_lanes,
+                    traffic.execution_model.clone(),
+                )
+            })
+    });
     if capture_artifacts {
         ensure!(
             matches!(&spec.topology, ReplayTopology::Aggregated { .. }),
@@ -797,7 +961,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
 
-    let (report, artifacts) = match spec.topology.clone() {
+    let (report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let capacity_is_explicit = role
@@ -825,14 +989,22 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            if let Some(built) = &built_input {
+                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+            }
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             let factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
             run_with_input(spec, factory, input, capture_artifacts)
+                .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -868,7 +1040,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| {
                     build_runtime_input(
                         traffic,
@@ -882,6 +1054,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     )
                 })
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             run_with_input(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
@@ -891,11 +1067,57 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 input,
                 capture_artifacts,
             )
+            .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
     .context("AISimulate replay failed")?;
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    if report.agentic_graph.is_some()
+        && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
+    {
+        let source_models = report
+            .agentic_graph
+            .as_ref()
+            .expect("agentic graph presence was checked")
+            .source_models
+            .clone();
+        let execution_model = execution_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .context("agentic execution did not declare its configured target model")?;
+        let object = report_json
+            .as_object_mut()
+            .context("AISimulate replay report did not serialize as an object")?;
+        object.insert(
+            "agentic_qualification".to_string(),
+            serde_json::Value::String("functional_only".to_string()),
+        );
+        object.insert(
+            "agentic_input_format".to_string(),
+            serde_json::Value::String(input_format),
+        );
+        object.insert(
+            "agentic_lanes".to_string(),
+            serde_json::to_value(agentic_lanes)
+                .context("serializing configured agentic lane count")?,
+        );
+        if let Some(resolved_basis) = resolved_weka_timestamp_basis {
+            object.insert(
+                "weka_nested_timestamp_basis".to_string(),
+                serde_json::Value::String(resolved_basis.as_str().to_string()),
+            );
+        }
+        object.insert(
+            "agentic_model_projection".to_string(),
+            serde_json::json!({
+                "policy": AGENTIC_MODEL_PROJECTION_POLICY,
+                "source_models": source_models,
+                "target_model": execution_model,
+            }),
+        );
+    }
     if !report.per_request.is_empty() {
         let object = report_json
             .as_object_mut()
@@ -950,6 +1172,109 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
+        let directory = tempfile::tempdir().unwrap();
+        let dynamo = serde_json::json!({
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10,
+            "agent_context": {"session_id": "session"},
+            "request": {
+                "request_id": "root", "model": "model", "output_tokens": 1,
+                "request_received_ms": 0, "total_time_ms": 10,
+                "replay": {"trace_block_size": 4, "input_length": 4, "input_sequence_hashes": [1]}
+            }
+        });
+        let mut standard_dynamo = dynamo.clone();
+        standard_dynamo
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_context");
+        let fixtures = [
+            (
+                "weka",
+                vec![serde_json::json!({
+                    "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+                    "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+                })],
+                true,
+            ),
+            (
+                "agentic_mooncake",
+                vec![
+                    serde_json::json!({
+                        "schema": "dynamo.agentic_mooncake", "version": 2,
+                        "block_size": 4, "hash_id_scope": "local",
+                        "source": {"format": "test", "digest": "qualification"}
+                    }),
+                    serde_json::json!({
+                        "request_id": "root", "play_id": "play", "session_id": "session", "model": "model",
+                        "input_length": 4, "output_length": 1, "hash_ids": [1], "not_before_ms": 0.0
+                    }),
+                ],
+                true,
+            ),
+            ("dynamo", vec![dynamo], true),
+            ("dynamo", vec![standard_dynamo], false),
+        ];
+        for (format, rows, agentic) in fixtures {
+            let path = directory.path().join(format!("{format}-{agentic}.jsonl"));
+            std::fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            for (options, message) in [
+                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
+                (
+                    serde_json::json!({"aic_nextn": 1}),
+                    "speculative decoding disabled",
+                ),
+                (
+                    serde_json::json!({
+                        "kv_cache_bytes_per_token": 16,
+                        "native_host_offload": {"num_host_blocks": 8}
+                    }),
+                    "HBM-only",
+                ),
+            ] {
+                let mut rank = serde_json::json!({
+                    "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                rank.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let payload = serde_json::json!({
+                    "spec": {
+                        "version": 1,
+                        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1, "startup_delay_ms": 0.0}},
+                        "engine": {"rank": rank},
+                        "requests": []
+                    },
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps",
+                        "trace_format": format, "trace_path": path,
+                        "trace_block_size": 4, "execution_model": "model"
+                    }
+                });
+                // No lane flag: Dynamo agentic detection must follow loaded content.
+                let result = execute_json(&payload.to_string(), false);
+                if agentic {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains(message), "{format}: {error}");
+                } else {
+                    let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+                    assert_eq!(report["completed_requests"], 1);
+                    assert!(report.get("agentic_qualification").is_none());
+                }
+            }
+        }
+    }
+
     #[pyclass]
     struct DecodeCoordinateProbe;
 
@@ -990,6 +1315,7 @@ mod tests {
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
+            cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
         }
@@ -1016,6 +1342,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+    }
+
+    #[test]
+    fn cuda_graph_reservation_reaches_capacity_rematerialization() {
+        let mut config = aic_config();
+        config.cuda_graph_reserved_bytes = 14_559_939_133;
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+
+        materialize_aic_capacity(&config, &mut role, false, |config, _role| {
+            assert_eq!(config.cuda_graph_reserved_bytes, 14_559_939_133);
+            Ok(321)
+        })
+        .unwrap();
+
+        assert_eq!(role.rank.num_gpu_blocks, 321);
     }
 
     #[test]
@@ -1167,6 +1508,7 @@ mod tests {
                 output_tokens: 1,
                 output_token_ids: None,
                 dp_rank: None,
+                prefill_dp_rank: None,
                 session_id: Some("session-a".into()),
                 turn_index: Some(2),
                 metadata: serde_json::json!({"caller_tag": "binding"}),

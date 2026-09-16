@@ -10,6 +10,7 @@ import importlib
 import importlib.metadata
 import importlib.resources
 import json
+import math
 import os
 import subprocess
 import sys
@@ -81,6 +82,12 @@ def _verify_payload() -> None:
             "aiconfigurator_core/sdk/engine.py",
             "aiconfigurator_core/sdk/memory.py",
             "aiconfigurator_core/systems/h100_sxm.yaml",
+            "collector/__init__.py",
+            "collector/model_cases.py",
+            "collector/cases/base_ops/mla_module.yaml",
+            "collector/fpm_forward/cli.py",
+            "collector/fpm_forward/__init__.py",
+            "collector/fpm_forward/runtime/fpm_exec.sh",
         ),
     )
     _forbid_distribution_files(
@@ -117,6 +124,8 @@ def _verify_imports() -> None:
     compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
     core = importlib.import_module("aiconfigurator_core")
     stable = importlib.import_module("aisimulate_core")
+    importlib.import_module("collector")
+    importlib.import_module("collector.fpm_forward")
     if core.AicEngine is not runtime.AicEngine or compatibility_runtime.AicEngine is not runtime.AicEngine:
         raise RuntimeError("AicEngine identity differs across unified compatibility namespaces")
     if stable.AicEngine is not runtime.AicEngine:
@@ -124,7 +133,9 @@ def _verify_imports() -> None:
 
     sdk = importlib.import_module("aiconfigurator_core.sdk")
     expected_facade = {
+        "AttentionBackend",
         "EngineHandle",
+        "MoEBackend",
         "ModelConfig",
         "RuntimeConfig",
         "RustForwardPassPerfModel",
@@ -157,6 +168,79 @@ def _exercise_engine() -> None:
     decode_ms = engine.predict_decode_latency(1, 1024, 2)
     if not (prefill_ms > 0 and decode_ms > 0):
         raise RuntimeError(f"unified engine produced invalid latencies: {prefill_ms=}, {decode_ms=}")
+
+
+def _verify_fpe_probe_results(payload: dict) -> None:
+    """Require complete passing probes for each selected role and topology."""
+    role_phases = {
+        "agg": {"prefill", "decode_start", "decode_end", "mixed"},
+        "prefill": {"prefill"},
+        "decode": {"decode_start", "decode_end"},
+    }
+    groups: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for row in payload["results"]:
+        if row["status"] != "PASS":
+            raise RuntimeError("installed FPE sentinels did not execute successfully")
+        latency = row["latency_ms"]
+        if (
+            isinstance(latency, bool)
+            or not isinstance(latency, (int, float))
+            or not math.isfinite(latency)
+            or latency <= 0
+        ):
+            raise RuntimeError("installed FPE command produced invalid latencies")
+        roles = tuple(sorted(row["roles"].split("|")))
+        if not set(roles) <= role_phases.keys():
+            raise RuntimeError("installed FPE command produced invalid roles")
+        compile_args = json.loads(row["reproducer"])["compile"]
+        key = (json.dumps(compile_args, sort_keys=True), roles)
+        phases = groups.setdefault(key, set())
+        if row["phase"] in phases:
+            raise RuntimeError("installed FPE command produced duplicate phases")
+        phases.add(row["phase"])
+    if not groups or payload["metadata"]["plan_count"] != len(groups):
+        raise RuntimeError("installed FPE plan count does not match probe results")
+    for (_, roles), phases in groups.items():
+        if phases != set().union(*(role_phases[role] for role in roles)):
+            raise RuntimeError("installed FPE command produced incomplete topology phases")
+    if set().union(*groups.values()) != role_phases["agg"]:
+        raise RuntimeError("installed FPE command did not exercise all required phases")
+
+
+def _exercise_fpe_matrix() -> None:
+    """Launch the actual matrix command without exposing a source package."""
+    generator = Path(__file__).resolve().parent / "support_matrix/generate_fpe_support_matrix.py"
+    with tempfile.TemporaryDirectory(prefix="aisim-installed-fpe-") as directory:
+        output = Path(directory) / "matrix"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(generator),
+                "--system",
+                "b200_sxm",
+                "--backend",
+                "vllm",
+                "--backend-version",
+                "0.24.0",
+                "--model",
+                "Qwen/Qwen3-32B",
+                "--max-topologies-per-role",
+                "1",
+                "--max-workers",
+                "1",
+                "--output-dir",
+                str(output),
+            ],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode:
+            raise RuntimeError(f"installed FPE command failed: {result.stdout}\n{result.stderr}")
+        payload = json.loads((output / "fpe_support_matrix.json").read_text())
+        _verify_fpe_probe_results(payload)
 
 
 def _verify_fpm_workflow() -> str:
@@ -271,6 +355,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expect", choices=("fpm", "full", "unified"), default="unified")
     parser.add_argument("--exercise-engine", action="store_true")
+    parser.add_argument(
+        "--exercise-fpe", action="store_true", help="Run repository FPE tooling against the installed wheel"
+    )
     args = parser.parse_args()
 
     if args.expect == "fpm":
@@ -282,6 +369,8 @@ def main() -> int:
     _verify_imports()
     if args.exercise_engine:
         _exercise_engine()
+    if args.exercise_fpe:
+        _exercise_fpe_matrix()
     print(
         f"Verified unified aisimulate {wheel_version}: application, compatibility SDKs, resources, and native runtime"
     )

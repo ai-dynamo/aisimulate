@@ -152,18 +152,6 @@ impl ReplayEngineConfig {
                                 .to_string(),
                         ));
                     }
-                    if role.dp_size != 1 {
-                        // TODO(#12965): Carry logical-worker plus DP-rank identity through
-                        // disaggregated handoff before removing this fail-fast guard.
-                        let role_name = match stage {
-                            WorkerStage::Prefill => "prefill",
-                            WorkerStage::Decode => "decode",
-                            WorkerStage::Aggregated => unreachable!(),
-                        };
-                        return Err(ReplayError::InvalidSpec(format!(
-                            "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
-                        )));
-                    }
                 }
             }
         }
@@ -180,19 +168,39 @@ pub struct ReplayRoleFactory {
     tensor_parallel_size: u32,
     backend: Backend,
     total_blocks: u64,
+    pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
+    pub(crate) g3_block_bytes: usize,
+    pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
 }
 
 impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn build(&self, worker_id: usize) -> ReplayResult<Engine> {
+        if self.g3_config.is_some() && self.g3_tier.is_none() {
+            return Err(ReplayError::InvalidSpec(
+                "g3_offload requires a Replay deployment registry".into(),
+            ));
+        }
         let worker_id = u64::try_from(worker_id).map_err(|_| {
             ReplayError::Engine(format!(
                 "worker id {worker_id} exceeds the native engine range"
             ))
         })?;
-        self.factory
+        let mut engine = self
+            .factory
             .build(EngineIdentity::new(worker_id), self.dp_size)
-            .map_err(engine_error)
+            .map_err(engine_error)?;
+        if let Some(registry) = &self.g3_tier {
+            registry
+                .lock()
+                .unwrap()
+                .register_worker(worker_id as usize)
+                .map_err(|error| ReplayError::Engine(error.to_string()))?;
+            for rank in engine.ranks_mut() {
+                rank.set_g3_offload(Arc::clone(registry), worker_id as usize);
+            }
+        }
+        Ok(engine)
     }
 
     #[doc(hidden)]
@@ -285,6 +293,13 @@ impl ReplayEngineFactory {
         let total_blocks = u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
             ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
         })?;
+        role.rank.validate().map_err(engine_error)?;
+        let g3_config = role.rank.g3_offload.take();
+        let g3_block_bytes = role
+            .rank
+            .block_size
+            .checked_mul(role.rank.kv_cache_bytes_per_token.unwrap_or(0))
+            .ok_or_else(|| ReplayError::InvalidSpec("G3 block bytes overflow".into()))?;
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -296,6 +311,9 @@ impl ReplayEngineFactory {
             tensor_parallel_size: role.tensor_parallel_size,
             backend,
             total_blocks,
+            g3_config,
+            g3_block_bytes,
+            g3_tier: None,
         })
     }
 }

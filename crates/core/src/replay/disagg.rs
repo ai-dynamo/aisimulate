@@ -32,10 +32,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp, pop_ready_scaling_tick,
-    pop_ready_telemetry_tick, pop_ready_transfer_complete, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_transfer_complete,
-    push_worker_completions, push_worker_ready,
+    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
+    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_transfer_complete, push_worker_completions, push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -274,6 +274,7 @@ impl DisaggActionQueues {
 struct DisaggFlowState {
     requests: HashMap<Uuid, DisaggRequestState>,
     requests_by_handoff: HashMap<HandoffId, Uuid>,
+    next_handoff_ordinal: u128,
     handoff_order: HandoffOrder,
     handoff_latency_ms: f64,
     action_queues: DisaggActionQueues,
@@ -302,6 +303,7 @@ impl DisaggFlowState {
         Self {
             requests: HashMap::new(),
             requests_by_handoff: HashMap::new(),
+            next_handoff_ordinal: 1,
             handoff_order,
             handoff_latency_ms,
             action_queues: DisaggActionQueues::default(),
@@ -630,7 +632,14 @@ impl DisaggFlowState {
         if self.requests.contains_key(&uuid) {
             bail!("offline disagg replay request {uuid} is already active");
         }
-        let handoff_id = HandoffId::new(Uuid::new_v4());
+        // Handoff identities are replay-local. Allocate in arrival order so
+        // simultaneous transfers have stable priority even with random request
+        // UUIDs, and never reuse an identity while stale events may remain.
+        let handoff_id = HandoffId::new(Uuid::from_u128(self.next_handoff_ordinal));
+        self.next_handoff_ordinal = self
+            .next_handoff_ordinal
+            .checked_add(1)
+            .context("offline disagg replay handoff ordinal overflow")?;
         let mut state = DisaggRequestState::new(
             request,
             arrival_time_ms,
@@ -937,6 +946,8 @@ where
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
     collect_fpm: bool,
+    drive_started: bool,
+    drive_finalized: bool,
 }
 
 #[cfg(test)]
@@ -1006,9 +1017,7 @@ where
         let handoff_order = match (prefill_factory.backend(), decode_factory.backend()) {
             (Backend::Vllm, Backend::Vllm) => HandoffOrder::SourceFirst,
             (Backend::Sglang, Backend::Sglang) => HandoffOrder::DestinationFirst,
-            (Backend::Trtllm, _) | (_, Backend::Trtllm) => {
-                bail!("offline disaggregated replay does not support TRT-LLM")
-            }
+            (Backend::Trtllm, Backend::Trtllm) => HandoffOrder::SourceFirst,
             _ => bail!("offline disaggregated replay requires matching backend engine types"),
         };
         let progress = ReplayProgress::new(
@@ -1074,6 +1083,8 @@ where
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
+            drive_started: false,
+            drive_finalized: false,
         })
     }
 
@@ -1234,11 +1245,11 @@ where
             return Ok(());
         };
         self.admission
-            .on_request_causal_terminal(uuid, self.now_ms, status)
+            .defer_causal_terminal(uuid, self.now_ms, status)
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        self.admission.on_request_quiescent(uuid, self.now_ms)
+        self.admission.defer_quiescent(uuid, self.now_ms)
     }
 
     /// Submit a coordinator-owned prefill onto a selected worker.
@@ -1409,6 +1420,7 @@ where
 
     fn route_prefill(&mut self, uuid: Uuid, action: IssuedHandoffAction) -> Result<()> {
         self.state_mut(uuid)?.phase = DisaggPhase::QueuedPrefill;
+        self.state_mut(uuid)?.select_prefill_dp_rank()?;
         let metadata =
             Metadata::from_hashes(self.state_mut(uuid)?.take_replay_hashes()).for_prefill();
         let session_id = self.state(uuid)?.session_id().map(str::to_owned);
@@ -1456,6 +1468,7 @@ where
 
     fn route_destination(&mut self, uuid: Uuid, action: IssuedHandoffAction) -> Result<()> {
         self.state_mut(uuid)?.await_destination();
+        self.state_mut(uuid)?.select_decode_dp_rank()?;
         // TODO: Keep the destination side compact through decode routing and
         // reservation once decode-block hashes can be derived without prompt
         // expansion and the scheduler accepts compact metadata. Destination-
@@ -1802,7 +1815,20 @@ where
                 self.notify_causal_terminal(uuid)?;
                 self.cancel_prefill_route(uuid)?;
                 self.cancel_decode_route(uuid)?;
-                self.finish_logical_request(uuid, true)?;
+                if self.state(uuid)?.counted_in_flight {
+                    self.finish_logical_request(uuid, true)?;
+                } else {
+                    // Decode terminal already finalized the request while its
+                    // handoff stayed retained for cleanup, so finalizing again
+                    // would trip `prepare_logical_finish`. Retire it instead,
+                    // dropping the queued actions the way the `remove_actions`
+                    // argument above would have. A request retired twice still
+                    // fails loudly on the handoff index.
+                    self.flow.action_queues.remove(uuid);
+                    if self.flow.retire_completed_request(uuid)? {
+                        self.notify_quiescent(uuid)?;
+                    }
+                }
             }
             None => bail!("handoff completed without a terminal coordinator outcome"),
         }
@@ -1996,7 +2022,7 @@ where
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
         if let Some(token_id) = signal.token_id {
-            CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
+            self.admission.defer_output_token(signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2438,8 +2464,9 @@ where
             changed |= self.apply_worker_completions()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
-            changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            changed |= self.release_ready_arrivals()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self
@@ -3210,7 +3237,10 @@ where
         self.decode_fpm_buffer.take()
     }
 
-    fn run_to_completion(&mut self) -> Result<()> {
+    fn ensure_drive_started(&mut self) -> Result<bool> {
+        if self.drive_started {
+            return Ok(false);
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -3218,11 +3248,35 @@ where
         }
         self.drain_current_timestamp()?;
         self.seed_first_telemetry_tick()?;
-        // With a planner attached, seed the recurring heartbeat; ticks then fire as
-        // events inside drain_current_timestamp.
         self.seed_first_scaling_tick()?;
+        // Keep the baseline before the first scaling decision, but settle any
+        // tick seeded at this instant before exposing a settled step boundary.
+        if !self.is_done()
+            && self
+                .events
+                .peek()
+                .is_some_and(|event| event.at_ms <= self.now_ms)
+        {
+            self.drain_current_timestamp()?;
+        }
+        self.drive_started = true;
+        Ok(true)
+    }
 
-        while !self.is_done() {
+    /// Advance to the next fully settled semantic timestamp while preserving
+    /// the live engine, router, handoff, placement, and KV state.
+    pub(crate) fn step(&mut self) -> Result<ReplayStepOutcome> {
+        let just_started = self.ensure_drive_started()?;
+        if self.is_done() {
+            return Ok(ReplayStepOutcome::Complete);
+        }
+        if just_started {
+            return Ok(ReplayStepOutcome::Settled {
+                now_ms: self.now_ms,
+            });
+        }
+
+        loop {
             let (next_timestamp_ms, canonical_timestamp_ms) = self.next_timestamps();
             let Some(canonical_timestamp_ms) = canonical_timestamp_ms else {
                 if self.prefill_engine.has_runnable_worker()
@@ -3243,7 +3297,9 @@ where
             if let Some(cap_ms) = self.max_sim_time_ms
                 && canonical_timestamp_ms > cap_ms
             {
-                break;
+                return Ok(ReplayStepOutcome::TimeLimitReached {
+                    now_ms: self.now_ms,
+                });
             }
             let next_timestamp_ms = next_timestamp_ms
                 .expect("canonical replay activity must have a next scheduled timestamp");
@@ -3253,9 +3309,22 @@ where
             }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
+            return Ok(if self.is_done() {
+                ReplayStepOutcome::Complete
+            } else {
+                ReplayStepOutcome::Settled {
+                    now_ms: self.now_ms,
+                }
+            });
         }
+    }
 
-        self.publish_final_telemetry_sample()?;
+    fn run_to_completion(&mut self) -> Result<()> {
+        while let ReplayStepOutcome::Settled { .. } = self.step()? {}
+        if !self.drive_finalized {
+            self.publish_final_telemetry_sample()?;
+            self.drive_finalized = true;
+        }
 
         Ok(())
     }
@@ -3274,6 +3343,12 @@ where
         }
         if let Some(identity) = self.admission.agentic_graph_identity() {
             self.collector.set_agentic_graph(identity);
+        }
+        if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
+            self.collector.set_agentic_lifecycle(transcript);
+        }
+        if let Some(outcomes) = self.admission.agentic_play_outcomes() {
+            self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))

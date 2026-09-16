@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Nightly CI
+name: Main branch nightly CI
 
 # Nightly build of the approved AISimulate release artifacts — the
-# `aisimulate` wheel and the `aisimulate-core` crate — via
+# `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
+# FPE support-matrix refresh at the same source SHA. Artifact staging waits for
+# the matrix refresh to complete successfully. Release artifacts are built via
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. The build job runs only hash-pinned tooling and
 # lockfile-resolved crates; the wheel's unpinned PyPI dependency tree is
@@ -346,6 +348,23 @@ jobs:
           # Matches the Dynamo nightly compliance policy's 30-day window.
           retention-days: 30
 
+  # Refresh strict-native op-level FPE coverage at the exact nightly source
+  # SHA. This remains outside pull-request CI because a complete refresh uses
+  # multiple CPU shards and remains expensive. A failed refresh
+  # prevents the nightly artifacts from advancing to Artifactory.
+  # Staging waits for every shard: at most 20 run concurrently and each has
+  # a 480-minute limit. Queueing and multiple waves can extend total latency.
+  fpe-support-matrix:
+    name: FPE Support Matrix (main)
+    needs: [changes-guard, build-artifacts]
+    if: needs.changes-guard.outputs.should-build == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fpe-support-matrix.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      wheel_artifact: nightly-dist-amd64
+
   # Installing the wheel pulls its unpinned PyPI dependency tree — untrusted
   # code that must not share a job with artifact production, so this runs
   # after the artifacts are immutable in the artifact store. A red smoke job
@@ -490,7 +509,7 @@ jobs:
   # environment that scopes the ARTIFACTORY_* secrets.
   stage-artifactory:
     name: Stage to Artifactory
-    needs: [build-artifacts, smoke-test]
+    needs: [build-artifacts, smoke-test, fpe-support-matrix]
     if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30

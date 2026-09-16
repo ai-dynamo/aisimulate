@@ -11,12 +11,18 @@ subtitle: Core fields and optional adapter-owned search spaces
 `SmartSearchConfig.search_space` contains backend and deployment fields. Optional feature-specific
 search spaces are mappings under `SmartSearchConfig.adapters`.
 
+For fixed-image E+agg/E+P+D search, see [Analytical EPD search](epd.md).
+The SDK uses `search_space.encoder` with `workload.images`; it reuses AIC's
+encoder model and does not expose per-request EPD replay or deployment outputs.
+
 ## Top-Level Shape
 
 ```yaml
 search_space:
   model_name: example/model
   hardware_sku: h200_sxm
+  prefill_hardware_sku: h200_sxm
+  decode_hardware_sku: gb200
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
@@ -57,6 +63,8 @@ configuration for each candidate.
 |---|---|---|
 | `model_name` | required | model identifier |
 | `hardware_sku` | required | AI Configurator system identifier |
+| `prefill_hardware_sku` | `None` | optional disaggregated-prefill system override; inherits `hardware_sku` |
+| `decode_hardware_sku` | `None` | optional disaggregated-decode system override; inherits `hardware_sku` |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
@@ -67,7 +75,67 @@ configuration for each candidate.
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
-size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
+or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+
+`prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
+override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share
+the configured model, backend, backend version, and total `gpu_budget`. When `backend_version` is
+omitted, the latest performance-data version for both effective SKUs must match; otherwise pin one
+version supported by both systems. These overrides are part of the Sweeper YAML/SDK contract; the
+separate `aisimulate recommend` input continues to describe one shared hardware SKU.
+
+The current Dynamo Router adapter uses the shared `hardware_sku` for
+`prefill_load_model.type: aic`. Sweeper rejects a candidate before replay when its materialized
+Router AIC system differs from the effective prefill SKU. This also affects matching overrides:
+`hardware_sku: h200_sxm` with both role SKUs set to `gb200` needs a GB200 prefill load model.
+Use a Router provider that consumes `prefill_hardware_sku`, or select a non-AIC load model.
+Correctly materialized AIC hooks, decode-only overrides, and shared-SKU behavior remain supported.
+
+## Attention-FFN Disaggregation
+
+AFD is supported by public `aisimulate predict` and `aisimulate recommend` with the built-in
+analytical engine runner. See the [AFD Topology Contract](afd-topology.md) for public configuration
+and replay limits. The internal `SmartSearchConfig` schema uses topology `afd` or `afd+pd`;
+an injected runner must explicitly advertise the selected backend with the chosen topology.
+
+This pinned pure-AFD example creates a finite standard Sweeper branch:
+
+```yaml
+search_space:
+  deployment_mode: [afd]
+  backend: [trtllm]
+  model_name: Qwen/Qwen3-32B
+  hardware_sku: h200_sxm
+  gpu_budget: 32
+  afd_phase: both
+  afd_pinned_topologies:
+    - n_a_nodes: 2
+      n_f_nodes: 2
+      tp_a: 4
+      a_batch_size: 64
+      f_moe_ep_size: 1
+      num_microbatches: 3
+      pipeline_model: optimistic
+
+workload:
+  isl: 1024
+  osl: 128
+  concurrency: 64
+  num_request_ratio: 10
+```
+
+Use `deployment_mode: [afd+pd]` with `afd_phase: prefill` or `decode` to search a companion for the
+opposite phase. The companion uses that phase's ordinary `max_num_batched_tokens`, `max_num_seqs`,
+block-size, and memory fields. Optional `afd_companion_parallel_configs` pins its parallel shapes.
+Searched (non-pinned) AFD requires an explicit `afd_batch_size_candidates` list. The finite domain
+also supports `afd_tp_a_candidates`, `afd_f_moe_ep_size_candidates`,
+`afd_microbatch_candidates`, `afd_pipeline_model_candidates`, and `afd_max_candidates`.
+
+AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible KV capacity. The
+current performance-model adapter also requires concrete positive `isl` and `osl`, so use a
+synthetic request rate or absolute concurrency rather than a trace-only workload. The complete
+topology and capability contract is documented in [AFD Topology Contract](afd-topology.md).
 
 ## Pinned Parallel Configurations
 
@@ -83,7 +151,9 @@ search_space:
 ```
 
 A disaggregated entry contains `prefill` and `decode` shapes. Every pinned shape must be legal,
-KV-feasible, and supported by at least one selected backend.
+KV-feasible, supported by at least one selected backend, and accepted by the configured Replay
+runner. If every selected backend/topology pair is runner-incompatible, preflight raises
+`aisimulate.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
 
 ## Provider Selection
 
@@ -115,8 +185,21 @@ algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandi
 `SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
 AI Simulate variable takes precedence.
 
-## Removed KVBM Fields
+<a id="removed-kvbm-fields"></a>
+
+## Host Offload and Removed KVBM Fields
 
 Sweeper rejects the old KVBM block-count, transfer-bandwidth, offload-batch-size, and cache-hit
-fields. The AI Simulate engine and replay path do not support them, and they have no adapter
-migration.
+search fields. Those legacy fields have no adapter migration.
+
+The public `predict` and `recommend` commands support a separate native host-offload descriptor
+at `engine.workers.aggregated.kv_cache.host_offload`. It sets `num_host_blocks`,
+`d2h_bandwidth_gbps`, and `h2d_bandwidth_gbps` as fixed values, not search dimensions. It requires
+aggregated vLLM, prefix caching enabled, and `attention_data: 1`; native speculative decoding is
+not supported. For `recommend`, mode and backend must be concrete, the parallelism preset must be
+disabled (`preset: false`), and `attention_data` must be fixed to `1`. Other parallelism knobs,
+such as `tensor` and `replicas`, may still be searched. This does not add disk offload or restore
+the removed KVBM search fields.
+
+See [Native vLLM host-offload prediction](../cli/user-guide.md#native-vllm-host-offload-prediction)
+for a complete YAML example and CLI command.

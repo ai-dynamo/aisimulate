@@ -16,6 +16,9 @@ SPDX-License-Identifier: Apache-2.0
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aisimulate)
 [![Discord](https://dcbadge.limes.pink/api/server/mRJ2KNzwYE?style=flat)](https://discord.gg/mRJ2KNzwYE)
 
+Visit the [AISimulate website](https://ai-dynamo.org/aisimulate/) for the published
+accuracy overview and support matrices.
+
 In disaggregated serving, configuring an effective deployment is challenging: you need to decide how many prefill and decode
 workers to run, and the parallelism for each worker. Combined with SLA targets for TTFT (Time to First Token) and
 TPOT (Time per Output Token), optimizing throughput at a given latency becomes even more complex.
@@ -28,6 +31,37 @@ For a technical deep dive into the design and methodology of AIConfigurator, ple
 
 The tool models LLM inference using collected data for a target machine and framework. It evaluates thousands of
 configurations and runs anywhere via the CLI.
+
+## DeepEP-LL decode modeling
+
+Stage 1 models each DeepEP low-latency decode dispatch/combine from a measured
+same-shape curve, OLS or system-startup one-shot calibration, and deterministic
+Monte Carlo routing skew. Runtime uses the P50 of complete trials. Typed rows
+are tried per shape before the phase-compatible legacy `default` row;
+`default` is FP8 dispatch or BF16 combine, not a general dtype wildcard.
+Exact-topology curves are not rescaled by advertised bandwidth;
+NVLink/MNVL/IB endpoint limits guard only single-domain donor extrapolation.
+DeepEP-HT, DeepEP V2, and TensorRT-LLM communication paths are unchanged. See the detailed
+[DeepEP-LL modeling document](docs/DEEPEP_LL_MODELING.md) for token conventions,
+payload dtypes, formulas, topology rules, fixed assumptions, and Stage 2/3/4
+TODOs.
+
+Expert compute remains on the measured `MoeExpertCompute` path, including the
+existing SGLang `DeepEPMoE.run_moe_core`-derived WideEP data. The Monte Carlo
+routing/load adjustment is applied only to LL dispatch and combine, so this
+stage changes communication modeling without replacing the measured compute
+kernel with the ordinary fused-MoE predictor.
+
+Across the 192 checked-in LL curves, every OLS slope and raw intercept is
+positive; the smallest raw intercept is approximately 6.02 us, median
+\(R^2\) is approximately 0.99909, and the minimum is approximately 0.9522. A
+future finite negative intercept caused by measurement noise is clamped to
+zero instead of making the configuration unavailable. For
+GB200 \(H=7168,K=8,N=256\), the dispatch and combine fitted bandwidths are
+634.3 and 776.8 GB/s, respectively. These slopes are fitted from parquet data;
+the separate 900 GB/s NVLink value comes from `SystemSpec`.
+
+![GB200 DeepEP-LL OLS feasibility](docs/deepep_ll_gb200_ols.svg)
 
 Let's get started.
 
@@ -92,7 +126,7 @@ Dynamo, without creating another CLI:
 aisimulate predict --stack dynamo --config prediction.yaml
 ```
 
-See [the unified CLI design](../../docs/cli/design.md) for the complete field, domain, preset, and
+See [the AISimulate CLI User Guide](../../docs/cli/user-guide.md) for the complete field, domain, preset, and
 traffic contract. The `aiconfigurator` command below remains available for its existing AIC
 estimation and deployment-generation workflows.
 
@@ -131,9 +165,19 @@ Quantization defaults are inferred from the Hugging Face model config (`config.j
 For low-precision models, use a quantized HF ID (for example, `Qwen/Qwen3-32B-FP8`) or a local model directory containing those files.
 Any quantization set via `profiles` or YAML `config` overrides the HF defaults.
 
-For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see the [CLI User Guide -- End-to-End Workflow](docs/cli_user_guide.md#end-to-end-workflow).
+For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see the [Legacy AIC CLI User Guide -- End-to-End Workflow](../../docs/cli/legacy-aic-user-guide.md#end-to-end-workflow).
 
-Refer to [CLI User Guide](docs/cli_user_guide.md)
+Refer to [Legacy AIC CLI User Guide](../../docs/cli/legacy-aic-user-guide.md)
+
+KV-cache estimation and AISimulate engine replay accept an optional
+`cuda_graph_reserved_bytes` rank-local reservation. For SGLang, the value is
+additional to headroom already encoded by `mem_fraction_static`. The default is zero. See
+the [core API contract](../../docs/core-api.md#kv-cache-capacity-reservation)
+for the Python and Rust fields and budget semantics.
+
+The standard prediction CLI accepts the same value at
+`engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` when
+`capacity.type` is `default`.
 
 ### Python API
 
@@ -303,7 +347,7 @@ aiconfigurator cli exp --yaml-path customized_config.yaml
 ```
 We can use `exp` mode to compare multiple results, including disagg vs. agg, homogeneous vs. heterogeneous, and more than 2 experiments.
 We've crafted several examples in `src/aiconfigurator/cli/exps/*.yaml`
-For the full guide, refer to [CLI User Guide](docs/cli_user_guide.md).
+For the full guide, refer to [Legacy AIC CLI User Guide](../../docs/cli/legacy-aic-user-guide.md).
 
 ### Deploying to llm-d Platform
 
@@ -497,13 +541,17 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 
 #### Legacy AIC Support Matrix
 
-The interactive [Legacy AIC Support Matrix](docs/support-matrix/) preserves
-historical AIConfigurator CLI compatibility coverage. It uses the current
-`main` snapshot and supports filtering by system, mode, and model.
+The interactive [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+preserves historical AIConfigurator CLI compatibility coverage. It uses the
+published snapshot and supports filtering by system, mode, and model.
 
 For current strict-native forward-pass estimator coverage, use the
-[FPE Support Matrix](docs/fpe-support-matrix/). FPE coverage is estimator
+[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/). FPE coverage is estimator
 evidence, not deployment certification.
+
+For matched serving-accuracy results, use the
+[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/), which reports
+TTFT and TPOT error separately from prediction coverage.
 
 The raw data is also available as
 [per-system CSV files](src/aiconfigurator_core/systems/support_matrix).

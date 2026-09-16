@@ -1,6 +1,6 @@
 {
  "_regenerate": ".venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/gen_op_oracle.py",
- "_source": "MoEAllToAll(...).query / MoEExpertCompute(...).query (shared_layer=False), SILICON mode",
+ "_source": "MoEAllToAll(...)._engine_query / MoEExpertCompute(...)._engine_query (shared_layer=False), SILICON mode",
  "_tuples": ["h200_sxm/sglang/0.5.6.post2", "gb200/trtllm/1.3.0rc10"],
  "samples": [
   {"attention_tp_size": 1, "backend": "sglang", "comm_backend": "deepep_ht", "comm_dtype": "default", "data_root": "data/h200_sxm/sglang/0.5.6.post2", "hidden_size": 7168, "kind": "tp1_exact", "latency_ms": 0.04836, "moe_ep_size": 8, "node_num": 1, "num_experts": 256, "op": "moe_a2a", "phase": "combine", "scale_factor": 1.0, "sms": 20, "system": "h200_sxm", "topk": 8, "version": "0.5.6.post2", "x": 1},

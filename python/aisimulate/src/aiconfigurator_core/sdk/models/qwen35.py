@@ -12,6 +12,8 @@ from aiconfigurator_core.sdk.models.helpers import (
     mtp_scale_factor,
     quant_exclude_patterns,
 )
+from aiconfigurator_core.sdk.models.vit_ops import build_encoder_ops
+from aiconfigurator_core.sdk.utils import _get_language_quantization_config
 
 _MAMBA_SSM_DTYPE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
 
@@ -46,7 +48,7 @@ def _qwen35_mixed_precision_gemm_modes(
         quantization = hf_quant.get("quantization")
         if isinstance(quantization, dict):
             layer_maps.append(quantization.get("quantized_layers"))
-    quantization = raw_config.get("quantization_config")
+    quantization = _get_language_quantization_config(raw_config)
     if isinstance(quantization, dict):
         layer_maps.append(quantization.get("quantized_layers"))
 
@@ -88,7 +90,7 @@ def _qwen35_mixed_precision_gemm_modes(
 @register_model("QWEN35")
 class Qwen35Model(BaseModel):
     """
-    Qwen3.5 hybrid GDN + full-attention model (dense and MoE variants).
+    Qwen3.5 multimodal hybrid GDN + full-attention model (dense and MoE variants).
 
     Handles two layer types from Qwen35Config.layer_types:
       - "linear_attention": Gated DeltaNet (GDN) layers using chunk_gated_delta_rule
@@ -185,6 +187,11 @@ class Qwen35Model(BaseModel):
 
         self._build_context_ops()
         self._build_generation_ops()
+        if cfg.vision_config is not None:
+            self.encoder_config = cfg.vision_config
+            self.encoder_ops.extend(
+                build_encoder_ops(cfg.vision_config, self.config.tp_size, self.config.enable_encoder_dp)
+            )
 
     @staticmethod
     def _resolve_mamba_ssm_dtype(raw_config: dict) -> str:

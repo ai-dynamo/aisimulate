@@ -67,6 +67,7 @@ class ReplayCliConfig:
                 if not self.uses_trace and concurrency is not None
                 else None
             ),
+            execution_mode=self.replay_mode,
         )
 
     def _deployment_spec(self) -> BackendDeploymentSpec:

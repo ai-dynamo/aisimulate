@@ -46,6 +46,11 @@ pub struct KvCacheEstimateRequest {
     /// Override for unknown SKUs; when `Some`, it wins over the SystemSpec
     /// capacity reported by the native path.
     pub gpu_memory_capacity_bytes_override: Option<u64>,
+    /// Fixed rank-local bytes reserved by CUDA graphs before KV allocation.
+    /// For SGLang this is additional to graph/runtime headroom already encoded
+    /// by `mem_fraction_static`.
+    #[serde(default)]
+    pub cuda_graph_reserved_bytes: u64,
     /// `None` = raw estimate only; `Some(0.05)` = 5% safety margin.
     pub tolerance_fraction: Option<f64>,
     pub options: KvCacheEstimateOptions,
@@ -126,6 +131,8 @@ pub struct MemoryBreakdown {
     pub activations_bytes: u64,
     pub runtime_overhead_bytes: u64,
     pub comm_overhead_bytes: u64,
+    #[serde(default)]
+    pub cuda_graph_reserved_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -243,63 +250,12 @@ fn fetch_python_estimate(
     req: &KvCacheEstimateRequest,
 ) -> Result<KvCacheEstimate, KvCacheEstimateError> {
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
 
     let engine = &req.engine;
-    let parallel = &engine.parallel;
-    let quant = &engine.quantization;
-    let nextn = engine
-        .speculative
-        .as_ref()
-        .and_then(|s| s.nextn)
-        .unwrap_or(0);
-    let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
 
     Python::with_gil(|py| -> PyResult<KvCacheEstimate> {
         let engine_mod = py.import("aiconfigurator.sdk.memory")?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
-        kwargs.set_item("max_num_tokens", req.max_num_tokens)?;
-        kwargs.set_item("max_batch_size", req.max_batch_size)?;
-        kwargs.set_item("memory_fraction_kind", fraction_kind)?;
-        kwargs.set_item("memory_fraction_value", fraction_value)?;
-        kwargs.set_item("tp_size", parallel.tp_size)?;
-        kwargs.set_item("pp_size", parallel.pp_size)?;
-        kwargs.set_item("attention_dp_size", parallel.attention_dp_size.unwrap_or(1))?;
-        kwargs.set_item("moe_tp_size", parallel.moe_tp_size)?;
-        kwargs.set_item("moe_ep_size", parallel.moe_ep_size)?;
-        kwargs.set_item(
-            "gemm_quant_mode",
-            quant.weight_dtype.as_ref().map(dtype_str),
-        )?;
-        kwargs.set_item("moe_quant_mode", quant.moe_dtype.as_ref().map(dtype_str))?;
-        kwargs.set_item(
-            "kvcache_quant_mode",
-            quant.kv_cache_dtype.as_ref().map(dtype_str),
-        )?;
-        kwargs.set_item(
-            "fmha_quant_mode",
-            quant.activation_dtype.as_ref().map(dtype_str),
-        )?;
-        // `comm_quant_mode` is intentionally NOT forwarded: the comm/NCCL
-        // overhead comes from `system_spec` (`nccl_mem` / `other_mem`), not the
-        // comm quant mode, so it does not affect the non-KV breakdown.
-        kwargs.set_item("nextn", nextn)?;
-        kwargs.set_item(
-            "systems_path",
-            engine.systems_path.as_deref().and_then(|p| p.to_str()),
-        )?;
-        kwargs.set_item(
-            "gpu_memory_capacity_bytes_override",
-            req.gpu_memory_capacity_bytes_override,
-        )?;
-        kwargs.set_item("tolerance_fraction", req.tolerance_fraction)?;
-        kwargs.set_item("naive_kv_reservation", req.options.naive_kv_reservation)?;
-        kwargs.set_item("allow_naive_fallback", req.options.allow_naive_fallback)?;
-        kwargs.set_item(
-            "allow_hf_config_download",
-            req.options.allow_hf_config_download,
-        )?;
+        let kwargs = estimate_kwargs(py, req)?;
 
         let out = engine_mod.call_method(
             "estimate_kv_cache",
@@ -323,6 +279,72 @@ fn fetch_python_estimate(
         gpu_sku: engine.system_name.clone(),
         reason: format!("estimate_kv_cache: {e}"),
     })
+}
+
+/// Build the exact keyword dictionary passed across the PyO3 boundary.
+/// Kept separate from module import/call so forwarding has deterministic,
+/// perf-database-independent coverage.
+#[cfg(feature = "python")]
+fn estimate_kwargs<'py>(
+    py: pyo3::Python<'py>,
+    req: &KvCacheEstimateRequest,
+) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    use pyo3::types::{PyDict, PyDictMethods};
+
+    let engine = &req.engine;
+    let parallel = &engine.parallel;
+    let quant = &engine.quantization;
+    let nextn = engine
+        .speculative
+        .as_ref()
+        .and_then(|s| s.nextn)
+        .unwrap_or(0);
+    let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
+    kwargs.set_item("max_num_tokens", req.max_num_tokens)?;
+    kwargs.set_item("max_batch_size", req.max_batch_size)?;
+    kwargs.set_item("memory_fraction_kind", fraction_kind)?;
+    kwargs.set_item("memory_fraction_value", fraction_value)?;
+    kwargs.set_item("tp_size", parallel.tp_size)?;
+    kwargs.set_item("pp_size", parallel.pp_size)?;
+    kwargs.set_item("attention_dp_size", parallel.attention_dp_size.unwrap_or(1))?;
+    kwargs.set_item("moe_tp_size", parallel.moe_tp_size)?;
+    kwargs.set_item("moe_ep_size", parallel.moe_ep_size)?;
+    kwargs.set_item(
+        "gemm_quant_mode",
+        quant.weight_dtype.as_ref().map(dtype_str),
+    )?;
+    kwargs.set_item("moe_quant_mode", quant.moe_dtype.as_ref().map(dtype_str))?;
+    kwargs.set_item(
+        "kvcache_quant_mode",
+        quant.kv_cache_dtype.as_ref().map(dtype_str),
+    )?;
+    kwargs.set_item(
+        "fmha_quant_mode",
+        quant.activation_dtype.as_ref().map(dtype_str),
+    )?;
+    // `comm_quant_mode` is intentionally NOT forwarded: the comm/NCCL
+    // overhead comes from `system_spec` (`nccl_mem` / `other_mem`), not the
+    // comm quant mode, so it does not affect the non-KV breakdown.
+    kwargs.set_item("nextn", nextn)?;
+    kwargs.set_item(
+        "systems_path",
+        engine.systems_path.as_deref().and_then(|p| p.to_str()),
+    )?;
+    kwargs.set_item(
+        "gpu_memory_capacity_bytes_override",
+        req.gpu_memory_capacity_bytes_override,
+    )?;
+    kwargs.set_item("cuda_graph_reserved_bytes", req.cuda_graph_reserved_bytes)?;
+    kwargs.set_item("tolerance_fraction", req.tolerance_fraction)?;
+    kwargs.set_item("naive_kv_reservation", req.options.naive_kv_reservation)?;
+    kwargs.set_item("allow_naive_fallback", req.options.allow_naive_fallback)?;
+    kwargs.set_item(
+        "allow_hf_config_download",
+        req.options.allow_hf_config_download,
+    )?;
+    Ok(kwargs)
 }
 
 /// Rebuild a [`KvCacheEstimate`] from the Python `estimate_kv_cache` dict.
@@ -359,6 +381,7 @@ fn estimate_from_dict(
             activations_bytes: get("activations_bytes")?,
             runtime_overhead_bytes: get("runtime_overhead_bytes")?,
             comm_overhead_bytes: get("comm_overhead_bytes")?,
+            cuda_graph_reserved_bytes: get("cuda_graph_reserved_bytes")?,
         })
     };
 
@@ -440,5 +463,130 @@ mod tests {
             KvCacheMemoryFraction::OfTotal(0.85).to_wire(),
             ("of_total", 0.85)
         );
+    }
+
+    #[test]
+    fn old_estimate_json_defaults_missing_cuda_graph_breakdown_to_zero() {
+        let estimate: KvCacheEstimate = serde_json::from_value(serde_json::json!({
+            "total_gpu_capacity_bytes": 1_000,
+            "total_kv_size_bytes": 500,
+            "kv_size_per_token_bytes": 10,
+            "total_kv_size_tokens": 50,
+            "source": "Native",
+            "memory_breakdown": {
+                "weights_bytes": 100,
+                "activations_bytes": 20,
+                "runtime_overhead_bytes": 30,
+                "comm_overhead_bytes": 40
+            },
+            "tolerance_adjusted": null
+        }))
+        .expect("pre-reservation estimate JSON must remain readable");
+
+        assert_eq!(
+            estimate
+                .memory_breakdown
+                .expect("fixture has a native breakdown")
+                .cuda_graph_reserved_bytes,
+            0
+        );
+    }
+
+    #[cfg(feature = "python")]
+    fn python_forwarding_request() -> KvCacheEstimateRequest {
+        use std::collections::BTreeMap;
+
+        use crate::perfmodel::{ENGINE_CONFIG_SCHEMA_VERSION, ParallelMapping, QuantizationConfig};
+
+        KvCacheEstimateRequest {
+            engine: EngineConfig {
+                schema_version: ENGINE_CONFIG_SCHEMA_VERSION,
+                model_name: "test-model".to_string(),
+                system_name: "test-system".to_string(),
+                systems_path: None,
+                backend: BackendKind::Vllm,
+                backend_version: Some("test-version".to_string()),
+                forward_model: None,
+                kv_block_size: None,
+                parallel: ParallelMapping {
+                    tp_size: 1,
+                    pp_size: 1,
+                    attention_dp_size: Some(1),
+                    moe_tp_size: None,
+                    moe_ep_size: None,
+                    cp_size: None,
+                },
+                quantization: QuantizationConfig {
+                    weight_dtype: None,
+                    moe_dtype: None,
+                    activation_dtype: None,
+                    kv_cache_dtype: None,
+                },
+                speculative: None,
+                enable_shared_layer: None,
+                strict_provenance: false,
+                tolerate_dirless_version: false,
+                database_mode: Default::default(),
+                transfer_policy: None,
+                extra: BTreeMap::new(),
+            },
+            max_num_tokens: 8192,
+            max_batch_size: 256,
+            kv_cache_memory_fraction: KvCacheMemoryFraction::OfTotal(0.8),
+            gpu_memory_capacity_bytes_override: None,
+            cuda_graph_reserved_bytes: 14_559_947_612,
+            tolerance_fraction: None,
+            options: KvCacheEstimateOptions {
+                allow_naive_fallback: false,
+                allow_hf_config_download: false,
+                naive_kv_reservation: 0.8,
+            },
+        }
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn py_dict_forwarding_and_parsing_are_deterministic() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+
+        pyo3::prepare_freethreaded_python();
+        let req = python_forwarding_request();
+        Python::with_gil(|py| -> PyResult<()> {
+            let kwargs = estimate_kwargs(py, &req)?;
+            assert_eq!(
+                kwargs
+                    .get_item("cuda_graph_reserved_bytes")?
+                    .expect("reservation kwarg must be present")
+                    .extract::<u64>()?,
+                req.cuda_graph_reserved_bytes
+            );
+
+            let breakdown = PyDict::new(py);
+            breakdown.set_item("weights_bytes", 100_u64)?;
+            breakdown.set_item("activations_bytes", 20_u64)?;
+            breakdown.set_item("runtime_overhead_bytes", 30_u64)?;
+            breakdown.set_item("comm_overhead_bytes", 40_u64)?;
+            breakdown.set_item("cuda_graph_reserved_bytes", req.cuda_graph_reserved_bytes)?;
+            let out = PyDict::new(py);
+            out.set_item("total_gpu_capacity_bytes", 1_000_u64)?;
+            out.set_item("total_kv_size_bytes", 500_u64)?;
+            out.set_item("kv_size_per_token_bytes", 10_u64)?;
+            out.set_item("total_kv_size_tokens", 50_u64)?;
+            out.set_item("source", "native")?;
+            out.set_item("memory_breakdown", breakdown)?;
+            out.set_item("tolerance_adjusted", py.None())?;
+
+            let estimate = estimate_from_dict(out.as_any())?;
+            assert_eq!(
+                estimate
+                    .memory_breakdown
+                    .expect("fake native result has a breakdown")
+                    .cuda_graph_reserved_bytes,
+                req.cuda_graph_reserved_bytes
+            );
+            Ok(())
+        })
+        .expect("deterministic PyDict round-trip must succeed");
     }
 }
