@@ -3,18 +3,45 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Prepare a model for FPM collection and simulation
+# Prepare model metadata and choose an FPM execution route
 
-FPM onboarding currently requires an AISimulate model class. Reuse a compatible
-registered class or implement the missing model description before collecting
-whole-forward timings. You do not need to collect per-operation GPU timings for
-this workflow: the retained operations describe analytical work and memory.
+FPM onboarding needs pinned model and deployment metadata, correct memory and
+KV-cache accounting, and matching whole-forward timing data. An op-level model
+class is one way to supply analytical work and resource information; it is not
+the intended prerequisite for every FPM onboarding. Per-operation GPU timing
+collection is not required.
 
-This guide covers the model-integration stage of self-service onboarding. Its
-CPU examples use the bundled **Qwen3-0.6B configuration as a procedural example**;
-they do not integrate Inkling or establish coverage for another model. After
-reviewing and installing your integration, continue with the
-[FPM collection-to-prediction workflow](end-to-end-workflow.md).
+In this revision, ordinary FPM `predict` and `recommend` still construct a
+registered analytical class and can use its SOL estimates for timing transfer.
+The separate decoupling change will add direct measured-time interpolation and
+independent model/resource metadata for models without a registered class. It
+will preserve the existing registered-model/SOL route. Collection bootstrap can
+already resolve some unregistered configurations; this does not establish that
+the current prediction path can construct those models.
+
+Record the common inputs in section 1 for either route. Sections 2–5 describe
+the **optional registered-model/SOL integration procedure**. Their runnable CPU
+examples use the bundled **Qwen3-0.6B configuration as a procedural example**;
+they do not integrate Inkling or establish coverage for another model. The
+[FPM collection-to-prediction workflow](end-to-end-workflow.md) covers the later
+collection and simulation stages.
+
+## Planned class-independent route
+
+The self-service pilot will onboard Inkling on NVIDIA GB200 without adding an
+op-level model class. It will cover TP, DEP, and TEP configurations with separately
+pinned topology identities. The exact checkpoint, runtime, allocation, and
+strategy degrees still need to be resolved; the current guided CLI foundation
+generates pure-TP configurations only.
+
+The separate decoupling change must resolve model geometry, weight storage and
+sharding, and cache layout from validated metadata rather than a retained
+operation graph. Direct prefill interpolation will use measured prompt curves
+and two-sided KV brackets at the same batch size, including wider brackets when
+both neighboring curves cover the query. It must keep exact deployment identity,
+reject unsupported metadata and uncovered queries explicitly, and avoid hidden
+SOL fallback for unregistered models. 2D interpolation remains experimental.
+No class-independent API or runnable example is introduced by this guide.
 
 ## 1. Record the intended deployment
 
@@ -33,10 +60,10 @@ autoregressive text inference. Encoder/multimodal models and MTP have explicit
 FPM construction restrictions; a model class existing for another mode is not
 evidence that the intended FPM deployment is supported.
 
-## 2. Reuse or implement the model description
+## 2. Registered-model route: reuse or implement the model description
 
 Follow [How to add a new model](../add_a_new_model.md) for the registry and native
-operation contracts. For this FPM use case, review these concrete responsibilities:
+operation contracts. For this registered-model/SOL route, review these concrete responsibilities:
 
 | Responsibility | Source and required result |
 | --- | --- |
