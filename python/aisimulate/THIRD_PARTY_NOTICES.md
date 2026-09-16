@@ -46,7 +46,7 @@ to those local-only identities. Exact per-file source paths, source and
 packaged SHA-256 digests, row counts, and measured coverage are recorded in
 `src/aiconfigurator_core/systems/data/b200_sxm/power_data_provenance.json`.
 
-The corresponding energy expectations in
+The corresponding energy expectations in the repository-root file
 `crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
 derivatives of those measurements. AISimulate's native pinning workflow at
 commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;

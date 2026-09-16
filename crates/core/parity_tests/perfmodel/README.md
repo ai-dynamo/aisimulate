@@ -134,6 +134,46 @@ Both cases now require a nonzero energy comparison in `_POWER_SUBSET_IDS`.
 These are regression expectations derived from imported operation measurements,
 not independent silicon-accuracy qualification.
 
+#### Recorded refresh commands
+
+The following commands ran from the repository root at
+`36dcc8f3afe9e6e2e9de976737b6337fad8c4d74`, after rebuilding the native extension
+for that checkout. The pin script requires a clean input tree; reproduce a
+historical refresh in an isolated checkout of that revision.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh gpt-oss-20b-b200-trtllm-isl1024-osl2 \
+  nemotron-nas-b200-trtllm-isl1024-osl2
+
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+```
+
+Recorded results: **2 per-op records pinned**, followed by **67 compile-engine
+tests passed**. The refreshed goldens and nonzero-energy guards were committed
+as `574c0d9ce64438c4a1c4e0fbbe58c5a9d4cd4de8`. An engine-step suite result was
+not recorded with that historical refresh.
+
+Both suites subsequently passed in the
+[Engine Golden Regression job](https://github.com/ai-dynamo/aisimulate/actions/runs/35043503755/job/104628335804)
+at `a83ad4f162669b318786cc279f320650ec09d5b1`, using a release native build:
+**298 engine-step tests passed** and **67 compile-engine tests passed**. The
+job ran these exact commands from the repository root:
+
+```bash
+python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py
+
+python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+```
+
+For local reproduction, activate the repository environment with a native
+extension built from matching source. On macOS, add `-p no:timeout` as described
+in `AGENTS.md`. Later PR heads require their own CI results; the linked run
+records the verified revision rather than certifying future changes.
+
 The two identity-merged B200 attention tables include pinned upstream artifacts
 in `power_upstream/*.parquet.source`. The provenance validator checks their
 upstream SHA-256, every imported identity and measurement, and the paired-zero
