@@ -21,6 +21,10 @@ Both artifacts use version `0.12.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
+For published versions, wheel platform tags, source installation, and internal
+nightly consumption, see the [installation guide](installation.md). The product
+version in a manifest does not establish publication on an index.
+
 ## Packaged license files
 
 The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository

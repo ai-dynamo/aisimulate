@@ -28,6 +28,7 @@ pub(super) struct SglangConfig {
     pub(super) max_prefill_tokens: usize,
     pub(super) max_running_requests: usize,
     pub(super) chunked_prefill_size: usize,
+    pub(super) prefill_decode_interval: usize,
     pub(super) clip_max_new_tokens: usize,
     pub(super) init_new_token_ratio: f64,
     pub(super) min_new_token_ratio: f64,
@@ -77,6 +78,7 @@ impl SglangConfig {
 
         Self {
             schedule_policy,
+            prefill_decode_interval: args.prefill_decode_interval,
             max_running_requests: args.max_num_seqs.unwrap_or(usize::MAX),
             max_prefill_tokens: sglang
                 .and_then(|s| s.max_prefill_tokens)

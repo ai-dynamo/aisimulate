@@ -54,6 +54,32 @@ extension contract:
 The wheel includes `py.typed` and a stub for that native extension. The SDK
 Python modules carry their own annotations.
 
+### Context-attention kernel queries
+
+`AicEngine.evaluate_context_attention_kernels_json` accepts `ops_json` (a JSON
+array of serialized `ContextAttention` operations), `batch_size`, and `s`
+(sequence length in tokens), with optional `prefix=0`,
+`imbalance_correction_scale=1.0`, and `visual_block_upper_triangle=False`.
+It evaluates only the attention kernels, excluding fused QK normalization,
+RoPE, and KV-write work. Invalid JSON and other operation families raise
+`ValueError`.
+
+With `visual_block_upper_triangle=True`, the query prices only the additional
+strict upper-triangle attention pairs inside a bidirectional visual block,
+using the underlying causal kernel's database policy and provenance. This
+mode requires `prefix=0`; a nonzero prefix raises `ValueError`. A block with
+zero or one token has zero additional latency and energy, with `source="sol"`.
+The flag is a runtime query option and does not change the serialized op or
+engine-spec formats.
+
+Results are `list[tuple[str, float, float, str]]`, containing
+`(name, latency_ms, energy_wms, source)` with repeated operation names folded
+together. Energy is in watt-milliseconds and is zero when power data is
+unavailable. An empty operation list returns an empty list. Both
+`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+method; `EngineHandle` provides an annotated SDK wrapper with the same query
+options.
+
 ## KV-cache capacity reservation
 
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
@@ -111,6 +137,23 @@ in that direction. Regression fallback ignores both options.
 Use `from_native(...)` instead when native AIC support is required and an
 unsupported configuration or native data failure should surface rather than
 fall back. This strict-native constructor does not take `worker_type`.
+
+`EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
+`SOL` for native forward-pass construction. The Python dictionary form uses
+those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the
+SOL/util path and is intended for research estimates when matching silicon
+data is unavailable. Set `enable_shared_layer=true` when empirical estimation
+may reuse sibling or cross-version calibration data; `transfer_policy` can
+limit the allowed transfer kinds. `strict_provenance=true` makes missing,
+malformed, or incomplete collection and reuse metadata fail the database load.
+`SOL_FULL` remains a per-call diagnostic and is rejected as an engine default.
+Version-slot validation is unchanged; raw versions outside the maintained slots
+still require the existing explicit SDK or environment escape hatch.
+
+`AicEngineBuilder` exposes `.database_mode(...)`, `.shared_layer(...)`,
+`.transfer_policy(...)`, and `.strict_provenance(...)`. Python `compile_engine`
+accepts the corresponding keyword names; `shared_layer` is serialized as
+`EngineConfig.enable_shared_layer`.
 
 Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
 `ForwardPassPerfModel::from_regression(worker_type, options)` for a
@@ -202,7 +245,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
-  `SpeculativeConfig`, `BackendKind`, and `DataType`;
+  `SpeculativeConfig`, `BackendKind`, `DatabaseMode`, and `DataType`;
 - schema gates: `ENGINE_CONFIG_SCHEMA_VERSION`,
   `ENGINE_SPEC_SCHEMA_VERSION`, and `FPM_VERSION`.
 

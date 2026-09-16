@@ -2,11 +2,27 @@ name: GitHub Pages
 
 on:
   workflow_dispatch:
+  schedule:
+    # Refresh committed release snapshots; prediction campaigns run separately.
+    - cron: "17 9 * * *"
+  workflow_run:
+    # Retain the old main workflow name for runs started before the rename.
+    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]
+    types: [completed]
+    branches: [main, 'release/**']
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
+      - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_fpe_pages.py"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/release-nightly-ci.yml"
+      - ".github/workflows/fpe-release-qualify.yml"
       - "tests/test_pages_site.py"
+      - "scripts/check_fpe_support_matrix_browser.py"
+      - "tests/test_e2e_accuracy_overview.py"
+      - "tests/test_e2e_accuracy_ui.mjs"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -18,6 +34,12 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/build_pages_site.py"
+      - "scripts/build_e2e_accuracy_overview.py"
+      - "scripts/prepare_fpe_pages.py"
+      - "scripts/check_fpe_support_matrix_browser.py"
+      - "scripts/run_release_fpe.py"
+      - ".github/workflows/release-nightly-ci.yml"
+      - ".github/workflows/fpe-release-qualify.yml"
       - "python/aisimulate/docs/index.html"
       - "python/aisimulate/docs/support-matrix/**"
       - "python/aisimulate/docs/e2e-accuracy/**"
@@ -26,6 +48,7 @@ on:
       - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
 
 permissions:
+  # Build and validate repository content without Pages access.
   contents: read
 
 concurrency:
@@ -34,36 +57,80 @@ concurrency:
 
 jobs:
   build:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # workflow_run payloads never choose executable repository content.
+          ref: ${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Build allowlisted public site
-        run: python scripts/build_pages_site.py --output-dir _site
-      - name: Test public artifact contract
-        run: python -m unittest discover -s tests -p test_pages_site.py
-      - name: Configure GitHub Pages
+      - name: Fetch release snapshot refs
+        run: git fetch --no-tags --prune origin "+refs/heads/release/*:refs/remotes/origin/release/*"
+      - name: Prepare qualified main and release FPE snapshots
         if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: python scripts/prepare_fpe_pages.py --repository "$GH_REPOSITORY" --output-dir fpe-pages-data
+      - name: Build public deployment with qualified FPE data
+        if: github.event_name != 'pull_request'
+        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site --fpe-data-dir fpe-pages-data
+      - name: Build pull request preview from repository data
+        if: github.event_name == 'pull_request'
+        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
+      - name: Test public artifact and accuracy contracts
+        run: |
+          python -m pip install pytest==8.4.2
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py -q
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Test accuracy UI state
+        run: node --test tests/test_e2e_accuracy_ui.mjs
+      - name: Test FPE branch selection in Chromium
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+          python scripts/check_fpe_support_matrix_browser.py
       - name: Upload GitHub Pages artifact
-        if: github.event_name != 'pull_request'
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      # Read the private Pages configuration and publish the site.
       pages: write
+      # Authenticate the deployment to GitHub Pages.
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

@@ -34,7 +34,7 @@ pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
 
-pub use common::AicError;
+pub use common::{AicError, enums::DatabaseMode};
 // Forward-pass perf model (PR #1152): a forward-pass latency model with online
 // correction, regression fallback, diagnostics, and readiness, built on the
 // compiled [`engine::Engine`]. Re-exported so Rust embedders (the Dynamo

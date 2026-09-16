@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from .detail import format_prediction_details
 from .replay.reporting import format_report_table
 from .sweeper.result import SweepResult
 
@@ -29,7 +30,13 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in ("prediction.json", "recommendation.json", "requests.jsonl"):
+        for name in (
+            "prediction.json",
+            "recommendation.json",
+            "requests.jsonl",
+            "afd-replay-spec.json",
+            "afd-qualification.json",
+        ):
             target = root / name
             if target.is_file() or target.is_symlink():
                 target.unlink()
@@ -82,10 +89,34 @@ def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[
     return paths
 
 
-def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str:
+def format_prediction_stdout(
+    summary: dict[str, Any], output_format: str, *, details: dict[str, Any] | None = None
+) -> str:
     if output_format == "json":
-        return json.dumps(summary, sort_keys=True, separators=(",", ":"))
-    return format_report_table(summary)
+        payload = summary if details is None else {"summary": summary, "details": details}
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    if details is not None:
+        return format_prediction_stdout(summary, output_format) + "\n\n" + format_prediction_details(details)
+    if summary.get("metric_semantics") == "analytical_epd_overlay":
+        lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
+        for name in (
+            "mean_ttft_ms",
+            "mean_tpot_ms",
+            "mean_e2e_latency_ms",
+            "output_throughput_tok_s",
+            "completed_requests",
+            "duration_ms",
+            "gpu_hours",
+            "encoder_gpus",
+            "total_gpus",
+        ):
+            lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
+        return "\n".join(lines)
+    table = format_report_table(summary)
+    if summary.get("agentic_qualification") == "functional_only":
+        return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
+    return table
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:

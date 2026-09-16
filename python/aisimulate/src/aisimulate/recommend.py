@@ -19,6 +19,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
@@ -32,12 +33,15 @@ def run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
     from .sweeper.search import Sweeper
 
+    if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("analytical EPD requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
@@ -68,6 +72,7 @@ def run_recommendation(
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
             config, sample, spec, adapter_sections=adapter_sections
         ),
+        afd_performance_model=afd_performance_model,
     )
     return sweeper.run(smart, top_n=None)
 
@@ -82,6 +87,11 @@ def recommendation_to_sweeper(
     optimization = config.optimization
     mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
     modes = [_legacy_mode(str(value)) for value in mode_values]
+    afd = engine.get("afd")
+    if modes == ["afd"]:
+        if not isinstance(afd, dict):
+            raise ValueError("engine.mode='afd' requires engine.afd")
+        modes = ["afd+pd" if afd["combined_with_pd"] else "afd"]
     backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
     model = engine.get("model")
     if not isinstance(model, str) or not model:
@@ -108,7 +118,40 @@ def recommendation_to_sweeper(
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
-    search_space.update(_role_search_space(workers, modes))
+    for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("hardware") is not None:
+            search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
+    if isinstance(afd, dict):
+        search_space.update(_afd_search_space(afd))
+        if modes == ["afd+pd"]:
+            companion_role = "decode" if afd["phase"] == "prefill" else "prefill"
+            workers.setdefault(companion_role, {})
+            kind, value = _parallel_entries(companion_role, workers[companion_role])
+            if kind == "flat":
+                search_space["afd_companion_parallel_configs"] = [_legacy_parallel(entry) for entry in value]
+            elif kind == "independent":
+                raise ValueError(
+                    f"engine.workers.{companion_role}.parallelism supports preset=default or a concrete "
+                    "preset list for AFD recommendations"
+                )
+    search_space.update(
+        _role_search_space(
+            workers,
+            modes,
+            afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
+        )
+    )
+    if engine.get("workers", {}).get("encoder") is not None:
+        encoder = workers["encoder"]
+        search_space["encoder"] = {
+            "hardware_sku": encoder.get("hardware"),
+            "backend_version": encoder.get("backend_version"),
+            "tp": _choices(encoder["tensor"], default=[1]),
+            "workers": _choices(encoder["replicas"], default=[1]),
+            "batch_size": _choices(encoder["batch_size"], default=[1]),
+            "latency_correction": encoder["latency_correction"],
+            "rate_degradation": encoder["rate_degradation"],
+        }
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
         search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
@@ -205,7 +248,36 @@ def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
 
-def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, Any]:
+def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "afd_phase": afd["phase"],
+        "afd_batch_size_candidates": [int(value) for value in _choices(afd["a_batch_size"], default=[])],
+        "afd_microbatch_candidates": [int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4])],
+        "afd_pipeline_model_candidates": [
+            str(value)
+            for value in _choices(
+                afd.get("pipeline_model"),
+                default=["optimistic", "conservative"],
+            )
+        ],
+        "afd_comm_overhead_factor": afd.get("comm_overhead_factor", 1.0),
+        "afd_boundary_on_attn": afd.get("boundary_on_attn", True),
+        "afd_max_af_ratio": afd.get("max_af_ratio", 4.0),
+        "afd_max_candidates": afd.get("max_candidates", 10_000),
+    }
+    if afd.get("tp_a") is not None:
+        result["afd_tp_a_candidates"] = [int(value) for value in _choices(afd["tp_a"], default=[])]
+    if afd.get("f_moe_ep_size") is not None:
+        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[])
+    return result
+
+
+def _role_search_space(
+    workers: dict[str, Any],
+    modes: list[str],
+    *,
+    afd_phase: str | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "engine_float_ranges": {},
         "engine_log_ranges": [],
@@ -214,8 +286,16 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
-        ("prefill", "prefill", "disagg" in modes),
-        ("decode", "decode", "disagg" in modes),
+        (
+            "prefill",
+            "prefill",
+            "disagg" in modes or ("afd+pd" in modes and afd_phase == "decode"),
+        ),
+        (
+            "decode",
+            "decode",
+            "disagg" in modes or ("afd+pd" in modes and afd_phase == "prefill"),
+        ),
     )
     for public_role, legacy_role, required in specifications:
         raw = workers.get(public_role)
@@ -286,6 +366,7 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
+        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -481,6 +562,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             trace_format=source.get("format", "mooncake"),
             trace_block_size=source.get("block_size"),
         )
+        if source.get("nested_timestamp_basis") is not None:
+            result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,
@@ -495,11 +578,15 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 field="arrival_speedup_ratio",
                 integer=False,
             )
+            if load.get("agentic_lanes") is not None:
+                result["agentic_lanes"] = load["agentic_lanes"]
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
         result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        if source.get("images") is not None:
+            result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
         ratio = stop.get("requests_per_load_unit") if isinstance(stop, dict) else None
     elif source_type == "synthetic-session":
@@ -607,7 +694,13 @@ def _candidate_prediction(
 ) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
     engine: dict[str, Any] = {
-        "mode": "aggregated" if deployment.deployment_mode == "agg" else "disaggregated",
+        "mode": (
+            "aggregated"
+            if deployment.deployment_mode == "agg"
+            else "afd"
+            if deployment.deployment_mode in {"afd", "afd+pd"}
+            else "disaggregated"
+        ),
         "model": sample["model_name"],
         "hardware": sample["hardware_sku"],
         "backend": sample["backend"],
@@ -616,7 +709,33 @@ def _candidate_prediction(
         "workers": {},
     }
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
-    roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
+    if deployment.encoder is not None:
+        from .config.epd import encoder_prediction_fields
+
+        engine["workers"]["encoder"] = encoder_prediction_fields(deployment.encoder)
+    if deployment.deployment_mode in {"afd", "afd+pd"}:
+        raw_afd = sample.get("afd")
+        if not isinstance(raw_afd, dict):
+            raise InfeasibleCandidate("AFD candidate omitted its concrete topology")
+        engine["afd"] = {
+            name: raw_afd[name]
+            for name in (
+                "phase",
+                "combined_with_pd",
+                "n_a_nodes",
+                "n_f_nodes",
+                "tp_a",
+                "a_batch_size",
+                "f_moe_ep_size",
+                "num_microbatches",
+                "pipeline_model",
+                "comm_overhead_factor",
+                "boundary_on_attn",
+            )
+        }
+        roles = (str(sample["afd_companion_role"]),) if deployment.deployment_mode == "afd+pd" else ()
+    else:
+        roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"
         public_role = "aggregated" if role == "agg" else role
@@ -639,7 +758,7 @@ def _candidate_prediction(
         if isinstance(timing_model, dict):
             timing = deepcopy(timing_model)
         else:
-            timing = {"type": "default"}
+            timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -676,6 +795,8 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
+            engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 

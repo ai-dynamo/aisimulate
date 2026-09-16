@@ -22,7 +22,7 @@ ENV MPLCONFIGDIR=/tmp/matplotlib
 # One `aisimulate` wheel owns the application, compatibility namespaces,
 # SDK/data payload, Replay runtime, and unified Rust extension. It is built in
 # the PyPA manylinux_2_28 image so the native PyO3 `.so` links glibc 2.28 and
-# maturin's auditwheel stamps the portable
+# standalone auditwheel repairs and stamps the portable
 # `manylinux_2_28_<arch>` tag. We add `uv` and a rustup toolchain so cargo can
 # fetch crates over TLS.
 #
@@ -47,10 +47,19 @@ ENV UV_PYTHON=/opt/python/cp313-cp313/bin/python3
 COPY Cargo.toml Cargo.lock /workspace/
 COPY crates/ /workspace/crates/
 COPY python/aisimulate/src/ /workspace/python/aisimulate/src/
+COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/
 COPY python/aisimulate/LICENSE python/aisimulate/THIRD_PARTY_NOTICES.md python/aisimulate/pyproject.toml python/aisimulate/README.md /workspace/python/aisimulate/
 COPY python/aisimulate/tools/verify_release_wheels.py /workspace/python/aisimulate/tools/verify_release_wheels.py
 COPY python/aisimulate/tools/verify_installed_package_layers.py /workspace/python/aisimulate/tools/verify_installed_package_layers.py
 COPY python/aisimulate/tools/build_legacy_monolith_fixture.py /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py
+# The source checkout exposes the compatibility data through
+# aic-core/src -> ../src. Recreate that link in the reduced Docker context so
+# maturin can follow aiconfigurator/{model_configs,systems} while assembling the
+# wheel, and fail before the expensive Rust build if the layout ever drifts.
+RUN mkdir -p /workspace/python/aisimulate/aic-core \
+    && ln -s ../src /workspace/python/aisimulate/aic-core/src \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/systems
 # Fail fast if Git LFS content wasn't materialized before the build — otherwise
 # the wheel ships pointer stubs in place of perf data (see DYN-2725).
 RUN set -e; \
@@ -61,12 +70,26 @@ RUN set -e; \
         echo "Run 'git lfs install && git lfs pull' in the source tree before building." >&2; \
         exit 1; \
     fi
-# `uv build` runs maturin's PEP517 backend, which defaults to `--compatibility
-# off`; MATURIN_PEP517_ARGS overrides it to stamp the manylinux_2_28 tag (maturin
-# appends it last, so it wins). `python` isn't on PATH here -> verify via UV_PYTHON.
+# Match Dynamo's release-wheel boundary: Maturin emits an unaudited wheel,
+# then the standalone auditwheel tool repairs and retags that exact wheel.
+# Compiling in this manylinux_2_28 image ensures repair never tries to claim a
+# policy older than the glibc symbols in the native extension.
 RUN cd /workspace/python/aisimulate && \
-    MATURIN_PEP517_ARGS="--compatibility manylinux_2_28" \
-        uv build --wheel --out-dir /workspace/dist && \
+    mkdir -p /workspace/unrepaired-dist && \
+    MATURIN_PEP517_ARGS="--auditwheel skip" \
+        uv build --wheel --out-dir /workspace/unrepaired-dist && \
+    set -- /workspace/unrepaired-dist/aisimulate-*.whl && \
+    [ "$#" -eq 1 ] && [ -f "$1" ] && \
+    case "$(uname -m)" in \
+        x86_64) manylinux_policy=manylinux_2_28_x86_64 ;; \
+        aarch64|arm64) manylinux_policy=manylinux_2_28_aarch64 ;; \
+        *) echo "unsupported wheel architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    auditwheel repair \
+        --plat "${manylinux_policy}" \
+        --wheel-dir /workspace/dist \
+        "$1" && \
+    auditwheel show /workspace/dist/aisimulate-*.whl && \
     "${UV_PYTHON}" tools/verify_release_wheels.py /workspace/dist
 
 # Exercise the one-wheel boundary outside the checkout, including all
@@ -121,4 +144,5 @@ COPY python/aisimulate/tests/ /workspace/tests/
 COPY python/aisimulate/src/ /workspace/src/
 COPY python/aisimulate/tools/ /workspace/tools/
 COPY python/aisimulate/collector/ /workspace/collector/
+COPY python/aisimulate/docs/support-matrix/index.html /workspace/docs/support-matrix/index.html
 COPY python/aisimulate/.agents/ /workspace/.agents/

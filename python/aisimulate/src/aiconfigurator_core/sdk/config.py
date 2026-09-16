@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/config.py
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TypeVar, Union
 
 from aiconfigurator_core.sdk import common
+from aiconfigurator_core.sdk.speculation.base import SpeculationConfig
 
 KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
 
@@ -23,6 +26,32 @@ def normalize_kernel_backend(
     except (TypeError, ValueError) as exc:
         choices = ", ".join(repr(item.value) for item in enum_type)
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
+
+
+def has_video_input(
+    *,
+    num_videos: int = 0,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_video_tokens: int = 0,
+) -> bool:
+    """Return whether any video workload field was configured.
+
+    Unsupported boundaries use this partial-input-aware predicate so an
+    incomplete video request cannot silently degrade to a text-only request.
+    """
+    fields = {
+        "num_videos": num_videos,
+        "video_height": video_height,
+        "video_width": video_width,
+        "video_frames": video_frames,
+        "num_video_tokens": num_video_tokens,
+    }
+    for name, value in fields.items():
+        if value is not None and value < 0:
+            raise ValueError(f"{name} must be nonnegative, got {value}.")
+    return any((value or 0) > 0 for value in fields.values())
 
 
 @dataclass
@@ -61,7 +90,10 @@ class ModelConfig:
     # quantization options
     # MTP speculative decoding: draft length (compute/verification cost only).
     # Accepted-token progress belongs to the upper prediction/simulation layer.
+    # Legacy sugar for speculation=SpeculationConfig("mtp", {"depth": nextn}).
     nextn: int = 0
+    # Resolved by config_builders.resolve_speculation before model construction.
+    speculation: SpeculationConfig | None = field(default=None, kw_only=True)
     overwrite_num_layers: int = 0
     # model builder falvors
     sms: int = 20
@@ -214,6 +246,11 @@ class RuntimeConfig:
     image_width: int = 0
     num_images_per_request: int = 1
     num_image_tokens: int = 0  # override: ViT output tokens per image; ignored when image_height/width are set
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0  # override: ViT output tokens per video; ignored when video dimensions are set
 
 
 @dataclass

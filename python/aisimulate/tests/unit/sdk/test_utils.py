@@ -235,6 +235,21 @@ class TestParseHFConfig:
         layer_types = layer_types * 16  # 64 layers total (48 GDN + 16 GQA)
         config = {
             "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "image_token_id": 248056,
+            "video_token_id": 248057,
+            "vision_config": {
+                "depth": 27,
+                "hidden_size": 1152,
+                "num_heads": 16,
+                "intermediate_size": 4304,
+                "patch_size": 16,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 2,
+                "out_hidden_size": 5120,
+                # Qwen3.5 ignores inherited deepstack metadata and keeps one merger.
+                "deepstack_visual_indexes": [8, 16, 24],
+                "in_channels": 4,
+            },
             "text_config": {
                 "num_hidden_layers": 64,
                 "num_attention_heads": 24,
@@ -279,6 +294,22 @@ class TestParseHFConfig:
         # For dense models moe_inter_size falls back to intermediate_size
         assert extra_params.moe_inter_size == 17408
         assert extra_params.shared_expert_inter_size == 0
+        assert extra_params.image_token_id == 248056
+        assert extra_params.video_token_id == 248057
+        assert extra_params.vision_config == common.VisionEncoderConfig(
+            depth=27,
+            hidden_size=1152,
+            num_heads=16,
+            intermediate_size=4304,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=5120,
+            projector_dims=((4608, 4608), (4608, 5120)),
+            projector_n_instances=1,
+            partial_rotary_factor=1.0,
+            in_channels=4,
+        )
 
     def test_parse_qwen35_moe_config(self):
         """Test parsing Qwen3.5-35B-A3B (MoE hybrid) config → Qwen35Config with MoE fields."""
@@ -287,6 +318,19 @@ class TestParseHFConfig:
         layer_types = layer_types * 10  # 40 layers total (30 GDN + 10 GQA)
         config = {
             "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+            "image_token_id": 248056,
+            "video_token_id": 248057,
+            "vision_config": {
+                "depth": 27,
+                "hidden_size": 1152,
+                "num_heads": 16,
+                "intermediate_size": 4304,
+                "patch_size": 16,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 2,
+                "out_hidden_size": 2048,
+                "deepstack_visual_indexes": [],
+            },
             "text_config": {
                 "num_hidden_layers": 40,
                 "num_attention_heads": 16,
@@ -327,6 +371,44 @@ class TestParseHFConfig:
         assert extra_params.num_experts == 256
         assert extra_params.moe_inter_size == 512
         assert extra_params.shared_expert_inter_size == 512
+        assert extra_params.vision_config is not None
+        assert extra_params.vision_config.out_hidden_size == 2048
+        assert extra_params.vision_config.projector_dims == ((4608, 4608), (4608, 2048))
+        assert extra_params.vision_config.projector_n_instances == 1
+
+    def test_parse_qwen35_rejects_vision_language_projection_mismatch(self):
+        config = {
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "vision_config": {
+                "depth": 27,
+                "hidden_size": 1152,
+                "num_heads": 16,
+                "intermediate_size": 4304,
+                "patch_size": 16,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 2,
+                "out_hidden_size": 4096,
+            },
+            "text_config": {
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 1,
+                "hidden_size": 5120,
+                "intermediate_size": 1024,
+                "vocab_size": 1024,
+                "max_position_embeddings": 4096,
+                "head_dim": 128,
+                "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+                "linear_num_key_heads": 4,
+                "linear_key_head_dim": 128,
+                "linear_num_value_heads": 4,
+                "linear_value_head_dim": 128,
+                "linear_conv_kernel_dim": 4,
+            },
+        }
+
+        with pytest.raises(ValueError, match="out_hidden_size must match"):
+            _parse_hf_config_json(config)
 
     def test_parse_qwen35_layer_types_length_mismatch_raises(self):
         """Test that mismatched layer_types length raises ValueError."""
@@ -353,11 +435,99 @@ class TestParseHFConfig:
         with pytest.raises(ValueError, match="layer_types length"):
             _parse_hf_config_json(config)
 
+    def test_parse_qwen38_max_flat_config(self):
+        """Test parsing Qwen3.8-Max (Qwen/Qwen3.8-2.4T-A95B) → Qwen35Config from a FLAT config.
+
+        Unlike the two Qwen3_5*ForConditionalGeneration VLM classes above, the
+        released Qwen3.8-Max checkpoint ships Qwen3_5MoeForCausalLM with every
+        LLM field top-level (no text_config nesting).
+        """
+        # 92 layers: interval-4 pattern (3 GDN then 1 full) x 23.
+        layer_types = ["linear_attention"] * 3 + ["full_attention"]
+        layer_types = layer_types * 23  # 92 layers total (69 GDN + 23 GQA)
+        config = {
+            "architectures": ["Qwen3_5MoeForCausalLM"],
+            "hidden_size": 8192,
+            "num_hidden_layers": 92,
+            "layer_types": layer_types,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "attn_output_gate": True,
+            "partial_rotary_factor": 0.25,
+            "linear_num_key_heads": 16,
+            "linear_key_head_dim": 128,
+            "linear_num_value_heads": 128,
+            "linear_value_head_dim": 128,
+            "linear_conv_kernel_dim": 4,
+            "mamba_ssm_dtype": "float32",
+            "num_experts": 512,
+            "num_experts_per_tok": 10,
+            "moe_intermediate_size": 2048,
+            "shared_expert_intermediate_size": 2048,
+            "vocab_size": 248320,
+            "max_position_embeddings": 262144,
+            "mtp_num_hidden_layers": 1,
+            "rms_norm_eps": 1e-6,
+            "hidden_act": "silu",
+            "dtype": "bfloat16",
+            "rope_parameters": {
+                "partial_rotary_factor": 0.25,
+                "rope_theta": 10000000,
+                "rope_type": "default",
+            },
+            "tie_word_embeddings": False,
+        }
+
+        result = _parse_hf_config_json(config)
+
+        assert result["architecture"] == "Qwen3_5MoeForCausalLM"
+        assert result["layers"] == 92
+        assert result["hidden_size"] == 8192
+        assert result["n"] == 64
+        assert result["n_kv"] == 4
+        # config head_dim (256) wins over hidden_size // n (8192 // 64 = 128).
+        assert result["d"] == 256
+        assert result["vocab"] == 248320
+        assert result["topk"] == 10
+        assert result["num_experts"] == 512
+        assert result["moe_inter_size"] == 2048
+
+        extra_params = result["extra_params"]
+        assert isinstance(extra_params, common.Qwen35Config)
+        assert len(extra_params.layer_types) == 92
+        assert extra_params.layer_types.count("linear_attention") == 69
+        assert extra_params.layer_types.count("full_attention") == 23
+        assert extra_params.linear_num_key_heads == 16
+        assert extra_params.linear_key_head_dim == 128
+        assert extra_params.linear_num_value_heads == 128
+        assert extra_params.linear_value_head_dim == 128
+        assert extra_params.linear_conv_kernel_dim == 4
+        assert extra_params.shared_expert_inter_size == 2048
+
     def test_parse_llama4_scout_config(self):
         """Test Llama 4 Scout (VLM, step=1: all-MoE) → HybridMoEConfig with alternating attn pattern."""
         config = {
             "architectures": ["Llama4ForConditionalGeneration"],
             "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
             "text_config": {
                 "num_hidden_layers": 48,
                 "hidden_size": 5120,
@@ -389,6 +559,8 @@ class TestParseHFConfig:
         assert cfg.attn_layer_pattern == tuple(i % 2 for i in range(48))
         assert cfg.sliding_window_size == 8192
         assert cfg.dense_inter_size == 16384
+        assert cfg.vision_config is not None
+        assert cfg.vision_config.image_size == 336
         # Llama 4 uses same dims for all layers → all four dim fields are 0
         assert cfg.swa_num_kv_heads == 0
         assert cfg.swa_head_dim == 0
@@ -398,6 +570,24 @@ class TestParseHFConfig:
         config = {
             "architectures": ["Llama4ForConditionalGeneration"],
             "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
             "text_config": {
                 "num_hidden_layers": 48,
                 "hidden_size": 5120,
@@ -424,6 +614,8 @@ class TestParseHFConfig:
         assert sum(cfg.moe_layer_freq) == 24  # 24 MoE layers
         assert cfg.moe_layer_freq.count(0) == 24  # 24 dense layers
         assert cfg.dense_inter_size == 16384
+        assert cfg.vision_config is not None
+        assert cfg.vision_config.image_size == 336
 
     def test_parse_mimov2flash_config(self):
         """Test MiMo-V2-Flash (explicit per-layer patterns, different SWA/global dims) → HybridMoEConfig."""
@@ -567,6 +759,52 @@ class TestParseHFConfig:
         assert cfg.global_head_dim == 512
         assert cfg.sliding_window_size == 1024
         assert cfg.attention_k_eq_v is True
+        assert cfg.vision_config is None
+
+    def test_parse_gemma4_vision_config_alongside_text_config(self):
+        """Gemma 4 keeps its fixed-budget pooled ViT contract beside the text/MoE config."""
+        layer_types = (["sliding_attention"] * 5 + ["full_attention"]) * 5
+        hf_config = self._gemma4_text_config(layer_types)
+        hf_config["text_config"]["use_bidirectional_attention"] = "vision"
+        hf_config["vision_soft_tokens_per_image"] = 280
+        hf_config["vision_config"] = {
+            "model_type": "gemma4_vision",
+            "num_hidden_layers": 27,
+            "hidden_size": 1152,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 16,
+            "head_dim": 72,
+            "intermediate_size": 4304,
+            "patch_size": 16,
+            "pooling_kernel_size": 3,
+            "position_embedding_size": 10240,
+            "default_output_length": 280,
+            "standardize": True,
+        }
+
+        result = _parse_hf_config_json(hf_config)
+
+        cfg = result["extra_params"]
+        assert isinstance(cfg, common.Gemma4MixConfig)
+        assert cfg.layer_types == tuple(layer_types)
+        assert cfg.use_bidirectional_vision_attention is True
+        vision = cfg.vision_config
+        assert isinstance(vision, common.Gemma4VisionEncoderConfig)
+        assert vision.depth == 27
+        assert vision.hidden_size == 1152
+        assert vision.num_heads == vision.num_key_value_heads == 16
+        assert vision.head_dim == 72
+        assert vision.intermediate_size == 4304
+        assert vision.patch_size == 16
+        assert vision.pooling_kernel_size == vision.spatial_merge_size == 3
+        assert vision.position_embedding_size == 10240
+        assert vision.soft_tokens_per_image == 280
+        assert vision.supported_soft_token_budgets == (70, 140, 280, 560, 1120)
+        assert vision.out_hidden_size == 2816
+        assert vision.projector_dims == ((1152, 2816),)
+        assert vision.projector_n_instances == 1
+        assert vision.partial_rotary_factor == 1.0
+        assert vision.standardize is True
 
     def test_gemma4_layer_types_length_mismatch_raises(self):
         """layer_types length must equal num_hidden_layers."""

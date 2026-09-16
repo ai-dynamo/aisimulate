@@ -7,8 +7,9 @@ import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
 from aiconfigurator_core.sdk.models.blocks.moe import MoEBlockShape, build_moe_block_ops
+from aiconfigurator_core.sdk.models.blocks.vit import build_llama4_encoder_ops
 from aiconfigurator_core.sdk.models.helpers import mtp_scale_factor
-from aiconfigurator_core.sdk.utils import _load_model_config_from_model_path
+from aiconfigurator_core.sdk.utils import _get_language_quantization_config, _load_model_config_from_model_path
 
 
 @register_model("HYBRIDMOE")
@@ -51,7 +52,19 @@ class HybridMoEModel(BaseModel):
             model_config,
             backend_name=backend_name,
         )
-        model.set_hybrid_config(model_info["extra_params"])
+        hybrid_config = model_info["extra_params"]
+        model.set_hybrid_config(hybrid_config)
+        if model_info["architecture"] == "Llama4ForConditionalGeneration" and hybrid_config.vision_config:
+            model.encoder_config = hybrid_config.vision_config
+            # EPD language workers keep visual context sizing but host no ViT.
+            if not model.config.language_only:
+                model.encoder_ops.extend(
+                    build_llama4_encoder_ops(
+                        hybrid_config.vision_config,
+                        model.config.tp_size,
+                        model.config.enable_encoder_dp,
+                    )
+                )
         return model
 
     def __init__(self, topk: int, num_experts: int, moe_inter_size: int, *args, backend_name: str = "") -> None:
@@ -90,7 +103,7 @@ class HybridMoEModel(BaseModel):
             return
         raw_config = _load_model_config_from_model_path(self.model_path)
         default_size = [128, 128]
-        weight_block_size = raw_config.get("quantization_config", {}).get("weight_block_size", default_size)[0]
+        weight_block_size = _get_language_quantization_config(raw_config).get("weight_block_size", default_size)[0]
         moe_size_per_gpu = self._moe_inter_size // self.config.moe_tp_size
         if (moe_size_per_gpu % weight_block_size) != 0:
             raise ValueError(

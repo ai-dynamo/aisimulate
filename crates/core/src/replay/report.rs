@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
 use crate::replay::PlacementCacheSample;
-use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
+use crate::replay::loadgen::{
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticTrajectorySnapshot,
+};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
@@ -22,6 +24,7 @@ const DDSKETCH_MAX_BINS: usize = 32_768;
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -29,6 +32,11 @@ pub struct ReplayReport {
     pub latency: TraceLatencyStats,
     pub trajectories: Option<TraceTrajectoryStats>,
     pub agentic_graph: Option<AgenticGraphIdentity>,
+    /// Canonical driver lifecycle evidence. The compact JSON report publishes
+    /// only its digest and event count; conformance tests can inspect all events.
+    pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    /// One explicit completed, failed, or incomplete result per authored play.
+    pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
@@ -224,7 +232,10 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(70))?;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(g3) = &self.g3_offload {
+            map.serialize_entry("g3_offload", g3)?;
+        }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -315,6 +326,16 @@ impl Serialize for ReplayReport {
         }
         if let Some(agentic_graph) = &self.agentic_graph {
             map.serialize_entry("agentic_graph", agentic_graph)?;
+        }
+        if let Some(lifecycle) = &self.agentic_lifecycle {
+            map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
+            map.serialize_entry(
+                "agentic_lifecycle_digest",
+                &lifecycle.digest().map_err(serde::ser::Error::custom)?,
+            )?;
+        }
+        if let Some(outcomes) = &self.agentic_play_outcomes {
+            map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
         serialize_rate_distribution(
@@ -745,7 +766,11 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    /// Simulated timestamp at which this reporting epoch began. Request
+    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
     itl_distribution: StreamingDistribution,
@@ -778,6 +803,8 @@ pub struct TraceCollector {
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
+    agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
 
 impl TraceRequestStats {
@@ -861,6 +888,10 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.requests.contains_key(&uuid)
+    }
+
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;
@@ -985,6 +1016,14 @@ impl TraceCollector {
 
     pub fn set_agentic_graph(&mut self, identity: AgenticGraphIdentity) {
         self.agentic_graph = Some(identity);
+    }
+
+    pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
+        self.agentic_lifecycle = Some(transcript);
+    }
+
+    pub fn set_agentic_play_outcomes(&mut self, outcomes: Vec<AgenticPlayOutcome>) {
+        self.agentic_play_outcomes = Some(outcomes);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1339,7 +1378,38 @@ impl TraceCollector {
             .map(TraceRequestStats::actual_output_length)
     }
 
-    pub fn finish(mut self) -> ReplayReport {
+    /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
+    pub(crate) fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        let stats = self.requests.get(&uuid)?;
+        Some((
+            stats.first_admit_ms?,
+            stats.first_admission_reused_input_tokens,
+        ))
+    }
+
+    /// Drain measurements while retaining the configuration that applies to
+    /// each reporting epoch of a reusable runtime. The absolute report boundary
+    /// includes idle time in this epoch and starts the next one.
+    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+        debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
+        let next = Self {
+            report_start_ms: report_end_ms,
+            defer_token_timeline_finalization: self.defer_token_timeline_finalization,
+            capture_per_request: self.capture_per_request,
+            sla: self.sla,
+            static_worker_count: self.static_worker_count,
+            prefill_gpus_per_worker: self.prefill_gpus_per_worker,
+            decode_gpus_per_worker: self.decode_gpus_per_worker,
+            ..Default::default()
+        };
+        std::mem::replace(self, next).finish_at(Some(report_end_ms))
+    }
+
+    pub fn finish(self) -> ReplayReport {
+        self.finish_at(None)
+    }
+
+    fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1380,6 +1450,7 @@ impl TraceCollector {
             Vec::new()
         };
         let sla = self.sla;
+        let report_start_ms = self.report_start_ms;
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
@@ -1387,6 +1458,8 @@ impl TraceCollector {
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
+        let agentic_lifecycle = self.agentic_lifecycle;
+        let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -1405,7 +1478,9 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
-        let mut duration_ms = 0.0_f64;
+        let mut duration_ms = report_end_ms
+            .map(|end_ms| (end_ms - report_start_ms).max(0.0))
+            .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
@@ -1435,7 +1510,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - report_start_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())
@@ -1492,6 +1567,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            g3_offload: self.g3_offload,
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -1538,6 +1614,8 @@ impl TraceCollector {
             },
             trajectories,
             agentic_graph,
+            agentic_lifecycle,
+            agentic_play_outcomes,
             goodput,
             per_request,
             runtime_evidence,

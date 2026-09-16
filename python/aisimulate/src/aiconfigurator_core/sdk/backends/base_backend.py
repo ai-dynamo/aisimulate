@@ -1,5 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/backends/base_backend.py
+# Kimi resize/pad is a modified adaptation, copyright 2026 the HuggingFace
+# Inc. team and HuggingFace Team (Apache-2.0):
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
 
 import copy
 import dataclasses
@@ -13,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.config import RuntimeConfig
+from aiconfigurator_core.sdk.config import RuntimeConfig, has_video_input
 from aiconfigurator_core.sdk.inference_summary import InferenceSummary
 from aiconfigurator_core.sdk.models import BaseModel
 from aiconfigurator_core.sdk.perf_database import PerfDatabase
@@ -27,6 +33,50 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 from aiconfigurator_core.sdk.step_estimate import MixedStepInput, StepEstimate
 
 logger = logging.getLogger(__name__)
+
+
+def _kimi_resized_spatial_tokens(
+    height: int, width: int, enc_cfg: common.VisionEncoderConfig, *, is_video: bool = False
+) -> tuple[int, int]:
+    """Return Kimi projected tokens and patches after processor resize/pad.
+
+    Modified adaptation of navit_resize, copyright 2026 the HuggingFace Inc.
+    team and HuggingFace Team, Apache-2.0. Image and video implementations:
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+    """
+    patch = enc_cfg.patch_size
+    max_patches = enc_cfg.video_max_patches if is_video else enc_cfg.image_max_patches
+    side_limit = enc_cfg.max_patches_per_side * patch
+    patch_count = max(1.0, height // patch) * max(1.0, width // patch)
+    scale = min(1.0, math.sqrt(max_patches / patch_count), side_limit / height, side_limit / width)
+    resized_height = min(max(1, int(height * scale)), side_limit)
+    resized_width = min(max(1, int(width * scale)), side_limit)
+    stride = patch * enc_cfg.spatial_merge_size
+    padded_height = -(-resized_height // stride) * stride
+    padded_width = -(-resized_width // stride) * stride
+    # Kimi K3's fixed rotary lookup: modified adaptation, Apache-2.0,
+    # copyright contributors to the vLLM project.
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.encoder_type == "kimi_k3_moonvit3d_patchmergerv2" and max(padded_height, padded_width) // patch > 512:
+        raise ValueError(
+            "Kimi K3 supports at most 512 spatial patches per side after processor padding, "
+            f"got {padded_height // patch}x{padded_width // patch}"
+        )
+    return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
+
+
+@dataclasses.dataclass(frozen=True)
+class _EncoderVisualWorkload:
+    """Per-visual token geometry after checkpoint preprocessing."""
+
+    output_tokens_per_image: int
+    context_tokens_per_image: int
+    output_tokens_per_sequence: int
+    transformer_tokens_per_sequence: int
+    patch_tokens_per_sequence: int
+    sequences_per_image: int
+    num_visuals: int = 0
 
 
 class BaseBackend:
@@ -243,10 +293,18 @@ class BaseBackend:
 
     @staticmethod
     def _visual_context_tokens_from_encoder_config(enc_cfg, runtime_config: RuntimeConfig) -> int:
-        if not isinstance(enc_cfg, common.VisionEncoderConfig) or runtime_config.num_images_per_request <= 0:
+        if not isinstance(enc_cfg, common.VisionEncoderConfig):
+            if has_video_input(
+                num_videos=runtime_config.num_videos_per_request,
+                video_height=runtime_config.video_height,
+                video_width=runtime_config.video_width,
+                video_frames=runtime_config.video_frames,
+                num_video_tokens=runtime_config.num_video_tokens,
+            ):
+                raise ValueError("Video workloads require a model with a supported vision encoder configuration.")
             return 0
-        post_merge, _ = BaseBackend._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
-        return post_merge * runtime_config.num_images_per_request
+        workload = BaseBackend._encoder_workload_per_visual(runtime_config, enc_cfg)
+        return workload.context_tokens_per_image * workload.num_visuals
 
     @staticmethod
     def effective_prefill_isl(model_path: str, runtime_config: RuntimeConfig) -> int:
@@ -255,10 +313,14 @@ class BaseBackend:
         Single source for the effective prefill ISL: every token/batch budget
         derived from it must divide by this same value, never a recomputed one.
         """
-        from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
+        from aiconfigurator_core.sdk.utils import (
+            get_model_config_from_model_path,
+            get_vision_encoder_config_from_model_info,
+        )
 
         try:
-            enc_cfg = get_model_config_from_model_path(model_path).get("extra_params")
+            model_info = get_model_config_from_model_path(model_path)
+            enc_cfg = get_vision_encoder_config_from_model_info(model_info)
         except Exception:
             logger.debug("Could not resolve model config for the effective ISL; using text ISL", exc_info=True)
             enc_cfg = None
@@ -271,40 +333,303 @@ class BaseBackend:
         )
 
     @staticmethod
+    def _has_visual_context_work(model: BaseModel, runtime_config: RuntimeConfig) -> bool:
+        visual_ops = getattr(model, "visual_context_ops", ())
+        return (
+            isinstance(visual_ops, (list, tuple))
+            and bool(visual_ops)
+            and BaseBackend._visual_context_tokens(model, runtime_config) > 0
+        )
+
+    @staticmethod
     def _encoder_pre_merge_per_visual(
         runtime_config: RuntimeConfig,
         enc_cfg,
-    ) -> tuple[int, int]:
-        """Resolve the per-image pre-merge / post-merge token counts from
+    ) -> tuple[int, int, int]:
+        """Compatibility tuple for output tokens, transformer tokens, and count."""
+        workload = BaseBackend._encoder_workload_per_visual(runtime_config, enc_cfg)
+        return (
+            workload.output_tokens_per_image,
+            workload.transformer_tokens_per_sequence * workload.sequences_per_image,
+            workload.num_visuals,
+        )
+
+    @staticmethod
+    def _tiled_encoder_sequence_count(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> int:
+        """Mirror Llama4ImageProcessor's best-fit canvas and global-tile rule.
+
+        Source: Hugging Face Transformers v4.51.0, commit
+        0720e206c6ba28887e4d60ef60a6a089f6c1cc76, image_processing_llama4_fast.py.
+        """
+        tile = enc_cfg.image_size
+        if height <= 0 or width <= 0 or tile <= 0 or enc_cfg.max_num_tiles <= 0:
+            raise ValueError(
+                "tiled sequence count requires positive geometry: "
+                f"height={height}, width={width}, tile={tile}, max_num_tiles={enc_cfg.max_num_tiles}"
+            )
+        candidates: list[tuple[int, int]] = []
+        for chunk_count in range(enc_cfg.max_num_tiles, 0, -1):
+            for factor in range(1, int(chunk_count**0.5) + 1):
+                if chunk_count % factor == 0:
+                    candidates.append((factor * tile, (chunk_count // factor) * tile))
+                    if factor != chunk_count // factor:
+                        candidates.append(((chunk_count // factor) * tile, factor * tile))
+
+        scales = [min(target_h / height, target_w / width) for target_h, target_w in candidates]
+        upscaling = [scale for scale in scales if scale >= 1]
+        selected_scale = (
+            (max(upscaling) if enc_cfg.resize_to_max_canvas else min(upscaling)) if upscaling else max(scales)
+        )
+        viable = [
+            candidate
+            for candidate, scale in zip(candidates, scales, strict=True)
+            if abs(scale - selected_scale) <= 1e-12
+        ]
+        target_h, target_w = min(viable, key=lambda size: size[0] * size[1])
+        local_tiles = (target_h // tile) * (target_w // tile)
+        return local_tiles + int(enc_cfg.add_global_tile and local_tiles > 1)
+
+    @staticmethod
+    def _encoder_workload_per_visual(
+        runtime_config: RuntimeConfig,
+        enc_cfg: common.VisionEncoderConfig,
+    ) -> _EncoderVisualWorkload:
+        """Resolve one homogeneous image or video workload.
+
+        Images and videos use different temporal semantics and may have
+        different attention sequence lengths. Until mixed-shape packing is
+        modeled explicitly, fail loudly when both are requested rather than
+        collapse them into one dishonest encoder query.
+
+        Resolve the per-visual pre-merge / post-merge token counts from
         RuntimeConfig + VisionEncoderConfig.
 
-        Resolution order:
+        Image resolution order:
             1. image_height + image_width (smart-resized, then patch/merge sizes)
             2. num_image_tokens (explicit per-image override)
+        Video resolution order:
+            1. video_frames + video_height + video_width
+            2. num_video_tokens (explicit per-video override)
 
-        Returns ``(tokens_post_merge_per_image, pre_merge_per_image)``.
-        Returns ``(0, 0)`` when neither is set (text-only path).
+        Fixed tiled encoders retain per-tile transformer sequence geometry and
+        prompt-only context tokens. Dynamic encoders retain the Qwen image and
+        video semantics already used by the shared path.
         """
-        has_image_dims = runtime_config.image_height > 0 and runtime_config.image_width > 0
-        if has_image_dims:
+        zero = _EncoderVisualWorkload(0, 0, 0, 0, 0, 0, 0)
+        image_count = runtime_config.num_images_per_request
+        image_height = runtime_config.image_height
+        image_width = runtime_config.image_width
+        image_token_override = runtime_config.num_image_tokens
+        has_any_image_dims = image_height > 0 or image_width > 0
+        has_image_dims = image_height > 0 and image_width > 0
+        has_image_override = image_token_override > 0
+        if image_count > 0 and has_any_image_dims and not has_image_dims:
+            raise ValueError("Image height and width must either both be provided or both be omitted.")
+        has_images = image_count > 0 and (has_image_dims or has_image_override)
+
+        video_count = runtime_config.num_videos_per_request
+        video_frames = runtime_config.video_frames
+        video_height = runtime_config.video_height
+        video_width = runtime_config.video_width
+        video_token_override = runtime_config.num_video_tokens
+        has_any_video_input = has_video_input(
+            num_videos=video_count,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_video_tokens=video_token_override,
+        )
+        has_video_dims = video_frames > 0 and video_height > 0 and video_width > 0
+        has_video_override = video_token_override > 0
+        if has_any_video_input:
+            if video_count <= 0:
+                raise ValueError("Video workloads require num_videos_per_request > 0.")
+            if not has_video_dims and not has_video_override:
+                raise ValueError(
+                    "Video workloads require video_frames + video_height + video_width, "
+                    "or num_video_tokens + video_frames."
+                )
+            if has_video_override and video_frames <= 0:
+                raise ValueError(
+                    "num_video_tokens requires video_frames so temporal attention sequences can be modeled."
+                )
+            if has_video_override and (video_height > 0) != (video_width > 0):
+                raise ValueError("Video height and width must either both be provided or both be omitted.")
+        has_videos = has_any_video_input
+        if has_videos:
+            temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
+            if enc_cfg.max_temporal_patches and temporal_patches > enc_cfg.max_temporal_patches:
+                raise ValueError(
+                    f"{enc_cfg.encoder_type or 'vision encoder'} supports at most "
+                    f"{enc_cfg.max_temporal_patches} temporal patches; got {temporal_patches}."
+                )
+        if has_videos and enc_cfg.max_video_frames and video_frames > enc_cfg.max_video_frames:
+            raise ValueError(
+                f"Kimi video modeling supports at most {enc_cfg.max_video_frames} sampled frames per video; "
+                "longer videos require separate temporal chunks, which are not modeled yet."
+            )
+        if has_images and has_videos:
+            raise ValueError(
+                "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
+            )
+
+        if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
+            if has_videos:
+                raise ValueError("Video workloads are not modeled for the Gemma 4 vision encoder.")
+            if not has_images:
+                return zero
+
+            max_soft_tokens = image_token_override or enc_cfg.soft_tokens_per_image
+            if max_soft_tokens not in enc_cfg.supported_soft_token_budgets:
+                raise ValueError(
+                    f"Gemma 4 num_image_tokens must be one of {enc_cfg.supported_soft_token_budgets}, "
+                    f"got {max_soft_tokens}"
+                )
+            max_patches = max_soft_tokens * enc_cfg.pooling_kernel_size**2
+            if not has_image_dims:
+                return _EncoderVisualWorkload(
+                    max_soft_tokens, max_soft_tokens, max_soft_tokens, max_patches, max_patches, 1, image_count
+                )
+
+            # Keep this arithmetic aligned with Gemma4ImageProcessor's
+            # get_aspect_ratio_preserving_size. The target area is the maximum
+            # patch budget, but rounding both sides down to the pooling stride
+            # determines the actual valid soft-token count. The processor pads
+            # the patch tensor back to max_patches before running the tower.
+            # Source: Hugging Face Transformers commit
+            # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55.
+            patch_size = enc_cfg.patch_size
+            pooling_size = enc_cfg.pooling_kernel_size
+            target_pixels = max_patches * patch_size**2
+            scale = math.sqrt(target_pixels / (image_height * image_width))
+            side_multiple = pooling_size * patch_size
+            target_height = math.floor(scale * image_height / side_multiple) * side_multiple
+            target_width = math.floor(scale * image_width / side_multiple) * side_multiple
+            max_side_length = (max_patches // pooling_size**2) * side_multiple
+            if target_height == 0 and target_width == 0:
+                raise ValueError("Gemma 4 image dimensions resize to 0x0; increase the dimensions or soft-token budget")
+            if target_height == 0:
+                target_height = side_multiple
+                target_width = min(math.floor(image_width / image_height) * side_multiple, max_side_length)
+            elif target_width == 0:
+                target_width = side_multiple
+                target_height = min(math.floor(image_height / image_width) * side_multiple, max_side_length)
+            resized_patches = (target_height // patch_size) * (target_width // patch_size)
+            tokens_per_image = resized_patches // pooling_size**2
+            if tokens_per_image <= 0 or resized_patches <= 0:
+                return zero
+            return _EncoderVisualWorkload(
+                tokens_per_image, tokens_per_image, tokens_per_image, max_patches, max_patches, 1, image_count
+            )
+
+        if enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0:
+            if has_videos:
+                raise ValueError("Video workloads are not modeled for fixed-tile vision encoders.")
+            if not has_images:
+                return zero
+            post_per_sequence = (enc_cfg.image_size // (enc_cfg.patch_size * enc_cfg.spatial_merge_size)) ** 2
+            patch_per_sequence = (enc_cfg.image_size // enc_cfg.patch_size) ** 2
+            transformer_per_sequence = patch_per_sequence + int(enc_cfg.has_cls_token)
+            if has_image_dims:
+                sequences = BaseBackend._tiled_encoder_sequence_count(image_height, image_width, enc_cfg)
+                output_tokens = post_per_sequence * sequences
+            else:
+                output_tokens = image_token_override
+                if output_tokens % post_per_sequence != 0:
+                    patch_tokens = output_tokens * enc_cfg.spatial_merge_size**2
+                    return _EncoderVisualWorkload(
+                        output_tokens,
+                        output_tokens + enc_cfg.prompt_image_tokens,
+                        output_tokens,
+                        patch_tokens + int(enc_cfg.has_cls_token),
+                        patch_tokens,
+                        1,
+                        image_count,
+                    )
+                sequences = output_tokens // post_per_sequence
+            local_tiles = sequences - int(enc_cfg.add_global_tile and sequences > 1)
+            context_tokens = output_tokens + enc_cfg.prompt_image_tokens
+            if local_tiles > 1:
+                context_tokens += local_tiles * enc_cfg.prompt_tokens_per_local_tile
+            return _EncoderVisualWorkload(
+                output_tokens,
+                context_tokens,
+                post_per_sequence,
+                transformer_per_sequence,
+                patch_per_sequence,
+                sequences,
+                image_count,
+            )
+
+        def _smart_resized_spatial_tokens(height: int, width: int, *, is_video: bool = False) -> tuple[int, int]:
+            if enc_cfg.resize_mode == "kimi":
+                return _kimi_resized_spatial_tokens(height, width, enc_cfg, is_video=is_video)
             # Upstream VL processors (Qwen smart_resize) round each raw
-            # dimension to the *nearest* multiple of patch_size * merge_size
-            # before patchify; plain floor under-counts tokens for
-            # non-aligned inputs.  The processor's min/max_pixels rescaling
-            # is a preprocessor knob AIC does not model.
-            img_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
-            h_bar = max(img_stride, round(runtime_config.image_height / img_stride) * img_stride)
-            w_bar = max(img_stride, round(runtime_config.image_width / img_stride) * img_stride)
-            tokens_per_image = (h_bar // img_stride) * (w_bar // img_stride)
-            pre_merge_per_image = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
-        elif runtime_config.num_image_tokens > 0:
-            tokens_per_image = runtime_config.num_image_tokens
-            pre_merge_per_image = tokens_per_image * (enc_cfg.spatial_merge_size**2)
+            # dimension to the nearest patch-and-merge stride before
+            # patchify. The processor's min/max_pixels rescaling is a
+            # preprocessor knob AIC does not model.
+            spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            h_bar = max(spatial_stride, round(height / spatial_stride) * spatial_stride)
+            w_bar = max(spatial_stride, round(width / spatial_stride) * spatial_stride)
+            post_merge = (h_bar // spatial_stride) * (w_bar // spatial_stride)
+            pre_merge = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
+            return post_merge, pre_merge
+
+        if has_videos:
+            if has_video_dims:
+                # Qwen pads a short final temporal group by repeating its last
+                # frame, so a partial group still produces one temporal patch.
+                spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(
+                    video_height, video_width, is_video=True
+                )
+                tokens_per_visual = (
+                    spatial_post_merge if enc_cfg.pool_temporal else temporal_patches * spatial_post_merge
+                )
+                pre_merge_per_visual = temporal_patches * spatial_pre_merge
+            else:
+                tokens_per_visual = video_token_override
+                if not enc_cfg.pool_temporal and tokens_per_visual % temporal_patches != 0:
+                    raise ValueError(
+                        "num_video_tokens must divide evenly across temporal attention sequences: "
+                        f"num_video_tokens={tokens_per_visual}, temporal_sequences={temporal_patches}."
+                    )
+                pre_merge_per_visual = tokens_per_visual * (enc_cfg.spatial_merge_size**2)
+                if enc_cfg.pool_temporal:
+                    pre_merge_per_visual *= temporal_patches
+            num_visuals = video_count
         else:
-            return 0, 0
-        if tokens_per_image <= 0 or pre_merge_per_image <= 0:
-            return 0, 0
-        return tokens_per_image, pre_merge_per_image
+            num_visuals = image_count
+            if has_image_dims:
+                tokens_per_visual, pre_merge_per_visual = _smart_resized_spatial_tokens(image_height, image_width)
+            elif has_image_override:
+                tokens_per_visual = image_token_override
+                pre_merge_per_visual = tokens_per_visual * (enc_cfg.spatial_merge_size**2)
+            else:
+                return zero
+        if has_videos and (tokens_per_visual <= 0 or pre_merge_per_visual <= 0):
+            spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            raise ValueError(
+                "Video dimensions resolve to zero encoder tokens; "
+                f"height and width must each be at least {spatial_stride} pixels."
+            )
+        if tokens_per_visual <= 0 or pre_merge_per_visual <= 0 or num_visuals <= 0:
+            return zero
+        sequences_per_visual = temporal_patches if has_videos and not enc_cfg.pool_temporal else 1
+        if tokens_per_visual % sequences_per_visual != 0 or pre_merge_per_visual % sequences_per_visual != 0:
+            raise ValueError(
+                "Visual tokens must divide evenly across encoder attention sequences: "
+                f"post_merge_tokens={tokens_per_visual}, pre_merge_tokens={pre_merge_per_visual}, "
+                f"sequences={sequences_per_visual}."
+            )
+        return _EncoderVisualWorkload(
+            tokens_per_visual,
+            tokens_per_visual,
+            tokens_per_visual // sequences_per_visual,
+            pre_merge_per_visual // sequences_per_visual,
+            pre_merge_per_visual // sequences_per_visual,
+            sequences_per_visual,
+            num_visuals,
+        )
 
     def _run_encoder_phase(
         self,
@@ -320,54 +645,61 @@ class BaseBackend:
         encoder_energy_wms_dict = defaultdict(float)
         encoder_source_dict = {}
 
-        if not model.encoder_ops:
-            return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
-
         enc_cfg = getattr(model, "encoder_config", None)
-        num_images = runtime_config.num_images_per_request
-        if num_images <= 0 or not isinstance(enc_cfg, common.VisionEncoderConfig):
+        if not model.encoder_ops or not isinstance(enc_cfg, common.VisionEncoderConfig):
+            # Reuse the visual-input guard so a configured video can never
+            # degrade silently to a text-only estimate on an unsupported model.
+            self._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config)
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        tokens_per_image, pre_merge_per_image = self._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
-        if tokens_per_image == 0:
-            # No image dimensions specified; skip encoder modeling.
+        workload = self._encoder_workload_per_visual(runtime_config, enc_cfg)
+        if workload.output_tokens_per_image == 0:
+            # No visual dimensions specified; skip encoder modeling.
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        n_img_post = tokens_per_image * num_images  # post-merge: injected into LLM context
+        visual_context_tokens = workload.context_tokens_per_image * workload.num_visuals
 
-        # Encoder DP: whole images are sharded across the tp_size ranks and the
+        # Encoder DP: whole visuals are sharded across the tp_size ranks and the
         # busiest rank (ceil share) gates the phase.
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
-        images_local = -(-batch_size * num_images // encoder_dp_size)
+        visuals_local = -(-batch_size * workload.num_visuals // encoder_dp_size)
+        sequences_local = visuals_local * workload.sequences_per_image
 
         # Per-op shape rules (the encoder orchestration — this token math —
         # stays Python-side; only the per-op values may come from the
         # compiled engine below). Projector ops and the DP exit AllGather run
-        # on post-merge tokens; ViT attention uses cu_seqlens (each image an
-        # independent varlen sequence of pre_merge_per_image patches).
-        def _encoder_eff_s(op) -> int:
-            use_post = "encoder_projector" in op._name or "all_gather" in op._name
-            use_varlen = "encoder_attention" in op._name
-            if use_varlen:
-                return pre_merge_per_image
-            return tokens_per_image if use_post else pre_merge_per_image
+        # on post-merge tokens. ViT attention uses cu_seqlens: each image tile
+        # or non-pooled temporal patch is an independent transformer sequence;
+        # pooled Kimi video uses one spatial-temporal sequence per video.
+
+        def _encoder_shape(op) -> tuple[int, int]:
+            name = op._name
+            if "encoder_patch_embedding" in name:
+                return sequences_local, workload.patch_tokens_per_sequence
+            if "encoder_attention" in name:
+                return sequences_local, workload.transformer_tokens_per_sequence
+            if (
+                "encoder_projector" in name
+                or "encoder_gemma4_pool_postprocess" in name
+                or name == "encoder_dp_all_gather"
+            ):
+                return sequences_local, workload.output_tokens_per_sequence
+            return sequences_local, workload.transformer_tokens_per_sequence
 
         self._require_rust_engine_step(runtime_config, database, surface="encoder")
         encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(
             model,
             database,
-            images_local,
-            _encoder_eff_s,
+            _encoder_shape,
             include_energy=include_energy,
         )
-        return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, n_img_post
+        return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, visual_context_tokens
 
     def _run_encoder_phase_with_rust(
         self,
         model: BaseModel,
         database: PerfDatabase,
-        images_local: int,
-        eff_s_of,
+        shape_of,
         *,
         include_energy: bool,
     ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
@@ -376,8 +708,8 @@ class BaseBackend:
         Encoder ops are deliberately NOT in the compiled ``EngineSpec`` (the
         compile path threads no image configuration), so they travel through
         the ad-hoc op-list evaluation FFI: ops are grouped by their resolved
-        ``eff_s`` (the shape math above), each group serialized to OpSpec
-        JSON and evaluated at ``batch=images_local, s=eff_s, x=batch*s``.
+        ``(batch, eff_s)`` (the shape math above), each group serialized to
+        OpSpec JSON and evaluated at ``x=batch*s``.
         Latency/energy fold with ``+=``; sources are last-wins ACROSS shape
         groups, while duplicate names WITHIN one group would merge to
         ``"mixed"`` inside the engine (``build_encoder_ops`` never emits
@@ -388,30 +720,78 @@ class BaseBackend:
         from aiconfigurator_core.sdk.engine import build_ops_json
         from aiconfigurator_core.sdk.rust_engine_step import evaluate_ops_json_with_rust
 
-        groups: dict[int, list] = {}
+        groups: dict[tuple[int, int], list] = {}
         for op in model.encoder_ops:
-            groups.setdefault(int(eff_s_of(op)), []).append(op)
+            eff_batch, eff_s = shape_of(op)
+            groups.setdefault((int(eff_batch), int(eff_s)), []).append(op)
 
         latency_dict: dict[str, float] = defaultdict(float)
         energy_dict: dict[str, float] = defaultdict(float)
         source_dict: dict[str, str] = {}
-        for eff_s, ops in groups.items():
+        for (eff_batch, eff_s), ops in groups.items():
             ops_json = build_ops_json(ops)
             entries = evaluate_ops_json_with_rust(
                 model,
                 database,
                 ops_json=ops_json,
                 is_context=True,
-                batch_size=images_local,
+                batch_size=eff_batch,
                 s=eff_s,
                 prefix=0,
-                x=images_local * eff_s,
+                x=eff_batch * eff_s,
             )
             for name, latency_ms, energy_wms, source in entries:
                 latency_dict[name] += float(latency_ms)
                 if include_energy:
                     energy_dict[name] += float(energy_wms)
                 source_dict[name] = source
+        return latency_dict, energy_dict, source_dict
+
+    def _run_visual_context_phase(
+        self,
+        model: BaseModel,
+        database: PerfDatabase,
+        runtime_config: RuntimeConfig,
+        batch_size: int,
+        *,
+        include_energy: bool = True,
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
+        """Model Gemma 4's extra upper-triangle attention per visual block.
+
+        The ordinary context-attention graph already prices the causal half of
+        every image block. Gemma 4 makes those blocks bidirectional on sliding
+        layers, so this evaluates the same attention shape through the compiled
+        engine and retains only the additional strict upper triangle.
+        """
+        visual_ops = getattr(model, "visual_context_ops", ())
+        enc_cfg = getattr(model, "encoder_config", None)
+        if not visual_ops or runtime_config.num_images_per_request <= 0 or enc_cfg is None:
+            return {}, {}, {}
+
+        tokens_per_image, _, _ = self._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
+        if tokens_per_image <= 1:
+            return {}, {}, {}
+
+        from aiconfigurator_core.sdk.engine import build_ops_json
+        from aiconfigurator_core.sdk.rust_engine_step import evaluate_context_attention_kernels_with_rust
+
+        image_batch = batch_size * runtime_config.num_images_per_request
+        entries = evaluate_context_attention_kernels_with_rust(
+            model,
+            database,
+            ops_json=build_ops_json(visual_ops),
+            batch_size=image_batch,
+            s=tokens_per_image,
+            imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
+            visual_block_upper_triangle=True,
+        )
+        latency_dict: dict[str, float] = {}
+        energy_dict: dict[str, float] = {}
+        source_dict: dict[str, str] = {}
+        for name, latency_ms, energy_wms, source in entries:
+            latency_dict[name] = float(latency_ms)
+            energy_dict[name] = float(energy_wms) if include_energy else 0.0
+            source_dict[name] = source
         return latency_dict, energy_dict, source_dict
 
     def run_encoder_static(
@@ -490,6 +870,23 @@ class BaseBackend:
             stride,
             latency_correction_scale,
         )
+        if mode != "static_gen" and self._has_visual_context_work(model, runtime_config):
+            visual_latency, visual_energy, visual_source = self._run_visual_context_phase(
+                model,
+                database,
+                runtime_config,
+                runtime_config.batch_size,
+                include_energy=include_energy,
+            )
+            for name, latency_ms in visual_latency.items():
+                context_latency_dict[name] = context_latency_dict.get(name, 0.0) + (
+                    latency_ms * latency_correction_scale
+                )
+                context_energy_wms_dict[name] = context_energy_wms_dict.get(name, 0.0) + (
+                    visual_energy[name] * latency_correction_scale
+                )
+                context_source_dict[name] = visual_source[name]
+
         if not include_energy:
             # Latency-only callers must not observe energy; keep the key sets
             # identical to the latency dicts (the power coverage gate pairs
@@ -1090,13 +1487,43 @@ class BaseBackend:
             seq_imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
             gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
         )
+        component_latency_ms = dict(components["component_latency_ms"])
+        component_energy_wms = dict(components["component_energy_wms"])
+        per_op_latency_ms = dict(components["per_op_latency_ms"])
+        per_op_source = dict(components["per_op_source"])
+        latency_ms = float(components["latency_ms"])
+        energy_wms = float(components["energy_wms"])
+        if self._has_visual_context_work(model, runtime_config):
+            visual_batch = int(np.ceil(step.context_tokens / isl))
+            visual_scale = float(np.ceil(isl / step.context_tokens))
+            visual_latency, visual_energy, visual_source = self._run_visual_context_phase(
+                model,
+                database,
+                runtime_config,
+                visual_batch,
+            )
+            visual_latency = {name: value / visual_scale for name, value in visual_latency.items()}
+            visual_energy = {name: value / visual_scale for name, value in visual_energy.items()}
+            visual_latency_total = sum(visual_latency.values())
+            visual_energy_total = sum(visual_energy.values())
+            latency_ms += visual_latency_total
+            energy_wms += visual_energy_total
+            component_latency_ms["context_attention"] = (
+                component_latency_ms.get("context_attention", 0.0) + visual_latency_total
+            )
+            component_energy_wms["context_attention"] = (
+                component_energy_wms.get("context_attention", 0.0) + visual_energy_total
+            )
+            for name, value in visual_latency.items():
+                per_op_latency_ms[name] = per_op_latency_ms.get(name, 0.0) + value
+                per_op_source[name] = visual_source[name]
         return StepEstimate(
-            latency_ms=components["latency_ms"],
-            energy_wms=components["energy_wms"],
-            component_latency_ms=components["component_latency_ms"],
-            component_energy_wms=components["component_energy_wms"],
-            per_op_latency_ms=components["per_op_latency_ms"],
-            per_op_source=components["per_op_source"],
+            latency_ms=latency_ms,
+            energy_wms=energy_wms,
+            component_latency_ms=component_latency_ms,
+            component_energy_wms=component_energy_wms,
+            per_op_latency_ms=per_op_latency_ms,
+            per_op_source=per_op_source,
             moe_comm_fallbacks=components["moe_comm_fallbacks"],
             context_tokens=step.context_tokens,
             num_decode_requests=step.num_decode_requests,
@@ -1143,10 +1570,26 @@ class BaseBackend:
         enc_cfg = getattr(model, "encoder_config", None)
         activations = 0.0
         if isinstance(enc_cfg, common.VisionEncoderConfig) and num_tokens > 0:
-            # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
-            activations = 2 * num_tokens * enc_cfg.hidden_size * 3
-            # Projected embeddings (all projector instances concatenated along hidden)
-            activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
+            if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
+                # Encoder TP shards QKV and gated-MLP intermediates while the
+                # residual stream stays replicated. Encoder DP instead builds
+                # a complete tower on each rank and shards whole images.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * enc_cfg.hidden_size // encoder_tp
+                gated_mlp_width = enc_cfg.hidden_size + (2 * enc_cfg.intermediate_size) // encoder_tp
+                activations = 2 * num_tokens * max(qkv_width, gated_mlp_width)
+                # Pooled tower output, normalized projection input, and final
+                # language-space embeddings coexist at the adapter boundary.
+                activations += 2 * embed_tokens * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
+            else:
+                # Retain the legacy live-activation estimate, but never budget
+                # less than the actual per-rank BF16 QKV output buffer. This is
+                # an analytical lower bound, not a calibrated peak-memory model.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
+                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
+                # Projected embeddings (all projector instances concatenated along hidden)
+                activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
         one_gib = 1 << 30
         return {
@@ -1167,18 +1610,16 @@ class BaseBackend:
         enc_cfg = getattr(model, "encoder_config", None)
         if not model.encoder_ops or not isinstance(enc_cfg, common.VisionEncoderConfig):
             return {}
-        if runtime_config.num_images_per_request <= 0:
-            return {}
-        tokens_per_image, pre_merge_per_image = self._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
-        if pre_merge_per_image <= 0:
+        workload = self._encoder_workload_per_visual(runtime_config, enc_cfg)
+        if workload.transformer_tokens_per_sequence <= 0:
             return {}
         # ViT activations follow the busiest rank's image share; the embeddings
         # buffer covers the full batch on every rank.
-        total_images = batch_size * runtime_config.num_images_per_request
+        total_visuals = batch_size * workload.num_visuals
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
-        images_local = -(-total_images // encoder_dp_size)
-        num_tokens = images_local * pre_merge_per_image
-        embed_tokens = total_images * tokens_per_image
+        visuals_local = -(-total_visuals // encoder_dp_size)
+        num_tokens = visuals_local * workload.sequences_per_image * workload.transformer_tokens_per_sequence
+        embed_tokens = total_visuals * workload.output_tokens_per_image
         return self._get_encoder_component_memory(model, num_tokens, embed_tokens)
 
     def run_agg(
@@ -1219,6 +1660,12 @@ class BaseBackend:
             runtime_config.image_height,
             runtime_config.image_width,
             runtime_config.num_images_per_request,
+            runtime_config.num_image_tokens,
+            runtime_config.video_height,
+            runtime_config.video_width,
+            runtime_config.video_frames,
+            runtime_config.num_videos_per_request,
+            runtime_config.num_video_tokens,
         )
         cache_key = (
             self._make_agg_cache_key(isl, osl, b, ctx_tokens, agg_extra),
@@ -1702,11 +2149,32 @@ class BaseBackend:
                 ``max_num_tokens`` budget that already caps total per-forward tokens
                 (draft tokens included), so re-multiplying would double-count.
         """
+        from aiconfigurator_core.sdk.speculation import NullScheme, SpecSchemeBase
+        from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
+
+        scheme = getattr(model, "spec_scheme", None)
+        # Exact-type Null check: a scheme SUBCLASSING NullScheme that overrides
+        # the draft hooks is a draft scheme (the test-fake idiom); MTP stays on
+        # the legacy nextn accounting baked into the model families.
+        has_draft_scheme = (
+            isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
+        )
+
         weights = 0.0
         for op in model.context_ops:
+            # Materialized draft ops are excluded here: the scheme's own
+            # byte-exact accounting below is the single source of truth
+            # (the op-list subset under-counts aliased/owned embed and
+            # sampling heads unevenly across schemes).
+            if has_draft_scheme and op._name.startswith("draft_"):
+                continue
             weights += op.get_weights()
         # count weights on a single GPU
         weights /= model.config.pp_size
+        if has_draft_scheme:
+            # Draft weights are resident on every pp stage's GPU that runs
+            # the draft (mirrors the legacy runtime-injection accounting).
+            weights += scheme.draft_weights_bytes(model)
 
         h = model._num_heads * model._head_size
         if num_tokens == 0:
@@ -1741,7 +2209,8 @@ class BaseBackend:
         # engine's max_num_tokens budget that already caps total per-forward tokens
         # (draft tokens included) -- re-multiplying there double-counts and can drive the
         # prefill worker's KV budget negative.
-        if mtp_activation_scaling and model.config.nextn > 0:
+        effective_nextn = int(getattr(model, "_nextn", 0) or model.config.nextn or 0)
+        if mtp_activation_scaling and effective_nextn > 0:
             if mtp_scaled_tokens is not None and num_tokens > 0:
                 # Mixed context+decode step (agg): only the decode-token share
                 # verifies nextn+1 tokens; context tokens are processed once.
@@ -1750,12 +2219,12 @@ class BaseBackend:
                 # inflates activations ~(nextn+1)x and over-prunes concurrency.
                 decode_share = min(max(mtp_scaled_tokens, 0), num_tokens)
                 activations = (
-                    activations * (num_tokens - decode_share + decode_share * (model.config.nextn + 1)) / num_tokens
+                    activations * (num_tokens - decode_share + decode_share * (effective_nextn + 1)) / num_tokens
                 )
             else:
                 # Decode-only steps (disagg decode worker): every token in the
                 # step is part of verification, so the full multiplier applies.
-                activations = activations * (model.config.nextn + 1)
+                activations = activations * (effective_nextn + 1)
 
         # Backend-level activation overhead (SGLang only by default).
         if self.ACTIVATION_OVERHEAD_FRAC > 0:
@@ -1765,6 +2234,8 @@ class BaseBackend:
         # CP shards persistent KV across cp ranks (full/cp per rank); the
         # all-gather is a transient compute buffer, not steady-state footprint.
         kvcache = batch_size * model.get_kvcache_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        if has_draft_scheme:
+            kvcache += batch_size * scheme.draft_kv_bytes_per_sequence(model, seq_tokens)
         # should not be divided by pp_size as you need to hold all kvcache for stages.
 
         # starting from 2.22

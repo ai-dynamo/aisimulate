@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/engine.py
 
 """Compiled-engine builder.
 
@@ -117,6 +119,14 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 #   `attn_projection_quant_modes` v12, and v14 alongside #1533's
 #   `GdnOp::mamba_ssm_dtype` v14); each landed first, so this renumbers to 15
 #   at merge (same v3/v4, v5/v6 precedent).
+# - 16 (Muse Glimmer continuation): Generation attention gained
+#   `use_qk_norm`; the Rust op now preserves the Python constructor flag and
+#   adds its decode latency.
+# - 17 (Muse Glimmer review follow-up): Context attention gained
+#   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
+# - 18 (speculation migration): Generation attention gained verify_query_tokens
+#   and FPM forward gained verify_width, both positional bincode fields.
+#   TokenScale was appended to remap draft query widths before op lookup.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -149,6 +159,10 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
             "weight_bytes": op._weight_bytes,
+            # Speculative verify width for the equivalent-AR decode mapping
+            # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
+            # draft scheme is materialized.
+            "verify_width": int(getattr(op, "_verify_width", 1) or 1),
             "sol_ops": [json.loads(_as_engine_op(c)._spec_json()) for c in op._sol_ops],
         }
     }
@@ -157,12 +171,26 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
 def _as_engine_op(op: Any) -> Operation:
     """Return the engine-backed form of ``op``.
 
-    Engine ops (Rust ``Operation`` subclasses, i.e. every family shell) pass
-    through; ``FPMForwardOp`` converts via its adapter dict +
+    Engine ops (Rust ``Operation`` subclasses) pass through, with a typed
+    query-width wrapper for materialized draft ops. ``FPMForwardOp`` converts via its adapter dict +
     ``op_from_spec_json``. Anything else — the AFD orchestration ops, ad-hoc
     stand-ins — raises ``OpConversionError``, the established contract for
     graphs the native engine cannot represent."""
     if isinstance(op, Operation):
+        width = getattr(op, "_draft_token_width", None)
+        if width is not None:
+            numerator, denominator = width
+            return aiconfigurator_core.op_from_spec_json(
+                json.dumps(
+                    {
+                        "TokenScale": {
+                            "op": json.loads(op._spec_json()),
+                            "numerator": numerator,
+                            "denominator": denominator,
+                        }
+                    }
+                )
+            )
         return op
     if isinstance(op, FPMForwardOp):
         return aiconfigurator_core.op_from_spec_json(json.dumps(_fpm_spec_dict(op)))
@@ -189,22 +217,26 @@ def _ops_json(ops: Any) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _shared_layer_flag(database: Any) -> bool | None:
+def _shared_layer_flag(database: Any, override: bool | None = None) -> bool | None:
     """The database view's shared-layer flag for the wire, ``None`` when no
     database is bound (the engine then derives it from ``database_mode``,
     mirroring ``_shared_layer_enabled``). The engine resolves per-op sources
     ITSELF (schema v13, ``perf_database/source_resolution.rs``); Python only
     ships the policy bit — including explicit ``shared_layer=`` overrides
     regression harnesses use to pin per-version behavior."""
+    if override is not None:
+        return bool(override)
     if database is None:
         return None
     flag = getattr(database, "enable_shared_layer", None)
     return None if flag is None else bool(flag)
 
 
-def _strict_provenance_flag(database: Any) -> bool:
+def _strict_provenance_flag(database: Any, override: bool | None = None) -> bool:
     """The database view's fail-closed provenance mode for the wire (absent
     database -> False, matching a bare load)."""
+    if override is not None:
+        return bool(override)
     return bool(getattr(database, "strict_provenance", False)) if database is not None else False
 
 
@@ -252,6 +284,10 @@ def _engine_config_dict(
     systems_path: str | None,
     nextn: int,
     database: Any = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -295,15 +331,15 @@ def _engine_config_dict(
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
         # wire carries the flag, not the resolved map.
-        "enable_shared_layer": _shared_layer_flag(database),
-        "strict_provenance": _strict_provenance_flag(database),
-        # Perf-database query mode + enabled empirical transfer kinds, read off
-        # the live database view so the compiled engine answers HYBRID/EMPIRICAL
-        # queries the same way the Python step does. Presets are resolved here
-        # (single source of truth in ``common.TRANSFER_PRESETS``); the wire form
-        # is always explicit kind tokens, ``None`` = the default ALL policy.
-        "database_mode": _database_mode_name(database),
-        "transfer_policy": _transfer_policy_tokens(database),
+        "enable_shared_layer": _shared_layer_flag(database, shared_layer),
+        "strict_provenance": _strict_provenance_flag(database, strict_provenance),
+        # Perf-database query mode + enabled empirical transfer kinds. Explicit
+        # compile arguments win so policy survives even when discovery returns
+        # no Python view; otherwise read the configured live view. Presets are
+        # resolved here (single source of truth in ``common.TRANSFER_PRESETS``);
+        # the wire form is always explicit kind tokens, ``None`` = default ALL.
+        "database_mode": _database_mode_name(database, database_mode),
+        "transfer_policy": _transfer_policy_tokens(database, transfer_policy),
         # Directory-less fleet-`next` marker (design §14): set only when the
         # loaded database rode backward fill without a local version
         # directory, so the Rust reload skips its missing-directory gate for
@@ -323,27 +359,33 @@ def _opt_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
-def _database_mode_name(database: Any) -> str:
+def _database_mode_name(database: Any, override: str | None = None) -> str:
     """The database view's query mode as the wire token (default SILICON)."""
+    if override is not None:
+        return getattr(override, "name", str(override)).upper()
     if database is None:
         return "SILICON"
     mode = getattr(database, "get_default_database_mode", lambda: None)()
     return getattr(mode, "name", str(mode)) if mode is not None else "SILICON"
 
 
-def _transfer_policy_tokens(database: Any) -> list[str] | None:
+def _transfer_policy_tokens(database: Any, override: str | list[str] | None = None) -> list[str] | None:
     """The view's enabled transfer kinds as explicit wire tokens.
 
     ``None`` = the default ALL-transfers policy (backward-compatible absent
     key). A non-default policy serialises as a sorted list of kind values so
     the Rust side never needs the preset vocabulary.
     """
-    if database is None:
-        return None
-    policy = getattr(database, "transfer_policy", None)
-    if policy is None:
-        return None
-    from aiconfigurator_core.sdk.common import ALL_TRANSFERS
+    from aiconfigurator_core.sdk.common import ALL_TRANSFERS, resolve_transfer_policy
+
+    if override is not None:
+        policy = resolve_transfer_policy(override)
+    else:
+        if database is None:
+            return None
+        policy = getattr(database, "transfer_policy", None)
+        if policy is None:
+            return None
 
     if frozenset(policy) == ALL_TRANSFERS:
         return None
@@ -376,6 +418,10 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -410,10 +456,19 @@ def compile_engine(
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
-    # tolerant database load — `_maybe_load_database` forgives LOAD failures
-    # (the Rust core falls back to its own defaults), never policy violations.
+    # tolerant database load. Explicit policy is also serialized independently
+    # below, so a missing Python view cannot silently downgrade the Rust reload.
     literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
-    database = _maybe_load_database(system, backend, literal_version, systems_path)
+    database = _maybe_load_database(
+        system,
+        backend,
+        literal_version,
+        systems_path,
+        database_mode,
+        shared_layer,
+        transfer_policy,
+        strict_provenance,
+    )
 
     spec_json = build_engine_spec_json(
         model,
@@ -425,6 +480,10 @@ def compile_engine(
         systems_path=systems_path,
         nextn=model_config.nextn,
         database=database,
+        database_mode=database_mode,
+        shared_layer=shared_layer,
+        transfer_policy=transfer_policy,
+        strict_provenance=strict_provenance,
     )
 
     return bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json))
@@ -441,7 +500,12 @@ def build_ops_json(ops: Any) -> str:
     return _ops_json(ops)
 
 
-def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None) -> None:
+def _resolve_attention_lane_orders(
+    ops: Any,
+    database: Any,
+    override: str | None,
+    architecture: str | None = None,
+) -> None:
     """Set ``_lane_order`` on every ``ContextAttention``/``GenerationAttention``
     in *ops*, mutating in place.
 
@@ -452,6 +516,10 @@ def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None
     same place ``_wideep_moe`` pre-bakes its kernel_source. Every op not
     explicitly re-resolved keeps the always-valid ``["default"]`` its pyo3
     constructor already carries.
+
+    *architecture* selects a model-specific framework-default lane when the
+    resolver map declares one. Ops carry no model identity, so the model's
+    architecture must be threaded at this spec-build boundary.
     """
     from aiconfigurator_core.sdk.operations.attention import (
         ContextAttention,
@@ -461,11 +529,21 @@ def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None
 
     for op in ops:
         if isinstance(op, ContextAttention):
-            op._lane_order = resolved_lane_order_for_op(database, "_context_attention_data", override)
+            op._lane_order = resolved_lane_order_for_op(
+                database,
+                "_context_attention_data",
+                override,
+                architecture,
+            )
         elif isinstance(op, GenerationAttention):
-            op._lane_order = resolved_lane_order_for_op(database, "_generation_attention_data", override)
+            op._lane_order = resolved_lane_order_for_op(
+                database,
+                "_generation_attention_data",
+                override,
+                architecture,
+            )
         elif isinstance(op, FPMForwardOp):
-            _resolve_attention_lane_orders(op._sol_ops, database, override)
+            _resolve_attention_lane_orders(op._sol_ops, database, override, architecture)
 
 
 def build_engine_spec_json(
@@ -479,6 +557,10 @@ def build_engine_spec_json(
     systems_path: str | None,
     nextn: int,
     database: Any = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -491,8 +573,9 @@ def build_engine_spec_json(
     # per-op) — every model family gets a valid, table-aware lane order this
     # way, whether or not it exposes the override.
     override = getattr(getattr(model, "config", None), "attention_backend", None)
-    _resolve_attention_lane_orders(model.context_ops, database, override)
-    _resolve_attention_lane_orders(model.generation_ops, database, override)
+    architecture = getattr(model, "architecture", None)
+    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
+    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
 
     # Vision encoder ops are intentionally NOT emitted into the spec.
     #
@@ -521,6 +604,10 @@ def build_engine_spec_json(
             systems_path=systems_path,
             nextn=nextn,
             database=database,
+            database_mode=database_mode,
+            shared_layer=shared_layer,
+            transfer_policy=transfer_policy,
+            strict_provenance=strict_provenance,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,
@@ -716,12 +803,41 @@ def _evaluate_single_op(
             op._lane_order = original_lane_order
 
 
-def _maybe_load_database(system: str, backend: str, backend_version: str | None, systems_path: str | None) -> Any:
+def _maybe_load_database(
+    system: str,
+    backend: str,
+    backend_version: str | None,
+    systems_path: str | None,
+    database_mode: str | None,
+    shared_layer: bool | None,
+    transfer_policy: str | list[str] | None,
+    strict_provenance: bool | None,
+) -> Any:
+    explicit_policy = any(
+        value is not None for value in (database_mode, shared_layer, transfer_policy, strict_provenance)
+    )
     try:
         from aiconfigurator_core.sdk import perf_database
 
-        return perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        formula_only = database_mode is not None and database_mode.upper() in {"EMPIRICAL", "SOL"}
+        database = perf_database.get_database_view(
+            system,
+            backend,
+            backend_version,
+            systems_paths=systems_path,
+            allow_missing_data=formula_only,
+            database_mode=database_mode,
+            shared_layer=shared_layer,
+            transfer_policy=transfer_policy,
+            strict_provenance=strict_provenance,
+        )
+        # Discovery may deliberately return no view after logging malformed or
+        # missing system data. Keep that absence so the serialized policy below
+        # reaches Rust, whose reload produces the authoritative input error.
+        return database
     except Exception:
+        if explicit_policy:
+            raise
         return None
 
 
@@ -1045,6 +1161,26 @@ class EngineHandle:
             int(prefix),
             float(imbalance_correction_scale),
             int(x) if x is not None else None,
+        )
+
+    def evaluate_context_attention_kernels_json(
+        self,
+        ops_json: str,
+        *,
+        batch_size: int,
+        s: int,
+        prefix: int = 0,
+        imbalance_correction_scale: float = 1.0,
+        visual_block_upper_triangle: bool = False,
+    ) -> list[PerOpValue]:
+        """Evaluate visual-mask kernel work without repeating fused attention extras."""
+        return self._engine.evaluate_context_attention_kernels_json(
+            ops_json,
+            int(batch_size),
+            int(s),
+            int(prefix),
+            float(imbalance_correction_scale),
+            bool(visual_block_upper_triangle),
         )
 
     def evaluate_ops_sol_json(

@@ -123,9 +123,7 @@ def test_predict_yaml_accepts_canonical_host_offload_schema(tmp_path) -> None:
     }
 
 
-def test_predict_cli_reaches_native_rank_host_offload(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_predict_cli_reaches_native_rank_host_offload(tmp_path, monkeypatch, capsys) -> None:
     engine = _prediction_engine()
     cache = engine["workers"]["aggregated"]["kv_cache"]
     cache["bytes_per_token"] = 131_072
@@ -206,18 +204,13 @@ def test_prediction_auto_transfer_geometry_uses_prefill_source_shape(
         return 10_000 * shape["tp_size"] + shape["pp_size"]
 
     monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", estimate)
-    deployment = prediction_to_replay_spec(
-        CorePredictionConfig.model_validate({"engine": engine})
-    ).backend_deployment
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
 
     assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
     assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
     assert [call["tp_size"] for call in calls] == [2]
     assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
-    assert (
-        deployment.decode_engine_args["kv_transfer_timing_mode"]
-        == "destination_missing"
-    )
+    assert deployment.decode_engine_args["kv_transfer_timing_mode"] == "destination_missing"
 
 
 def test_prediction_transfer_and_cache_geometry_are_independent(monkeypatch) -> None:
@@ -230,14 +223,10 @@ def test_prediction_transfer_and_cache_geometry_are_independent(monkeypatch) -> 
     engine["workers"]["decode"]["kv_cache"]["bytes_per_token"] = 222
     monkeypatch.setattr(
         "aisimulate.compiler.estimate_kv_bytes_per_token",
-        lambda *_args, **_kwargs: pytest.fail(
-            "explicit geometry must not be estimated"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("explicit geometry must not be estimated"),
     )
 
-    deployment = prediction_to_replay_spec(
-        CorePredictionConfig.model_validate({"engine": engine})
-    ).backend_deployment
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
 
     assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
     assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
@@ -254,9 +243,7 @@ def test_explicit_legacy_kv_transfer_geometry_yaml_remains_supported(tmp_path) -
     path = tmp_path / "legacy-kv-transfer.yaml"
     path.write_text(yaml.safe_dump({"engine": engine}), encoding="utf-8")
 
-    deployment = prediction_to_replay_spec(
-        CorePredictionConfig.from_yaml(path)
-    ).backend_deployment
+    deployment = prediction_to_replay_spec(CorePredictionConfig.from_yaml(path)).backend_deployment
 
     assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
     assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
@@ -290,9 +277,7 @@ def test_recommendation_keeps_transfer_and_cache_geometry_independent() -> None:
     assert space.decode_kv_bytes_per_token == 222
 
 
-def test_recommendation_carries_fixed_host_descriptor_without_search_dimension() -> (
-    None
-):
+def test_recommendation_carries_fixed_host_descriptor_without_search_dimension() -> None:
     engine = _recommendation_engine()
     cache = engine["workers"]["aggregated"]["kv_cache"]
     cache["bytes_per_token"] = 131_072
@@ -333,9 +318,7 @@ def test_recommendation_materializes_concrete_host_offload_prediction() -> None:
             "agg_max_num_batched_tokens": 8192,
             "agg_max_num_seqs": 4,
         },
-        parallel_config=ReplicaParallelConfig(
-            ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-        ),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
     )
     deployment = build_backend_deployment(sample, backend_version="test")
     prediction = _candidate_prediction(
@@ -359,9 +342,7 @@ def test_recommendation_materializes_concrete_host_offload_prediction() -> None:
     [
         (lambda engine: engine.update(backend="sglang"), "backend=vllm"),
         (
-            lambda engine: engine["workers"]["aggregated"]["kv_cache"].update(
-                prefix_caching=False
-            ),
+            lambda engine: engine["workers"]["aggregated"]["kv_cache"].update(prefix_caching=False),
             "prefix_caching=true",
         ),
         (
@@ -375,9 +356,7 @@ def test_recommendation_materializes_concrete_host_offload_prediction() -> None:
         ),
     ],
 )
-def test_prediction_host_offload_rejects_unsupported_runtime_scope(
-    mutation, message: str
-) -> None:
+def test_prediction_host_offload_rejects_unsupported_runtime_scope(mutation, message: str) -> None:
     engine = _prediction_engine()
     engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
     mutation(engine)
@@ -410,9 +389,7 @@ def test_recommendation_host_offload_rejects_mixed_backend_domain() -> None:
 
 def test_recommendation_host_offload_rejects_attention_dp_domain() -> None:
     engine = _recommendation_engine()
-    engine["workers"]["aggregated"]["parallelism"]["attention_data"] = {
-        "choices": [1, 2]
-    }
+    engine["workers"]["aggregated"]["parallelism"]["attention_data"] = {"choices": [1, 2]}
     engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
 
     with pytest.raises(ValidationError, match="fixed parallelism"):

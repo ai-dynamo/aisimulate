@@ -477,6 +477,7 @@ def render_backend_templates(
             wc[config_name] = config
 
         _set_nested("kv_cache_config", "free_gpu_memory_fraction", "kv_cache_free_gpu_memory_fraction")
+        _set_nested("kv_cache_config", "max_tokens", "kv_cache_max_tokens")
         _set_nested("kv_cache_config", "dtype", "kv_cache_dtype")
         _set_nested("kv_cache_config", "tokens_per_block", "tokens_per_block")
         _set_nested("cuda_graph_config", "enable_padding", "cuda_graph_enable_padding")
