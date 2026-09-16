@@ -193,25 +193,25 @@ def test_power_metric_contract_requires_paired_columns(parquet_diff_module):
 def test_power_metric_contract_accepts_positive_and_zero_sentinel_pairs(parquet_diff_module):
     table = pa.table(
         {
-            "power": pa.array([100.0, 0.0], type=pa.float64()),
+            "power": pa.array([100.0, 0.0, 106.0], type=pa.float64()),
+            "power_limit": pa.array([1000.0, 0.0, 100.0], type=pa.float64()),
+        }
+    )
+
+    # A finite positive pair is valid storage; no implicit ratio cap applies.
+    assert parquet_diff_module._power_metric_issues(table) == []
+
+
+def test_power_metric_contract_rejects_partial_sentinel(parquet_diff_module):
+    table = pa.table(
+        {
+            "power": pa.array([0.0, 100.0], type=pa.float64()),
             "power_limit": pa.array([1000.0, 0.0], type=pa.float64()),
         }
     )
 
-    assert parquet_diff_module._power_metric_issues(table) == []
-
-
-def test_power_metric_contract_rejects_partial_sentinel_and_implausible_power(parquet_diff_module):
-    table = pa.table(
-        {
-            "power": pa.array([0.0, 106.0], type=pa.float64()),
-            "power_limit": pa.array([1000.0, 100.0], type=pa.float64()),
-        }
-    )
-
     assert parquet_diff_module._power_metric_issues(table) == [
-        "power/power_limit contains 1 rows that are neither positive pairs nor 0.0 pairs",
-        "power exceeds 1.05x power_limit in 1 rows",
+        "power/power_limit contains 2 rows that are neither positive pairs nor 0.0 pairs",
     ]
 
 

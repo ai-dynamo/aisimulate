@@ -119,6 +119,20 @@ def test_manifest_validates_hash_counts_and_power_contract(power_data_module, tm
     assert power_data_module.main([str(manifest)]) == 0
 
 
+def test_manifest_accepts_positive_pairs_without_ratio_threshold(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    table = pq.read_table(table_path)
+    table = table.set_column(table.schema.get_field_index("power"), "power", pa.array([1060.0, 0.0]))
+    pq.write_table(table, table_path)
+    manifest = _write_manifest(tmp_path, table_path)
+
+    # Import integrity verifies the recorded measurements without inventing
+    # a hardware-quality threshold for their ratio to the reported limit.
+    assert power_data_module.validate_manifest(manifest) == []
+    assert power_data_module.main([str(manifest)]) == 0
+
+
 def test_manifest_rejects_checksum_drift(power_data_module, tmp_path):
     table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
     _write_power_table(table_path)

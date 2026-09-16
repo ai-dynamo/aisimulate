@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Validate paired power metrics and their checked-in provenance manifests."""
+"""Validate power-field integrity and pinned import evidence under Collector V3.
+
+The shared field checks serve the existing Parquet review and packaged-data
+tests. Import manifests record source hashes and row transformations; Collector
+V3 sidecars, reuse rules, and evidence policy remain authoritative.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,6 @@ import pyarrow.parquet as pq
 POWER_COLUMNS = ("power", "power_limit")
 MEASUREMENT_COLUMNS = ("latency", *POWER_COLUMNS)
 EXPECTED_UNITS = {"latency": "ms", "power": "W", "power_limit": "W"}
-MAX_POWER_LIMIT_RATIO = 1.05
 MANIFEST_BASENAME = "power_data_provenance.json"
 
 
@@ -29,6 +33,7 @@ def power_metric_issues(table: pa.Table) -> list[str]:
     A table may omit power entirely. Once either optional metric is present,
     both columns must be float64 and every row must be either a measured
     positive pair or the typed ``0.0``/``0.0`` unavailable sentinel.
+    Measurement-quality thresholds are outside this storage contract.
     """
     present = [name for name in POWER_COLUMNS if name in table.column_names]
     if not present:
@@ -61,19 +66,14 @@ def power_metric_issues(table: pa.Table) -> list[str]:
 
     pairs = zip(columns["power"], columns["power_limit"], strict=True)
     invalid_pairs = 0
-    over_limit = 0
     for power, power_limit in pairs:
         assert power is not None and power_limit is not None
         sentinel = power == 0.0 and power_limit == 0.0
         measured = power > 0.0 and power_limit > 0.0
         if not sentinel and not measured:
             invalid_pairs += 1
-        elif measured and power > MAX_POWER_LIMIT_RATIO * power_limit:
-            over_limit += 1
     if invalid_pairs:
         issues.append(f"power/power_limit contains {invalid_pairs} rows that are neither positive pairs nor 0.0 pairs")
-    if over_limit:
-        issues.append(f"power exceeds {MAX_POWER_LIMIT_RATIO:.2f}x power_limit in {over_limit} rows")
     return issues
 
 
