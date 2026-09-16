@@ -142,7 +142,8 @@ jobs:
         USER: runner
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # Match the repository's 20-runner AMD64 pool ceiling.
+      max-parallel: 20
       matrix:
         shard: ${{ fromJSON(needs.discover-shards.outputs.shards) }}
     env:
