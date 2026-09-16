@@ -41,8 +41,8 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | Keep AIC `generate`. | [Deployment files](#55-deployment-artifacts) still require AIC or the generator SDK. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Keep AIC for batch/static estimates, [detailed diagnostics](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
+| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#55-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Use `predict --detail` for serving summary, memory estimates, and timing. [Example](#410-inspect-prediction-details). Keep AIC for batch/static estimates, [per-operation diagnostics and SOL](#detailed-diagnostics), and [power reports](#54-power-and-energy-analysis). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -237,6 +237,7 @@ required result, keep the AIC command above.
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
+- [4.10 Prediction details](#410-inspect-prediction-details)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -613,6 +614,74 @@ These searches do not cover identical operating points. Native
 AFD deployment generation remains unavailable. Use fixed-length synthetic traffic with an
 absolute load; see [AFD topology and limits](../sweeper/afd-topology.md).
 
+### 4.10 Inspect prediction details
+
+Use `aisimulate predict --detail` to inspect serving metrics and the memory capacity estimate.
+
+**Before — select diagnostic reports in AIC:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 --detail summary,memory,time
+```
+
+`--detail` belongs to `aiconfigurator cli estimate`; `aiconfigurator cli default` does not accept
+it. With no `--detail`, `estimate` prints its normal summary without extra detail sections.
+The example uses the default aggregated estimate mode and prints its summary, memory components,
+and available phase/per-operation timing.
+
+**After — inspect supported serving details** using `prediction.yaml` from
+[the concrete-deployment example](#31-migrate-one-concrete-deployment):
+
+```bash
+aisimulate predict --config prediction.yaml --detail summary,memory,time \
+  --output-dir ./prediction-details
+```
+
+| AISimulate selector | Supported evidence |
+| --- | --- |
+| `summary` | Existing serving prediction metrics. |
+| `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
+| `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
+| `all` | The three supported sections above, when evidence exists. |
+
+**Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
+implementation, 2026-09-15; simulation results, latency/throughput rounded):
+
+| Section | Field | Value |
+| --- | --- | ---: |
+| `summary` | Completed requests | 100 |
+| `summary` | Output throughput (tokens/s) | 5114.43 |
+| `time` | Mean TTFT (ms) | 365.35 |
+| `time` | Mean inter-token latency (ms) | 8.54 |
+| `time` | Mean request latency (ms) | 1449.85 |
+| `memory` | Weights per rank (bytes) | 8,029,995,008 |
+| `memory` | KV capacity estimate per rank (bytes) | 123,674,925,465 |
+| `memory` | Estimated GPU blocks per rank | 29,486 |
+
+Memory has `stage: before_native_capacity_adjustments`. Both ranks use the same estimate;
+the table does not sum capacity across TP=2. No power/energy or per-operation report is emitted.
+For terminal and JSON examples, including a skipped memory section, see
+[Captured detail output](user-guide.md#captured-detail-output).
+
+The terminal identifies skipped sections with reasons. `prediction.json` stores the selected
+`details.sections` and `details.skipped`; `--format json` prints the same `details` object beside
+`summary`. Memory may be skipped for explicit KV blocks or providers/topologies without an
+exported estimate. Its block count is an initial estimate, not a final runtime allocation.
+Analytical EPD retains available language-worker estimates and identifies the missing encoder
+component breakdown; it does not claim a complete EPD memory report.
+`energy` and `source` are unsupported selectors and are rejected; `all` does not request them.
+For recommendation details, run `predict --detail` on a saved recommendation YAML.
+See the [detail output contract](user-guide.md#prediction-details).
+
+**What changed:** AISimulate reports the configured serving workload, rather than reproducing
+AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
+per-operation timing, SOL comparisons, and other unsupported diagnostics remain
+[separate gaps](#detailed-diagnostics).
+
 ## 5. Remaining feature and performance gaps
 
 These gaps concern the unified `aisimulate predict` and `aisimulate recommend` commands. The
@@ -728,39 +797,25 @@ aiconfigurator cli estimate \
 [estimate modes and outputs](legacy-aic-user-guide.md#estimate-mode).
 
 <a id="detailed-diagnostics"></a>
+<a id="532-detailed-diagnostics"></a>
 
-#### 5.3.2 Detailed diagnostics
+#### 5.3.2 Remaining detailed-diagnostic gaps
 
-The unified `aisimulate predict` and `aisimulate recommend` commands do not yet expose an
-equivalent of AIC's selectable `estimate --detail` reports. This is a separate migration gap
-from fixed-batch estimation. Keep the compatibility CLI when these breakdowns are required.
+The supported `summary`, `memory`, `time`, and `all` selectors are covered in
+[section 4.10](#410-inspect-prediction-details). Keep AIC `estimate --detail` when you need
+these additional diagnostic capabilities:
 
-`--detail` belongs to `aiconfigurator cli estimate`; `aiconfigurator cli default` does not accept
-it. With no `--detail`, `estimate` prints its normal summary without extra detail sections.
-
-| AIC `--detail` selector | Result to inspect |
+| Remaining gap | AIC selector and evidence |
 | --- | --- |
-| `summary` | Latency, throughput, phase totals, and memory status. |
-| `memory` | Memory components such as weights, KV cache, activations, and communication buffers, plus capacity. |
-| `time` | Phase and per-operation latency, with a speed-of-light (SOL) comparison when available. |
-| `energy` | Phase and per-operation energy when data is available. |
-| `source` | Per-operation data provenance and available fallback information. |
-| `all` | All five sections above. |
+| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
+| Per-operation data provenance and fallback information | `source`. |
+| Phase and per-operation energy | `energy`, when data is available; see [power and energy analysis](#54-power-and-energy-analysis). |
 
-Combine selectors with commas. The available sections depend on the estimate mode and data;
-for example, static-mode `--detail energy` can display `<no energy data>` when operation-energy
-data is absent. To inspect memory, timing, and data sources using the default aggregated mode:
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 --detail memory,time,source
-```
-
-**Result to inspect:** memory component totals, per-operation timing, and data-source breakdowns
-in the terminal. These selectable reports have no direct unified-CLI replacement yet.
+AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests only its
+three supported sections. Available AIC sections depend on the estimate mode and data;
+static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
+absent. For fixed-batch or single-pass semantics, keep the
+[static-estimate workflow](#531-static-estimates).
 
 <a id="power-and-energy-analysis"></a>
 
@@ -800,7 +855,13 @@ compatibility command or SDK when power is a required analysis result.
 
 ### 5.5 Deployment artifacts
 
-Keep `generate` when you need deployment files:
+#### 5.5.1 Standalone `generate` command: not planned
+
+`aiconfigurator cli generate` is a fast shortcut for a basic deployment configuration without
+search or SLA optimization. We do not plan to add an equivalent standalone `aisimulate generate`
+command. The AIC command remains available in the bundled compatibility CLI.
+
+For a quick basic deployment configuration with the AIC shortcut:
 
 ```bash
 aiconfigurator cli generate \
@@ -809,10 +870,19 @@ aiconfigurator cli generate \
   --deployment-target dynamo-j2 --save-dir ./deployment
 ```
 
-**Result to inspect:** `deployment/` contains a basic deployment configuration, generated without
-search or SLA optimization. AISimulate's `recommendations/*.yaml` files are inputs to `predict`, not launch
-manifests. For programmatic generation from supported agg/disagg candidates, see the
-[generator SDK](../../python/aisimulate/docs/generator_overview.md). Generation does not support
+**Result to inspect:** `deployment/` contains a basic deployment configuration generated without
+search or SLA optimization.
+
+#### 5.5.2 Deployment files: not yet available in the AISimulate CLI
+
+`aisimulate recommend` does not yet create deployment files, such as launch scripts or Kubernetes
+manifests. It saves the setups it recommends in `recommendations/*.yaml`. Pass one of these files
+to `aisimulate predict` to simulate that setup again.
+
+To create deployment files today, use the bundled AIC commands or the
+[generator SDK](../../python/aisimulate/docs/generator_overview.md). AIC's normal `default` and
+`exp` workflows generate deployment files for supported configurations when `--save-dir` is supplied;
+a separate `generate` command is not required. Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
 <a id="experiment-files-and-support-queries"></a>
