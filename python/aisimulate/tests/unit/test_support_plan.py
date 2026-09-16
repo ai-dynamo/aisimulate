@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import builtins
+import fcntl
 import json
 import os
+import select
 import shlex
 import subprocess
 import sys
@@ -19,7 +21,7 @@ from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support.fpm import run_fpm
-from aisimulate.support.plan import create_plan, request_id
+from aisimulate.support.plan import create_plan, plan_lock, request_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -147,14 +149,14 @@ def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, mod
         assert search.agg_max_num_batched_tokens == [8192]
         assert search.agg_max_num_seqs == [256]
     commands = json.loads((tmp_path / "commands.json").read_text())
-    command = commands["fpm_run_local"]
+    command = commands["fpm_plan_local"]
     assert command[command.index("--fpm-gpu-counts") + 1] == "4"
     assert command[command.index("--fpm-max-gpus") + 1] == "4"
     assert command[command.index("--fpm-parallel-presets") + 1] == preset
     assert command[command.index("--fpm-max-prefill-isl") + 1] == "1024"
     assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "1"
-    assert "--plan-only" not in command
-    assert "--plan-only" in commands["fpm_plan_local"]
+    assert "--plan-only" in command
+    assert "--execute" in commands["fpm_run_local"]
 
 
 def test_one_worker_allocation_keeps_one_pilot_even_with_two_candidate_limit(tmp_path):
@@ -208,8 +210,9 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     "max_candidates,missing_pilot_samples,statuses",
     [(1, False, [0]), (2, False, [0, 0]), (2, True, [1, 0])],
 )
+@pytest.mark.parametrize("tampered_commands", [False, True])
 def test_documented_recommendation_loop_attempts_every_candidate(
-    tmp_path, max_candidates, missing_pilot_samples, statuses
+    tmp_path, max_candidates, missing_pilot_samples, statuses, tampered_commands
 ):
     guide = Path(__file__).resolve().parents[4] / "docs/self-service-support.md"
     snippet = guide.read_text().split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
@@ -221,6 +224,20 @@ def test_documented_recommendation_loop_attempts_every_candidate(
     )
     plan = create_plan(request, workdir / "aisimulate-support")
     commands = json.loads(Path(plan["outputs"]["commands"]).read_text())["recommend"]
+    injected_marker = tmp_path / "injected-command-ran"
+    if tampered_commands:
+        command_file = Path(plan["outputs"]["commands"])
+        payload = json.loads(command_file.read_text())
+        payload["recommend"].insert(
+            0,
+            [
+                sys.executable,
+                "-c",
+                "import sys; from pathlib import Path; Path(sys.argv[1]).write_text('unexpected execution')",
+                str(injected_marker),
+            ],
+        )
+        command_file.write_text(json.dumps(payload))
     evaluated = tmp_path / "evaluated.txt"
     wrapper = tmp_path / "bin/aisimulate"
     wrapper.parent.mkdir()
@@ -282,6 +299,7 @@ if __name__ == "__main__":
         check=False,
     )
 
+    assert not injected_marker.exists()
     assert result.returncode == (1 if any(statuses) else 0), result.stderr
     assert evaluated.read_text().splitlines() == [str(index) for index in range(1, max_candidates + 1)]
     for index, (output, status) in enumerate(zip(plan["outputs"]["recommendation_results"], statuses, strict=True), 1):
@@ -432,6 +450,24 @@ def _reject_collector_import(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_collector_import)
 
 
+def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys):
+    from aisimulate.main import main
+
+    create_plan(_request(), tmp_path)
+    _seed_campaign(tmp_path)
+    before = _file_contents(tmp_path)
+    command = json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"]
+    assert command[:3] == ["aisimulate", "support", "collect-fpm"]
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(SystemExit) as error:
+        main(command[1:])
+
+    assert error.value.code == 2
+    assert "require --resume" in capsys.readouterr().err
+    assert _file_contents(tmp_path) == before
+
+
 @pytest.mark.parametrize("smoke", [False, True])
 def test_repeated_execute_requires_resume_without_touching_campaign(tmp_path, monkeypatch, smoke):
     create_plan(_request(), tmp_path)
@@ -443,7 +479,8 @@ def test_repeated_execute_requires_resume_without_touching_campaign(tmp_path, mo
         run_fpm(SupportRequest.from_yaml(tmp_path / "request.yaml"), output_dir=tmp_path, execute=True, smoke=smoke)
 
     assert _file_contents(tmp_path) == before
-    assert not (tmp_path / ".support.lock").exists()
+    with plan_lock(tmp_path):
+        pass
 
 
 @pytest.mark.parametrize(
@@ -491,7 +528,8 @@ def test_resume_occupied_campaign_requires_usable_selected_checkpoint(tmp_path, 
         run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke, resume=True, checkpoint_dir=selected_dir)
 
     assert _file_contents(tmp_path) == before
-    assert not (tmp_path / ".support.lock").exists()
+    with plan_lock(tmp_path):
+        pass
 
 
 @pytest.mark.parametrize("smoke", [False, True])
@@ -552,7 +590,8 @@ def test_execute_checks_for_campaign_outputs_while_holding_lock(tmp_path, monkey
         run_fpm(request, output_dir=tmp_path, execute=True)
 
     assert (tmp_path / "systems/data/collected.parquet").read_bytes() == b"formal timings"
-    assert not (tmp_path / ".support.lock").exists()
+    with plan_lock(tmp_path):
+        pass
 
 
 @pytest.mark.parametrize("smoke,limit", [(False, 1), (True, 0), (True, -1), (True, True)])
@@ -581,15 +620,68 @@ def test_checkpoint_override_cannot_escape_request_directory(tmp_path, relative)
         run_fpm(_request(), output_dir=tmp_path, checkpoint_dir=tmp_path / relative)
 
 
-def test_concurrent_plan_operation_preserves_existing_files(tmp_path):
+@pytest.mark.parametrize("kill_owner", [False, True])
+def test_plan_lock_recovers_after_owner_exit_and_preserves_existing_files(tmp_path, kill_owner):
     request = _request()
     create_plan(request, tmp_path)
-    (tmp_path / ".support.lock").write_text("busy")
     before = (tmp_path / "support-plan.json").read_bytes()
-    with pytest.raises(ValueError, match="another support operation"):
-        create_plan(request, tmp_path, overwrite=True)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from aisimulate.support.plan import plan_lock; "
+            "lock = plan_lock(Path(sys.argv[1])); lock.__enter__(); "
+            "print('locked', flush=True); sys.stdin.read(); lock.__exit__(None, None, None)",
+            str(tmp_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 10)[0], "lock owner did not become ready"
+        assert process.stdout.readline().strip() == "locked"
+        with pytest.raises(ValueError, match="another support operation"):
+            create_plan(request, tmp_path, overwrite=True)
+        if kill_owner:
+            process.kill()
+        process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
+
+    (tmp_path / "predict/pilot.yaml").unlink()
+    create_plan(request, tmp_path, overwrite=True)
+    assert (tmp_path / "predict/pilot.yaml").is_file()
     assert (tmp_path / "support-plan.json").read_bytes() == before
-    assert (tmp_path / ".support.lock").read_text() == "busy"
+
+
+def test_plan_lock_does_not_unlink_the_inode_used_by_a_waiting_process(tmp_path):
+    create_plan(_request(), tmp_path)
+    with (tmp_path / ".support.lock").open("r") as waiting:
+        with plan_lock(tmp_path):
+            pass
+        fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="another support operation"):
+            create_plan(_request(), tmp_path, overwrite=True)
+
+
+@pytest.mark.parametrize("existing_target", [False, True])
+def test_plan_lock_does_not_follow_a_symlink(tmp_path, existing_target):
+    root = tmp_path / "plan"
+    root.mkdir()
+    external = tmp_path / "external"
+    if existing_target:
+        external.write_text("preserve this")
+    (root / ".support.lock").symlink_to(external)
+
+    with pytest.raises(OSError):
+        create_plan(_request(), root)
+
+    assert not (root / "request.yaml").exists()
+    assert external.read_text() == "preserve this" if existing_target else not external.exists()
 
 
 def test_racing_writer_cannot_be_overwritten_or_reported_as_success(tmp_path, monkeypatch):
@@ -607,4 +699,5 @@ def test_racing_writer_cannot_be_overwritten_or_reported_as_success(tmp_path, mo
         create_plan(_request(), tmp_path)
     assert destination.read_bytes() == b"another writer's config"
     assert not (tmp_path / "support-plan.json").exists()
-    assert not (tmp_path / ".support.lock").exists()
+    with plan_lock(tmp_path):
+        pass

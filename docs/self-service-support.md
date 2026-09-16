@@ -53,7 +53,7 @@ The first command saves the request, `support-plan.json`, `commands.json`, `pred
 
 The search uses one selected TP size. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Dense collection uses the `tp` preset; MoE uses `pure_tp`; the selected TP size remains exact.
 
-Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` includes the underlying collector command for reviewing or extending it with the collector's deployment flags.
+Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` publishes the guarded `aisimulate support collect-fpm --execute` command for collection, alongside a read-only collector planning command.
 
 After those prerequisites are ready, explicitly launch collection from that environment:
 
@@ -65,7 +65,11 @@ aisimulate support collect-fpm \
 
 Execution requires a matching saved plan. The request records model and runtime revisions; this setup does not download a pinned checkpoint or verify the installed runtime against them. Keep the actual checkpoint and runtime consistent with the request before collecting or predicting.
 
+Set deployment options directly on `support collect-fpm`: `--dynamo-version VERSION`, `--image IMAGE`, `--namespace NAME`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--transport nvlink|ib|efa`, and `--image-pull-secret NAME`. The mount, when supplied, is an absolute container path. Prefer an immutable image digest. Supply the same options when previewing, executing, and resuming; deployment settings are part of the collector's frozen-plan identity, so changed settings require a new output directory. Arbitrary collector arguments and engine overrides are not accepted by this command.
+
 For a diagnostic run, add `--execute --smoke`; `--limit N` also requires `--smoke`. Diagnostic smoke and limited runs do not publish formal FPM data. Existing campaign data, raw artifacts, or checkpoints require explicit `--resume` and a readable matching collector checkpoint; otherwise choose a new output directory. A custom `--checkpoint-dir`, if needed, must remain inside the plan's `fpm-checkpoint/` directory. Selecting an empty checkpoint directory does not allow reuse of existing campaign artifacts. Smoke and formal campaigns have separate checkpoints and artifact directories, so an existing smoke run does not prevent the first formal run, or vice versa. The collector verifies the resumed checkpoint's frozen-plan identity.
+
+Planning and collection reject concurrent support operations. The persistent `.support.lock` file uses an OS advisory lock; ownership is released when the process exits, including after an abrupt termination. Leave the file in place. Request validation, saved support-plan checks, and collector input resolution exit 2. Failures after collector execution starts, including a frozen checkpoint identity mismatch, exit 1 with a concise message. Interruption exits 130.
 
 The collector narrows initial prefill sampling with the pilot's input-token and concurrency bounds. Decode uses the collector's existing profile; a four-request synthetic pilot does not imply four timing samples or a short decode campaign. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair.
 
@@ -83,18 +87,31 @@ aisimulate recommend \
   --output-dir ./aisimulate-support/recommend-results/pilot
 ```
 
-With two candidates, run every recommendation command in `commands.json` so both replica counts are evaluated. This executes the emitted ordinary command vectors:
+With two candidates, run both replica counts. This loop derives the candidate names from the validated saved request and constructs fixed `aisimulate recommend` commands:
 
 ```bash
 python3 - <<'PY'
-import json
 import shlex
 import subprocess
 from pathlib import Path
 
-commands = json.loads(Path("./aisimulate-support/commands.json").read_text())
+from aisimulate.support.plan import check_plan
+from aisimulate.support.schema import SupportRequest
+
+root = Path("./aisimulate-support").resolve()
+request = SupportRequest.from_yaml(root / "request.yaml")
+check_plan(request, root)
+max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.search.tensor_parallel)
+replicas = list(dict.fromkeys((1, max_replicas)))[:request.search.max_candidates]
 statuses = []
-for command in commands["recommend"]:
+for count in replicas:
+    name = "pilot" if count == 1 else f"replicas-{count}"
+    command = [
+        "aisimulate", "recommend",
+        "--config", str(root / f"recommend/{name}.yaml"),
+        "--output-dir", str(root / f"recommend-results/{name}"),
+        "--format", "json",
+    ]
     result = subprocess.run(command, check=False)
     statuses.append(result.returncode)
     print(f"exit {result.returncode}: {shlex.join(command)}", flush=True)
@@ -104,7 +121,7 @@ PY
 
 The loop reports each command's exit status and attempts all commands, including when the pilot finds no feasible candidate. It exits 1 after all attempts if any command returned a nonzero status, otherwise 0. Successful outputs remain usable even when the loop exits 1; inspect each result before comparing candidates.
 
-Run either the individual recommendation command or the command-vector loop against fresh result directories. The loop also handles a one-candidate plan. Results remain separate under `recommend-results/pilot` and, when present, `recommend-results/replicas-N`; compare their objective and latency results for the same workload. This plan does not produce a combined ranking or search additional TP sizes or scheduler settings.
+Run either the individual recommendation command or the loop against fresh result directories. The loop also handles a one-candidate plan and does not execute entries from `commands.json`. Results remain separate under `recommend-results/pilot` and, when present, `recommend-results/replicas-N`; compare their objective and latency results for the same workload. This plan does not produce a combined ranking or search additional TP sizes or scheduler settings.
 
 The generated configurations select `engine.workers.aggregated.timing.forward_model: fpm` and set `engine.systems_path` to the plan's absolute local systems directory. The same root supplies hardware and collected FPM data. Recommendation preserves it in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there.
 

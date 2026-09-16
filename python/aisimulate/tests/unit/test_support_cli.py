@@ -383,6 +383,183 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     assert calls[0][calls[0].index("--limit") + 1] == "1"
 
 
+def _local_collection_command(tmp_path):
+    model = tmp_path / "model with spaces"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "num_hidden_layers": 2,
+                "hidden_size": 128,
+                "intermediate_size": 256,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "vocab_size": 512,
+                "max_position_embeddings": 16384,
+                "torch_dtype": "bfloat16",
+            }
+        )
+    )
+    request_path = tmp_path / "request.yaml"
+    root = tmp_path / "plan"
+    assert cli.main(_init_args(request_path, model=model)) == 0
+    assert cli.main(["support", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
+    return ["support", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+
+
+def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
+    from collector.fpm_forward import runner
+
+    calls = []
+    monkeypatch.setattr(runner, "run_collection", lambda plan, **kwargs: calls.append((plan, kwargs)) or [])
+    command = _local_collection_command(tmp_path)
+    command += [
+        "--dynamo-version",
+        "1.2.0",
+        "--image",
+        "registry.example/fpm@sha256:" + "a" * 64,
+        "--namespace",
+        "pilot-collection",
+        "--model-cache",
+        "model-cache:/models:checkpoint",
+        "--transport",
+        "nvlink",
+        "--image-pull-secret",
+        "registry-secret",
+    ]
+
+    assert cli.main(command) == 0
+
+    [(plan, kwargs)] = calls
+    assert kwargs["generator_overrides"] == {
+        "generator_dynamo_version": "1.2.0",
+        "K8sConfig": {
+            "k8s_image": "registry.example/fpm@sha256:" + "a" * 64,
+            "k8s_namespace": "pilot-collection",
+            "k8s_pvc_name": "model-cache",
+            "k8s_pvc_mount_path": "/models",
+            "k8s_model_path_in_pvc": "checkpoint",
+            "transport": "nvlink",
+            "k8s_image_pull_secret": "registry-secret",
+        },
+    }
+    assert plan.cells
+    assert kwargs["artifact_root"] == str(tmp_path / "plan/fpm-artifacts")
+    assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--dynamo-version", "latest"),
+        ("--image", "bad image"),
+        ("--image", ""),
+        ("--namespace", "invalid namespace"),
+        ("--model-cache", ":/models"),
+        ("--model-cache", "cache:a:b:c"),
+        ("--model-cache", "cache:relative"),
+        ("--transport", "pcie"),
+        ("--image-pull-secret", "invalid secret"),
+        ("--generator-set", "params.agg.tp=8"),
+        ("--generator-config", "unrestricted.yaml"),
+    ],
+)
+def test_deployment_options_reject_invalid_or_unrestricted_inputs(tmp_path, capsys, option, value):
+    command = _local_collection_command(tmp_path)
+    command.remove("--execute")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main([*command, option, value])
+
+    assert error.value.code == 2
+    assert "Traceback" not in capsys.readouterr().err
+    assert not (tmp_path / "plan/fpm-checkpoint").exists()
+    assert not (tmp_path / "plan/fpm-artifacts").exists()
+
+
+@pytest.mark.parametrize(
+    "option,first,changed",
+    [
+        ("--dynamo-version", "1.2.0", "1.3.0"),
+        ("--image", "registry.example/fpm:first", "registry.example/fpm:second"),
+        ("--namespace", "first", "second"),
+        ("--model-cache", "cache:/models:first", "cache:/models:second"),
+        ("--transport", "nvlink", "ib"),
+        ("--image-pull-secret", "first", "second"),
+    ],
+)
+def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypatch, capsys, option, first, changed):
+    from collector.fpm_forward import planner, runner
+
+    command = [*_local_collection_command(tmp_path), option, first]
+    checkpoint = tmp_path / "plan/fpm-checkpoint/fpm_forward.json"
+    plans = []
+    actual_run = runner.run_collection
+
+    def checkpoint_only(plan, **kwargs):
+        # No silicon data is produced: exercise planning and checkpoint guards
+        # with a synthetic empty campaign checkpoint in place of GPU execution.
+        plans.append(plan)
+        checkpoint.parent.mkdir(exist_ok=True)
+        checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        return []
+
+    monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
+    monkeypatch.setattr(runner, "run_collection", checkpoint_only)
+    assert cli.main(command) == 0
+    saved = checkpoint.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        cli.main(command)
+    assert error.value.code == 2
+    assert len(plans) == 1
+    assert cli.main([*command, "--resume"]) == 0
+    assert plans[0].sha256 == plans[1].sha256
+    assert checkpoint.read_bytes() == saved
+
+    # The real collector must reject a changed identity before GPU execution.
+    monkeypatch.setattr(runner, "run_collection", actual_run)
+    monkeypatch.setattr(runner, "KubernetesCellRunner", lambda *args, **kwargs: pytest.fail("must not launch GPU work"))
+    capsys.readouterr()
+    assert cli.main([*command, "--resume", option, changed]) == 1
+    assert "checkpoint does not match the current frozen plan" in capsys.readouterr().err
+    assert checkpoint.read_bytes() == saved
+
+
+@pytest.mark.parametrize("stage", ["input", "execution"])
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, OSError, KeyboardInterrupt])
+def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, stage, error_type):
+    from collector.fpm_forward import cli as collector_cli
+
+    request_path = tmp_path / "request.yaml"
+    root = tmp_path / "plan"
+    assert cli.main(_init_args(request_path)) == 0
+    assert cli.main(["support", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
+    capsys.readouterr()
+
+    def fail(*args, **kwargs):
+        raise error_type("test collection failure")
+
+    monkeypatch.setattr(collector_cli, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
+    monkeypatch.setattr(collector_cli, "resolve_run_inputs", fail if stage == "input" else lambda *args: None)
+    monkeypatch.setattr(collector_cli, "run_resolved", fail)
+    command = ["support", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+
+    if error_type is KeyboardInterrupt:
+        assert cli.main(command) == 130
+    elif stage == "input":
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+    else:
+        assert cli.main(command) == 1
+    stderr = capsys.readouterr().err
+    assert "Traceback" not in stderr
+    if stage == "execution" and error_type is not KeyboardInterrupt:
+        assert "aisimulate support collect-fpm failed: test collection failure" in stderr
+
+
 @pytest.mark.parametrize("contents", ["[one, two]\n", "identity: [\n", "identity: {}\n"])
 def test_bad_request_yaml_is_reported_without_a_traceback(tmp_path, capsys, contents) -> None:
     request = tmp_path / "bad.yaml"

@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from packaging.version import Version
 from pydantic import Field, field_validator, model_validator
 
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
@@ -108,6 +109,42 @@ class SearchProfile(StrictModel):
         "pareto",
     ] = "throughput"
     seed: int = Field(default=42, strict=True, ge=0)
+
+
+_DNS_LABEL = r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
+_DNS_SUBDOMAIN = rf"{_DNS_LABEL}(?:\.{_DNS_LABEL})*"
+
+
+class FPMDeployment(StrictModel):
+    """Deployment-only inputs included in the collector's frozen-plan identity."""
+
+    dynamo_version: str | None = None
+    image: str | None = Field(default=None, pattern=r"^[^\s\x00]+$")
+    namespace: str | None = Field(default=None, pattern=rf"^{_DNS_LABEL}$")
+    model_cache: str | None = None
+    transport: Literal["nvlink", "ib", "efa"] | None = None
+    image_pull_secret: str | None = Field(default=None, pattern=rf"^{_DNS_SUBDOMAIN}$", max_length=253)
+
+    @field_validator("dynamo_version")
+    @classmethod
+    def _release_version(cls, value: str | None) -> str | None:
+        if value is not None:
+            Version(value)
+        return value
+
+    @field_validator("model_cache")
+    @classmethod
+    def _model_cache(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = value.split(":")
+        if len(parts) > 3 or len(parts[0]) > 253 or not re.fullmatch(_DNS_SUBDOMAIN, parts[0]):
+            raise ValueError("model_cache must be NAME[:MOUNT[:SUBPATH]] with a valid PVC name")
+        if len(parts) > 1 and parts[1] and not PurePosixPath(parts[1]).is_absolute():
+            raise ValueError("model_cache MOUNT must be an absolute container path")
+        if "\x00" in value or "\n" in value or "\r" in value:
+            raise ValueError("model_cache must contain no NUL characters or newlines")
+        return value
 
 
 class SupportRequest(StrictModel):

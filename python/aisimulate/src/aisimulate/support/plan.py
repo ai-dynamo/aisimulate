@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -98,7 +101,16 @@ def _configs(
 def _commands(request: SupportRequest, root: Path, recommendation_names: list[str]) -> dict[str, Any]:
     return {
         "fpm_plan_local": fpm_cli_args(request, output_dir=root, plan_only=True),
-        "fpm_run_local": fpm_cli_args(request, output_dir=root, plan_only=False),
+        "fpm_run_local": [
+            "aisimulate",
+            "support",
+            "collect-fpm",
+            "--config",
+            str(root / "request.yaml"),
+            "--output-dir",
+            str(root),
+            "--execute",
+        ],
         "predict": [
             [
                 "aisimulate",
@@ -217,18 +229,20 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
 
 @contextmanager
 def plan_lock(root: Path) -> Iterator[None]:
-    """Reject overlapping support operations instead of racing plan writes."""
+    """Keep one stable lock inode; the OS releases ownership on process exit."""
 
     lock = root / _LOCK_NAME
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        handle = lock.open("x", encoding="utf-8")
-    except FileExistsError as exc:
-        raise ValueError(f"another support operation holds {lock}") from exc
-    try:
-        with handle:
-            yield
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"support lock must be a regular file: {lock}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError(f"another support operation holds {lock}") from exc
+        yield
     finally:
-        lock.unlink()
+        os.close(descriptor)
 
 
 def _check_paths(root: Path) -> None:

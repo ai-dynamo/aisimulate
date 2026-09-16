@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from pathlib import Path
 
-from .schema import SupportRequest
+from .schema import FPMDeployment, SupportRequest
 
 
 def fpm_cli_args(
@@ -21,6 +22,7 @@ def fpm_cli_args(
     limit: int | None = None,
     resume: bool = False,
     checkpoint_dir: str | Path | None = None,
+    deployment: FPMDeployment | None = None,
 ) -> list[str]:
     if limit is not None and (not smoke or type(limit) is not int or limit < 1):
         raise ValueError("limit must be a positive cell count and requires smoke=True")
@@ -57,6 +59,12 @@ def fpm_cli_args(
     ]
     if request.identity.sm is not None:
         command.extend(("--sm", str(request.identity.sm)))
+    if deployment is not None:
+        for name, value in deployment.model_dump(exclude_none=True).items():
+            if name == "image":
+                command.extend(("--generator-set", f"K8sConfig.k8s_image={json.dumps(value)}"))
+            else:
+                command.extend(("--" + name.replace("_", "-"), value))
     if plan_only:
         command.append("--plan-only")
     if smoke:
@@ -116,6 +124,7 @@ def run_fpm(
     limit: int | None = None,
     resume: bool = False,
     checkpoint_dir: str | Path | None = None,
+    deployment: FPMDeployment | None = None,
 ) -> int:
     """Preview without side effects; execution requires the matching saved plan."""
 
@@ -130,6 +139,7 @@ def run_fpm(
         limit=limit,
         resume=resume,
         checkpoint_dir=checkpoint_dir,
+        deployment=deployment,
     )
     if not execute:
         if resume or (root.exists() and any(root.iterdir())):
@@ -142,4 +152,10 @@ def run_fpm(
         _check_campaign_outputs(root, smoke=smoke, resume=resume, checkpoint_dir=checkpoint_dir)
         from collector.fpm_forward.cli import main as fpm_main
 
-        return fpm_main(command[3:])
+        # The collector reports input/plan failures through argparse before
+        # entering run_resolved; only execution failures escape this call.
+        try:
+            return fpm_main(command[3:])
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"aisimulate support collect-fpm failed: {exc}", file=sys.stderr)
+            return 1
