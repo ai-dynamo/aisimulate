@@ -50,7 +50,8 @@ are separate identities:
 
 The exporter, Pages validator, and browser restrict evaluated branch names to
 `main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*` and commits to 40 lowercase hex
-characters. The browser checks catalog status and evaluated identity against the
+characters. Evaluated snapshots must include matching bundled AIC CLI provenance;
+only historical snapshots may omit it. The browser checks catalog status and evaluated identity against the
 loaded summary before rendering. Contradictory evidence fails visibly rather
 than displaying another branch's results. A missing catalog permits direct
 source preview, whose label is derived from the loaded summary itself.

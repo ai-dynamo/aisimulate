@@ -513,7 +513,7 @@ function validateSummary(data) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
-  if (aicSource !== undefined && (!aicSource ||
+  if ((revision != null || aicSource !== undefined) && (!aicSource ||
     aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
     !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||

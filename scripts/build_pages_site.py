@@ -223,8 +223,8 @@ def _accuracy_summary(text: str) -> dict:
                 and branch_name(revision.get("branch")),
                 "evaluated revision",
             )
-        if "aic_source" in snapshot:
-            aic_source = snapshot["aic_source"]
+        if revision is not None or "aic_source" in snapshot:
+            aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
                 and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"

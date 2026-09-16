@@ -700,7 +700,7 @@ a[aria-disabled="true"] { color: var(--dim); pointer-events: none; }
   line-height: 20px;
 }
 
-.github-link { display: flex; color: #94a3b8; }
+.github-link { display: flex; color: var(--muted); }
 [data-theme="light"] .theme-sun,
 [data-theme="dark"] .theme-moon { display: none; }
 

@@ -718,6 +718,11 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     main_summary["snapshot"].pop("aic_source", None)
     release_summary = json.loads(json.dumps(main_summary))
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
+    release_summary["snapshot"]["aic_commit_sha"] = "a" * 40
+    release_summary["snapshot"]["aic_source"] = {
+        "repository": "https://github.com/ai-dynamo/aisimulate",
+        **release_summary["snapshot"]["evaluated_revision"],
+    }
     source.write_text(json.dumps(release_summary))
     (source.parent / "app.js").write_text("untrusted release javascript")
     git("add", ".")
@@ -830,3 +835,12 @@ def test_publication_rejects_evaluated_branches_outside_exporter_contract() -> N
         invalid["snapshot"]["aic_source"]["branch"] = branch
         with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "evaluated revision"):
             PAGES._accuracy_summary(json.dumps(invalid))
+
+
+def test_evaluated_snapshot_requires_legacy_cli_provenance() -> None:
+    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    del summary["snapshot"]["aic_source"]
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "legacy AIC CLI source"):
+        PAGES._accuracy_summary(json.dumps(summary))
+    del summary["snapshot"]["evaluated_revision"]
+    assert PAGES._accuracy_summary(json.dumps(summary)) == summary

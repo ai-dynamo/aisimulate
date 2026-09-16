@@ -59,6 +59,14 @@ function setup(fetch, url) {
   return app;
 }
 
+function withEvaluation() {
+  const data = structuredClone(historical);
+  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.aic_commit_sha = "d".repeat(40);
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  return data;
+}
+
 function withTopology() {
   const data = structuredClone(historical);
   const gpu = data.models[0].workloads[0].gpus[0];
@@ -85,10 +93,7 @@ test("legacy summary loads with historical provenance and branch-specific downlo
 });
 
 test("bundled AIC CLI provenance links to AISimulate and rejects another repository or revision", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
-  data.snapshot.aic_commit_sha = "d".repeat(40);
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  const data = withEvaluation();
   const app = setup(async () => response(data));
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
@@ -243,8 +248,7 @@ test("partial GPU links and topology-only links fail explicitly", async () => {
 });
 
 test("inherited evaluated evidence identifies its original branch", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  const data = withEvaluation();
   const app = setup(async () => response(data));
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[1], {status: "inherited", evaluated_revision: revisionFixture})');
@@ -304,8 +308,7 @@ test("summary rejects evaluated branches outside the exporter contract", () => {
 });
 
 test("catalog and loaded snapshot must agree before rendering", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  const data = withEvaluation();
   const app = setup(async () => response(data));
   for (const metadata of [
     { status: "historical" },
@@ -322,11 +325,21 @@ test("catalog and loaded snapshot must agree before rendering", async () => {
 });
 
 test("direct source preview derives its label from the actual evaluated snapshot", async () => {
-  const data = structuredClone(historical);
-  data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
+  const data = withEvaluation();
   const app = harness(async (path) => path === "./branches.json" ? response({}, 404) : response(data));
   await app.run("initialize()");
   assert.equal(app.run("state.catalog.branches[0].status"), "evaluated");
   assert.equal(app.element("branch-select").innerHTML, '<option value="main">main</option>');
   assert.equal(app.element("download-json").href, "./summary.json");
+});
+
+test("evaluated snapshots require matching legacy CLI provenance", () => {
+  const app = setup();
+  const data = withEvaluation();
+  delete data.snapshot.aic_source;
+  app.set("invalid", data);
+  assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+  delete data.snapshot.evaluated_revision;
+  app.set("historicalOnly", data);
+  assert.doesNotThrow(() => app.run("validateSummary(historicalOnly)"));
 });
