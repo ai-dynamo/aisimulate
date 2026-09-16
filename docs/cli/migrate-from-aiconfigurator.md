@@ -702,19 +702,19 @@ alongside the summary implementation from #142.
 
 #### 4.11.1 Summary power without energy details
 
-**Before — AIC includes power in its normal static-estimate summary:**
+**Before — AIC includes power in its normal estimate summary:**
 
 ```bash
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system b200_sxm --backend trtllm --backend-version 1.3.0rc20 \
-  --estimate-mode static --batch-size 64 --tp-size 2 --isl 1024 --osl 128
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128
 ```
 
-**Recorded result:** `Power (per GPU): 660.2 W`, without a detail flag. The explicit
-`--estimate-mode static` selects AIC's fixed-batch estimator and supports the energy
-breakdown used in 4.11.2. Keep this mode explicit: the default `agg` reporting path
-did not publish power or an energy breakdown in this capture.
+**Recorded result:** `Power (per GPU): 660.4 W`, without a detail flag. Omitting
+`--estimate-mode` uses AIC's default `agg` estimator, corresponding to the aggregated
+serving configuration below. The bundled AIC reporting fix in #144 preserves energy
+evidence through this default path and supports the breakdown in 4.11.2.
 
 **After — AISimulate summary with measured operation-power data.** Save as
 `power-prediction.yaml`. This uses the same traffic shape as section 3.1, with the
@@ -796,11 +796,11 @@ replay reports, using `null` for unavailable values under the publication gate b
 aiconfigurator cli estimate \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --system b200_sxm --backend trtllm --backend-version 1.3.0rc20 \
-  --estimate-mode static --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
+  --batch-size 64 --tp-size 2 --isl 1024 --osl 128 --detail energy
 ```
 
-**Recorded result:** the normal summary still prints **660.2 W/GPU**, followed by positive
-context/generation energy totals and per-operation contributions. See the
+**Recorded result:** the normal summary still prints **660.4 W/GPU**, followed by positive
+mixed-step and decode-only energy totals and per-operation contributions. See the
 [captured output](#4113-captured-result).
 
 **After — AISimulate energy detail**, using the same `power-prediction.yaml`:
@@ -838,10 +838,10 @@ path must not fabricate `0%`. JSON always returns both keys, with numbers when a
 `null` otherwise, never placeholder strings, `NaN`, or zero watts. These synthetic values do not guarantee
 power coverage for another hardware/model/backend combination.
 
-**What changed:** AIC estimates a fixed batch; AISimulate models serving traffic and scheduled
-forward passes. Their power values share the same meaning and coverage rule but need not be
-numerically equal for these different workloads. Both workflows must expose summary power
-independently of detail selection. This implementation does not
+**What changed:** AIC uses its default aggregated estimator at batch size 64; AISimulate
+simulates serving traffic at concurrency 64. Both model aggregated serving, but their
+scheduling calculations differ, so their power estimates need not be numerically equal.
+Both workflows must expose summary power independently of detail selection. This implementation does not
 qualify hardware accuracy or add a power/energy optimization objective. Modeled GPU power is
 not whole-node or datacenter consumption.
 
@@ -857,18 +857,18 @@ topology. Use the compatibility command or SDK when full-deployment EPD power is
 
 The B200 AIC and AISimulate commands above, each with and without `--detail energy`, were
 run on 2026-09-15 (Pacific) from a freshly built application wheel combining
-[#144 at `1687005c`](https://github.com/ai-dynamo/aisimulate/commit/1687005c26d3704b7dbbe4c887106e929ee1ab01)
+[#144 at `01744c7e`](https://github.com/ai-dynamo/aisimulate/commit/01744c7efee7c0767ec2d27a72e2749528bdde34)
 and [#212 at `a83ad4f1`](https://github.com/ai-dynamo/aisimulate/commit/a83ad4f162669b318786cc279f320650ec09d5b1).
 Both bundled CLIs used Llama 3.1 8B, two B200 GPUs, TRT-LLM `1.3.0rc20`, 1,024 input tokens,
-and 128 output tokens. AIC uses a static batch of 64; AISimulate runs 100 requests with
-concurrency 64. These are modeled results from operation profiles, and can change with
-code or data revisions.
+and 128 output tokens. AIC uses its default `agg` mode with batch size 64; AISimulate
+runs 100 requests at concurrency 64 in `aggregated` mode. These are modeled results from
+operation profiles, and can change with code or data revisions.
 
 **Positive power in both CLIs, with and without energy detail:**
 
 | Captured output | No `--detail` | `--detail energy` |
 | --- | ---: | ---: |
-| AIC `Power (per GPU)` | 660.2 W | 660.2 W |
+| AIC `Power (per GPU)` | 660.4 W | 660.4 W |
 | AISimulate `power_w` | 655.94 W | 655.94 W |
 | AISimulate `power_coverage` | 90.70% | 90.70% |
 | AISimulate completed requests | 100 | 100 |
@@ -887,13 +887,16 @@ Both AISimulate `prediction.json` files contain identical power fields:
 
 ```text
   Detailed Breakdown (energy)
-Context energy (total = 308408.607 W·ms, avg P = 723.5 W)
-Generation energy (total = 260758.604 W·ms, avg P = 598.2 W)
+Energy Breakdown (scheduled active work per GPU)
+Mixed steps energy (total = 468748.423 W·ms, coverage = 91.6%, avg P = 680.5 W)
+Decode-only steps energy (total = 131716.846 W·ms, coverage = 90.5%, avg P = 597.4 W)
 ```
 
 The AIC breakdown also reports positive operation energy, including
-`context_gate_ffn1_gemm = 138724.922 W·ms` and
-`generation_gate_ffn1_gemm = 86159.940 W·ms`.
+`context_gate_ffn1_gemm = 184423.039 W·ms` in mixed steps and
+`generation_gate_ffn1_gemm = 43419.182 W·ms` in decode-only steps. These totals use
+the same scheduling weights as the AIC summary. Mixed steps contain both prefill and
+decode work; their shared operation names retain AIC's `context_` prefix.
 
 **Additional AISimulate energy output:**
 
@@ -924,8 +927,9 @@ omitted rows; `details.sections.energy.diagnostics.phases` in the saved report r
 Operations without energy evidence, such as activation and normalization, still show
 unavailable energy and its reason; they account for the uncovered latency.
 
-The two CLIs both publish positive power, but their totals differ because a fixed static
-batch and a scheduled serving workload execute different forward passes. Within each CLI,
+The two CLIs both publish positive power using their aggregated serving paths. AIC
+approximates mixed/decode step counts; AISimulate schedules individual requests, so the
+executed forward passes and power estimates differ. Within each CLI,
 adding `--detail energy` preserves summary power and adds the breakdown.
 
 ## 5. Remaining feature and performance gaps
