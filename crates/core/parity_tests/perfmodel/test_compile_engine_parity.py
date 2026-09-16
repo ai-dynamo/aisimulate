@@ -403,6 +403,40 @@ _ACCEPTED_SOURCE_TAG_DIVERGENCES = {
 
 class TestCompileEnginePerOpParity:
     @pytest.mark.parametrize("case", _SUBSET_CASES)
+    @pytest.mark.parametrize("phase", ["prefill", "decode"])
+    def test_phase_per_op_matches_scalar_prediction(self, case: EngineStepParityCase, phase: str) -> None:
+        """Replay's evidence path must preserve the original scalar latency."""
+        handle = _compile_handle(case)
+        prefill = phase == "prefill"
+        # Match AicTimingModel's per-phase inputs, including one decode step
+        # and its default stride. The scalar helpers call run_static with
+        # these same coordinates; no golden values are regenerated here.
+        prefix = case.prefix if prefill else 0
+        ctx_entries, gen_entries = handle.run_static_per_op(
+            batch_size=case.batch_size,
+            beam_width=1,
+            isl=case.isl,
+            osl=1 if prefill else 2,
+            prefix=prefix,
+            seq_imbalance_correction_scale=1.0,
+            gen_seq_imbalance_correction_scale=1.0,
+            mode="static_ctx" if prefill else "static_gen",
+            stride=32,
+        )
+        if prefill:
+            scalar_ms = handle.predict_prefill_latency(case.batch_size, case.isl, prefix)
+            entries = ctx_entries
+            assert not gen_entries
+        else:
+            scalar_ms = handle.predict_decode_latency(case.batch_size, case.isl, 2)
+            entries = gen_entries
+            assert not ctx_entries
+        assert entries and scalar_ms > 0.0
+        # Permit only floating-point reduction-order roundoff, rather than
+        # the wider cross-implementation tolerance used for frozen goldens.
+        assert sum(entry[1] for entry in entries) == pytest.approx(scalar_ms, rel=1e-12, abs=1e-12)
+
+    @pytest.mark.parametrize("case", _SUBSET_CASES)
     def test_static_per_op_matches_golden(self, case: EngineStepParityCase) -> None:
         case_id = _SUBSET_CASE_IDS[case]
         golden = load_parity_golden("per_op.json")["cases"].get(case_id)

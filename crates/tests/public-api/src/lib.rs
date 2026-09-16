@@ -89,7 +89,8 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aiconfigurator_core::{
-        ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ForwardPassMetrics, TimingEvidenceSource, TimingEvidenceSummary, TimingOperationEvidence,
+        TimingPhaseEvidence, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 
     #[test]
@@ -125,6 +126,41 @@ mod tests {
         assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 18);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
+    }
+
+    struct LatencyOnlyProvider;
+
+    impl aiconfigurator_core::TimingModel for LatencyOnlyProvider {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(2.0)
+        }
+    }
+
+    #[test]
+    fn external_latency_only_provider_needs_no_energy_implementation() {
+        use aiconfigurator_core::TimingModel;
+        assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
+        assert_eq!(LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn timing_evidence_types_are_public() {
+        let operation = TimingOperationEvidence::new(
+            "gemm",
+            2.0,
+            Some(900.0),
+            TimingEvidenceSource::Silicon,
+        )
+        .unwrap();
+        let phase = TimingPhaseEvidence::from_operations(vec![operation]);
+        let summary = TimingEvidenceSummary {
+            prefill: phase,
+            decode: TimingPhaseEvidence::default(),
+        };
+        assert_eq!(summary.prefill.energy_wms, Some(900.0));
     }
 
     #[test]
