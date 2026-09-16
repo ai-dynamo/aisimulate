@@ -2536,6 +2536,7 @@ mod tests {
         ));
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
                 name: format!("fpm_forward_{}", phase.as_str()),
                 phase,
                 model_path: "org/model-a".to_string(),
@@ -2563,6 +2564,7 @@ mod tests {
         use crate::perf_database::fpm_forward::tests::default_identity;
         let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
         let fpm_op = Op::FpmForward(FpmForwardOp {
+            interpolation: Default::default(),
             name: "fpm_forward_prefill".into(),
             phase: FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -2620,6 +2622,7 @@ mod tests {
         ));
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
                 name: format!("fpm_forward_{}", phase.as_str()),
                 phase,
                 model_path: "org/model-a".to_string(),
@@ -2929,6 +2932,7 @@ mod tests {
         let hidden = Op::Overlap(crate::operators::OverlapOp::new(
             "hidden",
             vec![Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
                 name: "fpm_forward_prefill".into(),
                 phase: FpmPhase::Prefill,
                 model_path: "org/model-a".into(),
@@ -3246,6 +3250,7 @@ mod tests {
             "0.25.1",
         ));
         let mut op = FpmForwardOp {
+            interpolation: Default::default(),
             name: "fpm_forward_decode".into(),
             phase: FpmPhase::Decode,
             model_path: "org/model-a".into(),
@@ -3291,6 +3296,7 @@ mod tests {
         ));
         let fpm_op = |phase: FpmPhase, width: u32| {
             Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
                 name: format!("fpm_forward_{}", phase.as_str()),
                 phase,
                 model_path: "org/model-a".to_string(),

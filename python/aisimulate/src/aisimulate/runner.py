@@ -88,6 +88,8 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
+    "fpm_interpolation": ("fpm_interpolation", "aic_fpm_interpolation"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -1261,12 +1263,18 @@ def _materialize_engine_role(
         value = rank.pop(configured[0])
         if target in {"pp", "moe_tp_size", "moe_ep_size"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "fpm_profile":
+            from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+
+            value = load_fpm_profile(value).model_dump(mode="json")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
             raise ValueError(
                 f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
             )
+        if target == "fpm_interpolation" and value not in {"auto", "sol", "direct"}:
+            raise ValueError(f"engine provider {role} fpm_interpolation must be auto, sol, or direct")
         aic_timing_overrides[target] = value
 
     timing_model = rank.get("timing_model")

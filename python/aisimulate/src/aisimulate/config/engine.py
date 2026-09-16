@@ -9,6 +9,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
+
 from .common import Choices, IntegerRange, NumericRange, StrictModel, SystemsPath
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -141,11 +143,14 @@ class KvCachePredictionConfig(StrictModel):
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = "op_level"
+    fpm_interpolation: Literal["auto", "sol", "direct"] = "auto"
     prefill_ms: float | None = Field(default=None, ge=0.0)
     decode_ms: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.fpm_interpolation != "auto" and (self.type != "default" or self.forward_model != "fpm"):
+            raise ValueError("fpm_interpolation requires default FPM timing")
         if self.type == "fixed":
             if self.prefill_ms is None or self.decode_ms is None:
                 raise ValueError("fixed timing requires prefill_ms and decode_ms")
@@ -210,6 +215,7 @@ class KvTransferConfig(StrictModel):
 class EnginePredictionConfig(StrictModel):
     mode: EngineMode = "aggregated"
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
@@ -235,6 +241,7 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        _validate_fpm_profile(self, {self.mode}, {self.backend})
         _validate_systems_path_modes(self, {self.mode})
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
@@ -387,6 +394,7 @@ class EngineRecommendationConfig(StrictModel):
         default_factory=lambda: Choices[EngineMode](choices=["aggregated", "disaggregated"])
     )
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
@@ -406,6 +414,8 @@ class EngineRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
+        backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        _validate_fpm_profile(self, modes, backends)
         _validate_systems_path_modes(self, modes)
         _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
@@ -424,6 +434,47 @@ class EngineRecommendationConfig(StrictModel):
         _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
+    profile = engine.fpm_profile
+    if profile is None:
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(engine.workers, role)
+            if worker is not None and worker.timing.fpm_interpolation == "direct":
+                raise ValueError("direct FPM interpolation requires engine.fpm_profile")
+        return
+    if engine.model != profile.model:
+        raise ValueError("engine.model must match engine.fpm_profile.model")
+    if engine.backend_version is None:
+        raise ValueError("engine.fpm_profile requires a literal engine.backend_version")
+    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError("FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders")
+    if isinstance(engine.context_length, int) and engine.context_length > profile.context_length:
+        raise ValueError("engine.context_length exceeds the FPM profile context_length")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.timing.type != "default" or worker.timing.forward_model != "fpm":
+            raise ValueError("engine.fpm_profile requires default FPM timing for every worker")
+        if isinstance(worker, WorkerPredictionConfig):
+            parallel = worker.parallelism
+            deployment = profile.select(
+                model=engine.model,
+                system=worker.hardware or engine.hardware,
+                backend=engine.backend,
+                backend_version=engine.backend_version,
+                tp_size=parallel.tensor,
+                pp_size=parallel.pipeline,
+                attention_dp_size=parallel.attention_data,
+                moe_tp_size=parallel.moe_tensor,
+                moe_ep_size=parallel.moe_expert,
+            )
+            deployment.resources.validate_envelope(
+                max_num_tokens=worker.scheduler.max_batched_tokens,
+                max_batch_size=worker.scheduler.max_sequences,
+            )
 
 
 def _validate_systems_path_modes(engine, modes: set[str]) -> None:

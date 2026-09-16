@@ -83,6 +83,8 @@ def test_stable_function_signatures() -> None:
         "kv_block_size: 'int | None' = None, "
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "
+        "fpm_profile: 'dict | str | FpmModelProfile | None' = None, "
+        "fpm_interpolation: 'str' = 'auto', cp_size: 'int' = 1, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
         "strict_provenance: 'bool | None' = None) -> 'bytes'"

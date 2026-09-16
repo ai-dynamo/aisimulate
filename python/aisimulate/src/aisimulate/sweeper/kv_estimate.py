@@ -20,11 +20,16 @@ Native only: the estimate reads the perf database for ``(hardware_sku, backend)`
 (:func:`get_latest_database_version` resolves the version). SKUs without a perf
 DB raise :class:`NoPerfDatabase`; the naive fallback is intentionally disabled
 because it mis-models MoE expert sharding.
+
+An explicit FPM profile instead supplies per-deployment resource bounds. That
+memory path requires a hardware specification and literal profile version,
+but no timing database or analytical model.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from aiconfigurator_core.sdk.memory import estimate_kv_cache
 from aiconfigurator_core.sdk.perf_database import get_latest_database_version
@@ -69,6 +74,7 @@ def estimate_kv_tokens(
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
     systems_path: str | None = None,
+    fpm_profile: dict[str, Any] | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -93,6 +99,7 @@ def estimate_kv_tokens(
             nextn=nextn,
             systems_path=systems_path,
             allow_naive_fallback=False,
+            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
         )
     except ValueError as exc:
         msg = str(exc)
@@ -120,6 +127,7 @@ def feasible_shape_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     systems_path: str | None = None,
+    fpm_profile: dict[str, Any] | None = None,
 ) -> dict[ParallelShape, int]:
     """Map each *feasible* shape to its KV-cache token capacity.
 
@@ -141,6 +149,7 @@ def feasible_shape_tokens(
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
             systems_path=systems_path,
+            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
         )
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens

@@ -9,7 +9,11 @@ calls :func:`estimate_kv_cache` here and rebuilds its result, so all of the
 math -- fraction + tolerance validation, the native AIC memory model, the naive
 fallback, and the tolerance margin -- lives in this module.
 
-Two estimators, each built then asked to ``estimate()``:
+Resource sources:
+
+- **FPM profile**: caller-declared rank-local resource bounds bypass model
+  construction and timing data. The same budget arithmetic below applies,
+  after checking the scheduler against the declared resource envelope.
 
 - **Native** (:class:`KVCacheEstimator`): ``from_request`` reuses AIC's full
   backend memory model (``BaseBackend._get_memory_usage`` plus the model's
@@ -43,6 +47,7 @@ from aiconfigurator_core.sdk import perf_database
 from aiconfigurator_core.sdk.backends.factory import get_backend
 from aiconfigurator_core.sdk.common import DefaultHFModels
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config, validate_nextn
+from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aiconfigurator_core.sdk.models import get_model
 from aiconfigurator_core.sdk.utils import (
     _download_hf_config,
@@ -986,6 +991,8 @@ def estimate_kv_cache(
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    cp_size: int = 1,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
@@ -1024,11 +1031,17 @@ def estimate_kv_cache(
             model build is unsupported (default off -> the error propagates).
         allow_hf_config_download: allow the naive fallback to download a
             ``config.json`` from HuggingFace when it is not local / pre-cached.
+        fpm_profile: explicit FPM identity and conservative rank-local resource
+            bounds. This route reads only hardware specifications, requires the
+            requested scheduler envelope to fit the profile, and never builds
+            a model or falls back to naive estimation. CUDA graph bytes remain
+            a separate reservation in addition to declared profile overheads.
+        cp_size: profile context-parallel identity; currently only CP1 is supported.
 
     Returns:
         A flat dict with ``total_gpu_capacity_bytes``, ``total_kv_size_bytes``,
         ``kv_size_per_token_bytes``, ``total_kv_size_tokens``, ``source``
-        (``"native"`` | ``"naive_fallback"``), ``memory_breakdown`` (dict on the
+        (``"native"`` | ``"naive_fallback"`` | ``"profile"``), ``memory_breakdown`` (dict on the
         native path, ``None`` on the fallback), and ``tolerance_adjusted`` (a dict
         when ``tolerance_fraction`` is set, else ``None``).
 
@@ -1037,6 +1050,8 @@ def estimate_kv_cache(
             tolerance, no KV budget, insufficient model metadata, or (with the
             fallback off) an unsupported model/backend.
     """
+    if type(cp_size) is not int or cp_size != 1:
+        raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
     _validate_memory_fraction(backend, memory_fraction_kind, memory_fraction_value)
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
@@ -1046,6 +1061,59 @@ def estimate_kv_cache(
 
     # Validate the compute-side MTP depth before any fallback path.
     validate_nextn(nextn)
+
+    if fpm_profile is not None:
+        if nextn:
+            raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
+        profile = load_fpm_profile(fpm_profile)
+        if backend_version is None:
+            raise ValueError("FPM profile memory estimation requires the profile's literal backend_version")
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=backend_version,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
+        )
+        deployment.validate_overrides(
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+        )
+        resources = deployment.resources
+        resources.validate_envelope(max_num_tokens=max_num_tokens, max_batch_size=max_batch_size)
+        if resources.non_kv_bytes + cuda_graph_reserved_bytes > _MAX_EXACT_BYTE_COUNT:
+            raise ValueError("total FPM non-KV bytes including CUDA graphs must not exceed 2**53")
+        capacity = gpu_memory_capacity_bytes_override
+        if capacity is None:
+            capacity = perf_database.load_system_spec(system, systems_paths=systems_path)["gpu"]["mem_capacity"]
+        estimate = KVCacheEstimator._estimate_from_breakdown(
+            {
+                "weights_bytes": resources.weights_bytes,
+                "activations_bytes": resources.activations_bytes,
+                "runtime_overhead_bytes": resources.runtime_overhead_bytes,
+                "comm_overhead_bytes": resources.comm_overhead_bytes,
+                "non_kv_bytes": resources.non_kv_bytes,
+                "kv_size_per_token_bytes": resources.kv_bytes_per_token,
+                "gpu_memory_capacity_bytes": capacity,
+            },
+            is_of_free=is_of_free,
+            fraction=fraction,
+            gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+        )
+        estimate["source"] = "profile"
+        estimate["resource_provenance"] = resources.provenance
+        _apply_tolerance(estimate, tolerance_fraction)
+        estimate.pop("tokens_from_kv_bytes", None)
+        return estimate
 
     try:
         native = KVCacheEstimator.from_request(
@@ -1135,6 +1203,8 @@ def estimate_num_gpu_blocks(
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
     diagnostics: dict[str, Any] | None = None,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    cp_size: int = 1,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1170,13 +1240,13 @@ def estimate_num_gpu_blocks(
         system,
         backend,
         backend_version=backend_version,
-        max_num_tokens=int(max_num_tokens),
-        max_batch_size=int(max_batch_size),
+        max_num_tokens=max_num_tokens if fpm_profile is not None else int(max_num_tokens),
+        max_batch_size=max_batch_size if fpm_profile is not None else int(max_batch_size),
         memory_fraction_kind=memory_fraction_kind,
         memory_fraction_value=float(memory_fraction_value),
-        tp_size=int(tp_size),
-        pp_size=int(pp_size),
-        attention_dp_size=int(attention_dp_size),
+        tp_size=tp_size if fpm_profile is not None else int(tp_size),
+        pp_size=pp_size if fpm_profile is not None else int(pp_size),
+        attention_dp_size=attention_dp_size if fpm_profile is not None else int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
         gemm_quant_mode=gemm_quant_mode,
@@ -1184,7 +1254,7 @@ def estimate_num_gpu_blocks(
         kvcache_quant_mode=kvcache_quant_mode,
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
-        nextn=int(nextn),
+        nextn=nextn if fpm_profile is not None else int(nextn),
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
         cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
@@ -1192,6 +1262,8 @@ def estimate_num_gpu_blocks(
         naive_kv_reservation=float(naive_kv_reservation),
         allow_naive_fallback=allow_naive_fallback,
         allow_hf_config_download=allow_hf_config_download,
+        fpm_profile=fpm_profile,
+        cp_size=cp_size,
     )
 
     adjusted = estimate.get("tolerance_adjusted")

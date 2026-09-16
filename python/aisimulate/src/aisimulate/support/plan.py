@@ -33,20 +33,13 @@ def request_id(request: SupportRequest) -> str:
 
 
 def _parallelism(request: SupportRequest, replicas: int) -> dict[str, int]:
-    return {
-        "replicas": replicas,
-        "tensor": request.search.tensor_parallel,
-        "pipeline": 1,
-        "attention_data": 1,
-        "moe_tensor": request.search.tensor_parallel if request.identity.model_kind == "moe" else 1,
-        "moe_expert": 1,
-    }
+    return request.parallelism(replicas)
 
 
 def _configs(
     request: SupportRequest, root: Path
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[dict[str, int]]]:
-    max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.search.tensor_parallel)
+    max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.worker_gpus)
     replicas = list(dict.fromkeys((1, max_replicas)))[: request.search.max_candidates]
     presets = [_parallelism(request, count) for count in replicas]
     workload = request.workload
@@ -73,9 +66,12 @@ def _configs(
     }
     # Recommendation otherwise expands scheduler defaults into extra domains.
     worker = {
-        "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
+        "scheduler": request.scheduler_limits(),
         "timing": {"type": "default", "forward_model": "fpm"},
     }
+    if request.fpm_profile is not None:
+        engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
+        worker["timing"]["fpm_interpolation"] = "direct"
     prediction = {
         **common,
         "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": presets[0]}}},
@@ -155,7 +151,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "candidate_count": len(presets),
             "max_candidates": request.search.max_candidates,
             "candidates": [
-                {"parallelism": preset, "total_gpus": preset["replicas"] * preset["tensor"]} for preset in presets
+                {"parallelism": preset, "total_gpus": preset["replicas"] * request.worker_gpus} for preset in presets
             ],
             "detail": (
                 "A single selected worker is planned; recommendation does not compare alternative configurations."
@@ -168,7 +164,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         },
         "fpm": {
             "status": "planned",
-            "worker_gpus": request.search.tensor_parallel,
+            "worker_gpus": request.worker_gpus,
             "plan_command": commands["fpm_plan_local"],
             "sampling": (
                 "Prefill is bounded by max(2, input_tokens * concurrency) and concurrency. Decode sampling and "
@@ -181,10 +177,10 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "id": "model_integration",
                 "status": "not_checked",
                 "detail": (
-                    "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. This revision's "
-                    "FPM predict/recommend uses registered analytical classes and SOL transfer; follow "
-                    "python/aisimulate/docs/add_a_new_model.md for that route. Class-independent FPM with direct "
-                    "timing interpolation is planned separately. Per-operation silicon data is not required."
+                    "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. Without an "
+                    "FPM profile, predict/recommend uses a registered analytical class and SOL transfer; follow "
+                    "python/aisimulate/docs/add_a_new_model.md for that route. Supply an FPM identity/resource "
+                    "profile to use direct interpolation without a class. Per-operation silicon data is not required."
                 ),
             },
             {
@@ -217,12 +213,70 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "systems_root": str(root / "systems"),
         },
     }
+    if request.fpm_profile is not None:
+        from aiconfigurator_core.sdk.memory import estimate_kv_cache
+
+        deployment = request.profile_deployment()
+        scheduler = prediction["engine"]["workers"]["aggregated"]["scheduler"]
+        estimate = estimate_kv_cache(
+            request.identity.model,
+            request.identity.gpu,
+            request.identity.framework,
+            backend_version=request.identity.framework_version,
+            max_num_tokens=scheduler["max_batched_tokens"],
+            max_batch_size=scheduler["max_sequences"],
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            tp_size=deployment.tp,
+            pp_size=deployment.pp,
+            attention_dp_size=deployment.dp,
+            moe_tp_size=deployment.moe_tp,
+            moe_ep_size=deployment.moe_ep,
+            fpm_profile=request.fpm_profile,
+        )
+        if estimate["total_kv_size_tokens"] <= request.search.context_length:
+            raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the pilot context")
+        plan["resources"] = estimate
+        plan["search"]["baseline_rule"] = (
+            "Selected profile deployment; declared topology and rank-local resource bounds pass CPU admission. "
+            "Serving-runtime compatibility and silicon accuracy remain unchecked."
+        )
+        plan["prerequisites"][0].update(
+            status="declared_profile_validated",
+            detail=(
+                "The pinned identity, declared deployment, scheduler envelope and resource budget validate without "
+                "an analytical model class. Verify the profile's resource provenance against the serving runtime. "
+                "Generated configs use direct interpolation; matching timing coverage is still required."
+            ),
+        )
+        plan["prerequisites"][1]["detail"] = (
+            "Prepare and verify the declared model/tokenizer revisions, visible GPUs, model access, and the "
+            "packaged Dynamo/Kubernetes/Generator collector runtime. This plan does not download a pinned "
+            "checkpoint or inspect the running runtime. During collection execution, the collector checks "
+            "the observed Pod vLLM version against the profile's literal backend version before benchmarking."
+        )
+        plan["fpm"]["sampling"] = (
+            "Prefill sampling is capped by the pilot input length and the generated rank-local scheduler limits. "
+            "These bounds do not establish complete timing coverage of worker-wide FPM queries, including DEP. "
+            "Decode uses the collector's existing sampling profile within the declared resource envelope. "
+            "The synthetic request count does not bound timing samples. Smoke and limited runs do not publish "
+            "formal FPM data."
+        )
+        plan["prerequisites"][2]["detail"] = (
+            "Collect matching prefill/decode timings into the local systems tree before prediction or recommendation. "
+            "The profile resource estimate does not establish timing coverage or measured accuracy."
+        )
+        plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
     yaml_documents = {
         Path("request.yaml"): request.model_dump(mode="json", exclude_none=True),
         Path("predict/pilot.yaml"): prediction,
         **{Path(f"recommend/{name}.yaml"): config for name, config in recommendations.items()},
     }
     documents = {path: yaml.safe_dump(data, sort_keys=False).encode() for path, data in yaml_documents.items()}
+    if request.fpm_profile is not None:
+        documents[Path("fpm-model-profile.json")] = (
+            json.dumps(request.fpm_profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+        ).encode()
     documents[Path("systems") / source_spec.name] = source_spec.read_bytes()
     documents[Path("commands.json")] = (json.dumps(commands, indent=2, sort_keys=True) + "\n").encode()
     documents[Path("support-plan.json")] = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
@@ -251,6 +305,7 @@ def _check_paths(root: Path) -> None:
     for relative in (
         "request.yaml",
         "support-plan.json",
+        "fpm-model-profile.json",
         "commands.json",
         "predict",
         "predict/pilot.yaml",
@@ -290,6 +345,15 @@ def check_plan(request: SupportRequest, root: Path) -> None:
         raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
     if saved != request:
         raise ValueError(f"saved request identity in {root} differs from the requested plan")
+    if request.fpm_profile is not None and (root / "fpm-model-profile.json").exists():
+        from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+
+        try:
+            profile = load_fpm_profile((root / "fpm-model-profile.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"saved FPM model profile in {root} is missing or invalid") from exc
+        if profile != request.fpm_profile:
+            raise ValueError(f"saved FPM model profile in {root} differs from the requested identity")
 
 
 def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: bool = False) -> dict[str, Any]:

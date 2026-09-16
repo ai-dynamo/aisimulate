@@ -319,6 +319,14 @@ def _worker_performance_model_metadata(
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
             "forward_model": worker.timing.forward_model,
+            **(
+                {
+                    "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                    "fpm_interpolation": worker.timing.fpm_interpolation,
+                }
+                if engine.fpm_profile is not None
+                else {}
+            ),
             **({"systems_path": engine.systems_path} if engine.systems_path is not None else {}),
         },
     }
@@ -361,6 +369,11 @@ def _worker_engine_args(
         payload["aic_backend_version"] = engine.backend_version
     if engine.systems_path is not None:
         payload["systems_path"] = engine.systems_path
+    if engine.fpm_profile is not None:
+        payload["aic_fpm_profile"] = engine.fpm_profile.model_dump(mode="json")
+        payload["aic_fpm_interpolation"] = worker.timing.fpm_interpolation
+    elif worker.timing.fpm_interpolation != "auto":
+        payload["aic_fpm_interpolation"] = worker.timing.fpm_interpolation
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:
@@ -373,6 +386,8 @@ def _worker_engine_args(
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
+            else engine.fpm_profile.context_length
+            if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
     if capacity.type == "fixed":
@@ -442,6 +457,17 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        **(
+            {
+                "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "system": worker.hardware or engine.hardware,
+                "backend": engine.backend,
+                "backend_version": engine.backend_version,
+                "attention_dp_size": parallel.attention_data,
+            }
+            if engine.fpm_profile is not None
+            else {}
+        ),
     )
 
 

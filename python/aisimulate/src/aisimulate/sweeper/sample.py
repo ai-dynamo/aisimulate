@@ -132,6 +132,8 @@ def unroll_sample(
         sample[key] = getattr(search_space, key)
     if search_space.systems_path is not None:
         sample["systems_path"] = search_space.systems_path
+    if search_space.fpm_profile is not None:
+        sample["fpm_profile"] = search_space.fpm_profile
 
     if mode == "disagg":
         sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")
@@ -156,6 +158,18 @@ def unroll_sample(
         sample[key] = selection[key]
     for key in pinned:
         sample[key] = selection.get(key, getattr(search_space, key))
+    for role in ("agg", "prefill", "decode"):
+        if f"{role}_forward_model" not in sample:
+            continue
+        method = getattr(search_space, f"{role}_fpm_interpolation")
+        if search_space.fpm_profile is not None:
+            from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile, resolve_fpm_interpolation
+
+            # Pin the method before execution so replay cannot change it when
+            # another process has a different model registry.
+            method = resolve_fpm_interpolation(load_fpm_profile(search_space.fpm_profile), method)
+        if method != "auto" or search_space.fpm_profile is not None:
+            sample[f"{role}_fpm_interpolation"] = method
     if mode == "disagg":
         for key in (
             "kv_transfer_bytes_per_token",

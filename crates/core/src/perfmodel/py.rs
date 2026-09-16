@@ -1030,6 +1030,9 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    fpm_profile: Option<String>,
+    fpm_interpolation: Option<String>,
+    cp_size: u32,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1074,6 +1077,9 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                fpm_profile: None,
+                fpm_interpolation: None,
+                cp_size: 1,
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1086,6 +1092,13 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Supply independent FPM identity/resource metadata and interpolation mode.
+    pub fn fpm_profile(mut self, profile: serde_json::Value, interpolation: &str) -> Self {
+        self.request.fpm_profile = Some(profile.to_string());
+        self.request.fpm_interpolation = Some(interpolation.to_owned());
         self
     }
 
@@ -1286,7 +1299,7 @@ mod builder_tests {
             "enable_shared_layer": true,
             "transfer_policy": ["xshape", "xquant"],
             "strict_provenance": true,
-            "extra": {}
+            "extra": {"fpm_profile": "{\"model\":\"model\"}", "fpm_interpolation": "direct"}
         }))
         .expect("deserialize engine config");
 
@@ -1299,6 +1312,9 @@ mod builder_tests {
             Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
         );
         assert_eq!(request.strict_provenance, Some(true));
+        assert_eq!(request.fpm_profile.as_deref(), Some(r#"{"model":"model"}"#));
+        assert_eq!(request.fpm_interpolation.as_deref(), Some("direct"));
+        assert_eq!(request.cp_size, 1);
     }
 
     #[test]
@@ -1328,6 +1344,12 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    if request.cp_size != 1 {
+        return Err(AicError::InvalidEngineConfig(
+            "cp_size must be the integer 1; this SDK entry point does not support context parallelism"
+                .to_string(),
+        ));
+    }
     if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
         return Err(AicError::InvalidEngineConfig(
             "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
@@ -1358,6 +1380,12 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
+        kwargs.set_item(
+            "fpm_interpolation",
+            request.fpm_interpolation.as_deref().unwrap_or("auto"),
+        )?;
+        kwargs.set_item("cp_size", request.cp_size)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1377,12 +1405,17 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
             )?
             .extract::<Vec<u8>>()
     })
-    // PyErr → AicError inline (keeps error.rs pyo3-free). A `compile_engine`
-    // failure means the model cannot be built natively, so it maps to
-    // `UnsupportedModel` — the variant `best_available` treats as
-    // fallback-safe. Hard caller/config errors use `InvalidEngineConfig` (which
-    // is NOT fallback-safe) so they surface instead of silently degrading.
-    .map_err(|e| AicError::UnsupportedModel(format!("compile_engine: {e}")))?;
+    // Explicit FPM requests must surface invalid metadata, precision conflicts,
+    // and construction failures. Keep the legacy unsupported-model fallback
+    // only for callers that did not opt into profile/interpolation settings.
+    .map_err(|e| {
+        let message = format!("compile_engine: {e}");
+        if request.fpm_profile.is_some() || request.fpm_interpolation.is_some() {
+            AicError::InvalidEngineConfig(message)
+        } else {
+            AicError::UnsupportedModel(message)
+        }
+    })?;
 
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
@@ -1402,7 +1435,30 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
-    compile_engine_from_request(engine_build_request(config, systems_path))
+    let mut request = engine_build_request(config, systems_path);
+    if config.extra.contains_key("fpm_profile") {
+        let mut modes = Python::with_gil(|py| fpm_profile_quantization(py, config))
+            .map_err(|e| AicError::InvalidEngineConfig(format!("FPM profile quantization: {e}")))?;
+        request.gemm_quant_mode = modes.remove("gemm_quant_mode");
+        request.moe_quant_mode = modes.remove("moe_quant_mode");
+        request.kvcache_quant_mode = modes.remove("kvcache_quant_mode");
+        request.fmha_quant_mode = modes.remove("fmha_quant_mode");
+        request.comm_quant_mode = modes.remove("comm_quant_mode");
+    }
+    compile_engine_from_request(request)
+}
+
+/// Restore profile precision shared by the native timing and memory bridges.
+/// Python checks the wire dtypes before recovering exact quantization modes.
+pub(crate) fn fpm_profile_quantization(
+    py: Python<'_>,
+    config: &EngineConfig,
+) -> PyResult<std::collections::BTreeMap<String, String>> {
+    let config_json = serde_json::to_string(config)
+        .map_err(|e| PyValueError::new_err(format!("invalid engine config: {e}")))?;
+    py.import("aiconfigurator_core.sdk.fpm_profile")?
+        .call_method1("_quantization_from_engine_config", (config_json,))?
+        .extract()
 }
 
 fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> EngineBuildRequest {
@@ -1436,6 +1492,9 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        fpm_profile: config.extra.get("fpm_profile").cloned(),
+        fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
+        cp_size: config.parallel.cp_size.unwrap_or(1),
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),

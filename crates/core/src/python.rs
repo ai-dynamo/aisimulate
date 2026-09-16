@@ -180,6 +180,10 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    fpm_profile: Option<serde_json::Value>,
+    #[serde(default)]
+    fpm_interpolation: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -295,6 +299,17 @@ impl AicTimingModel {
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
             kwargs.set_item("forward_model", config.forward_model.as_deref())?;
+            kwargs.set_item(
+                "fpm_profile",
+                config
+                    .fpm_profile
+                    .as_ref()
+                    .map(serde_json::Value::to_string),
+            )?;
+            kwargs.set_item(
+                "fpm_interpolation",
+                config.fpm_interpolation.as_deref().unwrap_or("auto"),
+            )?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -413,6 +428,13 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item(
+            "fpm_profile",
+            config
+                .fpm_profile
+                .as_ref()
+                .map(serde_json::Value::to_string),
+        )?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -1318,6 +1340,8 @@ mod tests {
             cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
+            fpm_profile: None,
+            fpm_interpolation: None,
         }
     }
 
@@ -1413,10 +1437,17 @@ mod tests {
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_profile": {"model": "test-model"},
+            "fpm_interpolation": "direct"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_profile,
+            Some(serde_json::json!({"model": "test-model"}))
+        );
+        assert_eq!(config.fpm_interpolation.as_deref(), Some("direct"));
     }
 
     #[test]

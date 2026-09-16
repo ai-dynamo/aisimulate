@@ -46,6 +46,9 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
     }
     if sample.get("systems_path") is not None:
         config["systems_path"] = sample["systems_path"]
+    if sample.get("fpm_profile") is not None:
+        config["fpm_profile"] = sample["fpm_profile"]
+        config["fpm_interpolation"] = sample.get(f"{role}_fpm_interpolation", "auto")
     return {"provider": "aic", "config": config}
 
 
@@ -85,6 +88,11 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     }
     if sample.get("systems_path") is not None:
         payload["systems_path"] = sample["systems_path"]
+    if sample.get("fpm_profile") is not None:
+        payload["aic_fpm_profile"] = sample["fpm_profile"]
+    method = sample.get(f"{role}_fpm_interpolation", "auto")
+    if sample.get("fpm_profile") is not None or method != "auto":
+        payload["aic_fpm_interpolation"] = method
     if backend == "vllm" and sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -127,6 +135,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
                 pp_size=int(sample[f"{prefix}pp"]),
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
+                **_profile_kv_args(sample, role, backend_version),
             )
             if configured_bytes == "auto"
             else int(configured_bytes)
@@ -140,6 +149,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
                 pp_size=int(sample["prefill_pp"]),
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
+                **_profile_kv_args(sample, "prefill", backend_version),
             )
             if transfer_geometry == "auto"
             else int(transfer_geometry)
@@ -152,6 +162,19 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
+
+
+def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) -> dict[str, Any]:
+    if sample.get("fpm_profile") is None:
+        return {}
+    prefix = _role_prefix(role)
+    return {
+        "fpm_profile": sample["fpm_profile"],
+        "system": _role_hardware_sku(sample, role),
+        "backend": sample["backend"],
+        "backend_version": backend_version,
+        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+    }
 
 
 def build_backend_deployment(

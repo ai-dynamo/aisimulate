@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conservative AIC memory admission for FPM parallel topologies."""
+"""Conservative memory admission for FPM parallel topologies."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from aiconfigurator.sdk.memory import KVCacheEstimator
 from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
+from aiconfigurator_core.sdk.perf_database import load_system_spec
 
 from .capabilities import ModelCapabilityProfile
 from .types import ParallelTopology
@@ -25,9 +27,10 @@ class DTypeMemoryEstimate:
     estimated_non_kv_bytes: int | None
     gpu_capacity_bytes: int | None
     reason: str
+    provenance: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "kv_cache_dtype": self.kv_cache_dtype,
             "disposition": self.disposition,
             "estimated_non_kv_bytes": self.estimated_non_kv_bytes,
@@ -39,6 +42,9 @@ class DTypeMemoryEstimate:
             ),
             "reason": self.reason,
         }
+        if self.provenance is not None:
+            payload["provenance"] = self.provenance
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,17 +54,29 @@ class TopologyMemoryDecision:
     max_new_tokens: int
     estimates: tuple[DTypeMemoryEstimate, ...]
     reason: str
+    source: str = "aic_native_configured_max_new_tokens"
+    max_batch_size: int = 1
+    profile_max_num_tokens: int | None = None
 
     def to_dict(self) -> dict[str, object]:
+        envelope = {
+            "max_new_tokens": self.max_new_tokens,
+            "aic_max_num_tokens": self.max_new_tokens,
+            "max_batch_size": self.max_batch_size,
+        }
+        if self.profile_max_num_tokens is not None:
+            envelope = {
+                "requested_prefill_tokens": self.max_new_tokens,
+                "max_num_tokens": self.profile_max_num_tokens,
+                "max_batch_size": self.max_batch_size,
+                "scope": "rank_local",
+                "cuda_graph_reservation": "runtime_profiled_separately",
+            }
         return {
             "topology": self.topology.to_dict(),
             "disposition": self.disposition,
-            "source": "aic_native_configured_max_new_tokens",
-            "activation_envelope": {
-                "max_new_tokens": self.max_new_tokens,
-                "aic_max_num_tokens": self.max_new_tokens,
-                "max_batch_size": 1,
-            },
+            "source": self.source,
+            "activation_envelope": envelope,
             "estimates": [estimate.to_dict() for estimate in self.estimates],
             "reason": self.reason,
         }
@@ -73,6 +91,8 @@ def _estimate_dtype(
     topology: ParallelTopology,
     kv_cache_dtype: str,
     max_new_tokens: int,
+    fpm_profile: FpmModelProfile | None = None,
+    max_batch_size: int | None = None,
 ) -> DTypeMemoryEstimate:
     # Planner-owned capability data fails closed: resolve_model_capability
     # guarantees an fmha mapping for every resolved KV dtype, so a missing
@@ -84,6 +104,41 @@ def _estimate_dtype(
         raise ValueError(
             f"capability profile invariant violated: kv dtype {kv_cache_dtype!r} has no fmha mapping"
         ) from error
+    if fpm_profile is not None:
+        deployment = fpm_profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            tp_size=topology.tp,
+            pp_size=topology.pp,
+            attention_dp_size=topology.dp,
+            moe_tp_size=topology.moe_tp,
+            moe_ep_size=topology.moe_ep,
+            cp_size=topology.cp,
+        )
+        resources = deployment.resources
+        resources.validate_envelope(
+            max_num_tokens=max_new_tokens,
+            max_batch_size=max_batch_size or resources.max_batch_size,
+        )
+        capacity = math.floor(float(load_system_spec(system)["gpu"]["mem_capacity"]))
+        if capacity <= 0:
+            raise ValueError(f"invalid GPU memory capacity for {system!r}: {capacity}")
+        rejected = resources.non_kv_bytes >= capacity
+        return DTypeMemoryEstimate(
+            kv_cache_dtype=kv_cache_dtype,
+            disposition="rejected" if rejected else "admitted",
+            estimated_non_kv_bytes=resources.non_kv_bytes,
+            gpu_capacity_bytes=capacity,
+            reason=(
+                "declared rank-local non-KV resource bound is not below GPU capacity"
+                if rejected
+                else "declared rank-local non-KV resource bound is below GPU capacity; "
+                "runtime profiling still determines KV capacity and CUDA-graph memory"
+            ),
+            provenance=resources.provenance,
+        )
     try:
         breakdown = KVCacheEstimator.from_request(
             model_path,
@@ -168,13 +223,16 @@ def filter_memory_infeasible_topologies(
     capability: ModelCapabilityProfile,
     topologies: tuple[ParallelTopology, ...],
     max_new_tokens: int,
+    fpm_profile: FpmModelProfile | None = None,
+    max_batch_size: int | None = None,
 ) -> tuple[tuple[ParallelTopology, ...], tuple[TopologyMemoryDecision, ...]]:
     """Drop topologies that cannot fit the configured max-new-token envelope.
 
     This is intentionally a one-sided generation-time filter. A topology is
-    rejected only when every requested KV dtype has a successful AIC estimate
-    and all estimates exceed rank-local physical capacity. Unknown estimates
-    remain runnable so the target runtime stays authoritative.
+    rejected only when every requested KV dtype has a successful estimate
+    and all estimates exceed rank-local physical capacity. Without a profile,
+    unknown AIC estimates remain runnable. Supplied profiles must explicitly
+    cover the requested deployment and envelope; validation errors propagate.
     """
 
     if max_new_tokens < 1:
@@ -184,6 +242,22 @@ def filter_memory_infeasible_topologies(
     admitted = []
     rejected_capacity = []
     for topology in topologies:
+        resources = (
+            fpm_profile.select(
+                model=model_path,
+                system=system,
+                backend=backend,
+                backend_version=capability.aic_database_version,
+                tp_size=topology.tp,
+                pp_size=topology.pp,
+                attention_dp_size=topology.dp,
+                moe_tp_size=topology.moe_tp,
+                moe_ep_size=topology.moe_ep,
+                cp_size=topology.cp,
+            ).resources
+            if fpm_profile is not None
+            else None
+        )
         estimates = tuple(
             _estimate_dtype(
                 backend=backend,
@@ -193,6 +267,8 @@ def filter_memory_infeasible_topologies(
                 topology=topology,
                 kv_cache_dtype=kv_cache_dtype,
                 max_new_tokens=max_new_tokens,
+                fpm_profile=fpm_profile,
+                max_batch_size=max_batch_size,
             )
             for kv_cache_dtype in capability.dtype.kv_cache_dtypes
         )
@@ -216,6 +292,9 @@ def filter_memory_infeasible_topologies(
                 max_new_tokens=max_new_tokens,
                 estimates=estimates,
                 reason=reason,
+                source="fpm_profile_declared" if fpm_profile is not None else "aic_native_configured_max_new_tokens",
+                max_batch_size=resources.max_batch_size if resources is not None else 1,
+                profile_max_num_tokens=resources.max_num_tokens if resources is not None else None,
             )
         )
 
@@ -237,17 +316,19 @@ def filter_memory_infeasible_topologies(
                     f"{best.gpu_capacity_bytes / 2**30:.2f} GiB"
                 )
         logger.warning(
-            "fpm_forward: dropped %d/%d topologies (AIC configured max-new-token non-KV memory "
+            "fpm_forward: dropped %d/%d topologies (%s configured max-new-token non-KV memory "
             "exceeds GPU capacity, system=%s, max_new_tokens=%d): %s",
             len(rejected_capacity),
             len(topologies),
+            "FPM profile" if fpm_profile is not None else "AIC",
             system,
             max_new_tokens,
             "; ".join(details),
         )
     if not admitted:
+        source = "FPM profile" if fpm_profile is not None else "AIC"
         raise ValueError(
-            "AIC max-new-token memory admission rejected every FPM topology; "
+            f"{source} max-new-token memory admission rejected every FPM topology; "
             f"model={model_path!r}, system={system!r}, max_new_tokens={max_new_tokens}"
         )
     return tuple(admitted), tuple(decisions)

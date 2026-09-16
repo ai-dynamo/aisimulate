@@ -485,6 +485,7 @@ class SearchSpace(BaseModel):
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
     systems_path: SystemsPath | None = None
+    fpm_profile: dict[str, Any] | None = None
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
     decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
@@ -521,6 +522,7 @@ class SearchSpace(BaseModel):
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
     prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    prefill_fpm_interpolation: Literal["auto", "sol", "direct"] = "auto"
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -535,6 +537,7 @@ class SearchSpace(BaseModel):
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
     decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    decode_fpm_interpolation: Literal["auto", "sol", "direct"] = "auto"
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -549,6 +552,7 @@ class SearchSpace(BaseModel):
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
     agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    agg_fpm_interpolation: Literal["auto", "sol", "direct"] = "auto"
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None

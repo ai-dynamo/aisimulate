@@ -932,7 +932,11 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
         adapter_sections={},
     )
 
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "fpm"}
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {
+        "type": "default",
+        "forward_model": "fpm",
+        "fpm_interpolation": "auto",
+    }
     CorePredictionConfig.model_validate(prediction)
 
 
@@ -962,7 +966,11 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     )
 
     # Normalization materializes every schema default into the candidate; forward_model is no exception.
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "op_level"}
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {
+        "type": "default",
+        "forward_model": "op_level",
+        "fpm_interpolation": "auto",
+    }
 
 
 def _pd_hardware_config(*, recommend=False, **overrides):

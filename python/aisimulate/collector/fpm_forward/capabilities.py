@@ -181,8 +181,13 @@ def resolve_model_capability(
     requested_kv_cache_dtypes: tuple[str, ...],
     model_config_path: str | None = None,
     database_version: str | None = None,
+    checkpoint_native_dtypes: bool = False,
 ) -> ModelCapabilityProfile:
-    """Resolve a conservative matrix profile from AIC code and perf data."""
+    """Resolve checkpoint identity with optional legacy op-data dtype evidence.
+
+    Profile collection supplies a literal runtime version and retains native
+    checkpoint precision without requiring previously collected timing data.
+    """
 
     # The CLI maps an empty --fpm-kv-cache-dtypes to ("auto",); a programmatic
     # caller passing an empty tuple would otherwise crash below on
@@ -251,34 +256,48 @@ def resolve_model_capability(
             f"its AIC-inferred GEMM mode {gemm!r}, got {sorted(requested_weights)}"
         )
 
+    if checkpoint_native_dtypes and database_version is None:
+        raise ValueError("checkpoint-native FPM collection requires a literal profile backend_version")
     version = database_version or get_latest_database_version(system=system, backend=backend)
     if not version:
         raise ValueError(f"no AIC database version is available for system={system!r}, backend={backend!r}")
-    database = get_database(system, backend, version)
-    if database is None:
-        raise ValueError(f"failed to load AIC database for system={system!r}, backend={backend!r}, version={version!r}")
-    supported = getattr(database, "supported_quant_mode", {}) or {}
     context_op, generation_op = _attention_ops(source_name)
-
-    _require_mode(supported, "gemm", gemm)
-    if is_moe:
-        _require_mode(supported, "moe", moe)
-
-    context_modes = _supported_modes(supported, context_op)
-    if not context_modes:
-        raise ValueError(f"AIC database has no context-attention dtype evidence for template op {context_op!r}")
-
-    generation_modes = _supported_modes(supported, generation_op)
-    if not generation_modes:
-        raise ValueError(f"AIC database has no generation-attention dtype evidence for template op {generation_op!r}")
     requested_kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv_cache_dtypes))
     resolved_kv = tuple(dict.fromkeys(native_kv if value == "auto" else value for value in requested_kv))
-    unsupported_kv = [value for value in resolved_kv if value not in generation_modes]
-    if unsupported_kv:
-        raise ValueError(
-            f"AIC database does not support KV-cache dtype(s) {unsupported_kv} for {generation_op}; "
-            f"supported modes: {sorted(generation_modes)}"
-        )
+    database = None
+    if checkpoint_native_dtypes:
+        if resolved_kv != (native_kv,):
+            raise ValueError(
+                "profile-based FPM collection currently requires the checkpoint-native KV dtype "
+                f"{native_kv!r}; got {list(resolved_kv)}"
+            )
+    else:
+        database = get_database(system, backend, version)
+        if database is None:
+            raise ValueError(
+                f"failed to load AIC database for system={system!r}, backend={backend!r}, version={version!r}"
+            )
+        supported = getattr(database, "supported_quant_mode", {}) or {}
+
+        _require_mode(supported, "gemm", gemm)
+        if is_moe:
+            _require_mode(supported, "moe", moe)
+
+        context_modes = _supported_modes(supported, context_op)
+        if not context_modes:
+            raise ValueError(f"AIC database has no context-attention dtype evidence for template op {context_op!r}")
+
+        generation_modes = _supported_modes(supported, generation_op)
+        if not generation_modes:
+            raise ValueError(
+                f"AIC database has no generation-attention dtype evidence for template op {generation_op!r}"
+            )
+        unsupported_kv = [value for value in resolved_kv if value not in generation_modes]
+        if unsupported_kv:
+            raise ValueError(
+                f"AIC database does not support KV-cache dtype(s) {unsupported_kv} for {generation_op}; "
+                f"supported modes: {sorted(generation_modes)}"
+            )
 
     # fmha_quant_mode names the AIC data slice a template transfers
     # utilization from, so it is resolved PER KV DTYPE against joint
@@ -293,6 +312,18 @@ def resolve_model_capability(
     fmha_by_kv: dict[str, str] = {}
     fmha_resolution_by_kv: dict[str, str] = {}
     for kv_name in resolved_kv:
+        if checkpoint_native_dtypes:
+            # Profile collection uses the checkpoint mode, without borrowing
+            # an op-table slice. This is a whole-forward identity, not a
+            # claim that every attention intermediate has this dtype: vLLM
+            # v0.25.1 (752a3a504485790a2e8491cacbb35c137339ad34),
+            # vllm/v1/attention/backends/mla/flashmla_sparse.py:879-894
+            # selects its FP8-cache route while that route can use BF16
+            # prefill intermediates. Actual backend dispatch stays in vLLM.
+            fmha_by_kv[kv_name] = inferred_fmha
+            fmha_resolution_by_kv[kv_name] = "checkpoint_native"
+            continue
+        assert database is not None
         joint_modes = context_fmha_supported_modes(database, context_op, common.KVCacheQuantMode[kv_name])
         if inferred_fmha in joint_modes:
             fmha_by_kv[kv_name] = inferred_fmha

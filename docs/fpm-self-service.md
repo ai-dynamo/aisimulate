@@ -5,13 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # FPM self-service
 
-`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one pure tensor-parallel worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's existing per-worker FPM support and packaged collector. No other draft PR needs to be merged first.
+`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one TP, DEP, or TEP worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector. PR #46 is not a dependency.
 
-Planning works before the model has an AISimulate model class or measured FPM timings. A valid request records your choices; model metadata and execution readiness, runtime compatibility, and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not run target preflight checks, provision GPU resources, or establish measured accuracy.
+Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity and estimates memory admission from your resource bounds. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
-In this revision, ordinary FPM `predict` and `recommend` still construct a registered analytical model for resource accounting and SOL-based timing transfer. A separate decoupling change will add a route that uses model/resource metadata and direct interpolation of measured timings without an op-level model class. The existing registered-model/SOL route will remain available. See [Choose the model execution route](#choose-the-model-execution-route) before handing off a new architecture.
+Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` with model identity and rank-local resource bounds. Direct interpolation uses measured timings without constructing an op-level model. Registered models retain SOL interpolation. See [Choose the model execution route](#choose-the-model-execution-route) for selection and coverage rules.
 
-The Inkling pilot is planned for NVIDIA GB200 with TP, DEP, and TEP configurations through the class-independent route. This guided planner currently generates pure-TP configurations only. The checkpoint, runtime, allocation, and strategy degrees must be pinned before that pilot; this guide does not establish Inkling readiness or GB200 accuracy.
+The Inkling pilot targets NVIDIA GB200 with TP, DEP, and TEP through the class-independent route. Its checkpoint, runtime, allocation, profile resource bounds, and strategy degrees must be pinned before collection. This guide does not establish Inkling readiness or GB200 accuracy.
 
 ## Create the request
 
@@ -40,7 +40,41 @@ Replace the model and runtime placeholders with the actual inputs. The example d
 
 The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. Scripted setup defaults to TP1 unless `--tensor-parallel` is supplied. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
 
-One node is the default; GPUs per node then equals `--gpu-count`. For multiple nodes, supply both `--node-count` and `--gpus-per-node`; their product must equal the total allocation. Each pure-TP worker must fit on one node. Advanced flags include `--request-count`, `--max-candidates`, `--objective`, `--seed`, and `--sm`.
+One node is the default; GPUs per node then equals `--gpu-count`. For multiple nodes, supply both `--node-count` and `--gpus-per-node`; their product must equal the total allocation. Each selected worker must fit on one node. Advanced flags include `--request-count`, `--max-candidates`, `--objective`, `--seed`, and `--sm`.
+
+`--tensor-parallel` always means attention TP. Use all MoE dimensions explicitly for DEP and TEP; replicas are independent workers:
+
+| Worker | CLI parallelism flags | `(TP, PP, attention DP, MoE TP, MoE EP, CP)` |
+| --- | --- | --- |
+| MoE TP4 | `--tensor-parallel 4 --moe-tensor-parallel 4` | `(4, 1, 1, 4, 1, 1)` |
+| DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
+| TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
+
+The first profile implementation supports vLLM decoder-only models with PP1, CP1 and linear KV storage. AFD, encoder pools, speculative decoding, nonlinear recurrent state, wide EP and EPLB need additional metadata/semantics and are rejected by this route.
+
+## Provide identity and resource metadata
+
+For a model without an analytical class, create a JSON or YAML FPM profile and pass `--fpm-profile /path/to/model-profile.yaml` to `onboard init`. The request embeds the complete profile; ordinary prediction and recommendation use the same object under `engine.fpm_profile`. The profile schema is [FpmModelProfile](../python/aisimulate/src/aiconfigurator_core/sdk/fpm_profile.py). It rejects missing fields, unknown fields, conflicting identities and mutable revision placeholders.
+
+| Profile fields | Required meaning |
+| --- | --- |
+| `schema_version` | Integer `1`. |
+| `model`, `model_revision`, `architecture` | Exact timing model identity, pinned checkpoint revision, and architecture identifier. An unknown architecture is valid for direct interpolation. |
+| `context_length`, `num_experts`, `provenance` | Declared context limit, routed expert count (`0` for dense), and how the metadata was obtained. |
+| `deployments` | One or more exact deployment records, with one precision/resource identity per hardware/runtime/full parallel tuple. |
+| Deployment `system`, `backend`, `backend_version` | GPU system, `vllm`, and literal runtime version. |
+| Deployment `tp`, `pp`, `dp`, `moe_tp`, `moe_ep`, `cp` | Complete topology. PP and CP default to `1`; other dimensions are explicit. |
+| Deployment precision | Exact `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode`, `kv_cache_dtype`. They must match the collected cell; FP8 FMHA and BF16 FMHA are separate identities. |
+| Deployment runtime hints | `moe_backend`, `attention_backend` (default `auto`), `enable_wideep`, `enable_eplb` (currently both `false`). |
+| Deployment `resources` | Conservative bounds described below, specific to this topology. |
+
+Each `resources` record requires integer `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes`, `comm_overhead_bytes`, positive `kv_bytes_per_token`, `cache_layout: linear`, positive `max_num_tokens` and `max_batch_size`, and a `provenance` explanation. Obtain these from checkpoint tensor/storage metadata and serving-runtime accounting or conservative explicit estimates. A profile is an input declaration; AISimulate does not certify that its values describe your runtime.
+
+All resource bytes are **per rank**, and must bound every rank. Scheduler envelope limits are also per attention-DP rank; they are not the summed batch and token totals used by the worker's FPM timing query. Do not copy TP resource values into DEP/TEP merely because GPU counts match. Include all non-KV storage, including quantization overheads. Overhead fields exclude the separate `kv_cache.capacity.cuda_graph_reserved_bytes` reservation. Requests above the declared scheduler envelope fail explicitly.
+
+Automatic KV admission subtracts these non-KV bounds and CUDA graph reservation from the configured fraction of GPU memory, then divides by the declared KV bytes per token. `context_length: max` uses the profile limit; `bytes_per_token: auto` uses the exact deployment's cache geometry. These operations need a hardware specification and profile, but no FPM timing files or model graph.
+
+The declared checkpoint revision is preserved for review and replay. Existing FPM tables may not pin a checkpoint revision; supplying one in a profile does not prove that the historical measurements came from that exact revision. Record that limitation in `provenance` when validating existing data.
 
 ## Plan, preview, and explicitly execute
 
@@ -53,11 +87,11 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support
 ```
 
-The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. The second prints the collector command without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each request. On an existing plan, `--overwrite` can repair missing generated files for the identical request; it rejects changed inputs and preserves existing collected data.
+The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records the CPU resource estimate. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each request. On an existing plan, `--overwrite` can repair missing generated files for the identical request; it rejects changed inputs and preserves existing collected data.
 
 If a newer draft revision changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate earlier draft plans. Guidance changes do not change the saved-request identity checks used by collection.
 
-The search uses one selected TP size. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Dense collection uses the `tp` preset; MoE uses `pure_tp`; the selected TP size remains exact.
+The guided plan uses one selected parallel tuple. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Collection uses the matching `tp`, `pure_tp`, `dep`, or `tep` preset and exact worker GPU count.
 
 Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command.
 
@@ -69,7 +103,11 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support --execute
 ```
 
-Execution requires a matching saved plan. The request records model and runtime revisions; this setup does not download a pinned checkpoint or verify the installed runtime against them. Keep the actual checkpoint and runtime consistent with the request before collecting or predicting.
+Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector checks the observed Pod's vLLM version against the profile's literal backend version before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
+
+For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Resource admission uses the supplied bounds without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
+
+New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must select one literal runtime version for the target hardware/backend.
 
 Set deployment options directly on `onboard collect-fpm`: `--dynamo-version VERSION`, `--image IMAGE`, `--namespace NAME`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--transport nvlink|ib|efa`, and `--image-pull-secret NAME`. The mount, when supplied, is an absolute container path. Prefer an immutable image digest. Supply the same options when previewing, executing, and resuming; deployment settings are part of the collector's frozen-plan identity, so changed settings require a new output directory. Arbitrary collector arguments and engine overrides are not accepted by this command.
 
@@ -77,7 +115,7 @@ For a diagnostic run, add `--execute --smoke`; `--limit N` also requires `--smok
 
 Planning and collection reject concurrent onboarding operations. The persistent `.support.lock` file uses an OS advisory lock; ownership is released when the process exits, including after an abrupt termination. Leave the file in place. Request validation, saved onboarding-plan checks, and collector input resolution exit 2. Failures after collector execution starts, including a frozen checkpoint identity mismatch, exit 1 with a concise message. Interruption exits 130.
 
-The collector narrows initial prefill sampling with the pilot's input-token and concurrency bounds. Decode uses the collector's existing profile; a four-request synthetic pilot does not imply four timing samples or a short decode campaign. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair.
+The collector narrows initial prefill sampling with the pilot's input-token and concurrency bounds. With an FPM profile, both the sample batch size and total new-token axis are capped by the same rank-local scheduler limits used in the generated prediction and recommendation configs. DEP does not multiply these limits by the GPU count; coverage of the worker's summed FPM queries still requires validation. Decode uses the collector's existing sampling profile within the declared resource envelope; a four-request synthetic pilot does not imply four timing samples or a short decode campaign. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair.
 
 ## Run the generated ordinary configurations
 
@@ -107,7 +145,7 @@ from aisimulate.support.schema import SupportRequest
 root = Path("./aisimulate-support").resolve()
 request = SupportRequest.from_yaml(root / "request.yaml")
 check_plan(request, root)
-max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.search.tensor_parallel)
+max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.worker_gpus)
 replicas = list(dict.fromkeys((1, max_replicas)))[:request.search.max_candidates]
 statuses = []
 for count in replicas:
@@ -131,13 +169,17 @@ Run either the individual recommendation command or the loop against fresh resul
 
 The generated configurations select `engine.workers.aggregated.timing.forward_model: fpm` and set `engine.systems_path` to the plan's absolute local systems directory. The same root supplies hardware and collected FPM data. Recommendation preserves it in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there.
 
-Ordinary `predict` and `recommend` commands retain their existing behavior and defaults. Their generated configs can be loaded and edited through the public configuration schema. In this revision, missing model registration or data may still prevent execution; a successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
+Ordinary `predict` and `recommend` retain their existing defaults when no profile is supplied. Generated configs can be edited through the public schema. A recommendation with a profile enumerates only its declared deployment tuples that fit the GPU budget; it preserves the complete inline profile and interpolation choice in exported prediction configs. Default scheduler search ranges may exceed a profile's envelope, so pin or bound those domains explicitly. A successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
 
 ## Choose the model execution route
 
 Hand off the saved request, pinned model configuration, and plan. Both routes need a canonical checkpoint identity, effective precision and topology, correct weight and KV-cache accounting, and matching whole-forward FPM measurements. Collected timings alone do not establish memory fit.
 
-- **Registered-model/SOL route, available in this revision:** reuse a compatible analytical class or follow [How to Add a New Model](../python/aisimulate/docs/add_a_new_model.md) when choosing to add one. Verify its operation graph, memory and cache accounting, and native FPM SOL execution. A dedicated class is an option for this route, not the intended prerequisite for every FPM onboarding.
-- **Class-independent route, planned in the separate decoupling change:** resolve model and resource metadata without constructing an operation graph. Use direct measured-time interpolation, including wider two-sided KV brackets at the same batch size when both neighboring prompt curves cover the query. Missing brackets or unsupported metadata must produce explicit errors. This route is not implemented by the guided foundation; 2D interpolation remains experimental.
+- **Registered-model/SOL route:** reuse a compatible analytical class or follow [How to Add a New Model](../python/aisimulate/docs/add_a_new_model.md) when choosing to add one. Verify its operation graph, memory/cache accounting, and native FPM SOL execution.
+- **Class-independent direct route:** supply the identity/resource profile and set worker `timing: {type: default, forward_model: fpm, fpm_interpolation: direct}`. The guided planner selects this route whenever a profile is supplied. No operation graph is constructed for resources, timing, or recommendation candidates.
 
-Per-operation silicon profiling described in the model guide is not required by either FPM route. The intended self-service workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Collection bootstrap can already resolve some unregistered model configurations; that does not establish that this revision's ordinary FPM prediction path can construct them.
+`fpm_interpolation: auto` retains SOL for a registered architecture and chooses direct for an unregistered architecture with a profile. Explicit `sol` requires a registered class; explicit `direct` requires a profile. A model-construction error does not trigger a silent change of method. The interpolation setting applies to default FPM timing only.
+
+Direct timing first uses an exact point or interpolation within a measured curve. Prefill interpolation stays at the same batch size, with two measured KV neighbors whose prompt curves both cover the requested token count. Wider KV bracketing removes the old distance limit only when the narrower direct bracket is unavailable. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
+
+Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Existing MiniMax-M2.7/H200 TP4 and GLM-5.2/B200 DEP8/TEP8 data provide functional validation targets. Coverage and interpolation error must be reported separately; these targets do not qualify Inkling or GB200.

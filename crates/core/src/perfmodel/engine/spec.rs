@@ -622,6 +622,7 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            interpolation: Default::default(),
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -1166,7 +1167,7 @@ mod tests {
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 got: 17,
-                expected: 18,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
         ));
