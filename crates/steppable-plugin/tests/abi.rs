@@ -272,7 +272,7 @@ fn backend_creates_and_destroys_a_default_replay() {
 }
 
 #[test]
-fn backend_refuses_dynamic_placement_for_disaggregated_topology() {
+fn disaggregated_dynamic_placement_invalid_path_is_rejected_without_round_robin_fallback() {
     let descriptor = unsafe { &*aisimulate_steppable_plugin::aiperf_steppable_plugin_v1() };
     let vtable = unsafe { &*descriptor.vtable };
     let payload = br#"{
@@ -302,9 +302,7 @@ fn backend_refuses_dynamic_placement_for_disaggregated_topology() {
     assert!(handle.0.is_null());
     // Safety: a rejected create returns one owned diagnostic slice.
     let message = unsafe { std::slice::from_raw_parts(error.data, error.len as usize) };
-    assert_eq!(
-        message,
-        b"dynamic placement is supported only with aggregated topology"
-    );
+    let message = std::str::from_utf8(message).expect("diagnostic is UTF-8");
+    assert!(message.starts_with("loading placement plugin /not/used/libplacement.so"));
     unsafe { vtable.release_bytes.unwrap()(error) };
 }

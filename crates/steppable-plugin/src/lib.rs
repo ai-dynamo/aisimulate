@@ -24,7 +24,7 @@ use aisimulate_core::replay::loadgen::{
 use aisimulate_core::replay::{
     DirectRequest, DynamicPlacementConfig, DynamicPlacementMetadata, DynamicPlacementPlugin,
     NoEngineEvents, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus, SlaThresholds,
-    WorkerTopology,
+    WorkerStage, WorkerTopology,
 };
 use aisimulate_placement_abi::{PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
@@ -119,7 +119,7 @@ pub struct BackendConfig {
     pub prefill_workers: usize,
     /// Decode worker count for a disaggregated replay.
     pub decode_workers: usize,
-    /// Explicit dynamic placement provider for an aggregated replay.
+    /// Explicit dynamic placement provider for an aggregated or disaggregated replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_placement: Option<DynamicPlacementLocator>,
 }
@@ -140,13 +140,24 @@ impl Default for BackendConfig {
 fn dynamic_placement_config(
     locator: DynamicPlacementLocator,
     engine: &ReplayEngineConfig,
+    stage: WorkerStage,
     workers: &[WorkerTopology],
 ) -> anyhow::Result<DynamicPlacementConfig> {
-    let total_kv_blocks = u64::try_from(engine.rank.num_gpu_blocks)
-        .map_err(|_| anyhow::anyhow!("aggregate KV capacity does not fit the placement ABI"))?;
-    let max_running_requests = u64::try_from(engine.rank.max_num_seqs).map_err(|_| {
-        anyhow::anyhow!("aggregate request capacity does not fit the placement ABI")
-    })?;
+    let rank = match stage {
+        WorkerStage::Aggregated => &engine.rank,
+        WorkerStage::Prefill => engine
+            .prefill
+            .as_ref()
+            .map_or(&engine.rank, |role| &role.rank),
+        WorkerStage::Decode => engine
+            .decode
+            .as_ref()
+            .map_or(&engine.rank, |role| &role.rank),
+    };
+    let total_kv_blocks = u64::try_from(rank.num_gpu_blocks)
+        .map_err(|_| anyhow::anyhow!("worker KV capacity does not fit the placement ABI"))?;
+    let max_running_requests = u64::try_from(rank.max_num_seqs)
+        .map_err(|_| anyhow::anyhow!("worker request capacity does not fit the placement ABI"))?;
     let capacities = workers
         .iter()
         .map(|worker| {
@@ -269,18 +280,6 @@ unsafe extern "C" fn create(
             return StatusV1::REJECTED;
         }
     };
-    if config.dynamic_placement.is_some() && config.topology != BackendTopology::Aggregated {
-        // The neutral V1 adapter has no encoding for concrete engine events,
-        // and the disaggregated steppable constructor has no dynamic-policy
-        // injection seam yet. Refuse rather than silently selecting the
-        // built-in routers for a configuration that asked for a provider.
-        unsafe {
-            *error = allocated_bytes(
-                "dynamic placement is supported only with aggregated topology".to_owned(),
-            )
-        };
-        return StatusV1::REJECTED;
-    }
     let factory = ReplayEngineFactory::new();
     let created: anyhow::Result<Box<dyn SteppableReplay>> = match config.topology {
         BackendTopology::Single => SteppableEngine::new(config.engine, &factory)
@@ -305,8 +304,12 @@ unsafe extern "C" fn create(
                             &factory,
                             config.workers,
                             move |_dp_size, workers| {
-                                let placement_config =
-                                    dynamic_placement_config(locator, &engine_config, &workers)?;
+                                let placement_config = dynamic_placement_config(
+                                    locator,
+                                    &engine_config,
+                                    WorkerStage::Aggregated,
+                                    &workers,
+                                )?;
                                 let policy = plugin.create(workers, placement_config)?;
                                 Ok(Box::new(policy))
                             },
@@ -316,13 +319,57 @@ unsafe extern "C" fn create(
                 }
             }
         },
-        BackendTopology::Disaggregated => SteppableDisagg::new(
-            config.engine,
-            &factory,
-            config.prefill_workers,
-            config.decode_workers,
-        )
-        .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>),
+        BackendTopology::Disaggregated => match config.dynamic_placement {
+            None => SteppableDisagg::new(
+                config.engine,
+                &factory,
+                config.prefill_workers,
+                config.decode_workers,
+            )
+            .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>),
+            Some(locator) => {
+                if locator.library_path.as_os_str().is_empty() {
+                    Err(anyhow::anyhow!(
+                        "dynamic placement library_path must not be empty"
+                    ))
+                } else {
+                    DynamicPlacementPlugin::load(&locator.library_path).and_then(|plugin| {
+                        let engine_config = config.engine.clone();
+                        SteppableDisagg::<
+                            DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
+                            NoEngineEvents,
+                            DynamicPlacementMetadata,
+                        >::with_placements(
+                            config.engine,
+                            &factory,
+                            config.prefill_workers,
+                            config.decode_workers,
+                            move |_prefill_dp_size,
+                                  prefill_workers,
+                                  _decode_dp_size,
+                                  decode_workers| {
+                                let prefill_config = dynamic_placement_config(
+                                    locator.clone(),
+                                    &engine_config,
+                                    WorkerStage::Prefill,
+                                    &prefill_workers,
+                                )?;
+                                let decode_config = dynamic_placement_config(
+                                    locator,
+                                    &engine_config,
+                                    WorkerStage::Decode,
+                                    &decode_workers,
+                                )?;
+                                let prefill = plugin.create(prefill_workers, prefill_config)?;
+                                let decode = plugin.create(decode_workers, decode_config)?;
+                                Ok((Box::new(prefill), Box::new(decode)))
+                            },
+                        )
+                        .map(|engine| Box::new(engine) as Box<dyn SteppableReplay>)
+                    })
+                }
+            }
+        },
     };
     match created {
         Ok(engine) => {
@@ -861,4 +908,88 @@ static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
 #[unsafe(no_mangle)]
 pub extern "C" fn aiperf_steppable_plugin_v1() -> *const PluginDescriptorV1 {
     &DESCRIPTOR
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aisimulate_core::replay::ReplayRoleConfig;
+
+    fn locator() -> DynamicPlacementLocator {
+        DynamicPlacementLocator {
+            library_path: PathBuf::from("/provider/libplacement.so"),
+            selector_seed: [0; 32],
+            options_namespace: Vec::new(),
+            provider_options: Vec::new(),
+            limits: DynamicPlacementLimits::default(),
+        }
+    }
+
+    #[test]
+    fn dynamic_placement_config_uses_each_disaggregated_role_capacity_and_topology() {
+        let mut engine = ReplayEngineConfig::default();
+        let mut prefill_rank = engine.rank.clone();
+        prefill_rank.num_gpu_blocks = 11;
+        prefill_rank.max_num_seqs = 3;
+        engine.prefill = Some(ReplayRoleConfig {
+            rank: prefill_rank,
+            ..Default::default()
+        });
+        let mut decode_rank = engine.rank.clone();
+        decode_rank.num_gpu_blocks = 29;
+        decode_rank.max_num_seqs = 7;
+        engine.decode = Some(ReplayRoleConfig {
+            rank: decode_rank,
+            ..Default::default()
+        });
+        let prefill_topology = vec![WorkerTopology {
+            worker_id: 4,
+            scheduler_ids: vec![10],
+        }];
+        let decode_topology = vec![
+            WorkerTopology {
+                worker_id: 9,
+                scheduler_ids: vec![20],
+            },
+            WorkerTopology {
+                worker_id: 12,
+                scheduler_ids: vec![21],
+            },
+        ];
+
+        let prefill =
+            dynamic_placement_config(locator(), &engine, WorkerStage::Prefill, &prefill_topology)
+                .expect("prefill capacity fits the placement ABI");
+        let decode =
+            dynamic_placement_config(locator(), &engine, WorkerStage::Decode, &decode_topology)
+                .expect("decode capacity fits the placement ABI");
+
+        assert_eq!(
+            prefill
+                .capacities
+                .iter()
+                .map(|capacity| (
+                    capacity.worker_id,
+                    capacity.total_kv_blocks,
+                    capacity.available_kv_blocks,
+                    capacity.max_running_requests,
+                    capacity.flags,
+                    capacity.reserved,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(4, 11, 11, 3, 0, 0)]
+        );
+        assert_eq!(
+            decode
+                .capacities
+                .iter()
+                .map(|capacity| (
+                    capacity.worker_id,
+                    capacity.total_kv_blocks,
+                    capacity.max_running_requests,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(9, 29, 7), (12, 29, 7)]
+        );
+    }
 }

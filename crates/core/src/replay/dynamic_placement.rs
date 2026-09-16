@@ -11,6 +11,7 @@
 //! use an adapter that encodes those DTOs rather than dropping them here.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use aisimulate_placement_abi::{
     AdmissionDecisionV1, AdmissionMetadataFormatV1, BlockHashSliceV1, ByteSliceV1,
@@ -82,12 +83,13 @@ impl ReplayAdmissionMetadata for DynamicPlacementMetadata {
     }
 }
 
-/// A loaded placement plugin that has not yet created its one policy instance.
+/// A loaded placement plugin that can create one or more policy instances.
 ///
-/// Creating consumes this owner so the library and the opaque plugin handle
-/// have one clear lifetime relationship.
+/// Each created policy retains a shared library owner until after its opaque
+/// plugin handle is destroyed, so a provider can safely supply distinct
+/// policies for the prefill and decode roles of one disaggregated replay.
 pub struct DynamicPlacementPlugin {
-    library: Library,
+    library: Arc<Library>,
     vtable: PluginVTableV1,
 }
 
@@ -114,12 +116,15 @@ impl DynamicPlacementPlugin {
         // Safety: `validate_descriptor_v1` checked this non-null readable table.
         let vtable = unsafe { *vtable };
 
-        Ok(Self { library, vtable })
+        Ok(Self {
+            library: Arc::new(library),
+            vtable,
+        })
     }
 
     /// Creates the plugin's placement instance for an already-resolved worker topology.
     pub fn create(
-        self,
+        &self,
         workers: Vec<WorkerTopology>,
         config: DynamicPlacementConfig,
     ) -> Result<DynamicPlacementPolicy> {
@@ -204,7 +209,7 @@ impl DynamicPlacementPlugin {
             limits: config.limits,
             // Field order intentionally destroys `instance` before unloading the
             // library: its Drop invokes the provider's destroy callback.
-            _library: Some(self.library),
+            _library: Some(Arc::clone(&self.library)),
         })
     }
 }
@@ -215,7 +220,7 @@ pub struct DynamicPlacementPolicy {
     pending_count: usize,
     last_now_ms: f64,
     limits: PlacementLimitsV1,
-    _library: Option<Library>,
+    _library: Option<Arc<Library>>,
 }
 
 impl DynamicPlacementPolicy {

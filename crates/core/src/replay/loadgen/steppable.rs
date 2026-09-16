@@ -204,8 +204,7 @@ pub type DynPlacement<ObservationFlavor, Metadata> = Box<
             Observation = <ObservationFlavor as ReplayEngineObservation>::Batch,
         >,
 >;
-type SteppableDisaggRuntime =
-    DisaggRuntimeImpl<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
+type SteppableDisaggRuntime<P, O, M> = DisaggRuntimeImpl<P, O, M>;
 
 /// Externally clocked replay admits every request the caller submits; the
 /// caller owns whatever concurrency limit it wants to impose.
@@ -580,12 +579,20 @@ impl SteppableReplay for SteppableEngine {
 }
 
 /// Disaggregated prefill/decode topology as a [`SteppableReplay`].
-pub struct SteppableDisagg {
-    runtime: SteppableDisaggRuntime,
+pub struct SteppableDisagg<
+    P = PoolRoundRobinPlacement<()>,
+    O = NoEngineEvents,
+    M = NoReplayMetadata,
+> where
+    O: ReplayEngineObservation,
+    M: ReplayAdmissionMetadata,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = M, Observation = O::Batch>,
+{
+    runtime: SteppableDisaggRuntime<P, O, M>,
     live: LiveRequests,
 }
 
-impl SteppableDisagg {
+impl SteppableDisagg<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata> {
     /// Build round-robin prefill and decode pools.
     pub fn new(
         engine: ReplayEngineConfig,
@@ -630,7 +637,11 @@ impl SteppableDisagg {
             num_decode_workers: decode_workers,
             handoff_latency_ms: 0.0,
         };
-        let runtime = SteppableDisaggRuntime::new_composed(
+        let runtime = SteppableDisaggRuntime::<
+            PoolRoundRobinPlacement<()>,
+            NoEngineEvents,
+            NoReplayMetadata,
+        >::new_composed(
             &config,
             AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
             false,
@@ -650,7 +661,82 @@ impl SteppableDisagg {
     }
 }
 
-impl SteppableReplay for SteppableDisagg {
+impl<O, M> SteppableDisagg<DynPlacement<O, M>, O, M>
+where
+    O: ReplayEngineObservation + 'static,
+    M: ReplayAdmissionMetadata + 'static,
+{
+    /// Build a disaggregated runtime driven by separate caller-supplied
+    /// prefill and decode placement policies.
+    pub fn with_placements(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        prefill_workers: usize,
+        decode_workers: usize,
+        make_placements: impl FnOnce(
+            u32,
+            Vec<WorkerTopology>,
+            u32,
+            Vec<WorkerTopology>,
+        )
+            -> anyhow::Result<(DynPlacement<O, M>, DynPlacement<O, M>)>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
+        anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
+        let config = OfflineDisaggReplayConfig {
+            prefill_factory: factory.role_factory(
+                &engine,
+                WorkerStage::Prefill,
+                O::capture_engine_kv_events(WorkerStage::Prefill),
+            )?,
+            decode_factory: factory.role_factory(
+                &engine,
+                WorkerStage::Decode,
+                O::capture_engine_kv_events(WorkerStage::Decode),
+            )?,
+            prefill_startup_time_ms: None,
+            decode_startup_time_ms: None,
+            num_prefill_workers: prefill_workers,
+            num_decode_workers: decode_workers,
+            handoff_latency_ms: 0.0,
+        };
+        let runtime = SteppableDisaggRuntime::<DynPlacement<O, M>, O, M>::new_composed(
+            &config,
+            AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
+            false,
+            |prefill_dp_size, prefill, decode_dp_size, decode| {
+                let (mut prefill_placement, mut decode_placement) =
+                    make_placements(prefill_dp_size, prefill, decode_dp_size, decode)?;
+                let prefill_released = prefill_placement.topology_settled(0.0)?;
+                anyhow::ensure!(
+                    prefill_released.is_empty(),
+                    "prefill placement released {} request(s) before any were submitted",
+                    prefill_released.len()
+                );
+                let decode_released = decode_placement.topology_settled(0.0)?;
+                anyhow::ensure!(
+                    decode_released.is_empty(),
+                    "decode placement released {} request(s) before any were submitted",
+                    decode_released.len()
+                );
+                Ok((prefill_placement, decode_placement))
+            },
+        )?
+        .with_capture_options(ReplayCaptureOptions::default())
+        .into_steppable();
+        Ok(Self {
+            runtime,
+            live: LiveRequests::default(),
+        })
+    }
+}
+
+impl<P, O, M> SteppableReplay for SteppableDisagg<P, O, M>
+where
+    O: ReplayEngineObservation,
+    M: ReplayAdmissionMetadata,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = M, Observation = O::Batch>,
+{
     fn now_ms(&self) -> f64 {
         self.runtime.now_ms()
     }

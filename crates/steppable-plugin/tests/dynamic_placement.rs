@@ -3,7 +3,9 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use aisimulate_core::replay::loadgen::{DynPlacement, SteppableAgg, SteppableReplay};
+use aisimulate_core::replay::loadgen::{
+    DynPlacement, SteppableAgg, SteppableDisagg, SteppableReplay,
+};
 use aisimulate_core::replay::{
     DirectRequest, DynamicPlacementMetadata, DynamicPlacementPolicy, NoEngineEvents,
     ReplayEngineConfig, ReplayEngineFactory,
@@ -20,6 +22,8 @@ use uuid::Uuid;
 struct Fixture {
     admissions: Vec<PlacementResultV1>,
     admitted: Option<[u8; 16]>,
+    prefill_admitted: Option<[u8; 16]>,
+    decode_admitted: Option<[u8; 16]>,
 }
 
 static FIXTURE: LazyLock<Mutex<Fixture>> = LazyLock::new(|| Mutex::new(Fixture::default()));
@@ -85,6 +89,40 @@ unsafe extern "C" fn apply_batch(
     StatusV1::OK
 }
 
+unsafe extern "C" fn apply_prefill_batch(
+    handle: PlacementHandleV1,
+    batch: PlacementMutationSliceV1,
+    result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    let is_admission = batch.len == 1
+        && !batch.data.is_null()
+        // Safety: a non-null one-record slice is valid for this callback.
+        && unsafe { (*batch.data).kind == PlacementMutationKindV1::ADMIT };
+    let status = unsafe { apply_batch(handle, batch, result) };
+    if status == StatusV1::OK && is_admission {
+        let mut fixture = FIXTURE.lock().expect("fixture lock");
+        fixture.prefill_admitted = fixture.admitted;
+    }
+    status
+}
+
+unsafe extern "C" fn apply_decode_batch(
+    handle: PlacementHandleV1,
+    batch: PlacementMutationSliceV1,
+    result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    let is_admission = batch.len == 1
+        && !batch.data.is_null()
+        // Safety: a non-null one-record slice is valid for this callback.
+        && unsafe { (*batch.data).kind == PlacementMutationKindV1::ADMIT };
+    let status = unsafe { apply_batch(handle, batch, result) };
+    if status == StatusV1::OK && is_admission {
+        let mut fixture = FIXTURE.lock().expect("fixture lock");
+        fixture.decode_admitted = fixture.admitted;
+    }
+    status
+}
+
 unsafe extern "C" fn release_results(_result: PlacementBatchResultV1) {}
 unsafe extern "C" fn release_bytes(_bytes: ByteSliceV1) {}
 unsafe extern "C" fn last_error(_handle: PlacementHandleV1, error: *mut ByteSliceV1) -> StatusV1 {
@@ -106,6 +144,16 @@ static FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
     release_bytes: Some(release_bytes),
     last_error: Some(last_error),
     destroy: Some(destroy),
+};
+
+static PREFILL_FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
+    apply_batch: Some(apply_prefill_batch),
+    ..FIXTURE_VTABLE
+};
+
+static DECODE_FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
+    apply_batch: Some(apply_decode_batch),
+    ..FIXTURE_VTABLE
 };
 
 #[test]
@@ -155,4 +203,70 @@ fn aggregated_steppable_uses_the_dynamic_placement_abi_fixture() {
         FIXTURE.lock().expect("fixture lock").admitted,
         Some(request_id.into_bytes())
     );
+}
+
+#[test]
+fn disaggregated_steppable_uses_distinct_dynamic_policies_for_prefill_and_decode() {
+    let _test_lock = TEST_LOCK.lock().expect("test lock");
+    *FIXTURE.lock().expect("fixture lock") = Fixture::default();
+    let factory = ReplayEngineFactory::new();
+    let mut replay = SteppableDisagg::<
+        DynPlacement<NoEngineEvents, DynamicPlacementMetadata>,
+        NoEngineEvents,
+        DynamicPlacementMetadata,
+    >::with_placements(
+        ReplayEngineConfig::default(),
+        &factory,
+        1,
+        1,
+        |_prefill_dp_size, prefill_topology, _decode_dp_size, decode_topology| {
+            assert_eq!(prefill_topology.len(), 1);
+            assert_eq!(decode_topology.len(), 1);
+            // Safety: the static ABI fixtures remain live and accept their sentinel handles.
+            let prefill = unsafe {
+                DynamicPlacementPolicy::from_test_vtable(
+                    PREFILL_FIXTURE_VTABLE,
+                    PlacementLimitsV1 {
+                        max_mutations: 1,
+                        max_admission_results: 1,
+                        max_released: 1,
+                        max_diagnostic_bytes: 0,
+                    },
+                )
+            };
+            // Safety: the static ABI fixtures remain live and accept their sentinel handles.
+            let decode = unsafe {
+                DynamicPlacementPolicy::from_test_vtable(
+                    DECODE_FIXTURE_VTABLE,
+                    PlacementLimitsV1 {
+                        max_mutations: 1,
+                        max_admission_results: 1,
+                        max_released: 1,
+                        max_diagnostic_bytes: 0,
+                    },
+                )
+            };
+            Ok((Box::new(prefill), Box::new(decode)))
+        },
+    )
+    .expect("dynamic placement fixtures build the disaggregated replay");
+
+    let request_id = Uuid::from_u128(8);
+    replay
+        .submit(DirectRequest {
+            uuid: Some(request_id),
+            tokens: vec![1, 2, 3],
+            max_output_tokens: 1,
+            ..Default::default()
+        })
+        .expect("prefill placement admits the request");
+    while !replay.is_idle() {
+        replay
+            .step()
+            .expect("dynamic placement fixtures make progress");
+    }
+
+    let fixture = FIXTURE.lock().expect("fixture lock");
+    assert_eq!(fixture.prefill_admitted, Some(request_id.into_bytes()));
+    assert_eq!(fixture.decode_admitted, Some(request_id.into_bytes()));
 }
