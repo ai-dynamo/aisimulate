@@ -1,0 +1,74 @@
+{
+  "max_age_days": 30,
+  "minimum_free_bytes": 35000000000,
+  "parts": [
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part00",
+      "sha256": "6cd2b2e7e8cd1386d59717a45f8a30af2ff6c21fd975185b5d713cb073720c9a",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part01",
+      "sha256": "778015c8e71b3d657fee394375b7041b4f4d20e1248d4b6a5a16e5d9176d3019",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part02",
+      "sha256": "589526775999cdabe61115688c6d5851ca5a20b5d6429c86b36678c772498a69",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part03",
+      "sha256": "ed627c9536807f64a0b43a1882cbd24bae4812bd1396f84145a9b1adce2817eb",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part04",
+      "sha256": "8a3310aa046aeeb6c4effed2e09c82a639edc0b1ae394d73aed7716e741d8718",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part05",
+      "sha256": "2e5865a091d0429c3644f8910d0d449f84d2951c8f9b9775a134b09f9b0cd258",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part06",
+      "sha256": "07fca5f5709010b08b6a0eb403e13d6531bff147dbaeb3072c37a7eaf6c04fc6",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part07",
+      "sha256": "63003df46a8c675ca403ca90017b3606da990afb327c5fbf0219e76a548592d4",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part08",
+      "sha256": "e1f4feefa3f06f5569509443b593075f6baadeed2d0e5834a4d5bca2c50aae8d",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part09",
+      "sha256": "4917b24bdcb7420322097f2b4f60ce84af91cbfdd8db3bc7f06504c4b1f30976",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part10",
+      "sha256": "a444cff40f4585912cbecd3a9be6e1bd61043836d305390479a8b92eb44cdc73",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part11",
+      "sha256": "90a444a161f699ae9e94abfebd2f54c54a4fe92667d62331b78fb8020059c873",
+      "size": 1992294400
+    },
+    {
+      "name": "inferencex-2026-09-14.dump.zst.part12",
+      "sha256": "5df713decfa3a393063575884ab2948eaaacdc744153e850f752f9631cc894c4",
+      "size": 746769630
+    }
+  ],
+  "release_tag": "db-dump/2026-09-14",
+  "schema_version": 1,
+  "selection_policy": "latest-complete-config-run-v1"
+}
