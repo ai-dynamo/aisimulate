@@ -154,11 +154,8 @@ def test_reproducible_examples_match_documented_aic_semantics(
     expected = case["expected"]
 
     assert actual.keys() == expected.keys() == {"power_w", "power_coverage"}
-    for name, value in expected.items():
-        if value is None:
-            assert actual[name] is None
-        else:
-            assert actual[name] == pytest.approx(value)
+    assert actual == expected
+    validate_strict_json(power_validator, expected)
     validate_strict_json(power_validator, actual)
     assert json.loads(json.dumps(actual, allow_nan=False)) == actual
 
