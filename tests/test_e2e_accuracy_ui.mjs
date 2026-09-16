@@ -7,7 +7,8 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.js", import.meta.url), "utf8");
-const historical = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
+const published = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
+const historical = structuredClone(published);
 // Exercise the legacy contract even after the published snapshot is refreshed.
 delete historical.snapshot.evaluated_revision;
 delete historical.snapshot.aic_source;
@@ -69,7 +70,22 @@ function withEvaluation() {
 
 function withTopology() {
   const data = structuredClone(historical);
-  const gpu = data.models[0].workloads[0].gpus[0];
+  const model = data.models[0];
+  const workload = model.workloads[0];
+  const gpu = workload.gpus[0];
+  data.models = [model];
+  data.totals.models = 1;
+  model.workloads = [workload];
+  workload.gpus = [gpu];
+  for (const item of [data.totals, model, workload, gpu]) {
+    item.rows = 3;
+    item.aic.points = 3;
+    item.aisimulate.points = 2;
+    item.aisimulate.coverage_pct = 200 / 3;
+    item.aisimulate.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
+    item.precisions = ["fp8"];
+    if ("gpu_skus" in item) item.gpu_skus = [gpu.gpu];
+  }
   const point = (concurrency, success) => ({
     concurrency, status: success ? "success" : "failed",
     measured: { ttft_relative: concurrency, tpot_relative: concurrency },
@@ -77,12 +93,24 @@ function withTopology() {
     aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
-  gpu.topologies = [{ ...gpu, aic: { ...gpu.aic, points: 3 }, aisimulate: { ...gpu.aisimulate, points: 2,
-    status_counts: { success: 2, unsupported: 0, failed: 1, unknown: 0 } },
-    id: "0123456789abcdef", rows: 3, framework: "vllm", precision: "fp8", serving: "aggregated",
+  gpu.topologies = [{ ...structuredClone(gpu),
+    id: "0123456789abcdef", framework: "vllm", precision: "fp8", serving: "aggregated",
     spec_method: "none", parallelism: { tp_size: 8, pp_size: 1 }, points: [point(1, true), point(2, false), point(4, true)] }];
   return data;
 }
+
+test("committed, historical, and topology snapshots pass validation and initialize", async () => {
+  for (const data of [published, historical, withTopology()]) {
+    const app = harness(async (path) => path === "./branches.json" ? response({}, 404) : response(data));
+    app.set("valid", data);
+    assert.doesNotThrow(() => app.run("validateSummary(valid)"));
+    await app.run("initialize()");
+    assert.equal(app.run("state.data.totals.rows"), data.totals.rows);
+    assert.equal(app.element("error-banner").hidden, true);
+    assert.equal(app.element("download-json").href, "./summary.json");
+    assert.match(app.element("summary-grid").innerHTML, /Points \(AIC CLI\)/);
+  }
+});
 
 test("legacy summary loads with historical provenance and branch-specific download", async () => {
   const app = setup();
@@ -200,10 +228,139 @@ test("invalid topology values and unsafe provenance fail before rendering", () =
   const invalid = withTopology(); invalid.models[0].workloads[0].gpus[0].topologies[0].points[0].concurrency = "<img>";
   app.set("invalid", invalid);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
-  invalid.models[0].workloads[0].gpus[0].topologies = [];
+  invalid.models[0].workloads[0].gpus[0].topologies[0].points[0].concurrency = 1;
   invalid.snapshot.measurement_source_url = "javascript:alert(1)";
   app.set("invalid", invalid);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+});
+
+test("aggregate point counts cannot exceed rows at any hierarchy level", () => {
+  const app = setup();
+  for (const select of [
+    (data) => data.totals,
+    (data) => data.models[0],
+    (data) => data.models[0].workloads[0],
+    (data) => data.models[0].workloads[0].gpus[0],
+    (data) => data.models[0].workloads[0].gpus[0].topologies[0],
+  ]) {
+    const invalid = withTopology();
+    const item = select(invalid);
+    item.aic.points = item.rows + 1;
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+  }
+});
+
+test("summary requires nonempty hierarchy arrays and an accurate model count", () => {
+  const app = setup();
+  for (const corrupt of [
+    (data) => { data.models = []; data.totals.models = 0; },
+    (data) => { data.totals.models += 1; },
+    (data) => { data.models[0].workloads = []; },
+    (data) => { data.models[0].workloads[0].gpus = []; },
+    (data) => { data.models[0].workloads[0].gpus[0].topologies = []; },
+  ]) {
+    const invalid = withTopology(); corrupt(invalid);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+  }
+});
+
+test("hierarchy fields reject missing and non-array values except absent historical topologies", () => {
+  const app = setup();
+  for (const [field, select] of [
+    ["models", (data) => data],
+    ["workloads", (data) => data.models[0]],
+    ["gpus", (data) => data.models[0].workloads[0]],
+    ["topologies", (data) => data.models[0].workloads[0].gpus[0]],
+    ["points", (data) => data.models[0].workloads[0].gpus[0].topologies[0]],
+  ]) {
+    for (const value of [null, {}, "invalid", undefined]) {
+      const data = withTopology();
+      if (value === undefined) delete select(data)[field];
+      else select(data)[field] = value;
+      app.set("data", data);
+      if (field === "topologies" && value === undefined) {
+        assert.doesNotThrow(() => app.run("validateSummary(data)"));
+      } else {
+        assert.throws(() => app.run("validateSummary(data)"), /schema/, field);
+      }
+    }
+  }
+});
+
+for (const [level, depth] of [["model", 1], ["workload", 2], ["GPU", 3], ["topology", 4]]) {
+  test(`${level} rows must cover their parent aggregate`, () => {
+    const invalid = withTopology();
+    const model = invalid.models[0]; const workload = model.workloads[0]; const gpu = workload.gpus[0];
+    // Keep each aggregate and all ancestors internally consistent; only this child coverage is short.
+    for (const parent of [invalid.totals, model, workload, gpu].slice(0, depth)) {
+      parent.rows += 1;
+      parent.aisimulate.status_counts.unknown += 1;
+    }
+    const app = setup(); app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
+  });
+}
+
+test("summary validates the metadata, dimensions, and types required by rendering", () => {
+  const app = setup();
+  for (const [field, corrupt] of [
+    ["release tag", (data) => {
+      data.snapshot.release_tag = 123;
+      data.snapshot.measurement_source_url = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/123";
+    }],
+    ["release URL", (data) => { data.snapshot.measurement_source_url += "-other"; }],
+    ["packages", (data) => { data.snapshot.aisimulate_packages = []; }],
+    ["measurement date", (data) => { data.snapshot.measurement_date_through = 123; }],
+    ["completion date", (data) => { data.snapshot.aisimulate_completed_at = {}; }],
+    ["scope", (data) => { data.scope = []; }],
+    ["multinode scope", (data) => { data.scope.multinode = "unknown"; }],
+    ["excluded rows", (data) => { data.scope.excluded_multinode_rows = -1; }],
+    ["scope claim", (data) => { delete data.scope.claim; }],
+    ["total GPUs", (data) => { data.totals.gpu_skus = "gpu"; }],
+    ["total precisions", (data) => { data.totals.precisions = []; }],
+    ["model GPUs", (data) => { data.models[0].gpu_skus = []; }],
+    ["model precisions", (data) => { data.models[0].precisions = [123]; }],
+    ["workload label", (data) => { delete data.models[0].workloads[0].label; }],
+    ["workload GPUs", (data) => { delete data.models[0].workloads[0].gpu_skus; }],
+    ["workload precisions", (data) => { data.models[0].workloads[0].precisions = null; }],
+    ["GPU precisions", (data) => { data.models[0].workloads[0].gpus[0].precisions = []; }],
+    ["topology ID", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].id = 1234567890123456; }],
+    ["topology parallelism", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].parallelism = []; }],
+    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisimulate.status_counts.extra = 0; }],
+  ]) {
+    const invalid = withTopology(); corrupt(invalid);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /schema/, field);
+  }
+});
+
+test("invalid branch data clears rendered accuracy and disables its download", async () => {
+  for (const corrupt of [
+    (data) => { data.totals.aic.points += 10000; },
+    (data) => { data.models = []; },
+    (data) => { data.models[0].workloads[0].gpus[0].topologies = []; },
+    (data) => { data.snapshot.measurement_source_url += "-other"; },
+  ]) {
+    const invalid = withTopology(); corrupt(invalid);
+    const app = harness(async (path) => response(path === "./branches.json" ? catalog :
+      path === `./${pathFor("b")}` ? invalid : historical));
+    await app.run("initialize()");
+    assert.match(app.element("summary-grid").innerHTML, /Points \(AIC CLI\)/);
+    assert.equal(app.element("download-json").href, `./${pathFor("a")}`);
+    await app.run('loadBranch("release/0.12.0")');
+    assert.equal(app.run("state.data"), null);
+    assert.equal(app.element("error-banner").hidden, false);
+    assert.match(app.element("error-banner").textContent, /schema/);
+    assert.match(app.element("summary-grid").innerHTML, /Accuracy data unavailable/);
+    assert.match(app.element("matrix-body").innerHTML, /Accuracy data unavailable/);
+    assert.equal(app.element("identity-line").textContent, "");
+    assert.equal(app.element("release-label").textContent, "");
+    assert.equal(app.element("drilldown").hidden, true);
+    assert.equal(app.element("download-json").href, undefined);
+    assert.equal(app.element("download-json").attributes["aria-disabled"], "true");
+  }
 });
 
 test("aggregate replay counts must match rows and successful points at every level", () => {

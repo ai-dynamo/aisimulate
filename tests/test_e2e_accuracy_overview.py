@@ -339,11 +339,10 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
     assert 'class="hero"' not in page
 
 
-def test_public_page_validates_snapshot_urls_and_nested_schema() -> None:
+def test_public_page_validates_snapshot_urls() -> None:
     script = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js").read_text()
 
     assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
-    assert "!Array.isArray(model.workloads)" in script
 
 
 def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
