@@ -83,6 +83,7 @@ version = "0.12.0"
 dependencies = [
  "aiperf-steppable-abi",
  "aisimulate-core",
+ "aisimulate-placement-abi",
  "anyhow",
  "serde",
  "serde_json",
