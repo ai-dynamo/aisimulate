@@ -122,10 +122,12 @@ Manual dispatches and site-change triggers are listed below.
 | [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
-| [GitHub Pages](../.github/workflows/pages.yml) | Successful FPE Support Matrix, Main branch nightly CI, or Release branch nightly CI completion; relevant site changes on PRs/`main`; manual dispatch | Validates branch snapshots, tests FPE branch selection in Chromium, and builds dashboard/support-matrix pages; deployment is restricted to trusted `main` |
+| [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one explicit SHA | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
+| [GitHub Pages](../.github/workflows/pages.yml) | FPE Support Matrix, Main branch nightly CI, Release branch nightly CI, or E2E Accuracy Matrix completion; relevant site changes on PRs/`main`; daily at 09:17 UTC; manual dispatch | Validates qualified FPE and accuracy snapshots, tests FPE branch selection in Chromium, and builds public pages; deployment is restricted to trusted `main` |
 
-CODEOWNERS and advisory performance checks run alongside the validation
-pipelines. Pages consumes qualification evidence after producer completion.
+Ownership checks, prediction performance, E2E accuracy, and Pages run independently
+of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.
+Pages consumes qualification evidence after producer completion.
 The DCO sign-off check and review services are additional PR signals, not jobs
 inside Fast CI. See [CONTRIBUTING.md](../CONTRIBUTING.md) for DCO requirements.
 
@@ -354,6 +356,28 @@ Complete qualified results remain GitHub Actions artifacts for 90 days and
 trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
+
+### E2E accuracy campaigns
+
+The independent [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml)
+evaluates the scheduled main SHA and every discovered `release/*` head against
+checksum-pinned public measurements. A branch matrix runs at most two campaigns
+at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
+amd64 wheel for its exact SHA when available, even while nightly staging waits for
+approval; otherwise it builds one. Each release builds its own wheel. Both the
+AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manual
+runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
+
+Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
+Pages validates the branch's successful qualification job in the artifact's exact
+run attempt, producer, revision, coverage, and checksums before combining it with
+qualified FPE data. One branch's failure does not cancel other campaigns or block
+their publication. Retried jobs preserve successful branches' original run-attempt
+provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
+incomplete campaigns cannot publish. A release selector may still show a historical
+snapshot until that release has a qualified campaign. See the
+[accuracy campaign contract](../python/aisimulate/docs/e2e-accuracy/README.md)
+for pinned scheduler settings, measurement selection, and provenance.
 
 ## Reading results and troubleshooting
 

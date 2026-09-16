@@ -144,9 +144,18 @@ function renderSnapshot() {
     <p>Legacy AIC CLI source: ${snapshot.aic_source
       ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (bundled aiconfigurator CLI)`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
+    ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
+      Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
+      Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
+      Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level; unresolved recipes are excluded.</p>
+      <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
+      <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
       ? `<a href="https://github.com/ai-dynamo/aisimulate/blob/${state.branch.published_from_commit}/python/aisimulate/docs/e2e-accuracy/summary.json">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
-      : "Local preview; publication commit not recorded"}</p>
+      : snapshot.campaign
+        ? "Qualified e2e-accuracy-web artifact from the campaign above"
+        : "Local preview; publication commit not recorded"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
     <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
@@ -548,6 +557,22 @@ function validateSummary(data) {
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
     throw new Error("invalid legacy AIC CLI source");
+  }
+  const campaign = data.snapshot.campaign;
+  const exclusions = campaign?.exclusion_reasons;
+  const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
+    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "baseline_failed"].includes(key)) &&
+    Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
+  if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
+    campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
+    !/^[0-9a-f]{64}$/.test(campaign.wheel_sha256) || !/^[0-9a-f]{64}$/.test(campaign.dataset_sha256) ||
+    campaign.commit_sha !== revision.commit_sha || campaign.branch !== revision.branch ||
+    !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
+    campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
+    !campaign.backend_versions.every((version) => typeof version === "string") ||
+    campaign.selection_policy !== "latest-complete-config-run-v1" ||
+    !validExclusions)) {
+    throw new Error("invalid accuracy campaign provenance");
   }
   return data;
 }
