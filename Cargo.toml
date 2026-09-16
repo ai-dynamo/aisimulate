@@ -4,6 +4,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/steppable-plugin",
 ]
 exclude = ["crates/tests/public-api"]
 resolver = "3"
