@@ -172,6 +172,7 @@ def prepare(
     branch="main",
     history_ref="HEAD",
     artifacts=None,
+    run_cache=None,
     api=github,
 ) -> dict:
     """Select only CI-qualified data from the requested branch history."""
@@ -207,6 +208,8 @@ def prepare(
             continue
         candidates.append(artifact)
     candidates.sort(key=lambda a: -a["id"])
+    if run_cache is None:
+        run_cache = {}
     selected_key = None
     selected_files = None
     selected_successful = False
@@ -217,7 +220,9 @@ def prepare(
         if selected_key is not None and selected_key[0] == 0:
             break
         run_id = artifact["workflow_run"]["id"]
-        run = json.loads(api(repository, f"actions/runs/{run_id}"))
+        if run_id not in run_cache:
+            run_cache[run_id] = json.loads(api(repository, f"actions/runs/{run_id}"))
+        run = run_cache[run_id]
         workflow_sha = artifact["workflow_run"]["head_sha"]
         release_producer = branch != "main" and run.get("path") == RELEASE_WORKFLOW
         if artifact["name"] != ARTIFACT_NAME and not release_producer:
@@ -315,6 +320,8 @@ def prepare_branches(repository: str, repo_root: Path, destination: Path, *, api
         branch_path(name)
         branches[name] = ref
     artifacts = list_artifacts(repository, api=api)
+    # Later publications must fetch fresh metadata to observe any retried runs.
+    run_cache = {}
     catalog = {"schema_version": 1, "default": "main", "branches": []}
     for branch, ref in branches.items():
         path = branch_path(branch)
@@ -330,6 +337,7 @@ def prepare_branches(repository: str, repo_root: Path, destination: Path, *, api
                 branch=branch,
                 history_ref=ref,
                 artifacts=branch_artifacts,
+                run_cache=run_cache,
                 api=api,
             )
         except SnapshotUnavailable as exc:

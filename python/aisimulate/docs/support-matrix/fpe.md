@@ -234,11 +234,12 @@ To reproduce a release result, check out the recorded tooling commit at the
 workspace root and the recorded release source under `release-source/`.
 Download the run's `fpe-release-wheel-<version>` artifact into the workspace (preserving
 its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
-release's locked environment and exact wheel as in the workflow, and activate
-that environment. The matrix's per-cell command runs the verified release
-wrapper with the recorded source, tooling, and branch. Each invocation requires
-a fresh `release-probe-harness/` directory; remove only that generated directory
-between reproductions. Raw shard reports and the wheel are retained for seven
+release's locked environment and exact wheel as in the workflow. The matrix's
+per-cell command uses `release-source/python/aisimulate/.venv/bin/python`
+directly to run the verified release wrapper with the recorded source, tooling,
+and branch. Each invocation requires a fresh `release-probe-harness/` directory;
+remove only that generated directory between reproductions. Raw shard reports
+and the wheel are retained for seven
 days; the smaller qualified web dataset is retained for 90 days.
 
 The deployed `data/fpe-support-matrix/branches.json` catalog lists available

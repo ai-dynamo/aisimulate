@@ -7,6 +7,7 @@ import csv
 import importlib.util
 import io
 import json
+import shlex
 import subprocess
 import zipfile
 from collections import defaultdict
@@ -227,7 +228,11 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
     assert selected is not None
     rows = list(csv.DictReader(io.StringIO(selected["b200_sxm.csv"].decode())))
     assert len(rows) == 4
-    assert all("python scripts/run_release_fpe.py probe" in row["Command"] for row in rows)
+    assert all(
+        shlex.split(row["Command"])[3:6]
+        == ["release-source/python/aisimulate/.venv/bin/python", "scripts/run_release_fpe.py", "probe"]
+        for row in rows
+    )
     assert all(SHA in row["Command"] and TOOLING in row["Command"] for row in rows)
     assert all(row["SourceSHA"] == SHA for row in rows)
 

@@ -139,7 +139,7 @@ def package_reports(reports: Path, expected: dict, wheel_sha: str, shards: list,
                 ("FPE_BRANCH", expected["source_branch"]),
             ]
         )
-        + " python scripts/run_release_fpe.py probe"
+        + " release-source/python/aisimulate/.venv/bin/python scripts/run_release_fpe.py probe"
     )
     for path in (destination / DATA).glob("*.csv"):
         with path.open(newline="") as handle:

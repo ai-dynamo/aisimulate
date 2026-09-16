@@ -705,6 +705,8 @@ class FpeBranchesTest(unittest.TestCase):
             self.assertEqual([r["HuggingFaceID"] for r in rows], [f"example/model-{version}"])
         self.assertFalse((site / "data/fpe-support-matrix/branches/release/0.14.0").exists())
         self.assertEqual(sum(c.startswith("actions/artifacts?") for c in calls), 4)
+        self.assertEqual(calls.count("actions/runs/1"), 1)
+        self.assertEqual(calls.count("actions/runs/2"), 1)
 
     def test_main_only_commit_cannot_be_published_as_release(self):
         catalog, _ = self.prepare(self.main_sha)
