@@ -368,7 +368,8 @@
           "minLength": 1
         },
         "energy": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": [],

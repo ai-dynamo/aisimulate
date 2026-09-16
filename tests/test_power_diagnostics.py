@@ -179,6 +179,12 @@ def test_energy_schema_accepts_complete_measured_and_missing_operation_evidence(
     _energy_detail_validator().validate(_energy_detail_payload())
 
 
+@pytest.mark.parametrize("skipped,valid", [({}, True), ({"energy": "not requested"}, True), ({"energy": ""}, False)])
+def test_energy_schema_requires_a_reason_when_energy_is_skipped(skipped, valid):
+    payload = {"schema_version": "1.0", "sections": {}, "skipped": skipped}
+    assert _energy_detail_validator().is_valid(payload) is valid
+
+
 @pytest.mark.parametrize("value", ["invalid", 42, None, {}, ["nested"]])
 @pytest.mark.parametrize("level", ["phase", "operation"])
 def test_energy_schema_rejects_malformed_nested_records(level, value):
