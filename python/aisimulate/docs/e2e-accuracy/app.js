@@ -453,7 +453,7 @@ function renderDrilldown() {
 }
 
 function validBranchName(branch) {
-  return typeof branch === "string" &&
+  return typeof branch === "string" && !branch.endsWith("/") &&
     (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
 }
 

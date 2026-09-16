@@ -140,8 +140,10 @@ def _accuracy_summary(text: str) -> dict:
         return isinstance(value, list) and bool(value) and all(isinstance(item, str) for item in value)
 
     def branch_name(value: object) -> bool:
-        return isinstance(value, str) and (
-            value == "main" or bool(re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value))
+        return (
+            isinstance(value, str)
+            and not value.endswith("/")
+            and (value == "main" or bool(re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value)))
         )
 
     def aggregate(item: dict) -> None:

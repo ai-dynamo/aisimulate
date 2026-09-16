@@ -49,8 +49,9 @@ are separate identities:
 | `evaluated_revision` | Required for evaluated/inherited evidence: the producer-recorded `branch` and full `commit_sha`. Absent or `null` for historical/unavailable evidence. |
 
 The exporter, Pages validator, and browser restrict evaluated branch names to
-`main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*` and commits to 40 lowercase hex
-characters. Evaluated snapshots must include matching bundled AIC CLI provenance;
+`main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*`, without a trailing slash, and
+commits to 40 lowercase hex characters. Nested release names such as
+`release/0.13.0/rc1` are allowed. Evaluated snapshots must include matching bundled AIC CLI provenance;
 only historical snapshots may omit it. The browser checks catalog status and evaluated identity against the
 loaded summary before rendering. Contradictory evidence fails visibly rather
 than displaying another branch's results. A missing catalog permits direct

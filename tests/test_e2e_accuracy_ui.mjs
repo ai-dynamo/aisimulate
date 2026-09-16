@@ -294,9 +294,11 @@ test("catalog metadata rejects malformed revisions and contradictory status", ()
 
 test("summary rejects evaluated branches outside the exporter contract", () => {
   const app = setup();
-  for (const branch of ["", "feature/private", "release/", "release/with space", 42, null]) {
-    const invalid = structuredClone(historical);
-    invalid.snapshot.evaluated_revision = { branch, commit_sha: "d".repeat(40) };
+  for (const branch of ["", "feature/private", "release/", "release/with space",
+    "release/a/", "release/0.12.0/", "release/0.13.0/rc1/", 42, null]) {
+    const invalid = withEvaluation();
+    invalid.snapshot.evaluated_revision.branch = branch;
+    invalid.snapshot.aic_source.branch = branch;
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
   }
@@ -304,6 +306,39 @@ test("summary rejects evaluated branches outside the exporter contract", () => {
     const invalid = structuredClone(historical); invalid.snapshot.evaluated_revision = revision;
     app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /invalid evaluated revision/);
+  }
+});
+
+test("catalog rejects trailing slashes in branch names and evaluated revisions", () => {
+  const app = setup();
+  for (const branch of ["release/a/", "release/0.12.0/", "release/0.13.0/rc1/"]) {
+    const invalidBranch = structuredClone(catalog);
+    invalidBranch.branches[1].branch = branch;
+    const invalidRevision = structuredClone(catalog);
+    Object.assign(invalidRevision.branches[1], {
+      status: "inherited", evaluated_revision: { branch, commit_sha: "d".repeat(40) },
+    });
+    for (const invalid of [invalidBranch, invalidRevision]) {
+      app.set("invalid", invalid);
+      assert.throws(() => app.run("validateCatalog(invalid)"), /invalid accuracy branch catalog/);
+    }
+  }
+});
+
+test("catalog and summary retain valid release names including nested branches", () => {
+  const app = setup();
+  for (const branch of ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"]) {
+    const data = withEvaluation();
+    data.snapshot.evaluated_revision.branch = branch;
+    data.snapshot.aic_source.branch = branch;
+    const valid = structuredClone(catalog);
+    Object.assign(valid.branches[0], { status: branch === "main" ? "evaluated" : "inherited",
+      evaluated_revision: data.snapshot.evaluated_revision });
+    if (branch !== "main") valid.branches[1].branch = branch;
+    app.set("valid", valid);
+    app.set("data", data);
+    assert.doesNotThrow(() => app.run("validateCatalog(valid)"));
+    assert.doesNotThrow(() => app.run("validateSummary(data)"));
   }
 });
 

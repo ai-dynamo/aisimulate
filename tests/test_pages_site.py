@@ -825,11 +825,29 @@ def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
             PAGES._accuracy_summary(json.dumps(invalid))
 
 
+def test_publication_accepts_valid_evaluated_branches() -> None:
+    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    for branch in ("main", "release/a", "release/0.12.0", "release/0.13.0/rc1"):
+        summary["snapshot"]["evaluated_revision"]["branch"] = branch
+        summary["snapshot"]["aic_source"]["branch"] = branch
+        assert PAGES._accuracy_summary(json.dumps(summary)) == summary
+
+
 def test_publication_rejects_evaluated_branches_outside_exporter_contract() -> None:
     from copy import deepcopy
 
     valid = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
-    for branch in ("", "feature/private", "release/", "release/with space", 42, None):
+    for branch in (
+        "",
+        "feature/private",
+        "release/",
+        "release/with space",
+        "release/a/",
+        "release/0.12.0/",
+        "release/0.13.0/rc1/",
+        42,
+        None,
+    ):
         invalid = deepcopy(valid)
         invalid["snapshot"]["evaluated_revision"]["branch"] = branch
         invalid["snapshot"]["aic_source"]["branch"] = branch
