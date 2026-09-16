@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import importlib.resources
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ CORE_SDK_LEAF_MODULES = [
     "engine",
     "engine_table_view",
     "errors",
+    "fpm_profile",
     "inference_summary",
     "memory",
     "models.base",
@@ -124,6 +126,82 @@ def test_legacy_leaf_module_is_canonical_module(module_suffix: str) -> None:
 
     assert legacy_module is canonical_module
     assert sys.modules[legacy_name] is sys.modules[canonical_name]
+
+
+@pytest.mark.parametrize("namespace", ["aiconfigurator.sdk", "aisimulate_core.sdk"])
+def test_fpm_profile_alias_preserves_module_and_type_identity(namespace: str) -> None:
+    """All public profile imports must share the canonical classes and state."""
+    alias_name = f"{namespace}.fpm_profile"
+    alias = importlib.import_module(alias_name)
+    canonical = importlib.import_module("aiconfigurator_core.sdk.fpm_profile")
+
+    assert alias is canonical
+    assert sys.modules[alias_name] is canonical
+    for name in ("FpmModelProfile", "FpmDeploymentProfile", "FpmResourceProfile"):
+        assert getattr(alias, name) is getattr(canonical, name)
+
+
+@pytest.mark.parametrize("namespace", ["aiconfigurator.sdk", "aisimulate_core.sdk"])
+def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: Path) -> None:
+    """Profiles created through either facade must reach native compilation."""
+    from aiconfigurator_core.sdk.engine import compile_engine
+    from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
+
+    alias = importlib.import_module(f"{namespace}.fpm_profile")
+    profile = alias.FpmModelProfile.model_validate(
+        {
+            "schema_version": 1,
+            "model": "test/unknown-decoder",
+            "model_revision": "import-contract-fixture-v1",
+            "architecture": "ImportContractDecoderForCausalLM",
+            "context_length": 4096,
+            "num_experts": 0,
+            "provenance": "Synthetic metadata for import compatibility; not a GPU measurement.",
+            "deployments": [
+                {
+                    "system": "test_gpu",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "tp": 1,
+                    "dp": 1,
+                    "moe_tp": 1,
+                    "moe_ep": 1,
+                    "gemm_quant_mode": "fp8",
+                    "moe_quant_mode": "fp8",
+                    "fmha_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "kv_cache_dtype": "fp8",
+                    "resources": {
+                        "weights_bytes": 100,
+                        "activations_bytes": 20,
+                        "runtime_overhead_bytes": 30,
+                        "comm_overhead_bytes": 50,
+                        "kv_bytes_per_token": 10,
+                        "cache_layout": "linear",
+                        "max_num_tokens": 8192,
+                        "max_batch_size": 256,
+                        "provenance": "Synthetic rank-local resource bounds; excludes CUDA graphs.",
+                    },
+                }
+            ],
+        }
+    )
+
+    loaded = load_fpm_profile(profile)
+    assert type(loaded) is FpmModelProfile
+    assert loaded.model_dump() == profile.model_dump()
+
+    compiled = compile_engine(
+        profile.model,
+        "test_gpu",
+        "vllm",
+        "0.25.1",
+        systems_path=str(tmp_path),
+        forward_model="fpm",
+        fpm_profile=profile,
+    )
+    assert isinstance(compiled, bytes)
+    assert compiled
 
 
 @pytest.mark.parametrize("package_suffix", ["models", "operations", "speculation"])
