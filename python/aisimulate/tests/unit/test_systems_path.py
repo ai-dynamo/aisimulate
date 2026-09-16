@@ -223,7 +223,14 @@ def test_worker_hardware_override_resolves_in_local_systems_root(local_profiles,
     if not explicit_version:
         raw["engine"].pop("backend_version")
 
-    assert _predict(raw).metrics["completed_requests"] == 1
+    report = _predict(raw)
+
+    assert report.metrics["completed_requests"] == 1
+    # The first token needs a 20 ms prefill and a 20 ms decode; the next needs only decode.
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(40.0)
+    assert report.metrics["mean_itl_ms"] == pytest.approx(20.0)
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    assert deployment.backend_version == _VERSION
 
 
 def test_default_prediction_still_uses_bundled_op_level_data_after_a_local_request(local_profiles):
