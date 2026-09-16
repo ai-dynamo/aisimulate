@@ -65,16 +65,16 @@ flowchart TD
     subgraph MainNightly["Main nightly (08:00 UTC)"]
         MainGuard["Nightly CI: check for a new main commit"] -->|Changed| Build["Build nightly wheels and crate"]
         Build --> Smoke["Installed-wheel smoke tests"]
-        Build --> MainFPE["Call FPE Support Matrix<br/>Discover and probe all shards"]
+        Build --> MainFPE["FPE support matrix: main<br/>Discover and probe all shards"]
         MainFPE --> MainQualified["Qualify main matrix artifact"]
         Smoke --> NightlyStage["Protected nightly package staging"]
         MainQualified --> NightlyStage
     end
 
-    subgraph ReleaseNightly["Release nightly (09:23 UTC)"]
+    subgraph ReleaseNightly["Release FPE (09:23 UTC)"]
         Discover["FPE Release Nightly: discover release/*"] --> Pin["Pin every release commit"]
-        Pin --> PerRelease["Call Qualify one FPE release<br/>Build wheel, probe, and qualify<br/>One release at a time"]
-        PerRelease --> ReleaseQualified["Retain separate release artifacts"]
+        Pin --> PerRelease["FPE support matrix: each release<br/>Build wheel, discover, and probe"]
+        PerRelease --> ReleaseQualified["Qualify each release matrix artifact"]
         ReleaseQualified --> AllReleases["Require every release to succeed"]
     end
 
@@ -88,6 +88,12 @@ The two nightly schedules are independent. **FPE Support Matrix** and
 they have no separate nightly timers. Within main's nightly run, wheel smoke
 tests and FPE qualification run in parallel. Release qualification processes
 branches sequentially, with up to 20 shard jobs within each release.
+
+The release path runs **only FPE support-matrix qualification**. Its scheduler
+discovers branches and calls the per-release helper, whose jobs prepare the
+wheel, generate probe reports, and qualify the matrix artifact. Main's nightly
+pipeline additionally builds distributable packages, runs wheel smoke suites,
+and stages packages. Full CI's broader test suites run in their own workflow.
 
 The main path above shows a scheduled run with a changed commit. An unchanged
 `main` skips rebuilding and qualification; release nightly refreshes every
@@ -105,12 +111,12 @@ Manual dispatches and site-change triggers are listed below.
 | --- | --- | --- |
 | [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
+| [Nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
 | [FPE Support Matrix](../.github/workflows/fpe-support-matrix.yml) | Called by Nightly; manual dispatch with `expected_sha` | Broad native operation-level support qualification |
-| [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Discovers `release/*` branches and qualifies each pinned release wheel |
+| [FPE Release Nightly](../.github/workflows/fpe-release-nightly.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Schedules FPE support-matrix refreshes for discovered `release/*` branches |
 | [Qualify one FPE release](../.github/workflows/fpe-release-qualify.yml) | Called once per release by FPE Release Nightly | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
@@ -331,6 +337,12 @@ discovers every `release/<version>` branch each day, including new releases and
 days when their source is unchanged. From trusted `main`, it pins all release
 tips and calls a reusable qualification workflow once per release. Each builds
 an unchanged wheel and probes that release's inventory with the current harness.
+The release helper uses the same FPE probe and qualification code from `main`,
+with the release's own installed package and model inventory. Its separate
+wrapper lets older release branches use current qualification tooling without
+modifying their source. It performs wheel identity, import, and dependency
+checks needed for FPE; it does not run the main nightly's multi-architecture
+smoke suites or package staging.
 It records release and tooling commits separately. Releases run sequentially,
 with up to 20 system/backend jobs and eight probe threads per job. Versioned
 wheel, report, and web artifacts keep releases isolated. A failed release does
