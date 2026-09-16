@@ -637,6 +637,50 @@ def test_plan_rejects_symlinked_output_without_touching_target(tmp_path):
     assert data.read_bytes() == b"timings"
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "fpm-artifacts/aaaaaaaaaaaaaaaa/smoke/cells/output",
+        "fpm-checkpoint/custom/output",
+        "systems/data/h200_sxm/vllm/0.25.1/output",
+    ],
+)
+@pytest.mark.parametrize("target_kind", ["directory", "file", "dangling_directory", "dangling_file"])
+@pytest.mark.parametrize("operation", ["repair", "execute"])
+def test_nested_symlinks_rejected_before_repair_or_collector_import(
+    tmp_path, monkeypatch, relative, target_kind, operation
+):
+    request = _request()
+    root = tmp_path / "plan"
+    create_plan(request, root)
+    _seed_campaign(root)
+    (root / "predict/pilot.yaml").unlink()
+    external = tmp_path / "external"
+    if target_kind == "directory":
+        external.mkdir()
+    elif target_kind == "file":
+        external.write_bytes(b"outside data")
+    link = root / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(external, target_is_directory=target_kind.endswith("directory"))
+    before = _file_contents(tmp_path)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="refusing symlinked plan output"):
+        if operation == "repair":
+            create_plan(request, root, overwrite=True)
+        else:
+            run_fpm(request, output_dir=root, execute=True, resume=True)
+
+    assert _file_contents(tmp_path) == before
+    assert link.is_symlink()
+    assert link.readlink() == external
+    if target_kind == "directory":
+        assert not list(external.iterdir())
+    elif target_kind.startswith("dangling"):
+        assert not external.exists()
+
+
 @pytest.mark.parametrize("relative", ["../shared", "fpm-checkpoint/../../shared"])
 def test_checkpoint_override_cannot_escape_request_directory(tmp_path, relative):
     with pytest.raises(ValueError, match="checkpoint_dir"):

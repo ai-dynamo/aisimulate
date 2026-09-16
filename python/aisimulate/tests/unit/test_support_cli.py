@@ -656,6 +656,48 @@ def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection
     assert not list((root / "fpm-artifacts").rglob("*.yaml"))
 
 
+def test_real_collector_artifact_symlink_rejected_before_first_write(tmp_path, monkeypatch, capsys):
+    from collector.fpm_forward import runner
+
+    command = _local_collection_command(tmp_path)
+    capsys.readouterr()
+    assert cli.main([argument for argument in command if argument != "--execute"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    planned = subprocess.run(
+        [sys.executable, *preview[1:]],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert planned.returncode == 0, planned.stderr
+    frozen = json.loads(planned.stdout)
+    root = tmp_path / "plan"
+    external = tmp_path / "external"
+    external.mkdir()
+    (root / "fpm-artifacts").mkdir()
+    (root / "fpm-artifacts" / frozen["sha256"][:16]).symlink_to(external, target_is_directory=True)
+    reached_checkpoint = []
+
+    def stop_before_gpu(*args, **kwargs):
+        reached_checkpoint.append(True)
+        raise RuntimeError("collector reached checkpoint loading")
+
+    # The real collector writes collection-plan.json before loading its
+    # checkpoint. Keep that path intact and stop before any GPU work.
+    monkeypatch.setattr(runner, "_load_checkpoint", stop_before_gpu)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(command)
+
+    assert error.value.code == 2
+    assert "refusing symlinked plan output" in capsys.readouterr().err
+    assert not reached_checkpoint
+    assert not list(external.iterdir())
+    assert not (root / "fpm-checkpoint").exists()
+
+
 @pytest.mark.parametrize("contents", ["[one, two]\n", "identity: [\n", "identity: {}\n"])
 def test_bad_request_yaml_is_reported_without_a_traceback(tmp_path, capsys, contents) -> None:
     request = tmp_path / "bad.yaml"

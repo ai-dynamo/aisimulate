@@ -261,6 +261,13 @@ def _check_paths(root: Path) -> None:
     ):
         if (root / relative).is_symlink():
             raise ValueError(f"refusing symlinked plan output {root / relative}")
+    pending = [root / relative for relative in ("systems/data", "fpm-checkpoint", "fpm-artifacts")]
+    while pending:
+        path = pending.pop()
+        if path.is_symlink():
+            raise ValueError(f"refusing symlinked plan output {path}")
+        if path.is_dir():
+            pending.extend(path.iterdir())
 
 
 def check_plan(request: SupportRequest, root: Path) -> None:
