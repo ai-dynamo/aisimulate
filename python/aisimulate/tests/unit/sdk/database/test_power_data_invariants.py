@@ -37,7 +37,7 @@ _power_metric_issues = _POWER_DATA_MODULE.power_metric_issues
 
 def _power_carrying_files() -> list[Path]:
     files = []
-    for path in sorted(_DATA_ROOT.rglob("*_perf.parquet")):
+    for path in sorted(_DATA_ROOT.rglob("*.parquet")):
         schema = pq.read_schema(path)
         if any(col in schema.names for col in _POWER_COLUMNS):
             files.append(path)
