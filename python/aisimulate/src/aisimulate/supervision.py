@@ -315,6 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(arguments)
+    raw = None
     try:
         raw = _load_mapping(args.config)
         _apply_overrides(raw, args.overrides, command=args.command)
@@ -322,6 +323,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, AttributeError):
         # The child retains stack/schema error ordering under conservative limits.
         policy = ResourceConfig()
+    if raw is not None:
+        # Validate the lightweight core envelope before --overwrite removes outputs.
+        # Native imports, adapter preparation, and replay stay inside supervision.
+        try:
+            from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+            from .config.common import split_config_sections
+
+            core_raw, adapter_raw = split_config_sections(raw, command=args.command)
+            config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
+            config = config_type.model_validate(core_raw)
+            if config.engine.workers.encoder is not None:
+                if args.command == "predict" and (
+                    args.stack != "engine" or args.online or args.capture_per_request or adapter_raw
+                ):
+                    raise ValueError(
+                        "analytical EPD requires offline --stack engine without adapters or per-request capture"
+                    )
+                if args.command == "recommend" and (args.stack != "engine" or adapter_raw):
+                    raise ValueError("analytical EPD requires --stack engine without adapters")
+        except (ValueError, TypeError, AttributeError) as exc:
+            parser.error(f"{args.config}: {exc}")
     try:
         output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     except (OSError, ValueError) as exc:

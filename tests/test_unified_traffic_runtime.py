@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import json
+import runpy
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -99,6 +103,82 @@ def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
         ("session_1", 2),
     ]
     assert [row["input_length"] for row in records[:3]] == [8, 18, 28]
+
+
+@pytest.mark.parametrize("interval", [None, 0, 2], ids=["default", "disabled", "two_rounds"])
+def test_sglang_prefill_decode_interval_reaches_native_scheduler(tmp_path, interval) -> None:
+    trace = tmp_path / "interval.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {"request_id": "running", "timestamp": 0, "input_length": 8, "output_length": 6, "hash_ids": [1]},
+                {"request_id": "waiting", "timestamp": 0.5, "input_length": 8, "output_length": 2, "hash_ids": [2]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    engine = _engine()
+    engine["backend"] = "sglang"
+    if interval is not None:
+        engine["workers"]["aggregated"]["scheduler"] = {"prefill_decode_interval": interval}
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake", "block_size": 8},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    running, waiting = sorted(report.metadata["native_report"]["per_request"], key=lambda row: row["arrival_time_ms"])
+
+    # Both forward types take exactly 1 ms. The second request arrives during
+    # the first EXTEND. With N=2, decode rounds occupy [1,2] and [2,3] before
+    # the waiting request's EXTEND at [3,4]. With N=0, it extends at [1,2]
+    # and the existing request's first decode instead occupies [2,3].
+    assert running["first_token_ms"] == pytest.approx(1.0)
+    assert waiting["arrival_time_ms"] == pytest.approx(0.5)
+    assert waiting["first_admit_ms"] == pytest.approx(3.0 if interval else 1.0)
+    assert waiting["first_token_ms"] == pytest.approx(4.0 if interval else 2.0)
+    assert running["ttst_ms"] == pytest.approx(1.0 if interval else 2.0)
+    assert (running["output_length"], waiting["output_length"]) == (6, 2)
+
+
+@pytest.mark.parametrize("seeded", [False, True], ids=["fresh", "completed_prior_wave"])
+def test_sglang_interval_idle_tail_does_not_relax_later_kv_admission(tmp_path, seeded) -> None:
+    rows = [{"timestamp": 0, "input_length": 4, "output_length": 1, "hash_ids": [1] * 4}] if seeded else []
+    rows += [
+        {"timestamp": 100, "input_length": 4, "output_length": 200, "hash_ids": [2] * 4},
+        {"timestamp": 100.5, "input_length": 4, "output_length": 106, "hash_ids": [3] * 4},
+    ]
+    trace = tmp_path / "interval-idle-pressure.jsonl"
+    trace.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    engine = _engine()
+    engine["backend"] = "sglang"
+    worker = engine["workers"]["aggregated"]
+    worker["scheduler"] = {"max_sequences": 2, "prefill_decode_interval": 20}
+    worker["kv_cache"] = {
+        "block_size": 1,
+        "prefix_caching": False,
+        "capacity": {"type": "fixed", "blocks": 256},
+    }
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake", "block_size": 1},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    waiting = max(report.metadata["native_report"]["per_request"], key=lambda row: row["arrival_time_ms"])
+    # With the normal reservation ratio the first request holds enough KV budget
+    # to keep the second waiting until t=300. The trace reader normalizes its
+    # origin, so compare delays. A completed earlier wave and its idle cooldown
+    # must not lower that reservation and admit the second request at t=121.
+    assert waiting["first_admit_ms"] - waiting["arrival_time_ms"] == pytest.approx(199.5)
+    assert report.metrics["completed_requests"] == len(rows)
 
 
 def test_engine_stack_runs_mooncake_delta() -> None:
@@ -296,15 +376,17 @@ def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(monkeypatc
     assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
 
 
-def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_engine_stack_runs_weka_directory_with_one_agentic_lane(backend: str) -> None:
     corpus = _TRACE_FIXTURES / "weka"
+    engine = {**_engine(), "backend": backend}
     report = _run(
         {
             "traffic": {
                 "source": {"type": "trace", "paths": [str(corpus)], "format": "weka"},
                 "load": {"type": "trace_timestamps", "agentic_lanes": 1},
             },
-            "engine": _engine(),
+            "engine": engine,
         }
     )
 
@@ -313,6 +395,11 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert native["agentic_input_format"] == "weka"
     assert native["agentic_lanes"] == 1
     assert native["agentic_qualification"] == "functional_only"
+    assert len(native["agentic_lifecycle_digest"]) == 64
+    assert native["agentic_lifecycle_event_count"] > native["completed_requests"]
+    assert len(native["agentic_play_outcomes"]) == 2
+    assert all(outcome["status"] == "completed" for outcome in native["agentic_play_outcomes"])
+    assert min(record["dispatched_at_ms"] for record in native["per_request"]) == 0
     assert native["weka_nested_timestamp_basis"] == "absolute"
     assert native["agentic_model_projection"] == {
         "policy": "project_to_configured_target",
@@ -341,22 +428,193 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert prefill_only["first_token_ms"] is None
 
 
-def test_engine_stack_auto_infers_raw_weka_relative_timestamps() -> None:
-    report = _run(
-        {
-            "traffic": {
-                "source": {
-                    "type": "trace",
-                    "paths": [str(_TRACE_FIXTURES / "weka-relative.json")],
-                    "format": "weka",
-                },
-                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> None:
+    config = {
+        "traffic": {
+            "source": {
+                "type": "trace",
+                "paths": [str(_TRACE_FIXTURES / "weka-relative.json")],
+                "format": "weka",
             },
-            "engine": _engine(),
-        }
-    )
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+        "engine": {**_engine(), "backend": backend},
+    }
+    report = _run(config)
 
     native = report.metadata["native_report"]
     assert native["weka_nested_timestamp_basis"] == "relative"
     assert native["agentic_input_format"] == "weka"
     assert report.metrics["completed_requests"] == 4
+    repeated = _run(config).metadata["native_report"]
+    for key in ("agentic_graph", "agentic_lifecycle_digest", "agentic_play_outcomes", "per_request"):
+        assert repeated[key] == native[key], key
+    assert [outcome["status"] for outcome in native["agentic_play_outcomes"]] == ["completed"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
+    config = {
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(_TRACE_FIXTURES / "weka-relative.json")]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+        "engine": {**_engine(), "backend": backend},
+    }
+    code = textwrap.dedent("""
+        import importlib.abc
+        import json
+        import sys
+
+        assert not any(name.split(".")[0] in {"aisimulate", "dynamo"} for name in sys.modules)
+
+        class RejectDynamo(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "dynamo" or fullname.startswith("dynamo."):
+                    raise AssertionError("public AISimulate Weka replay must not import Dynamo")
+
+        sys.meta_path.insert(0, RejectDynamo())
+
+        from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory
+        from aisimulate.compiler import prediction_to_replay_spec
+
+        config = CorePredictionConfig.model_validate(json.load(sys.stdin))
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            report = runner.run(prediction_to_replay_spec(config))
+        finally:
+            runner.close()
+        print(json.dumps({"metrics": report.metrics, "metadata": report.metadata}))
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        input=json.dumps(config),
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    report = json.loads(completed.stdout)
+    assert report["metrics"]["completed_requests"] == 4
+    assert report["metadata"]["agentic_qualification"] == "functional_only"
+    assert report["metadata"]["agentic_lanes"] == 1
+    assert report["metadata"]["agentic_model_projection"]["target_model"] == "example/model"
+    assert "native_report" not in report["metadata"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentx_m1_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    gate = runpy.run_path(str(scripts / "qualify_agentx_m1.py"))
+    source = _TRACE_FIXTURES / "weka-relative.json"
+    block_size = json.loads(source.read_text())["block_size"]
+    assert block_size == 4
+    config = gate["prediction_config"](source, "weka", block_size, backend)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    assert spec.workload["trace_block_size"] == block_size
+    assert spec.backend_deployment.agg_engine_args["block_size"] == block_size
+    report = gate["run_python"](config)
+    evidence = gate["evidence"](report)
+    assert evidence["agentic_graph"]["block_size"] == block_size
+    assert report["completed_requests"] == 4
+
+
+def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.main import main
+
+    config = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "engine": {
+            "model": "Qwen/Qwen3-30B-A3B",
+            "hardware": "b200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"tensor": 4, "moe_tensor": 1, "moe_expert": 4},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
+                    "kv_cache": {"block_size": 64},
+                }
+            },
+        },
+    }
+    path = tmp_path / "native-detail.yaml"
+    path.write_text(yaml.safe_dump(config))
+    out = tmp_path / "out"
+    assert (
+        main(
+            [
+                "predict",
+                "-c",
+                str(path),
+                "--detail",
+                "all",
+                "--format",
+                "json",
+                "--output-dir",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((out / "prediction.json").read_text())
+    assert stdout["details"] == saved["details"]
+    from jsonschema import validate
+
+    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    validate(stdout["details"], schema)
+    sections = stdout["details"]["sections"]
+    assert set(sections) == {"summary", "memory", "time"}
+    assert "power_diagnostics" not in saved
+    assert "power_w" not in stdout["summary"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["status"] == "available"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert "num_gpu_blocks" not in memory
+    assert memory["memory_breakdown"]["weights_bytes"] > 0
+    assert memory["estimated_num_gpu_blocks"] == memory["total_kv_size_tokens"] // 64
+    assert memory["total_gpu_capacity_bytes"] > memory["total_kv_size_bytes"] > 0
+    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] == stdout["summary"]["mean_ttft_ms"]
+    assert "wall_time_ms" not in sections["time"]["serving_metrics"]
+    assert "duration_ms" not in sections["time"]["serving_metrics"]
+    assert stdout["summary"]["duration_ms"] > 0
+    assert "phases" not in sections["time"]
+    # Repeating the same prediction without diagnostics keeps modeled metrics identical.
+    plain_out = tmp_path / "plain"
+    assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    for key, value in stdout["summary"].items():
+        if key not in {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}:
+            assert plain[key] == value, key
+
+
+def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
+    import yaml
+
+    from aisimulate.main import main
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = tmp_path / "fpm.yaml"
+    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
+    assert (
+        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
+        == 0
+    )
+    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["scope"] == "capacity_estimate_per_rank"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert memory["estimated_num_gpu_blocks"] > 0
+    assert "num_gpu_blocks" not in memory
+    assert set(sections) == {"summary", "memory", "time"}
+    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0

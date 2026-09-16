@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from .detail import parse_detail_sections
+
 
 class _CliConfigError(ValueError):
     pass
@@ -40,6 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
             "--dry-run", action="store_true", help="validate core configuration and plan host resources without replay"
         )
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].epilog = (
+        "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
+        "trace_timestamps and agentic_lanes=1. The engine stack supports aggregated "
+        "vLLM/SGLang, HBM-only, speculative decoding disabled. Results are "
+        "functional_only; benchmark warmup and profiling are not qualified."
+    )
+    subparsers.choices["predict"].add_argument(
+        "--detail",
+        type=parse_detail_sections,
+        default=(),
+        metavar="SECTIONS",
+        help="comma-separated summary,memory,time, or all; unavailable evidence is skipped",
+    )
     subparsers.choices["predict"].add_argument(
         "--online",
         action="store_true",

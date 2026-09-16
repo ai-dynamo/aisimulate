@@ -46,6 +46,15 @@ This regression depends on the host-budget and supervision PRs, the Dynamo lazy
 binding PR, and the bounded-reporting PR. Do not mark the integrated fix verified
 until both platform manifests have been produced from the intended builds.
 
+## Qualification status after the September 2026 draft refresh
+
+The draft now follows the refreshed host-budget and supervision stack. The
+manifest below remains evidence for its recorded revisions; it does not qualify
+the refreshed draft heads. Repeat the native runner with the intended combined
+AISimulate and Dynamo builds on macOS and Linux before marking integration
+verified. Deterministic regression tests and a locally rebuilt Dynamo wheel
+do not replace those platform manifests.
+
 ## Recorded macOS result
 
 The [macOS manifest](evidence/macos-arm64.json) records an actual native run on

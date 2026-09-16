@@ -21,19 +21,14 @@ CASE = Path(__file__).parent / "e2e/configs/resource_safety/reported-mac-sweep.y
 
 
 def normalized_digest(raw):
-    return hashlib.sha256(
-        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def test_original_sweep_identity_and_largest_candidate():
     raw = yaml.safe_load(CASE.read_text())
     original = deepcopy(raw)
     # Locks every behavioral field, including all seven concurrency choices.
-    assert (
-        normalized_digest(raw)
-        == "af1a9d53df52c5eab2c07f9be20b69457e51ddd4c43933c42bcca7e489698577"
-    )
+    assert normalized_digest(raw) == "af1a9d53df52c5eab2c07f9be20b69457e51ddd4c43933c42bcca7e489698577"
     core, _ = split_config_sections(raw, command="recommend")
     bounds = workload_bounds(CoreRecommendationConfig.model_validate(core))
     assert bounds["concurrency"] == 64_512
@@ -51,9 +46,7 @@ def test_original_sweep_identity_and_largest_candidate():
 
 
 @pytest.mark.parametrize("largest_only", [False, True])
-def test_sweep_refuses_before_candidate_sampling_or_native_allocation(
-    tmp_path, monkeypatch, largest_only
-):
+def test_sweep_refuses_before_candidate_sampling_or_native_allocation(tmp_path, monkeypatch, largest_only):
     raw = yaml.safe_load(CASE.read_text())
     if largest_only:
         raw["traffic"]["load"]["concurrency"] = 64_512
@@ -68,12 +61,8 @@ def test_sweep_refuses_before_candidate_sampling_or_native_allocation(
         def create(self, worker_id):
             pytest.fail("must refuse before allocating native requests")
 
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: AllocationSentinel()
-    )
-    monkeypatch.setattr(
-        resources, "discover_host", lambda: HostResources(32 * GIB, 16 * GIB, 8)
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: AllocationSentinel())
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(32 * GIB, 16 * GIB, 8))
     output = tmp_path / "result"
     assert (
         cli._main(
@@ -108,9 +97,7 @@ def test_sweep_refuses_before_candidate_sampling_or_native_allocation(
         "not-reaped",
     ],
 )
-def test_native_evidence_gate_cannot_mistake_failure_for_safe_refusal(
-    tmp_path, failure
-):
+def test_native_evidence_gate_cannot_mistake_failure_for_safe_refusal(tmp_path, failure):
     import importlib.util
 
     path = Path(__file__).parents[1] / "scripts/verify_reported_resource_safety.py"
@@ -166,10 +153,7 @@ def test_evidence_hashing_is_bounded_and_source_identity_is_checked(tmp_path):
             return super().read(size)
 
     payload = b"report evidence" * 10_000
-    assert (
-        module.stream_digest(BoundedReader(payload))
-        == hashlib.sha256(payload).hexdigest()
-    )
+    assert module.stream_digest(BoundedReader(payload)) == hashlib.sha256(payload).hexdigest()
     loaded, expected = tmp_path / "loaded", tmp_path / "expected"
     loaded.mkdir()
     expected.mkdir()
