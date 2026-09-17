@@ -17,10 +17,12 @@ python -m pip uninstall -y aiconfigurator aiconfigurator-core
 python -m pip install "aisimulate==0.12.0"
 ```
 
-The `aisimulate` wheel contains the complete application and installs the
-established `aiconfigurator` command. It does not install a second top-level
-application command named `aisimulate`. The command name is independent of the
-distribution name and does not represent a separately published AIC artifact.
+The `aisimulate` wheel contains the complete application and installs both the
+established `aiconfigurator` command and the `aisimulate` command for `predict`
+and `recommend`. Both commands belong to the same wheel. The `aisimulate`
+command performs automatic host-resource admission and supervised execution.
+See the [installation guide](../../../docs/installation.md) for current
+published versions and source-install instructions.
 
 ## Keep CLI commands unchanged
 

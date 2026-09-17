@@ -50,6 +50,27 @@ def test_admission_splits_waves_and_skips_only_oversized_candidates():
     assert factory.admitted == [[0, 1], [3]]
 
 
+def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(monkeypatch):
+    from aisimulate import resource_scheduler as scheduler
+
+    factory = _BudgetFactory()
+    failure = ResourceLimitError("execution evidence exceeds the bounded checkpoint budget")
+
+    def fail_checkpoint(event, plan):
+        raise failure
+
+    def unexpected_pool(**kwargs):
+        pytest.fail("evidence refusal must precede worker creation")
+
+    monkeypatch.setattr(scheduler, "checkpoint", fail_checkpoint)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", unexpected_pool)
+    specs = [{"id": i, "cost": 1} for i in range(2)]
+    with pytest.raises(ResourceLimitError) as caught:
+        next(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=10))
+    assert caught.value is failure
+    assert factory.admitted == [[0, 1]]
+
+
 def test_resource_retries_are_bounded_and_preserve_completed_work():
     factory = _BudgetFactory()
     specs = [{"id": 0, "cost": 1}, {"id": 1, "cost": 1, "refuse": True}]

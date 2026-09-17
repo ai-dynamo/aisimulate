@@ -342,6 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy = ResourceConfig.model_validate(raw.get("execution", {}).get("resources", {}))
     except (OSError, ValueError, AttributeError):
         # The child retains stack/schema error ordering under conservative limits.
+        raw = None
         policy = ResourceConfig()
     if raw is not None:
         # Validate the lightweight core envelope before --overwrite removes outputs.
@@ -364,32 +365,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise ValueError("analytical EPD requires --stack engine without adapters")
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"{args.config}: {exc}")
-    try:
-        output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    except (OSError, ValueError) as exc:
-        parser.error(str(exc))
-    event_output = output / "execution-events.jsonl"
+    event_output = None
+    if raw is not None:
+        try:
+            output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        event_output = str(output / "execution-events.jsonl")
     try:
         report = run_process(
             [sys.executable, "-m", "aisimulate.resource_worker", "cli", *arguments],
             policy=policy,
-            events_output=str(event_output),
+            events_output=event_output,
         )
     except ResourceLimitError as exc:
-        report = exc.plan
+        report = {
+            "schema_version": 1,
+            "status": "resource_limited",
+            "reason": str(exc),
+            "exit_code": None,
+            "budget": None,
+            "requested_resources": policy.model_dump(mode="json"),
+            "peak_observed_rss_bytes": None,
+            "wall_seconds": None,
+            "thread_limit_per_runtime": None,
+            "termination_complete": None,
+            **exc.plan,
+        }
     if report["status"] != "completed":
         sys.stderr.write(f"aisimulate: {report.get('reason', report['status'])}\n")
-    try:
-        _save_runtime_report(args.output_dir, report, overwrite=args.overwrite)
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f"could not save resource runtime report: {exc}\n")
+    if raw is not None:
+        try:
+            _save_runtime_report(args.output_dir, report, overwrite=args.overwrite)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"could not save resource runtime report: {exc}\n")
     if report["status"] == "resource_limited":
         return 3
     if report["status"] == "cancelled":
         return 130
     if report["status"] == "timed_out":
         return 124
-    return int(report.get("exit_code") or 0)
+    code = int(report.get("exit_code") or 0)
+    return 1 if code < 0 else code
 
 
 def supervised_recommendation(config, kwargs):

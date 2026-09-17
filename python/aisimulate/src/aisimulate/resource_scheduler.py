@@ -45,7 +45,6 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
         while True:
             try:
                 plan = factory.admit_wave([specs[index] for index in wave])
-                checkpoint("wave_admitted", plan)
                 break
             except ResourceLimitError as exc:
                 if len(wave) > 1:
@@ -58,6 +57,7 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
                 break
         if not wave:
             continue
+        checkpoint("wave_admitted", plan)
         pending = pending[len(wave) :]
         for index in wave:
             attempts[index] += 1

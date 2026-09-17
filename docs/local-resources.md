@@ -76,8 +76,10 @@ reaped before another batch can start. Persistent pressure produces an explicit
 A sudden jump past the supervisor limit stops the entire execution tree.
 
 `resource-runtime.json` records observed peak RSS, effective budgets and the
-termination outcome. `execution-events.jsonl` checkpoints completed candidates
-and batch decisions so evidence survives a supervisor interruption. A completed
+termination outcome. Fields that could not be observed because resource discovery
+failed are null. Invalid configuration input preserves existing output artifacts,
+including when `--overwrite` is supplied. `execution-events.jsonl` checkpoints
+completed candidates and batch decisions so evidence survives a supervisor interruption. A completed
 sweep writes `recommendation.json` and selected prediction files as usual, and
 exits with status 3 if any candidates were resource-limited. If the entire tree
 is stopped, the event log contains the completed subset; it is not a finalized

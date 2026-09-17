@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import psutil
+import pytest
 import yaml
 
 from aisimulate.config.common import ResourceConfig
@@ -106,6 +107,95 @@ def test_child_exit_code_is_preserved(tmp_path):
     result = _run_script(tmp_path, "raise SystemExit(3)")
     assert result["status"] == "resource_limited"
     assert result["exit_code"] == 3
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed", "override", "resources"])
+@pytest.mark.parametrize("stack", ["engine", "missing-stack"])
+def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, failure, stack):
+    import subprocess
+
+    config = tmp_path / "config.yaml"
+    if failure != "missing":
+        config.write_text("[" if failure == "malformed" else "execution:\n  resources:\n    memory_limit_gb: -1\n")
+    output = tmp_path / "output"
+    output.mkdir()
+    original = {"prediction.json": '{"old":true}', "resource-runtime.json": '{"old_runtime":true}'}
+    for name, contents in original.items():
+        (output / name).write_text(contents)
+    command = [
+        sys.executable,
+        "-m",
+        "aisimulate",
+        "predict",
+        "--config",
+        str(config),
+        "--stack",
+        stack,
+        "--output-dir",
+        str(output),
+        "--overwrite",
+    ]
+    if failure == "override":
+        command += ["--set", "invalid-assignment"]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 2, result.stderr
+    assert {path.name: path.read_text() for path in output.iterdir()} == original
+    if stack == "missing-stack":
+        assert "missing-stack" in result.stderr
+        assert "could not read configuration" not in result.stderr
+        assert "malformed YAML" not in result.stderr
+        assert "invalid --set" not in result.stderr
+
+
+def _cli_arguments(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
+    return ["predict", "--config", str(config), "--output-dir", str(tmp_path / "output")]
+
+
+@pytest.mark.parametrize("probe", ["discover_host", "resolve_budget"])
+@pytest.mark.parametrize("detailed_plan", [False, True])
+def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monkeypatch, probe, detailed_plan):
+    from aisimulate import supervision
+    from aisimulate.resources import ResourceLimitError
+
+    details = {"budget": {"memory_limit_bytes": 100}, "peak_observed_rss_bytes": 90} if detailed_plan else {}
+
+    def refuse(*args, **kwargs):
+        raise ResourceLimitError(
+            "resource probe failed", plan={"status": "resource_limited", "reason": "probe", **details}
+        )
+
+    monkeypatch.setattr(supervision, probe, refuse)
+    assert supervision.main(_cli_arguments(tmp_path)) == 3
+    report = json.loads((tmp_path / "output/resource-runtime.json").read_text())
+    assert report["schema_version"] == 1
+    assert report["status"] == "resource_limited"
+    assert report["reason"] == "probe"
+    assert report["requested_resources"] == ResourceConfig().model_dump(mode="json")
+    for key in (
+        "exit_code",
+        "budget",
+        "peak_observed_rss_bytes",
+        "wall_seconds",
+        "thread_limit_per_runtime",
+        "termination_complete",
+    ):
+        assert report[key] == details.get(key)
+
+
+@pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])
+def test_cli_normalizes_signal_exit_but_retains_raw_diagnostics(tmp_path, monkeypatch, child_code, expected):
+    from aisimulate import supervision
+
+    monkeypatch.setattr(
+        supervision,
+        "run_process",
+        lambda *args, **kwargs: {"status": "failed", "reason": "child failed", "exit_code": child_code},
+    )
+    assert supervision.main(_cli_arguments(tmp_path)) == expected
+    report = json.loads((tmp_path / "output/resource-runtime.json").read_text())
+    assert report["exit_code"] == child_code
 
 
 def test_overwrite_clears_stale_results_before_early_resource_refusal(tmp_path):
@@ -224,6 +314,7 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
         "stop": {"requests_per_load_unit": 100},
     }
     raw["optimizer"].update(max_trials=1, parallelism=1)
+    raw["execution"] = {"resources": {"memory_limit_gb": 2.0}}
     config = CoreRecommendationConfig.model_validate(raw)
     result = run_recommendation(config, stack="engine", runner_factory=EngineReplayRunnerFactory(), show_progress=False)
     assert result.counts.resource_limited == 1
