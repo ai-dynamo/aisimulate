@@ -27,6 +27,13 @@ defaults:
   sglang: {current: "0.5.14", previous: null}      # next derives to 0.5.16 today
   vllm: {current: "0.24.0", previous: null}
 overrides:
+  # 0.24.0 was withdrawn for invalid FP8-block timing. These 0.25.0
+  # replacements are partial; see data/b300_sxm/vllm-0.25.0-collection.md.
+  # Per-system overrides intentionally do not derive a fleet-wide next.
+  b200_sxm:
+    vllm: {current: "0.25.0", previous: null}
+  b300_sxm:
+    vllm: {current: "0.25.0", previous: null}
   a100_sxm:
     trtllm: {current: "1.0.0", previous: null}
     sglang: {current: "0.5.10", previous: null}

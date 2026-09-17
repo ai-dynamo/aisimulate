@@ -71,7 +71,7 @@ def test_all_default_qwen3_vl_variants_have_encoder_implementations_and_image_co
         model=model,
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
         modes_to_test=("agg",),
         include_commands=True,
@@ -111,7 +111,7 @@ def test_dense_and_moe_qwen3_vl_cover_agg_and_disagg_without_text_only_duplicate
         model=model,
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
     )
 
@@ -142,7 +142,7 @@ def test_encoder_model_cannot_pass_with_zero_encoder_evidence(monkeypatch, mode,
         model="Qwen/Qwen3-VL-8B-Instruct",
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
         modes_to_test=(mode,),
     )
@@ -170,7 +170,7 @@ def test_declared_but_unimplemented_encoder_is_explicit_failure(monkeypatch, mod
         model=model,
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
         include_commands=True,
     )
@@ -201,7 +201,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
         model="stepfun-ai/Step-3.7-Flash",
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         modes_to_test=("agg",),
         include_commands=True,
     )
@@ -210,7 +210,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
         "Step3p7FlashForCausalLM",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         statuses["agg"],
         errors["agg"],
@@ -237,7 +237,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
             (
                 "uv run python tools/support_matrix/generate_support_matrix.py "
                 "--model google/gemma-4-26B-A4B --system b200_sxm --backend vllm "
-                "--backend-version 0.24.0 --mode agg --no-save --expect-status FAIL "
+                "--backend-version 0.25.0 --mode agg --no-save --expect-status FAIL "
                 "--expect-error-prefix ENCODER_UNSUPPORTED:"
             ),
             "ENCODER_UNSUPPORTED rows must use status FAIL",
@@ -250,7 +250,7 @@ def test_encoder_unsupported_row_requires_failure_preflight_contract(status, com
         "Gemma4ForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         status,
         "ENCODER_UNSUPPORTED: no AIC encoder implementation",
@@ -280,7 +280,7 @@ def test_text_only_model_keeps_existing_workload_and_command(monkeypatch):
         model="Qwen/Qwen3-8B",
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
         modes_to_test=("agg",),
         include_commands=True,
@@ -305,7 +305,7 @@ def test_image_workload_metadata_is_persisted_and_matches_command(tmp_path):
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_PASS,
         None,
@@ -329,7 +329,7 @@ def test_image_command_without_persisted_workload_metadata_is_invalid():
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_PASS,
         "",
@@ -354,7 +354,7 @@ def test_encoder_pass_without_command_or_metadata_evidence_is_invalid():
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_PASS,
         "",
@@ -376,7 +376,7 @@ def test_encoder_pass_with_noncanonical_image_workload_is_invalid():
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_PASS,
         "",
@@ -401,7 +401,7 @@ def test_text_only_model_cannot_persist_image_workload_metadata():
         "Qwen3ForCausalLM",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_PASS,
         "",
@@ -427,7 +427,7 @@ def test_legacy_encoder_row_cannot_be_upgraded_without_image_evidence(tmp_path, 
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         status,
         None if status == STATUS_PASS else "encoder execution failed",
@@ -444,7 +444,8 @@ def test_legacy_encoder_row_cannot_be_upgraded_without_image_evidence(tmp_path, 
     [
         ("a100_sxm", "trtllm", "1.0.0", False),
         ("b60", "vllm", "0.26.0", False),
-        ("b200_sxm", "vllm", "0.24.0", True),
+        ("b200_sxm", "vllm", "0.25.0", True),
+        ("b300_sxm", "vllm", "0.25.0", True),
     ],
 )
 def test_encoder_perf_data_availability_matches_bundled_databases(system, backend, version, expected):
@@ -577,7 +578,7 @@ def test_hardware_incompatibility_takes_precedence_over_missing_encoder_perf_dat
 def test_encoder_data_unavailable_claim_on_a_system_with_encoder_data_is_rejected():
     command = (
         "uv run python tools/support_matrix/generate_support_matrix.py --model Qwen/Qwen3-VL-8B-Instruct "
-        "--system b200_sxm --backend vllm --backend-version 0.24.0 --mode agg --max-workers 1 --no-save "
+        "--system b200_sxm --backend vllm --backend-version 0.25.0 --mode agg --max-workers 1 --no-save "
         "--expect-status FRAMEWORK_INCOMPATIBLE --expect-error-prefix ENCODER_DATA_UNAVAILABLE:"
     )
     row = [
@@ -585,10 +586,10 @@ def test_encoder_data_unavailable_claim_on_a_system_with_encoder_data_is_rejecte
         "Qwen3VLForConditionalGeneration",
         "b200_sxm",
         "vllm",
-        "0.24.0",
+        "0.25.0",
         "agg",
         STATUS_FRAMEWORK_INCOMPATIBLE,
-        "ENCODER_DATA_UNAVAILABLE: b200_sxm/vllm v0.24.0 has no encoder_attention perf data",
+        "ENCODER_DATA_UNAVAILABLE: b200_sxm/vllm v0.25.0 has no encoder_attention perf data",
         command,
         "",
         *_image_workload_csv_values("Qwen/Qwen3-VL-8B-Instruct"),
@@ -635,7 +636,7 @@ def test_qwen35_encoder_is_implemented_through_the_nested_vision_config(monkeypa
         model=model,
         system="b200_sxm",
         backend="vllm",
-        version="0.24.0",
+        version="0.25.0",
         system_spec=_b200_system_spec(),
         modes_to_test=("agg",),
         include_commands=True,

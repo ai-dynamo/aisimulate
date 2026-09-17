@@ -15,8 +15,9 @@ tables:
     # construction; the RadixArk NVFP4 artifact's vLLM gate is kept
     # closed -- no packaged HF config, construction unverified; a24c3b92).
     # Sparse version: only Qwen3.8-Max rows live at 0.27.1; every other
-    # shape at this version inherits 0.24.0 via shared-layer query-time
-    # fallback.
+    # shape at this version may use eligible remaining measurements via
+    # shared-layer query-time fallback. The 0.24.0 donor was withdrawn;
+    # missing coverage is not guaranteed by this sparse collection.
     # Manual JET pipeline 63873278 (dl/jet/ci downstream 63873324, job
     # 406619569) on aws-pdx, same image mirrored as gitlab
     # yimingl/aic-eval-tools/vllm:v0.27.1-amd64 (the runtime block above is

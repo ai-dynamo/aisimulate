@@ -13,8 +13,9 @@ tables:
     # 128 v-heads at head dims 128/128, shard ladder tp1..tp16) at vllm
     # 0.27.1.
     # Sparse version: only Qwen3.8-Max rows live at 0.27.1; every other
-    # shape at this version inherits 0.24.0 via shared-layer query-time
-    # fallback.
+    # shape at this version may use eligible remaining measurements via
+    # shared-layer query-time fallback. The 0.24.0 donor was withdrawn;
+    # missing coverage is not guaranteed by this sparse collection.
     # Auto-collect child pipeline 63879009 (project 205688, job
     # 406658099) with AIC_BACKEND_DOCKER_IMAGE=
     # vllm/vllm-openai:v0.27.1 pinned explicitly (the pipeline's Blackwell
