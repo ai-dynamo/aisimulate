@@ -20,15 +20,16 @@ use aiperf_steppable_abi::{
     BackendDistributionStatsV1, BackendFinalSummaryV1, BackendGoodputStatsV1,
     BackendLatencyStatsV1, BackendRequestCountsV1, BackendThroughputStatsV1, ByteMutSliceV1,
     ByteSliceV1, CAPABILITY_COMPACT_BUFFER_LEASES_V1, CAPABILITY_COMPACT_REQUEST_V1,
-    CAPABILITY_FINAL_REPORT_BUNDLE_V1, CompactRequestV1, CreateRequestV1, DirectRequestSliceV1,
-    DirectRequestV1, EngineEventSliceV1, EngineEventV1, FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
-    FINAL_ARTIFACT_KIND_REPORT_JSON_V1, FinalArtifactChunkV1, FinalArtifactMetadataV1,
-    HashBufferIdV1, HashBufferLeaseCallbacksV1, HashBufferRangeV1, PluginDescriptorV1,
-    PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION, REQUEST_FACT_FLAG_LATENCIES,
-    REQUEST_FACT_FLAG_OUTPUT_LENGTH, REQUEST_FLAG_UUID, ReplayHandleV1, ReplayStateV1,
-    RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
-    SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
-    StepResultV1, U32SliceV1,
+    CAPABILITY_FINAL_REPORT_BUNDLE_V1, CAPABILITY_TIMESTAMPED_EVENTS_V1, CompactRequestV1,
+    CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1, EngineEventV1,
+    FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1, FINAL_ARTIFACT_KIND_REPORT_JSON_V1,
+    FinalArtifactChunkV1, FinalArtifactMetadataV1, HashBufferIdV1, HashBufferLeaseCallbacksV1,
+    HashBufferRangeV1, PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION,
+    REQUEST_FACT_FLAG_LATENCIES, REQUEST_FACT_FLAG_OUTPUT_LENGTH, REQUEST_FLAG_UUID,
+    ReplayHandleV1, ReplayStateV1, RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1,
+    RequestIdSliceV1, RequestIdV1, SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1,
+    StatusV1, StepRequestV1, StepResultV1, TimestampedEngineEventSliceV1, TimestampedEngineEventV1,
+    TimestampedStepResultV1, U32SliceV1,
 };
 use aisimulate_core::replay::loadgen::{
     CompactDirectRequest, CompactHashIdsLease, DynPlacement, SteppableAgg, SteppableDisagg,
@@ -1192,6 +1193,84 @@ unsafe extern "C" fn step(
     StatusV1::OK
 }
 
+unsafe fn step_timestamped_impl(
+    handle: ReplayHandleV1,
+    request: StepRequestV1,
+    result: *mut TimestampedStepResultV1,
+) -> StatusV1 {
+    if result.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let mut legacy = StepResultV1::EMPTY;
+    // Safety: this wrapper passes its own valid output storage to the stable
+    // V1 step implementation, then transfers its request-fact allocation to
+    // the timestamped result below.
+    let status = unsafe { step(handle, request, &raw mut legacy) };
+    if !status.is_ok() {
+        return status;
+    }
+    let events = if legacy.events.len == 0 {
+        Vec::new()
+    } else {
+        if legacy.events.data.is_null() || !legacy.events.data.is_aligned() {
+            unsafe { release_request_facts(legacy.request_facts) };
+            return StatusV1::INTERNAL;
+        }
+        // Safety: `step` returned this exact nonempty plugin-owned slice.
+        unsafe { std::slice::from_raw_parts(legacy.events.data, legacy.events.len as usize) }
+            .iter()
+            .copied()
+            .map(|event| TimestampedEngineEventV1 {
+                event,
+                // A steppable core invocation drains one current timestamp and
+                // returns before another timestamp can be consumed; hence every
+                // event emitted by this outcome occurred at its end time.
+                at_ms: legacy.end_ms,
+            })
+            .collect::<Vec<_>>()
+    }
+    .into_boxed_slice();
+    let event_len = events.len() as u64;
+    let event_data = Box::into_raw(events).cast::<TimestampedEngineEventV1>();
+    // Release the legacy event allocation after copying it. The request-fact
+    // allocation is transferred verbatim to the timestamped result.
+    unsafe { release_events(legacy.events) };
+    unsafe {
+        *result = TimestampedStepResultV1 {
+            struct_size: std::mem::size_of::<TimestampedStepResultV1>() as u32,
+            flags: 0,
+            end_ms: legacy.end_ms,
+            next_event_ms: legacy.next_event_ms,
+            in_flight: legacy.in_flight,
+            is_idle: legacy.is_idle,
+            reserved: [0; 7],
+            events: TimestampedEngineEventSliceV1 {
+                data: event_data,
+                len: event_len,
+            },
+            request_facts: legacy.request_facts,
+        };
+    }
+    StatusV1::OK
+}
+
+unsafe extern "C" fn step_timestamped(
+    handle: ReplayHandleV1,
+    request: StepRequestV1,
+    result: *mut TimestampedStepResultV1,
+) -> StatusV1 {
+    if !result.is_null() {
+        // Safety: caller supplied writable output storage for this FFI call.
+        unsafe { *result = TimestampedStepResultV1::EMPTY };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        step_timestamped_impl(handle, request, result)
+    })) {
+        Ok(status) => status,
+        Err(_) => batch_panic_status(handle),
+    }
+}
+
 unsafe fn take_report_impl(
     handle: ReplayHandleV1,
     wall_ms: f64,
@@ -1659,6 +1738,23 @@ unsafe extern "C" fn release_events(events: EngineEventSliceV1) {
         )));
     }
 }
+
+unsafe extern "C" fn release_timestamped_events(events: TimestampedEngineEventSliceV1) {
+    if events.data.is_null()
+        || !ffi_slice_len_is_valid::<TimestampedEngineEventV1>(events.len)
+        || !events.data.is_aligned()
+    {
+        return;
+    }
+    // Safety: `step_timestamped` allocates exact-length boxed slices and
+    // transfers one release obligation to the host.
+    unsafe {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            events.data.cast_mut(),
+            events.len as usize,
+        )));
+    }
+}
 unsafe extern "C" fn release_request_facts(facts: RequestFactSliceV1) {
     if facts.data.is_null()
         || !ffi_slice_len_is_valid::<RequestFactV1>(facts.len)
@@ -1811,6 +1907,8 @@ static VTABLE: PluginVTableV1 = PluginVTableV1 {
     take_final_summary: Some(take_final_summary),
     get_final_artifact_metadata: Some(get_final_artifact_metadata),
     read_final_artifact_chunk: Some(read_final_artifact_chunk),
+    step_timestamped: Some(step_timestamped),
+    release_timestamped_events: Some(release_timestamped_events),
 };
 
 static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
@@ -1820,7 +1918,8 @@ static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
     flags: 0,
     capabilities: CAPABILITY_COMPACT_REQUEST_V1
         | CAPABILITY_COMPACT_BUFFER_LEASES_V1
-        | CAPABILITY_FINAL_REPORT_BUNDLE_V1,
+        | CAPABILITY_FINAL_REPORT_BUNDLE_V1
+        | CAPABILITY_TIMESTAMPED_EVENTS_V1,
     provider_id: PROVIDER_ID.as_ptr().cast::<c_char>(),
     vtable: &VTABLE,
 };
@@ -2026,6 +2125,71 @@ mod tests {
             },
             StatusV1::REJECTED
         );
+        unsafe { destroy(handle) };
+    }
+
+    #[test]
+    fn timestamped_step_reports_the_exact_core_step_time_for_each_event() {
+        let handle = empty_replay_handle();
+        let tokens = [7_u32];
+        let request = DirectRequestV1 {
+            struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+            flags: REQUEST_FLAG_UUID,
+            tokens: U32SliceV1 {
+                data: tokens.as_ptr(),
+                len: tokens.len() as u64,
+            },
+            output_token_ids: U32SliceV1::EMPTY,
+            max_output_tokens: 1,
+            uuid: [71; 16],
+            dp_rank: 0,
+            preferred_dp_rank: 0,
+            preferred_prefill_dp_rank: 0,
+            arrival_timestamp_ms: 0.0,
+            priority: 0,
+            strict_priority: 0,
+            policy_class: ByteSliceV1::EMPTY,
+            replay_context: aiperf_steppable_abi::ReplayContextV1::EMPTY,
+        };
+        let mut request_id = [0; 16];
+        assert_eq!(
+            unsafe { submit(handle, request, &raw mut request_id) },
+            StatusV1::OK
+        );
+
+        let mut result = TimestampedStepResultV1::EMPTY;
+        for _ in 0..16 {
+            assert_eq!(
+                unsafe {
+                    step_timestamped(
+                        handle,
+                        StepRequestV1 {
+                            struct_size: std::mem::size_of::<StepRequestV1>() as u32,
+                            flags: 0,
+                            until_ms: 1_000_000.0,
+                        },
+                        &raw mut result,
+                    )
+                },
+                StatusV1::OK
+            );
+            let events = if result.events.len == 0 {
+                &[]
+            } else {
+                unsafe {
+                    std::slice::from_raw_parts(result.events.data, result.events.len as usize)
+                }
+            };
+            assert!(events.iter().all(|event| event.at_ms == result.end_ms));
+            unsafe {
+                release_timestamped_events(result.events);
+                release_request_facts(result.request_facts);
+            }
+            if result.is_idle != 0 {
+                break;
+            }
+        }
+        assert_eq!(result.is_idle, 1, "test request must finish");
         unsafe { destroy(handle) };
     }
 
