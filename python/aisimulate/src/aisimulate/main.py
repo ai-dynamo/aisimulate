@@ -9,13 +9,12 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
+from .cli_args import _apply_overrides, _CliConfigError, _load_mapping, build_parser
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
@@ -29,7 +28,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, energy_diagnostics, parse_detail_sections, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -53,110 +52,8 @@ from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
 
 
-class _CliConfigError(ValueError):
-    pass
-
-
 class _CliExecutionError(RuntimeError):
     pass
-
-
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be at least 1")
-    return parsed
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="aisimulate",
-        description="Predict or recommend an LLM serving configuration.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("predict", "recommend"):
-        child = subparsers.add_parser(command)
-        child.add_argument("-c", "--config", required=True)
-        child.add_argument("--stack", default="engine")
-        child.add_argument(
-            "--set",
-            dest="overrides",
-            action="append",
-            default=[],
-            metavar="PATH=YAML_VALUE",
-        )
-        child.add_argument("--output-dir", default="./aisimulate-output")
-        child.add_argument("--overwrite", action="store_true")
-        child.add_argument("--format", choices=("table", "json"), default="table")
-    subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
-    subparsers.choices["predict"].epilog = (
-        "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
-        "trace_timestamps and agentic_lanes=1. The engine stack supports aggregated "
-        "vLLM/SGLang, HBM-only, speculative decoding disabled. Results are "
-        "functional_only; benchmark warmup and profiling are not qualified."
-    )
-    subparsers.choices["predict"].add_argument(
-        "--detail",
-        type=parse_detail_sections,
-        default=(),
-        metavar="SECTIONS",
-        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
-    )
-    subparsers.choices["predict"].add_argument(
-        "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
-    )
-    subparsers.choices["predict"].add_argument(
-        "--diagnostics-top-n",
-        type=_positive_int,
-        default=12,
-        metavar="N",
-        help="maximum operations per phase in energy detail tables (default: 12)",
-    )
-    subparsers.choices["predict"].add_argument(
-        "--online",
-        action="store_true",
-        help="pace prediction against the real wall clock instead of virtual time",
-    )
-    return parser
-
-
-def _load_mapping(path: str) -> dict[str, Any]:
-    source = Path(path)
-    try:
-        value = yaml.safe_load(source.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise _CliConfigError(f"could not read configuration {source}: {exc}") from exc
-    except yaml.YAMLError as exc:
-        raise _CliConfigError(f"malformed YAML in {source}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise _CliConfigError(f"configuration {source} must contain one YAML mapping")
-    return value
-
-
-def _apply_overrides(data: dict[str, Any], overrides: list[str], *, command: str) -> None:
-    for assignment in overrides:
-        if "=" not in assignment:
-            raise _CliConfigError(f"invalid --set {assignment!r}; expected PATH=YAML_VALUE")
-        raw_path, raw_value = assignment.split("=", 1)
-        parts = raw_path.split(".")
-        if not raw_path or any(not part or part.isdigit() for part in parts):
-            raise _CliConfigError(f"invalid --set path {raw_path!r}; sequence indexes are unsupported")
-        if command == "predict" and parts[0] in {"optimization", "optimizer"}:
-            raise _CliConfigError(f"--set path {raw_path!r} is not in the schema")
-        current: Any = data
-        for part in parts[:-1]:
-            if not isinstance(current, dict):
-                raise _CliConfigError(f"--set path {raw_path!r} crosses a non-mapping value")
-            if part not in current:
-                current[part] = {}
-            current = current[part]
-        leaf = parts[-1]
-        if not isinstance(current, dict):
-            raise _CliConfigError(f"--set path {raw_path!r} crosses a non-mapping value")
-        try:
-            current[leaf] = yaml.safe_load(raw_value)
-        except yaml.YAMLError as exc:
-            raise _CliConfigError(f"invalid YAML value for --set {raw_path!r}: {exc}") from exc
 
 
 def _resolve_section_adapters(sections: dict[str, dict[str, Any]], stack: str) -> dict[str, SimulationConfigAdapter]:
@@ -197,6 +94,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     config = CorePredictionConfig.model_validate(core_raw)
     plan = _resource_plan(args, config, factory)
     require_plan(plan)
+    from .supervision import checkpoint, mark_execution_ready, mark_shutdown
+
+    checkpoint("resource_plan", plan)
     factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
     epd = config.engine.workers.encoder is not None
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
@@ -216,6 +116,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     factory.capabilities().require_compatible(spec)
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     runner = factory.create(0)
+    mark_execution_ready()
     try:
         try:
             report = runner.run(
@@ -231,7 +132,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         except Exception as exc:
             raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
     finally:
+        mark_shutdown()
         runner.close()
+        mark_execution_ready()
     native = report.metadata.get("native_report")
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
@@ -298,8 +201,6 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
-    plan = _resource_plan(args, config, factory)
-    require_plan(plan)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,
@@ -346,7 +247,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     write_recommendation_csv(root, result)
     if not selected:
         sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
-        return 1
+        return 3 if getattr(result.counts, "resource_limited", 0) else 1
     paths = write_recommendations(root, [config for _, _, config in selected])
     rows = []
     for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1):
@@ -363,6 +264,9 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full result to: {result_path}\n")
+    if getattr(result.counts, "resource_limited", 0):
+        sys.stderr.write("some candidates were resource-limited; saved results cover only evaluated candidates\n")
+        return 3
     return 0
 
 
@@ -421,4 +325,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .supervision import main as supervised_main
+
+    raise SystemExit(supervised_main())

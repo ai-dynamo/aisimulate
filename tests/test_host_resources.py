@@ -193,7 +193,7 @@ def test_execution_section_is_core_and_roundtrips():
     assert roundtrip.execution.resources.memory_limit_gb == 4.0
 
 
-@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize("command", ["predict"])
 def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command):
     class NeverExecute:
         def create(self, worker_id):
@@ -227,9 +227,7 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
     config = CoreRecommendationConfig.model_validate(raw)
-    monkeypatch.setattr(
-        recommendation, "build_plan", lambda *a, **kw: {"status": "admitted", "effective_parallelism": 2}
-    )
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
     seen = []
 
     class CaptureSweeper:
@@ -241,7 +239,7 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
             return "result"
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
-    assert recommendation.run_recommendation(config, stack="engine", runner_factory=object()) == "result"
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=object()) == "result"
     assert seen[0].parallel_evals == 2
     assert seen[0].candidates_per_round == 8
     assert seen[0].max_trials == 256
@@ -285,12 +283,16 @@ def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     config = tmp_path / "case.yaml"
-    config.write_text(yaml.safe_dump(_config()))
+    raw = _config()
+    raw.pop("optimizer")
+    raw.pop("optimization")
+    raw["traffic"]["load"]["concurrency"] = 64512
+    config.write_text(yaml.safe_dump(raw))
     output = tmp_path / "output"
     output.mkdir()
     evidence = output / "resource-plan.json"
     evidence.write_text("existing evidence")
-    assert cli.main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
+    assert cli.main(["predict", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
     assert evidence.read_text() == "existing evidence"
 
 
@@ -341,13 +343,17 @@ def test_trace_scalar_lengths_are_counted_before_token_expansion(tmp_path, host)
     assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
 
 
-def test_trace_inspection_refuses_oversized_record_before_json_parse(tmp_path, host, monkeypatch):
+def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
     trace = tmp_path / "large.jsonl"
-    trace.write_text(" " * (256 * 1024 + 1))
-    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("record must be bounded before JSON parsing"))
+    # Each valid record exceeds the old 256 KiB limit, total exceeds 16 MiB.
+    record = '{"input_length": 2, "output_length": 1, "ignored": [' + "0," * 150_000 + "0]}\n"
+    with trace.open("w") as stream:
+        for _ in range(60):
+            stream.write(record)
+    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("must not materialize entire JSON records"))
     plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
-    assert plan["estimate"]["estimated_peak_bytes"] is None
-    assert "256 KiB" in plan["reason"]
+    assert plan["status"] == "admitted"
+    assert plan["estimate"]["estimated_peak_bytes"] > trace.stat().st_size
 
 
 def test_delta_trace_accounts_for_cumulative_prompts(tmp_path):
@@ -378,3 +384,25 @@ def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
     (proc / "self/mountinfo").write_text("42 30 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
     with pytest.raises(ResourceLimitError, match="outside its visible namespace"):
         constrain_to_cgroups(host, proc=proc, root=tmp_path)
+
+
+def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypatch, host):
+    import os
+
+    workload = {"source_type": "synthetic-session", "request_count": 4, "turns_per_session": 2}
+    assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 8 * GB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+    plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
+    assert plan["status"] == "admitted"
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None

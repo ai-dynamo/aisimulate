@@ -26,6 +26,8 @@ execution:
     reserve_memory_gb: 1.0
     reserve_memory_fraction: 0.0
     available_memory_fraction: 0.9
+    initialization_timeout_seconds: 60.0
+    shutdown_timeout_seconds: 5.0
 ```
 
 Memory settings use decimal GB: 1 GB is 1,000,000,000 bytes. Let A be available
@@ -47,20 +49,48 @@ The plan reserves coordinator RSS plus 256 MiB and a 512 MiB baseline within
 each candidate estimate. Recommendation execution parallelism is the minimum
 of the requested parallelism, CPU allowance, and memory slots. Reducing it
 preserves the suggestion batch size, trial budget and requested traffic.
-One candidate must fit even when parallelism is one. Domain preflight uses the
-largest requested load without enumerating its Cartesian product; if that
-candidate cannot fit, the whole request is refused. This increment does not
-silently prune the search space or return partial recommendations.
+Admission checks each concrete candidate and the combined memory estimate of
+its batch against fresh host headroom before starting workers. A large load in
+the search domain does not block smaller candidates. If a batch cannot fit,
+AISimulate reduces its parallelism; a candidate that cannot fit alone is recorded
+as `resource_limited`, with no simulated metrics or score. It consumes a trial
+and completes it as an optimizer rejection without a fabricated measurement.
+Completed candidates remain available. Resource-limited candidates are counted
+separately from `evaluated`; the selected recommendations cover only completed
+evaluations, not every requested candidate.
 
 Resource checks run automatically on every `predict` and `recommend` command.
-If the workload cannot fit, AISimulate stops before creating a runner or
-compiling adapters and exits with status 3 (`resource_limited`). It writes the
-refused plan to `resource-plan.json` in the output directory, including the host
-snapshot, reserved memory, requested and effective parallelism, allocation model,
-lower bound and estimated peak bytes. Use a new output directory or `--overwrite`
-to replace known outputs. An admitted workload proceeds to simulation. A runtime
-resource refusal also exits with status 3 and aborts the sweep instead of
-observing a fictitious model score.
+A refused prediction exits with status 3 before creating its runner and writes
+`resource-plan.json`, including the host snapshot, reserved memory, allocation
+model, lower bound and estimated peak. Admitted work proceeds automatically;
+there is no separate dry-run option.
+
+Execution runs inside an owned subprocess tree. The supervisor fixes the memory
+budget at startup, then samples total owned RSS and live host headroom every
+50 ms, including initialization and output serialization. Runtime thread pools
+are limited to one thread per worker. During recommendation evaluation, memory
+pressure triggers worker cleanup and retries unfinished candidates at lower
+parallelism, at most twice. Completed candidates are retained. Workers must be
+reaped before another batch can start. Persistent pressure produces an explicit
+`resource_limited` candidate and the sweep continues with other candidates.
+A sudden jump past the supervisor limit stops the entire execution tree.
+
+`resource-runtime.json` records observed peak RSS, effective budgets and the
+termination outcome. `execution-events.jsonl` checkpoints completed candidates
+and batch decisions so evidence survives a supervisor interruption. A completed
+sweep writes `recommendation.json` and selected prediction files as usual, and
+exits with status 3 if any candidates were resource-limited. If the entire tree
+is stopped, the event log contains the completed subset; it is not a finalized
+recommendation. The Python API returns partial sweep results for individual
+candidate refusals, or raises `ResourceLimitError` with bounded partial events
+when the supervisor stops the whole tree. Host evidence is available through
+`result.execution_resources` and excluded from the portable result fingerprint.
+Use a new output directory or `--overwrite` to replace known outputs.
+
+The public Python recommendation API uses spawned processes. Factories and
+providers must be pickleable, and script calls belong inside an
+`if __name__ == "__main__":` guard. Initialization and shutdown deadlines are
+configurable above; the optimizer's candidate timeout remains independent.
 
 For a synthetic Dynamo workload with 64,512 concurrent requests, 100 requests
 per load unit and 10,240 input tokens, the compatibility estimator calculates
@@ -90,17 +120,16 @@ API automatically changes the adapter's allocation behavior.
 
 An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
-Supported JSON traces receive bounded metadata inspection (at most 16 MiB,
-1024 files and 256 KiB per JSON document/record), including scalar token lengths,
-hash expansion and cumulative delta/tool turns. Larger or unknown formats need
-a runner estimate before admission. Fixed-capacity KV-relative recommendation
-domains use a conservative token-capacity bound; other unresolved KV-relative
-counts and unrecognized runner models remain unqualified and are refused. The
-low-level Runner protocol itself remains an execution primitive.
+Supported JSON and JSONL traces are inspected as a stream, including scalar
+token lengths, hash expansion and cumulative delta/tool turns. Inspection does
+not load complete documents or token arrays and has no total-file or record-size
+cutoff. Unknown allocation models can run one candidate at a time under runtime
+supervision when baseline headroom exists; this is explicitly an unqualified
+estimate. Known lower bounds still reject impossible workloads before allocation.
+The low-level Runner protocol itself remains an execution primitive.
 
-This preflight increment does not enforce native thread counts, supervise RSS,
-or contain allocations during adapter initialization and report serialization.
-The companion worker-supervision change adds runtime protection. macOS offers
-no portable hard RSS cap; preallocation checks remain necessary even with a
-watchdog. Do not describe a successful resource plan as proof that the original
-OS panic is resolved.
+RSS monitoring is best effort, not an operating-system memory sandbox. Allocations
+can outpace polling, estimates can be conservative, and other programs can change
+available RAM between samples. macOS offers no portable hard RSS cap; preallocation
+checks remain necessary. A successful plan or watchdog test does not prove that
+the original OS panic is resolved.

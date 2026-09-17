@@ -111,6 +111,8 @@ class EvaluationConfig(StrictModel):
 class ResourceConfig(StrictModel):
     """Execution-host limits, independent of the simulated GPU configuration."""
 
+    initialization_timeout_seconds: PositiveFiniteFloat = 60.0
+    shutdown_timeout_seconds: PositiveFiniteFloat = 5.0
     memory_limit_gb: PositiveFiniteFloat | Literal["auto"] = "auto"
     cpu_limit: PositiveStrictInt | Literal["auto"] = "auto"
     reserve_memory_gb: float = Field(default=1.0, strict=True, ge=0, allow_inf_nan=False)

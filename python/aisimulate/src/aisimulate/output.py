@@ -9,14 +9,15 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .detail import format_prediction_details
 from .power import format_power_summary
-from .replay.reporting import format_power_diagnostics, format_report_table
-from .sweeper.result import SweepResult
+
+if TYPE_CHECKING:
+    from .sweeper.result import SweepResult
 
 _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
 
@@ -37,6 +38,8 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
             "recommendation.csv",
             "requests.jsonl",
             "resource-plan.json",
+            "resource-runtime.json",
+            "execution-events.jsonl",
             "afd-replay-spec.json",
             "afd-qualification.json",
         ):
@@ -108,6 +111,8 @@ def format_prediction_stdout(
     power_diagnostics: dict[str, Any] | None = None,
     diagnostics_top_n: int = 12,
 ) -> str:
+    from .replay.reporting import format_power_diagnostics, format_report_table
+
     if output_format == "json":
         payload = summary if details is None else {"summary": summary, "details": details}
         if power_diagnostics is not None:
@@ -149,6 +154,7 @@ def format_prediction_stdout(
         lines.append(format_power_summary(summary))
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return "\n".join(lines)
+
     table = format_report_table(summary)
     if summary.get("agentic_qualification") == "functional_only":
         return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
