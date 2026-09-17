@@ -107,8 +107,8 @@ SPDX-License-Identifier: Apache-2.0
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="gpu">GPU <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="framework">Framework <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="measurements">Measurements <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:warmup">FPM warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:nowarmup">FPM no warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:warmup">FPM KV warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:nowarmup">FPM no KV warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:regression">Regression MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
             </tr></thead>
             <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="loading-cell">Loading accuracy matrix…</td></tr></tbody>
@@ -116,25 +116,6 @@ SPDX-License-Identifier: Apache-2.0
         </div>
       </section>
 
-      <section class="public-notes" aria-label="Scope and provenance">
-        <details open>
-          <summary>Public evidence scope</summary>
-          <div class="notes-grid">
-            <article>
-              <h2>Read accuracy and coverage together</h2>
-              <p>MAPE is averaged over successful predictions, weighted by observation count.
-                Cold starts, missing inputs, unsupported predictors, and prediction errors remain
-                visible in coverage. These results apply to the measured configurations in this snapshot.</p>
-            </article>
-            <article>
-              <h2>Reproducible comparison</h2>
-              <p>Each FPM variant uses the same measurements. Warmup and no-warmup inputs are selected
-                separately by coverage, MAPE, then artifact ID. Regression predicts and scores before
-                tuning. Configuration and measurement links point to the evaluated HF revision.</p>
-            </article>
-          </div>
-        </details>
-      </section>
     </main>
     <script src="./app.js" defer></script>
   </body>

@@ -594,7 +594,7 @@ an executed shard or an explicit exception; verify actual collection.
 
 `FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
 an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
-uses verified exact wheels, and evaluates FPM warmup/no-warmup and regression
+uses verified exact wheels, and evaluates FPM KV warmup/no-warmup and regression
 on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns

@@ -398,7 +398,7 @@ before sending a change.
 ### FPM accuracy overview
 
 The [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
-reports daily FPM warmup, FPM no-warmup, and online regression accuracy against
+reports daily FPM KV warmup, FPM no KV warmup, and online regression accuracy against
 pinned Hugging Face measurements. It evaluates main and releases >= 0.12.0,
 with MAPE, prediction coverage, and exact source provenance. Results stay in
 GitHub Actions artifacts; the main Pages build publishes qualified aggregates.

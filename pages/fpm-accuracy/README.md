@@ -8,9 +8,9 @@ compares forward-pass predictions with measurements from the public
 
 - Only Overview: expandable model/configuration rows and sortable metrics.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
-  cards, table, and evidence panels. Light/dark mode shares the `sm-theme`
+  cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages.
-- FPM warmup, FPM no warmup (KV-off input), and online Regression.
+- FPM KV warmup, FPM no KV warmup (KV-off input), and online Regression.
 - MAPE over successful predictions, with predicted/measured counts, coverage,
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
@@ -19,7 +19,7 @@ compares forward-pass predictions with measurements from the public
   marked stale after 48 hours or when the selected branch has advanced.
 
 There is no op-based evaluation or navigation to the internal Gym's other tabs.
-FPM variants use the same observations. One winner per warmup mode is selected
+FPM variants use the same observations. One winner per KV warmup mode is selected
 by coverage descending, MAPE ascending, then artifact ID. This reproduces Gym's
 comparison policy; it is not an independent held-out ranking of input libraries.
 Regression predicts and scores each observation before tuning on its target;
