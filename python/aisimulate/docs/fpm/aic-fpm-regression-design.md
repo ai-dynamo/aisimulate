@@ -357,6 +357,40 @@ eviction, capacity limits, role guards, and diagnostics through the compiled
 Python extension. Native interpolation and correction are checked separately
 to confirm that their behavior remains unchanged.
 
+### Hand-derived routing and prediction oracle
+
+The Rust test
+`regression_bucket_predictions_match_hand_derived_equal_feature_oracle`
+gives all four workload buckets identical feature coordinates but different
+synthetic observed latencies. This makes accidental sharing observable: a shared
+fit cannot return four different answers for the same coordinates.
+
+For pure Prefill work with unit weights and one request, the existing feature
+definition reduces to `A = (P + 1) * H + P * (P + 1) / 2` and `T = P`. The test
+constructs the same `(A, T)` for each workload:
+
+| Workload | Scheduled work |
+|---|---|
+| Pure Decode | `B = T`, `K = A` |
+| Locally mixed | One rank: `P = 1`, `H = 0`, `B = T - 1`, `K = A - 1` |
+| Cross-rank aggregated | Prefill rank: `P = 1`, `H = 0`; Decode rank: `B = T - 1`, `K = A` |
+| Pure Prefill | `(P, H)` values `(2, 0)`, `(3, 0)`, `(2, 1)`, `(4, 0)`, `(3, 1)` |
+
+The five training coordinates are `(3, 2)`, `(6, 3)`, `(6, 2)`, `(10, 4)`,
+and `(10, 3)`. Literal targets follow `y = c + 2A + 3T`, with intercepts
+`c = 10, 20, 30, 40` milliseconds in the table's order. At the query
+`(A, T) = (14, 3)`, the independently calculated answers are **47, 57, 67,
+and 77 ms**. The previous pooled fit would average these equally represented
+intercepts and return **62 ms** for every workload. This is a mathematical
+before/after anchor, not a benchmark measurement.
+
+The test uses literal labels and expected answers; it does not call the
+production feature extractor to calculate them. It also checks that each
+bucket remains unavailable until its own five observations have arrived,
+and that training another bucket cannot change an already fitted answer.
+
+### Offline benchmark evidence and limits
+
 Joint offline validation with the Gym caller used seven configurations and
 five fresh processes for each configuration. The 35 runs evaluated 5,751,130
 iterations with zero prediction or tuning errors. The 1,150,226 distinct

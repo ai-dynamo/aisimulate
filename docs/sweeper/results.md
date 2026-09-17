@@ -71,8 +71,7 @@ Metric names and units are explicit: throughput is `*_tok_s`, latency is `*_ms`,
 power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score` is not assumed to
 have a unit; use the named metric or `objectives` for display and comparisons.
 
-`power_w` and `power_coverage` are reserved for the follow-up modeled-power
-integration. Once a conforming producer supplies them, they follow the
+`power_w` and `power_coverage` follow the
 [modeled-power contract](../power-model.md): active-forward-pass power per GPU,
 energy-over-active-latency aggregation, and AIC's existing coverage rule.
 Coverage is the share of modeled active time with operation-energy evidence.
@@ -85,12 +84,17 @@ active latency. Null values must never be treated as zero watts or zero coverage
 Failed attempts without a valid replay report retain the empty `metrics`
 envelope described above; they do not contain a power summary.
 
-This reservation does not make the current generic `SweepResult` serializer a
-modeled-power producer or claim that it enforces the gate. The runtime PR that
-introduces the producer must add end-to-end `SweepResult.to_json()` boundary
-tests for exact-threshold, below-threshold, and unavailable evidence, including
-preservation of both null keys and matching power provenance. Consumers must
-handle nulls before formatting, arithmetic, or ranking.
+Valid replay reports preserve both nullable keys through runner normalization,
+candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
+validation rejects numeric watts below the coverage gate. Null values never
+become zero or enter objective arithmetic.
+
+This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
+their legacy schema and sentinels; the mapping below describes conversion targets,
+not an automatic converter. They do not satisfy this power contract as-is. A
+converter must establish coverage and preserve unavailable values before emitting
+a conforming result; it cannot infer coverage from a legacy wattage column alone.
 
 ### Counts
 

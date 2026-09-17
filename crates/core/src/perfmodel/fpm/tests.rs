@@ -1066,6 +1066,89 @@ fn aggregated_role_trains_four_independent_workload_fits() {
 }
 
 #[test]
+fn regression_bucket_predictions_match_hand_derived_equal_feature_oracle() {
+    // With unit weights and one Prefill request, A=(P+1)*H+P*(P+1)/2,
+    // T=P. The other three rank layouts below encode the same literal (A,T):
+    // Decode uses (K,B)=(A,T); local mixed uses P=1, K=A-1, B=T-1;
+    // cross-rank uses P=1 on one rank and (K,B)=(A,T-1) on another.
+    // Targets are hand-calculated from y=c+2*A+3*T, with c=10,20,30,40
+    // for the four buckets. Neither labels nor expected predictions call
+    // the production feature extractor. A pooled fit would use c=25 and
+    // predict 62 ms for every query; separate buckets must give 47/57/67/77.
+    let workloads = |prefill_tokens, prefill_kv_tokens, attention, token_work| {
+        [
+            vec![decode_fpm(token_work, attention, 0.0)],
+            vec![regression_fpm(1, 1, 0, token_work - 1, attention - 1, 0.0)],
+            vec![
+                prefill_fpm(1, 0.0),
+                decode_fpm(token_work - 1, attention, 0.0),
+            ],
+            vec![regression_fpm(
+                1,
+                prefill_tokens,
+                prefill_kv_tokens,
+                0,
+                0,
+                0.0,
+            )],
+        ]
+        .map(|mut ranks| {
+            for (index, rank) in ranks.iter_mut().enumerate() {
+                rank.dp_rank = index as u32;
+            }
+            ranks
+        })
+    };
+    // P, H, A, T, and four literal observed latencies in milliseconds.
+    let training = [
+        (2, 0, 3, 2, [22.0, 32.0, 42.0, 52.0]),
+        (3, 0, 6, 3, [31.0, 41.0, 51.0, 61.0]),
+        (2, 1, 6, 2, [28.0, 38.0, 48.0, 58.0]),
+        (4, 0, 10, 4, [42.0, 52.0, 62.0, 72.0]),
+        (3, 1, 10, 3, [39.0, 49.0, 59.0, 69.0]),
+    ];
+    let queries = workloads(3, 2, 14, 3);
+    let expected_ms = [47.0, 57.0, 67.0, 77.0];
+    let options = ForwardPassPerfOptions {
+        min_observations: 5,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Aggregated, options).unwrap();
+
+    for bucket_index in 0..4 {
+        for (p, h, a, t, latencies_ms) in training {
+            assert_eq!(
+                model
+                    .estimate_forward_pass_time_ms(&queries[bucket_index])
+                    .unwrap(),
+                None,
+                "the selected bucket needs five of its own prior observations"
+            );
+            let mut ranks = workloads(p, h, a, t).into_iter().nth(bucket_index).unwrap();
+            for rank in &mut ranks {
+                rank.wall_time = latencies_ms[bucket_index] / 1000.0;
+            }
+            model.tune_with_fpms(&[ranks]).unwrap();
+        }
+        for (query_index, query) in queries.iter().enumerate() {
+            let prediction = model.estimate_forward_pass_time_ms(query).unwrap();
+            if query_index <= bucket_index {
+                assert_close(prediction.unwrap(), expected_ms[query_index]);
+            } else {
+                assert_eq!(prediction, None, "a cold bucket cannot borrow a fit");
+            }
+        }
+        for (index, bucket) in model.regression_store_diagnostics().iter().enumerate() {
+            assert_eq!(bucket.ready, index <= bucket_index);
+            assert_eq!(
+                bucket.retained_observations,
+                if index <= bucket_index { 5 } else { 0 }
+            );
+        }
+    }
+}
+
+#[test]
 fn ready_regression_store_never_supplies_cold_or_degenerate_workload_predictions() {
     let options = ForwardPassPerfOptions::default();
     let mut model = regression_model(ForwardPassWorkerType::Aggregated, options.clone()).unwrap();

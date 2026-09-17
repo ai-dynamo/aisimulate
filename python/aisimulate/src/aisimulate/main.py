@@ -29,16 +29,18 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, parse_detail_sections, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics, parse_detail_sections, prediction_summary
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
     write_prediction_report,
+    write_recommendation_csv,
     write_recommendation_result,
     write_recommendations,
     write_requests,
 )
+from .power import normalize_power_summary
 from .stack import StackResolutionError, resolve_runner_factory
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
@@ -50,6 +52,13 @@ class _CliConfigError(ValueError):
 
 class _CliExecutionError(RuntimeError):
     pass
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,7 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_detail_sections,
         default=(),
         metavar="SECTIONS",
-        help="comma-separated summary,memory,time, or all; unavailable evidence is skipped",
+        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics-top-n",
+        type=_positive_int,
+        default=12,
+        metavar="N",
+        help="maximum operations per phase in energy detail tables (default: 12)",
     )
     subparsers.choices["predict"].add_argument(
         "--online",
@@ -214,6 +233,15 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     summary = prediction_summary(native)
+    summary.update(normalize_power_summary(report.metrics))
+    if "summary" in native:
+        native = {**native, "summary": summary}
+    else:
+        native = {**native, **summary}
+    power_diagnostics = None
+    if args.diagnostics == "power":
+        power_diagnostics = energy_diagnostics(native)
+        native = {**native, "power_diagnostics": power_diagnostics}
     resolved_basis = native.get("weka_nested_timestamp_basis")
     if isinstance(resolved_basis, str):
         source = config.traffic.source
@@ -240,7 +268,15 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    sys.stdout.write(format_prediction_stdout(summary, args.format, details=details))
+    sys.stdout.write(
+        format_prediction_stdout(
+            summary,
+            args.format,
+            details=details,
+            power_diagnostics=power_diagnostics,
+            diagnostics_top_n=args.diagnostics_top_n,
+        )
+    )
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
@@ -295,20 +331,22 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     )
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     result_path = write_recommendation_result(root, result)
+    write_recommendation_csv(root, result)
     if not selected:
         sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
         return 1
     paths = write_recommendations(root, [config for _, _, config in selected])
-    rows = [
-        {
+    rows = []
+    for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1):
+        row = {
             "rank": index,
             "score": candidate.score,
             "objectives": candidate.objectives,
             "used_gpus": candidate.used_gpus,
             "config_path": str(path),
         }
-        for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1)
-    ]
+        row.update(normalize_power_summary(candidate.metrics))
+        rows.append(row)
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")
     if args.format == "table":

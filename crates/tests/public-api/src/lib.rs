@@ -152,24 +152,50 @@ mod tests {
     fn external_latency_only_provider_needs_no_energy_implementation() {
         use aiconfigurator_core::TimingModel;
         assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
-        assert_eq!(LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(), 1.0);
+        assert_eq!(
+            LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
+            1.0
+        );
     }
 
     #[test]
     fn timing_evidence_types_are_public() {
-        let operation = TimingOperationEvidence::new(
-            "gemm",
-            2.0,
-            Some(900.0),
-            TimingEvidenceSource::Silicon,
-        )
-        .unwrap();
+        let operation =
+            TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
+                .unwrap();
         let phase = TimingPhaseEvidence::from_operations(vec![operation]);
         let summary = TimingEvidenceSummary {
             prefill: phase,
             decode: TimingPhaseEvidence::default(),
         };
         assert_eq!(summary.prefill.energy_wms, Some(900.0));
+    }
+
+    #[test]
+    fn power_statistics_require_validated_public_construction() {
+        use aiconfigurator_core::replay::TracePowerStats;
+
+        let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
+        assert_eq!(available.power_w(), Some(500.0));
+        assert_eq!(available.coverage(), 0.9);
+        let withheld = TracePowerStats::new(None, 0.42).unwrap();
+        assert_eq!(withheld.power_w(), None);
+        assert_eq!(withheld.coverage(), 0.42);
+        assert!(TracePowerStats::new(None, 1.0).is_ok());
+
+        for (watts, coverage) in [
+            (Some(500.0), 0.9_f64.next_down()),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            assert!(TracePowerStats::new(watts, coverage).is_err());
+        }
     }
 
     #[test]
