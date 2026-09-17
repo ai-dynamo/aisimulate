@@ -758,7 +758,7 @@ fn materialize_aic_capacity(
         timing_depth as usize == engine_nextn,
         "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
     );
-    if capacity_is_explicit {
+    if capacity_is_explicit || role.rank.state_cache.is_some() {
         return Ok(());
     }
     let blocks = estimate(config, role)?;
@@ -775,7 +775,7 @@ fn cap_role_capacity_to_fpm_decode_domain(
     let Some(decode_kv_ceiling) = decode_kv_ceiling else {
         return Ok(());
     };
-    if capacity_is_explicit {
+    if capacity_is_explicit || role.rank.state_cache.is_some() {
         return Ok(());
     }
     let covered_blocks = decode_kv_ceiling as usize / role.rank.block_size;
@@ -804,7 +804,12 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
     role_rank
         .or_else(|| engine_value.get("rank"))
         .and_then(serde_json::Value::as_object)
-        .is_some_and(|rank| rank.contains_key("num_gpu_blocks"))
+        .is_some_and(|rank| {
+            rank.contains_key("num_gpu_blocks")
+                || rank
+                    .get("state_cache")
+                    .is_some_and(|value| !value.is_null())
+        })
 }
 
 fn resolve_role_timing(
@@ -2392,6 +2397,30 @@ mod tests {
         });
         assert!(role_capacity_is_explicit(&engine, Some("prefill")));
         assert!(!role_capacity_is_explicit(&engine, Some("decode")));
+    }
+
+    #[test]
+    fn manual_state_capacity_bypasses_native_estimation_and_fpm_capping() {
+        let rank_json = serde_json::json!({"num_gpu_blocks":8,"block_size":64,"kv_cache_bytes_per_token":16,
+            "state_cache": {"bytes_per_request":1500}});
+        assert!(role_capacity_is_explicit(
+            &serde_json::json!({"rank": rank_json}),
+            None
+        ));
+        assert!(!role_capacity_is_explicit(
+            &serde_json::json!({"rank": {"state_cache": null}}),
+            None
+        ));
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.rank = serde_json::from_value(rank_json).unwrap();
+        // Even a stale/false outer hint must not override explicit manual geometry.
+        materialize_aic_capacity(&aic_config(), &mut role, false, |_, _| {
+            panic!("manual state capacity must never invoke the estimator")
+        })
+        .unwrap();
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(64), false).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 8);
+        assert_eq!(role.rank.block_size, 64);
     }
 
     #[test]

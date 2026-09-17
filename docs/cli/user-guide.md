@@ -1012,7 +1012,9 @@ engine:
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
+| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1117,10 +1119,13 @@ candidate (reason category `replay_runtime`) rather than silently falling back t
 decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collected at a backend
 version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
-`kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
-`memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
-and derives block count from model, hardware, parallelism, block size, backend, memory fraction, and
-the caller-provided CUDA graph reservation.
+`kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
+Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
+`floor(bytes / (block_size * bytes_per_token))`. Specify exactly one of `blocks` and `bytes`.
+Fixed capacity rejects `memory_fraction` and nonzero `cuda_graph_reserved_bytes`.
+Conversely, `type: default` rejects `blocks` and `bytes` and derives block count from model,
+hardware, parallelism, block size, backend, memory fraction, and the caller-provided CUDA graph
+reservation.
 
 The physical GPU count of a worker role is:
 
@@ -1137,6 +1142,31 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+<a id="manual-state-cache-sizing"></a>
+
+#### 12.1.1 Manual state-cache sizing
+
+For recurrent-state models, set `state_cache.bytes_per_request` under
+`engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
+per request per simulated rank, including any padding, separately from token KV bytes:
+
+```yaml
+kv_cache:
+  block_size: 64
+  bytes_per_token: 16
+  capacity: {type: fixed, bytes: 8192}
+  state_cache: {bytes_per_request: 1500}
+```
+
+This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
+does not infer state size or adjust block size automatically.
+
+State caching currently supports `predict` with aggregated vLLM and fixed G1 capacity.
+It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
+`recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
+must be a positive integer, not `auto`.
 
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 
