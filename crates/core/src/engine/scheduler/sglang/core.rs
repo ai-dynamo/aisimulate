@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
+use crate::engine::belady::BeladyOracle;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::{
@@ -56,6 +57,7 @@ pub(crate) struct SglangCore {
     pub(super) running: Vec<SglangRequest>,
     pub(super) new_token_ratio: f64,
     pub(super) kv_manager: SglangKvManager,
+    belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldSglangPrefill>,
@@ -161,6 +163,7 @@ impl SglangCore {
                 args.enable_prefix_caching,
                 args.emit_kv_token_ids,
             ),
+            belady: None,
             speculative_sampler,
             kv_event_buffer,
             source_holds: SourceHolds::default(),
@@ -177,6 +180,11 @@ impl SglangCore {
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
         }
+    }
+
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.kv_manager.set_belady_oracle(oracle.clone());
+        self.belady = Some(oracle);
     }
 
     #[cfg(test)]
@@ -521,6 +529,9 @@ impl SglangCore {
         let Some(mut request) = request else {
             return false;
         };
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests([request_id]);
+        }
         let capacity_improved = self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
@@ -770,6 +781,13 @@ impl SglangCore {
         let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
         let prefill_time =
             simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
+
+        // This committed prefill retires the whole request's input forecast exactly once.
+        // Later chunks and preemption recomputation intentionally do not restore demand:
+        // the oracle estimates global input demand, while native execution remains causal.
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests(admit.can_run.iter().map(|request| request.uuid));
+        }
 
         let previously_running = self.running.len();
         for mut req in admit.can_run {

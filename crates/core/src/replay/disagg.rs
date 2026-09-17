@@ -2123,6 +2123,10 @@ where
         &mut self,
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> Result<()> {
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         match payload.stage {
             SimulationWorkerStage::Prefill => {
                 self.wake_deferred_actions(SimulationWorkerStage::Prefill, payload.worker_idx);
