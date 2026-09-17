@@ -10,7 +10,7 @@ runtime:
   image_digest: sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97
 tables:
   gemm_perf:
-    rows: 75036
+    rows: 111444
     status: complete
     collections:
     - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
@@ -24,4 +24,28 @@ tables:
       case_plan_hash: sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e
       collected_at: '2026-09-17'
       rows: 37518
+      status: complete
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5
+      case_plan_hash: sha256:e0f07c473cae107b8c2a5520c2bb1ae85045e499a268a73f0ba1ce97d035a42a
+      collected_at: '2026-09-17'
+      rows: 9348
+      status: complete
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5
+      case_plan_hash: sha256:fee7715156b25ee24e67995e9ae17a3bede2bbeed890c479b99cc84ade4d8fc8
+      collected_at: '2026-09-17'
+      rows: 9348
+      status: complete
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5
+      case_plan_hash: sha256:03318633ff86a012c7e9bf8310f97ba545972b973af130273420a0c381c85a66
+      collected_at: '2026-09-17'
+      rows: 8856
+      status: complete
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5
+      case_plan_hash: sha256:c5da28e5b245195dbf0816485f8230a16d02cf3aa39e8fed9dcffb8da85e87c8
+      collected_at: '2026-09-17'
+      rows: 8856
       status: complete
