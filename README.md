@@ -374,6 +374,10 @@ compatibility tests.
 
 ## Accuracy evidence
 
+The [84-point SGLang MLA TTFT diagnosis](docs/sglang-mla-ttft-20260917.md)
+separates a verified H200 KV-admission error from remaining Blackwell prefill
+timing gaps, with paired replay results and source provenance.
+
 The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
