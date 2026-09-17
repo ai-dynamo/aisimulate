@@ -130,7 +130,7 @@ jobs:
           echo "run-attempt=${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
 
   python-compliance:
-    name: Python Dependency Licenses (${{ matrix.arch }})
+    name: Python Dependency Licenses (${{ matrix.arch }}, ${{ matrix.python-version }})
     # No release environment or build artifacts are available to dependency
     # build hooks. Both architectures must pass before staging can start.
     needs: changes-guard
@@ -139,6 +139,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     timeout-minutes: 15
     container:
@@ -153,19 +154,20 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Check Python dependency licenses
         env:
           MATRIX_ARCH: ${{ matrix.arch }}
+          PYTHON_SERIES: ${{ matrix.python-version }}
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
           python scripts/check_python_licenses.py \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
-            --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-3.12.csv"
+            --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
       - name: Preserve the dependency inventory as data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-python-inventory-${{ matrix.arch }}
+          name: nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}
           path: ${{ runner.temp }}/python-inventory/*.csv
           if-no-files-found: error
           retention-days: 30
@@ -649,7 +651,8 @@ jobs:
                                    "version": r["Version"], "spdx_license": r["License"]})
           if not rows:
               raise SystemExit("missing Python dependency inventories")
-          meta = json.load(open(f"{outdir}/cargo-metadata.json"))
+          with open(f"{outdir}/cargo-metadata.json") as f:
+              meta = json.load(f)
           workspace = set(meta.get("workspace_members") or [])
           for p in meta["packages"]:
               if p.get("id") in workspace:
@@ -682,23 +685,26 @@ jobs:
                       "Authorization": f"Bearer {token}",
                       "Accept": "application/vnd.github+json"})
                   return urllib.request.urlopen(req, timeout=30)
-              runs = json.load(get(
+              with get(
                   f"https://api.github.com/repos/{repo}/actions/workflows/"
-                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10"))
+                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10") as response:
+                  runs = json.load(response)
               for run in runs.get("workflow_runs", []):
                   if str(run["id"]) == current:
                       continue
-                  arts = json.load(get(run["artifacts_url"]))
+                  with get(run["artifacts_url"]) as response:
+                      arts = json.load(response)
                   for a in arts.get("artifacts", []):
                       if "license" not in a["name"] or a.get("expired"):
                           continue
-                      data = get(a["archive_download_url"]).read()
+                      with get(a["archive_download_url"]) as response:
+                          data = response.read()
                       with zipfile.ZipFile(io.BytesIO(data)) as zf:
                           for n in zf.namelist():
                               if os.path.basename(n) == "deps.csv":
-                                  reader = csv.DictReader(
-                                      io.TextIOWrapper(zf.open(n)))
-                                  return {identity(r): r for r in reader}
+                                  with io.TextIOWrapper(zf.open(n)) as stream:
+                                      reader = csv.DictReader(stream)
+                                      return {identity(r): r for r in reader}
               return None
 
           try:
