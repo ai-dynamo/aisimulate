@@ -2,6 +2,12 @@
 
 This file adds explicit repository-wide development guards.
 
+## Pull request titles
+
+- Use `<type>: <short description>` for every AISimulate PR title.
+- Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
+- Check the title before creating or updating a PR.
+
 ## Required First Step
 
 Before making any change under:
