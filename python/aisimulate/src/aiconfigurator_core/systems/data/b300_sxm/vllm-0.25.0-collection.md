@@ -1,4 +1,4 @@
-# B300 / vLLM 0.25.0 operator data
+# B300 / vLLM 0.25.0 operator data — partial publication
 
 Collected **17 tables / 420,111 measurements** on NVIDIA B300 SXM6 AC (SM103), matching the 17-table scope of [PR #219](https://github.com/ai-dynamo/aisimulate/pull/219).
 
@@ -66,3 +66,30 @@ The adjacent JSON report contains table hashes, source jobs, coverage, clocks, r
 - Archive: `b300-vllm025-219-evidence.tar.gz` (desktop artifact directory recorded in the JSON report).
 - SHA-256: `29d6b379dbfbc96ff383fd77d753d8c2ef8636fc219718226b96dd1799b5742e`.
 - Contains original and resumed outputs, checkpoints, complete error logs, clock traces, runtime records, job states, and campaign scripts.
+
+## Reuse safety for historical FP8-block measurements
+
+- All B200/B300 0.24.0 data, sidecars, reuse declarations and query-version slots
+  are retained. The 0.25.0 collection remains partial and is not promoted to the
+  current version. Load this unlisted version explicitly in the SDK with
+  `allow_unlisted_version=True`.
+- The 0.24.0 GEMM directories now restrict donor kernels through `reuse.yaml`.
+  BF16, ordinary FP8 and NVFP4 remain eligible; the 35,742 FP8-block rows on
+  each GPU are excluded from declared, implicit and cross-backend reuse.
+  Other operator families, including communication, keep their existing reuse.
+- The old collector used `use_cuda_graph=gemm_type != "fp8_block"`. Host launch
+  gaps were included in eager FP8-block latency but published under the same
+  performance contract as graph-timed GEMMs. [PR #219](https://github.com/ai-dynamo/aisimulate/pull/219)
+  documents a B200 mechanism A/B at vLLM 0.25.1: eager versus one-op graph
+  timings were 148.55 versus 12.32 us at `(M,N,K)=(1,768,7168)` and 152.77
+  versus 8.21 us at `(1,7168,384)`. These are mechanism evidence, not a fresh
+  reproduction of every old 0.24.0 row.
+- The policy only restricts donors. Explicit 0.24.0 primary queries still read
+  the original measurements, including the problematic FP8-block rows. It is
+  not a correction of historical primary predictions or an assertion that
+  other 0.24.0 operators are invalid. Fresh 0.25.0 graph-timed kernels are not
+  blocked by the source-specific restriction.
+- Reuse-policy validation: 22 Rust source-resolution tests, 66 Python tests,
+  both engine parity suites (365 tests, unchanged goldens), and eight numerical
+  sentinels passed. Live B200/B300 source resolution confirms the GEMM donor
+  filter and unrestricted 0.24.0 custom-allreduce reuse.

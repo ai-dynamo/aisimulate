@@ -624,6 +624,15 @@ def _parse_reuse_yaml(path: str) -> dict:
     if not isinstance(entries, list):
         raise ValueError(f"{path}: 'reuse' must be a list, got {type(entries).__name__}")
 
+    donor_filters = raw.get("donor_kernel_sources", {})
+    if not isinstance(donor_filters, dict):
+        raise ValueError(f"{path}: donor_kernel_sources must be a mapping")
+    for table, sources in donor_filters.items():
+        if not isinstance(table, str) or not table.strip():
+            raise ValueError(f"{path}: donor_kernel_sources table must be a non-empty string")
+        if not isinstance(sources, list) or any(not isinstance(s, str) or not s.strip() for s in sources):
+            raise ValueError(f"{path}: donor_kernel_sources.{table} must be a list of non-empty strings")
+
     validated: list[dict[str, str]] = []
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):

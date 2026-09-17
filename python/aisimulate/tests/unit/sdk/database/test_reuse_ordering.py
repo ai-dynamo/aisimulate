@@ -27,12 +27,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import yaml
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator.sdk.perf_database import PerfDatabase, _parse_reuse_yaml
+from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
 
 pytestmark = pytest.mark.unit
 
@@ -862,3 +865,65 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
 
     view = fetch_table_view(db, "_gemm_data")
     assert view is None or not view, f"the vetoed primary leaked into the engine view: {view!r}"
+
+
+@pytest.mark.parametrize("invalid", [None, [], {"gemm_perf": "bad"}, {"gemm_perf": [None]}])
+def test_malformed_donor_whitelist_rejected_by_public_parser(systems_root, invalid):
+    path = systems_root / "reuse.yaml"
+    path.write_text(yaml.safe_dump({"reuse": [], "donor_kernel_sources": invalid}))
+    with pytest.raises(ValueError, match="donor_kernel_sources"):
+        _parse_reuse_yaml(str(path))
+
+
+def test_donor_filter_preserves_good_rows_and_primary_fp8_block(systems_root):
+    """A donor-only bad shape must not fill a hole in freshly measured data."""
+    packaged = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems"
+    (systems_root / "h100_sxm.yaml").write_text((packaged / "h100_sxm.yaml").read_text())
+    for version, rows in (
+        ("0.24.0", [("bfloat16", "safe", 128, 2.5), ("fp8_block", "eager", 256, 99.0)]),
+        ("0.25.0", [("fp8_block", "eager", 128, 1.25)]),
+    ):
+        directory = systems_root / "data/h100_sxm/gemm/vllm" / version
+        directory.mkdir(parents=True)
+        pq.write_table(
+            pa.table(
+                {
+                    "framework": ["vllm"] * len(rows),
+                    "version": [version] * len(rows),
+                    "device": ["h100"] * len(rows),
+                    "op_name": ["gemm"] * len(rows),
+                    "gemm_dtype": [r[0] for r in rows],
+                    "kernel_source": [r[1] for r in rows],
+                    "m": [r[2] for r in rows],
+                    "n": [256] * len(rows),
+                    "k": [512] * len(rows),
+                    "latency": [r[3] for r in rows],
+                }
+            ),
+            directory / "gemm_perf.parquet",
+        )
+    _write_yaml(
+        systems_root,
+        "data/h100_sxm/gemm/vllm/0.24.0/reuse.yaml",
+        {
+            "reuse": [],
+            "donor_kernel_sources": {"gemm_perf": ["safe"]},
+        },
+    )
+    db = _build_db(systems_root, backend="vllm", version="0.25.0")
+    loaded = fetch_table_view(db, "_gemm_data")
+    assert loaded[common.GEMMQuantMode.bfloat16][128][256][512]["latency"] == pytest.approx(2.5)
+    assert loaded[common.GEMMQuantMode.fp8_block][128][256][512]["latency"] == pytest.approx(1.25)
+    assert 256 not in loaded[common.GEMMQuantMode.fp8_block]
+
+
+@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
+def test_shipped_024_donor_policy_excludes_only_fp8_block(system):
+    data = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems/data" / system
+    directory = data / "gemm/vllm/0.24.0"
+    allowed = set(yaml.safe_load((directory / "reuse.yaml").read_text())["donor_kernel_sources"]["gemm_perf"])
+    rows = pq.read_table(directory / "gemm_perf.parquet", columns=["gemm_dtype", "kernel_source"]).to_pylist()
+    assert len(rows) == 142968
+    assert sum(row["gemm_dtype"] == "fp8_block" for row in rows) == 35742
+    assert all((row["kernel_source"] in allowed) == (row["gemm_dtype"] != "fp8_block") for row in rows)
+    assert (data / "comm/vllm/0.24.0/custom_allreduce_perf.parquet").is_file()

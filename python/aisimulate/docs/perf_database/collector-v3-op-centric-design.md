@@ -322,6 +322,36 @@ have been invalidated by it, so backward fill preserves historical
 reproducibility; forward fill silently answers "how fast is 0.5.14" with
 0.5.15's kernels.
 
+### Donor kernel restrictions
+
+A source directory can restrict which of its kernels may be reused through an
+optional `donor_kernel_sources` mapping in its own `reuse.yaml`. Keys are table
+stems; values are lists of exact `kernel_source` labels. For example:
+
+```yaml
+schema_version: 1
+reuse: []
+donor_kernel_sources:
+  gemm_perf:
+    - torch.nn.functional.linear
+    - CutlassFP8ScaledMMLinearKernel
+    - FlashInferCuteDslNvFp4LinearKernel
+```
+
+- The restriction applies when this directory is a declared donor, an implicit
+  earlier-version donor, or a cross-backend donor. It intersects the existing
+  cross-backend filter and never expands that filter.
+- An absent table key leaves that table unrestricted; an empty list prevents
+  that table from donating any rows. Malformed donor filters fail closed,
+  including when strict provenance is disabled.
+- Primary reads are unchanged. This does not remove, relabel, or certify any
+  historical measurements. Queries explicitly requesting the old version still
+  see its primary rows.
+- B200/B300 vLLM 0.24.0 GEMM uses this policy to retain BF16, ordinary FP8 and
+  NVFP4 reuse while excluding the two FP8-block kernels whose eager timings
+  include host launch gaps (PR #219). Fresh 0.25.0 rows with those same kernel
+  names remain usable; the restriction belongs to the 0.24.0 source directory.
+
 ### 6.3 Channel 2 — declared reuse (`reuse.yaml`, same backend, any direction)
 
 When we *know* data is valid for a version we never collected — typically a

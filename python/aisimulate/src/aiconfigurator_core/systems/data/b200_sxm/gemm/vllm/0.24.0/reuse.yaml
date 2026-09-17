@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+reuse: []
+# PR #219 found eager FP8-block timing included host launch gaps.
+# Keep the original table for historical primary queries, but do not reuse
+# DeepGemmFp8BlockScaledMMKernel or CutlassFp8BlockScaledMMKernel rows.
+# These three kernels cover all remaining BF16, FP8 and NVFP4 rows.
+donor_kernel_sources:
+  gemm_perf:
+    - torch.nn.functional.linear
+    - CutlassFP8ScaledMMLinearKernel
+    - FlashInferCuteDslNvFp4LinearKernel
