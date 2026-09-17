@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The old collector timed FP8-block eagerly. Preserve history, but do not
+# donate those rows to another version or backend. Other GEMM dtypes remain eligible.
+schema_version: 1
+reuse: []
+donor_kernel_sources:
+  gemm_perf:
+  - torch.nn.functional.linear
+  - CutlassFP8ScaledMMLinearKernel

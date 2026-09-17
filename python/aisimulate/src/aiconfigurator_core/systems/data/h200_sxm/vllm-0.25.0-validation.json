@@ -1,0 +1,54 @@
+{
+  "status": "passed",
+  "tables": {
+    "gemm_perf.parquet": {
+      "target_rows": 75036,
+      "b200_rows": 148962,
+      "shared_keys": 75036,
+      "target_only_keys": 0,
+      "b200_only_keys": 73926,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "gemm_dtype",
+        "m",
+        "n",
+        "k"
+      ]
+    }
+  },
+  "native_engine_sources": {
+    "gemm_perf.parquet": [
+      {
+        "version": "0.25.0",
+        "path": "/home/simonec/repo/vllm025-pr244-multigpu-artifacts/assembled/h200-gemm-checkpoint/h200_sxm/gemm/vllm/0.25.0/gemm_perf.parquet",
+        "channel": "primary",
+        "exists": true
+      }
+    ]
+  },
+  "gemm_queries": [
+    {
+      "dtype": "bfloat16",
+      "m": 32768,
+      "n": 65536,
+      "k": 5120,
+      "measured_ms": 27.146470811631943,
+      "engine_ms": 27.146470811631943
+    },
+    {
+      "dtype": "fp8",
+      "m": 32768,
+      "n": 65536,
+      "k": 6144,
+      "measured_ms": 21.186143663194446,
+      "engine_ms": 21.186143663194446
+    }
+  ],
+  "msa_queries": [],
+  "shared_layer": false,
+  "strict_provenance": true,
+  "allow_unlisted_version": false
+}

@@ -917,13 +917,23 @@ def test_donor_filter_preserves_good_rows_and_primary_fp8_block(systems_root):
     assert 256 not in loaded[common.GEMMQuantMode.fp8_block]
 
 
-@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
-def test_shipped_024_donor_policy_excludes_only_fp8_block(system):
+@pytest.mark.parametrize(
+    "system, total_rows, block_rows",
+    [
+        ("b200_sxm", 142968, 35742),
+        ("b300_sxm", 142968, 35742),
+        ("gb200", 142968, 35742),
+        ("gb300", 142968, 35742),
+        ("h100_sxm", 107188, 35704),
+        ("h200_sxm", 107225, 35741),
+    ],
+)
+def test_shipped_024_donor_policy_excludes_only_fp8_block(system, total_rows, block_rows):
     data = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems/data" / system
     directory = data / "gemm/vllm/0.24.0"
     allowed = set(yaml.safe_load((directory / "reuse.yaml").read_text())["donor_kernel_sources"]["gemm_perf"])
     rows = pq.read_table(directory / "gemm_perf.parquet", columns=["gemm_dtype", "kernel_source"]).to_pylist()
-    assert len(rows) == 142968
-    assert sum(row["gemm_dtype"] == "fp8_block" for row in rows) == 35742
+    assert len(rows) == total_rows
+    assert sum(row["gemm_dtype"] == "fp8_block" for row in rows) == block_rows
     assert all((row["kernel_source"] in allowed) == (row["gemm_dtype"] != "fp8_block") for row in rows)
     assert (data / "comm/vllm/0.24.0/custom_allreduce_perf.parquet").is_file()

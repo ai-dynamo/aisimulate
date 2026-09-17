@@ -347,8 +347,9 @@ donor_kernel_sources:
 - Primary reads are unchanged. This does not remove, relabel, or certify any
   historical measurements. Queries explicitly requesting the old version still
   see its primary rows.
-- B200/B300 vLLM 0.24.0 GEMM uses this policy to retain BF16, ordinary FP8 and
-  NVFP4 reuse while excluding the two FP8-block kernels whose eager timings
+- B200/B300/GB200/GB300 and H100/H200 SXM vLLM 0.24.0 GEMM use this policy
+  to retain BF16, ordinary FP8 and supported NVFP4 reuse while excluding
+  FP8-block kernels whose eager timings
   include host launch gaps (PR #219). Fresh 0.25.0 rows with those same kernel
   names remain usable; the restriction belongs to the 0.24.0 source directory.
 
