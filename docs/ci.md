@@ -82,7 +82,8 @@ flowchart TD
         ReleaseQualified --> AllReleases["Require every release to succeed"]
     end
 
-    Security -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    MainQualified -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    Evidence -.->|Main branch nightly CI succeeds| Pages
     AllReleases -.->|Release branch nightly CI succeeds| Pages
     Pages --> Deploy["Deploy support matrix pages"]
 ```
@@ -94,6 +95,8 @@ starts after the staged-wheel smoke tests succeed. Release qualification process
 branches sequentially, with up to 20 shard jobs within each release.
 Each release uses the commit SHA recorded at the start of the run, even if its
 branch receives new commits while the checks are running.
+Pages requires a successful completed nightly; the optional GitLab security
+job is skipped when disabled and must succeed when enabled.
 
 The release path runs **only FPE support-matrix qualification**. Its scheduler
 discovers branches and calls the per-release helper, whose jobs prepare the
@@ -327,6 +330,12 @@ checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
 before runtime dependencies execute, preserving the accuracy and installation
 consumer contract.
 
+Python license evidence covers the installed audit environment, including
+the runtime dependency closure and audit tools such as `pip` and `pip-licenses`.
+Package names are not exempted through a hard-coded ignore list. Detailed
+license failures remain suppressed in public job logs; reproduce with
+`pip-licenses --with-system` in the affected environment.
+
 Two kinds of validation then run:
 
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
@@ -351,6 +360,26 @@ recorded for that run attempt through `manual-release-approver`; environment
 reviewer protections must be configured to enforce it. FPE output is retained
 as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
+
+The GitLab request contract was checked against release-automation revision
+`1aaaeae1f4a29345085b68bb460d09ee47cc4bb0`, specifically the root
+`.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
+The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
+request selects `ref=main` and forwards these fields:
+
+| Variable | Nightly value |
+| --- | --- |
+| `PROJECT` | `aisimulate` |
+| `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
+| `NIGHTLY_TAG` | `nightly-YYYYMMDD-<first-seven-commit-characters>` |
+| `WHEEL_VERSION` | Exact stamped wheel version |
+| `GITHUB_RUN_ID` / `COMMIT_SHA` | Producing GitHub run and full source commit |
+| `SLACK_THREAD_TS` / `SLACK_CHANNEL_ID` | Notification thread and channel, optionally empty |
+| `DRY_RUN` | `false` |
+
+The workflow-contract test executes the real trigger script against a fake
+HTTP client, including missing credentials and HTTP errors. It validates the
+request boundary; it does not certify GitLab scan or publication outcomes.
 
 [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) separately
 discovers every `release/<version>` branch each day, including new releases and

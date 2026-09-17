@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib.metadata
 import io
 import json
 import os
@@ -1932,7 +1933,7 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
+def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=()):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -1942,10 +1943,11 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
     (tmp_path / "cargo-metadata.json").write_text(
         json.dumps(
             {
+                "workspace_members": list(workspace_members),
                 "packages": [
                     {"id": f"getrandom@{version}", "name": "getrandom", "version": version, "license": spdx}
                     for version, spdx in crates
-                ]
+                ],
             }
         )
     )
@@ -1956,6 +1958,8 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as zipped:
         zipped.writestr("deps.csv", prior_csv.getvalue())
+
+    responses = []
 
     def urlopen(request, timeout):
         assert timeout == 30
@@ -1970,10 +1974,14 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
         elif request.full_url == "https://fixture/artifacts":
             payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
         elif request.full_url == "https://fixture/archive":
-            return io.BytesIO(archive.getvalue())
+            response = io.BytesIO(archive.getvalue())
+            responses.append(response)
+            return response
         else:
             raise AssertionError(request.full_url)
-        return io.BytesIO(json.dumps(payload).encode())
+        response = io.BytesIO(json.dumps(payload).encode())
+        responses.append(response)
+        return response
 
     step = next(
         s
@@ -1987,6 +1995,7 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
         patch("urllib.request.urlopen", side_effect=urlopen),
     ):
         exec(compile(source, "nightly-ci-evidence", "exec"), {})
+    assert all(response.closed for response in responses)
     with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
         return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
 
@@ -2016,6 +2025,16 @@ def test_nightly_license_baseline_warns_only_on_lookup_failure(tmp_path, capsys,
     assert len(inventory) == len(difference) == 2
     assert all(row["change"] == "added" for row in difference)
     assert ("::warning::prior-artifact lookup failed" in capsys.readouterr().out) == (lookup_error is not None)
+
+
+def test_nightly_license_inventory_excludes_workspace_packages(tmp_path):
+    rows, _ = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], workspace_members=["getrandom@0.2.17"])
+    assert all(row["dependency_type"] != "crate" for row in rows)
+
+
+def test_nightly_license_inventory_rejects_conflicting_metadata(tmp_path):
+    with pytest.raises(SystemExit, match="conflicting license metadata"):
+        _nightly_license_report(tmp_path, [("0.2.17", "MIT"), ("0.2.17", "GPL-3.0-only")])
 
 
 @pytest.mark.parametrize(
@@ -2070,6 +2089,46 @@ def test_python_compliance_workflows_use_the_same_policy():
         commands = _run_commands(_workflow(workflow)["jobs"]["python-compliance"])
         assert "python scripts/check_python_licenses.py" in commands
         assert "--allow-only" not in commands
+
+
+def test_nightly_license_matrix_covers_the_smoked_python_versions():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    compliance = jobs["python-compliance"]
+    matrix = compliance["strategy"]["matrix"]
+    assert set(matrix["python-version"]) == set(jobs["build-artifacts"]["env"]["PYTHON_SERIES_LIST"].split())
+    assert set(matrix["arch"]) == {entry["arch"] for entry in jobs["build-artifacts"]["strategy"]["matrix"]["include"]}
+    setup = next(step for step in compliance["steps"] if "setup-python@" in step.get("uses", ""))
+    assert setup["with"]["python-version"] == "${{ matrix.python-version }}"
+    upload = next(step for step in compliance["steps"] if "upload-artifact@" in step.get("uses", ""))
+    assert upload["with"]["name"] == "nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}"
+
+
+@pytest.mark.parametrize("spdx,allowed", [("MIT", True), ("GPL-3.0-only", False)])
+def test_real_pip_licenses_enforces_the_policy(tmp_path, spdx, allowed):
+    assert importlib.metadata.version("pip-licenses") == "5.5.5"
+    metadata = tmp_path / "license_policy_fixture-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: license-policy-fixture\nVersion: 1.0\nLicense: {spdx}\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "piplicenses",
+            "--with-system",
+            "--packages",
+            "license-policy-fixture",
+            "--allow-only",
+            python_licenses.ALLOWED_LICENSES,
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) == allowed, result.stdout + result.stderr
+    assert "license-policy-fixture" in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("license_result", [0, 1])
@@ -2252,3 +2311,70 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
     wheel.write_bytes(b"fixture wheel")
     env["EXPECTED_SHA"] = "c" * 40
     assert verify().returncode != 0
+
+
+@pytest.mark.parametrize("failure", [None, "missing-token", "http-error"])
+def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure):
+    # Interface verified against release-automation commit
+    # 1aaaeae1f4a29345085b68bb460d09ee47cc4bb0: .gitlab-ci.yml forwarding
+    # and projects/aisimulate.yml. This is an independent request fixture,
+    # not a copy of the external pipeline implementation.
+    capture = tmp_path / "request.json"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['CAPTURE_REQUEST']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.exit(int(os.environ['CURL_EXIT_CODE']))\n"
+    )
+    curl.chmod(0o755)
+    step = next(
+        step
+        for step in _workflow("nightly-ci.yml")["jobs"]["trigger-gitlab-security"]["steps"]
+        if step.get("name") == "Trigger internal security scan"
+    )
+    endpoint = "https://gitlab.invalid/api/v4/projects/123/trigger/pipeline"
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CAPTURE_REQUEST": str(capture),
+            "CURL_EXIT_CODE": "22" if failure == "http-error" else "0",
+            "GITLAB_TRIGGER_TOKEN": "" if failure == "missing-token" else "fixture-token",
+            "GITLAB_PIPELINE_URL": endpoint,
+            "WHEEL_VERSION": "0.12.0.dev20260917",
+            "GH_RUN_ID": "123456",
+            "GH_SHA": "a" * 40,
+            "SLACK_THREAD_TS": "1234567890.123456",
+            "SLACK_CHANNEL_ID": "fixture-channel",
+        },
+    )
+    assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
+    if failure == "missing-token":
+        assert not capture.exists()
+        return
+    args = json.loads(capture.read_text())
+    assert args[-1] == endpoint
+    assert "--fail" in args
+    fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-F")
+    assert fields == {
+        "token": "fixture-token",
+        "ref": "main",
+        "variables[PROJECT]": "aisimulate",
+        "variables[PIPELINE_TYPE]": "security",
+        "variables[RELEASE_TYPE]": "nightly",
+        "variables[NIGHTLY_TAG]": "nightly-20260917-aaaaaaa",
+        "variables[WHEEL_VERSION]": "0.12.0.dev20260917",
+        "variables[GITHUB_RUN_ID]": "123456",
+        "variables[COMMIT_SHA]": "a" * 40,
+        "variables[SLACK_THREAD_TS]": "1234567890.123456",
+        "variables[SLACK_CHANNEL_ID]": "fixture-channel",
+        "variables[DRY_RUN]": "false",
+    }
