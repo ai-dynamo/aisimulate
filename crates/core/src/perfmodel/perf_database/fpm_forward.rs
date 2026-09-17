@@ -189,25 +189,38 @@ impl FpmForwardTable {
     /// identity, enforced against every row (a misplaced pair — e.g. an h200
     /// parquet copied into a b200 tree — must fail loudly, not merge).
     pub fn new(data_root: PathBuf, system: &str, backend: &str, version: &str) -> Self {
-        Self::from_parquet_path(
+        let raw = std::env::var(FPM_FAKE_FALLBACK_RAW_ENV).is_ok_and(|v| v == "1");
+        Self::from_parquet_path_with_replacement(
             data_root.join(FPM_FORWARD_BASENAME),
             system,
             backend,
             version,
+            !raw,
         )
     }
 
     /// Construct a table backed by an explicitly supplied parquet outside the
     /// bundled systems-data tree. The adjacent `.metadata.json` sidecar keeps
     /// the same atomic identity, digest, and schema validation as bundled data.
+    /// Relative paths are anchored at construction, before the first query.
     pub fn from_parquet_path(
         parquet_path: PathBuf,
         system: &str,
         backend: &str,
         version: &str,
-    ) -> Self {
+    ) -> Result<Self, AicError> {
+        let parquet_path = std::path::absolute(&parquet_path).map_err(|source| AicError::Io {
+            path: parquet_path,
+            source,
+        })?;
         let raw = std::env::var(FPM_FAKE_FALLBACK_RAW_ENV).is_ok_and(|v| v == "1");
-        Self::from_parquet_path_with_replacement(parquet_path, system, backend, version, !raw)
+        Ok(Self::from_parquet_path_with_replacement(
+            parquet_path,
+            system,
+            backend,
+            version,
+            !raw,
+        ))
     }
 
     /// Explicit-replacement constructor: lets tests pin both semantics
@@ -1448,7 +1461,8 @@ pub(crate) mod tests {
         .expect("rename sidecar");
 
         let table =
-            FpmForwardTable::from_parquet_path(external.clone(), "b200_sxm", "vllm", "0.25.1");
+            FpmForwardTable::from_parquet_path(external.clone(), "b200_sxm", "vllm", "0.25.1")
+                .unwrap();
 
         assert_eq!(table.parquet_path(), external);
         assert!(

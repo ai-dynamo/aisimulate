@@ -14,8 +14,10 @@ configurations offline, without bringing up a GPU serving cluster.
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 Whole-forward FPM data is supplied at runtime rather than shipped in this
-repository. Set `forward_model="fpm"` and pass `fpm_parquet_path` through the
-prediction/recommendation YAML, Python API, or Rust API; see the
+repository. Supply both the Parquet file and its adjacent, same-stem
+`.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
+`reviewed-fpm.metadata.json`). Set `forward_model="fpm"` and pass
+`fpm_parquet_path` through the prediction/recommendation YAML, Python API, or Rust API; see the
 [core API guide](docs/core-api.md#choosing-a-forward-pass-api).
 
 AISimulate is the successor to the

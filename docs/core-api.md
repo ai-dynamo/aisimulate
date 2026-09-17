@@ -139,7 +139,9 @@ unsupported configuration or native data failure should surface rather than
 fall back. This strict-native constructor does not take `worker_type`.
 
 For whole-forward prediction, set `forward_model` to `"fpm"` and provide an
-absolute `fpm_parquet_path`. AISimulate reads that file directly; it does not
+`fpm_parquet_path`, either absolute or relative to the process working directory
+when the engine is constructed. That location stays fixed if the working
+directory later changes. AISimulate reads that file directly; it does not
 require the FPM data to be installed or copied into the repository. The
 required sidecar must be adjacent and use the same stem with a
 `.metadata.json` suffix. Both files keep the existing schema, digest, row-count,

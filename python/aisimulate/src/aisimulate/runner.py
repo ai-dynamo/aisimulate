@@ -16,6 +16,8 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
+from aiconfigurator_core.sdk.engine import EngineHandle
+
 from .aic import materialize_aic_num_gpu_blocks
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
@@ -222,14 +224,39 @@ class AICAFDCompanionPerformanceModel:
         hardware = args.get("aic_system")
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
+        fpm_parquet_path = args.get("aic_fpm_parquet_path")
+        metric = "ttft" if role == "prefill" else "tpot"
+        source = "aiconfigurator.cli.api.cli_estimate"
         try:
-            result = estimator(model_name, hardware, **kwargs)
+            if fpm_parquet_path is not None:
+                # The legacy estimator cannot consume an external pair. Use
+                # the same Rust static integration through its compiled API.
+                compile_kwargs = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"mode", "backend_name", "isl", "osl", "batch_size"}
+                }
+                engine = EngineHandle.compile(
+                    model_name,
+                    hardware,
+                    deployment.backend,
+                    fpm_parquet_path=fpm_parquet_path,
+                    **compile_kwargs,
+                )
+                latency = (
+                    engine.predict_prefill_latency(batch_capacity, isl)
+                    if role == "prefill"
+                    else engine.predict_decode_latency(batch_capacity, isl, osl) / max(1, osl - 1)
+                )
+                raw = {metric: latency}
+                source = "aiconfigurator_core.sdk.engine.EngineHandle"
+            else:
+                result = estimator(model_name, hardware, **kwargs)
+                raw = getattr(result, "raw", None)
         except Exception as exc:
             raise InvalidRunnerError(
                 f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
             ) from exc
-        raw = getattr(result, "raw", None)
-        metric = "ttft" if role == "prefill" else "tpot"
         if not isinstance(raw, Mapping):
             raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
         latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
@@ -240,9 +267,10 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aiconfigurator.cli.api.cli_estimate",
+                "source": source,
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
+                **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
                 "metric": metric,
             },
         )

@@ -557,9 +557,12 @@ impl PerfDatabase {
             // Deliberately NOT shared-layer aware: FPM whole-model data is
             // valid only for its exact backend/version (fpm_forward.rs).
             fpm_forward: match fpm_parquet_path {
-                Some(path) => {
-                    FpmForwardTable::from_parquet_path(path.to_path_buf(), system, backend, version)
-                }
+                Some(path) => FpmForwardTable::from_parquet_path(
+                    path.to_path_buf(),
+                    system,
+                    backend,
+                    version,
+                )?,
                 None => FpmForwardTable::new(data_root.clone(), system, backend, version),
             },
             system_spec: spec,
@@ -658,6 +661,17 @@ impl PerfDatabase {
         tolerate_missing_data: bool,
         fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
+        // Pin external data before memo lookup and lazy loading. The same
+        // relative spelling can name different pairs after a cwd change.
+        let fpm_parquet_path = fpm_parquet_path
+            .map(|path| {
+                std::path::absolute(path).map_err(|source| AicError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            })
+            .transpose()?;
+        let fpm_parquet_path = fpm_parquet_path.as_deref();
         if tolerate_missing_data {
             // Estimate-only loads bypass the memo entirely: caching a set of
             // empty tables under the plain identity key would let a later

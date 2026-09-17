@@ -39,6 +39,7 @@ from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.main import main
 from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper import AFDLayerTimes
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 
 pytestmark = pytest.mark.unit
@@ -719,6 +720,91 @@ def test_external_fpm_pair_drives_yaml_replay_without_backend_data(external_fpm_
     # Replay emits the first token after prefill plus the first decode step.
     assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0 + 6.0)
     assert record["last_token_ms"] - record["first_token_ms"] == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("query_before_chdir", [False, True], ids=["lazy_load", "live_cache"])
+def test_external_fpm_relative_path_is_bound_at_engine_construction(
+    external_fpm_config, tmp_path, monkeypatch, query_before_chdir
+):
+    config, systems_root = external_fpm_config
+    original = Path(config.engine.workers.aggregated.timing.fpm_parquet_path)
+    rows = pq.read_table(original).to_pylist()
+    first_pair = Path(_write_pair(str(tmp_path / "first"), rows))
+    for row in rows:
+        if row["workload_kind"] == "prefill":
+            row["latency_ms"] = 99.0
+    second_pair = Path(_write_pair(str(tmp_path / "second"), rows))
+
+    def compile_relative():
+        return EngineHandle.compile(
+            "Qwen/Qwen3-0.6B",
+            SYSTEM,
+            BACKEND,
+            backend_version=VERSION,
+            forward_model="fpm",
+            fpm_parquet_path=first_pair.name,
+            systems_path=str(systems_root),
+        )
+
+    monkeypatch.chdir(first_pair.parent)
+    first = compile_relative()
+    if query_before_chdir:
+        assert first.predict_prefill_latency(1, 512) == pytest.approx(22.0)
+    monkeypatch.chdir(second_pair.parent)
+    second = compile_relative()
+    assert first.predict_prefill_latency(1, 512) == pytest.approx(22.0)
+    assert second.predict_prefill_latency(1, 512) == pytest.approx(99.0)
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "latency"), [("decode", "prefill", 22.0), ("prefill", "decode", 6.0)]
+)
+@pytest.mark.parametrize("output_tokens", [2, 4])
+def test_external_fpm_pair_drives_afd_companion_replay(
+    external_fpm_config, phase, companion_role, latency, output_tokens
+):
+    config, systems_root = external_fpm_config
+    raw = config.model_dump(mode="json", exclude_none=True)
+    raw["traffic"]["source"]["output_tokens"] = output_tokens
+    engine = raw["engine"]
+    engine["mode"] = "afd"
+    engine["afd"] = {
+        "phase": phase,
+        "combined_with_pd": True,
+        "n_a_nodes": 1,
+        "n_f_nodes": 1,
+        "tp_a": 1,
+        "a_batch_size": 1,
+        "num_microbatches": 1,
+    }
+    worker = engine["workers"].pop("aggregated")
+    worker["scheduler"] = {"max_sequences": 1, "max_batched_tokens": 512}
+    engine["workers"] = {companion_role: worker}
+
+    class AFDPerformanceFixture:
+        def measure(self, request):
+            return (
+                AFDLayerTimes(
+                    phase=request.topology.phase.value,
+                    attention_ms=1.0,
+                    ffn_ms=2.0,
+                    a_to_f_ms=0.1,
+                    f_to_a_ms=0.1,
+                    num_layers=2,
+                    provenance={"provider": "test"},
+                ),
+            )
+
+    spec = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(raw), afd_performance_model=AFDPerformanceFixture()
+    )
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+    assert not (systems_root / "data").exists()
+    assert report.metrics["completed_requests"] == 1
+    companion = report.metadata["afd_replay"]["companion"]
+    assert companion["source"] == "aiconfigurator_core.sdk.engine.EngineHandle"
+    assert companion["fpm_parquet_path"] == worker["timing"]["fpm_parquet_path"]
+    assert report.metrics["mean_ttft_ms" if companion_role == "prefill" else "mean_tpot_ms"] == pytest.approx(latency)
 
 
 def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_fpm_config, tmp_path, capsys):
