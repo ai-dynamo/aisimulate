@@ -1583,8 +1583,11 @@ pub struct PyForwardPassPerfModel {
 
 fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPerfModelConfig> {
     let mut de = serde_json::Deserializer::from_str(config_json);
-    serde_path_to_error::deserialize(&mut de)
-        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config at {e}")))
+    let config = serde_path_to_error::deserialize(&mut de)
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config at {e}")))?;
+    de.end()
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config: {e}")))?;
+    Ok(config)
 }
 
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either

@@ -369,6 +369,9 @@ impl AicTimingModel {
         config.database_mode = provenance.config.database_mode;
         config.transfer_policy = provenance.config.transfer_policy.clone();
         config.estimation_mode = Some(provenance.selected_estimation_mode);
+        config.worker_type = Some(worker_type);
+        config.forward_model = None;
+        config.fallback_policy = ForwardPassFallbackPolicy::Deny;
         config.estimator_config = provenance.config.estimator_config.clone();
         let use_fpm_decode_totals =
             provenance.selected_estimation_mode == EstimationMode::FpmInterpolation;
@@ -714,6 +717,26 @@ fn resolve_role_timing(
         timing.fpm_decode_kv_ceiling,
         capacity_is_explicit,
     )?;
+    let mut resolved = serde_json::to_value(config.estimator_request(worker_type)?)?;
+    if let Some(object) = resolved.as_object_mut() {
+        for (name, value) in [
+            ("gpu_memory_utilization", config.gpu_memory_utilization),
+            ("mem_fraction_static", config.mem_fraction_static),
+            ("free_gpu_memory_fraction", config.free_gpu_memory_fraction),
+        ] {
+            if let Some(value) = value {
+                object.insert(name.to_owned(), serde_json::json!(value));
+            }
+        }
+        object.insert(
+            "cuda_graph_reserved_bytes".to_owned(),
+            serde_json::json!(config.cuda_graph_reserved_bytes),
+        );
+    }
+    role.rank.timing_model = TimingModelConfig::External {
+        provider,
+        config: resolved,
+    };
     Ok(Some(Arc::new(timing)))
 }
 

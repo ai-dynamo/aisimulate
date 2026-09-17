@@ -217,3 +217,11 @@ def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
         )
     with pytest.raises(ValueError, match="unknown estimator override"):
         SearchSpace(**common, role_estimator_controls={"agg": {"estimation_mod": "op_level"}})
+
+
+def test_raw_config_rejects_trailing_json():
+    import aiconfigurator_core
+
+    payload = json.dumps(request(estimation_mode="fpm_regression").to_dict()) + " {}"
+    with pytest.raises(ValueError, match="trailing characters"):
+        aiconfigurator_core.RustForwardPassPerfModel.normalize_config(payload)
