@@ -29,6 +29,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
 pub(crate) mod fpm;
+pub(crate) mod kd_tree;
 pub mod memory;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
@@ -42,7 +43,8 @@ pub use common::{AicError, enums::DatabaseMode};
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
-    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassWorkerType,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

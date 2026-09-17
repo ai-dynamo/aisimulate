@@ -108,7 +108,9 @@ def _environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, remote
 
 
-def _run(mode: str, directory: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    mode: str, directory: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(HANDOFF), mode, str(directory)],
         env=env,
@@ -118,7 +120,9 @@ def _run(mode: str, directory: Path, env: dict[str, str]) -> subprocess.Complete
     )
 
 
-def test_artifactory_handoff_uploads_manifest_last_and_downloads_exact_wheel(tmp_path: Path) -> None:
+def test_artifactory_handoff_uploads_manifest_last_and_downloads_exact_wheel(
+    tmp_path: Path,
+) -> None:
     env, remote = _environment(tmp_path)
     source = tmp_path / "source"
     source.mkdir()
@@ -135,12 +139,33 @@ def test_artifactory_handoff_uploads_manifest_last_and_downloads_exact_wheel(tmp
     assert manifest["source_sha"] == env["GITHUB_SHA"]
     assert manifest["size"] == len(payload)
     assert (remote_dir / filename).read_bytes() == payload
-    assert Path(env["FAKE_CURL_LOG"]).read_text().splitlines() == [filename, "_WHEEL.json"]
+    assert Path(env["FAKE_CURL_LOG"]).read_text().splitlines() == [
+        filename,
+        "_WHEEL.json",
+    ]
 
     destination = tmp_path / "destination"
     downloaded = _run("download", destination, env)
     assert downloaded.returncode == 0, downloaded.stdout + downloaded.stderr
     assert (destination / filename).read_bytes() == payload
+
+
+def test_artifactory_handoff_records_explicit_source_sha(tmp_path: Path) -> None:
+    env, remote = _environment(tmp_path)
+    env["WHEEL_SOURCE_SHA"] = "c" * 40
+    env["EXPECTED_WHEEL_SOURCE_SHA"] = env["WHEEL_SOURCE_SHA"]
+    source = tmp_path / "source"
+    source.mkdir()
+    filename = "aisimulate-0.12.0-cp311-abi3-manylinux_2_28_x86_64.whl"
+    (source / filename).write_bytes(b"release branch wheel")
+
+    uploaded = _run("upload", source, env)
+    assert uploaded.returncode == 0, uploaded.stdout + uploaded.stderr
+
+    remote_dir = remote / "artifactory/test-pypi-local" / env["ARTIFACTORY_SUBPATH"]
+    manifest = json.loads((remote_dir / "_WHEEL.json").read_text())
+    assert manifest["source_sha"] == env["WHEEL_SOURCE_SHA"]
+    assert _run("download", tmp_path / "destination", env).returncode == 0
 
 
 def test_artifactory_handoff_rejects_overwrite_and_wrong_source(tmp_path: Path) -> None:

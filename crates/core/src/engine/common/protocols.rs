@@ -185,6 +185,8 @@ pub(crate) struct MockEngineArgs {
     pub max_num_batched_tokens: Option<usize>,
     #[builder(default = "1")]
     pub prefill_schedule_interval: usize,
+    #[builder(default = "0")]
+    pub prefill_decode_interval: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]

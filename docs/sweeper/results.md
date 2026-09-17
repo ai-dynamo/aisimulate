@@ -71,6 +71,31 @@ Metric names and units are explicit: throughput is `*_tok_s`, latency is `*_ms`,
 power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score` is not assumed to
 have a unit; use the named metric or `objectives` for display and comparisons.
 
+`power_w` and `power_coverage` follow the
+[modeled-power contract](../power-model.md): active-forward-pass power per GPU,
+energy-over-active-latency aggregation, and AIC's existing coverage rule.
+Coverage is the share of modeled active time with operation-energy evidence.
+For every candidate with a valid replay report, both keys must be present in
+metrics and power provenance. Exactly 90% is sufficient to publish numeric
+`power_w`; below 90%, `power_coverage` remains numeric while `power_w` is `null`.
+A runner without typed operation-energy evidence must return `null` for both
+values. Zero coverage is reserved for an energy-aware path with no covered
+active latency. Null values must never be treated as zero watts or zero coverage.
+Failed attempts without a valid replay report retain the empty `metrics`
+envelope described above; they do not contain a power summary.
+
+Valid replay reports preserve both nullable keys through runner normalization,
+candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
+validation rejects numeric watts below the coverage gate. Null values never
+become zero or enter objective arithmetic.
+
+This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
+their legacy schema and sentinels; the mapping below describes conversion targets,
+not an automatic converter. They do not satisfy this power contract as-is. A
+converter must establish coverage and preserve unavailable values before emitting
+a conforming result; it cannot infer coverage from a legacy wattage column alone.
+
 ### Counts
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
@@ -159,7 +184,7 @@ field names.
 | `tokens/s/user` | `metrics.mean_output_token_throughput_per_user` | Tokens/s/user. |
 | `seq/s`, `seq/s/gpu`, role worker rates | `metrics` | Sequences/s, with the legacy label preserved in migration metadata until a typed metric is added. |
 | `balance_score`, `num_ctx_reqs`, `num_gen_reqs`, `num_tokens`, `ctx_tokens`, `gen_tokens` | `metrics` | Exact numeric values; request/token counts are counts. |
-| `power_w` | `provenance.power.power_w` | Watts. |
+| `power_w`, `power_coverage` | `metrics` and `provenance.power` | Both keys are required in a conforming summary. Use watts per GPU and a latency-weighted ratio in `[0, 1]`, or `null` for each unavailable value; `power_w` is `null` below the gate. |
 | `gemm`, `kvcache`, `fmha`, `moe`, `comm`, `memory`, role variants | `metrics` | Legacy component estimates remain named metrics with original units recorded by the converter. |
 | EPD `(a)workers` and `(e)workers`, `(e)tp`, `(e)pp`, `(e)bs`, `(e)parallel`, `(e)memory` | `config` and `provenance.topology` | Preserve the rate-matched aggregate and encoder cell as explicit roles. |
 | AFD `phase`, `(a)nodes/tp/bs/micro_bs/workers`, `(f)nodes/tp/ep/workers` | `config` and `provenance.topology` | Preserve attention/FFN role topology and whether AFD applies to prefill, decode, or both. |

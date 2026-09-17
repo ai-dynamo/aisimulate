@@ -31,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
-      whitespace-base: ${{ steps.pr-target.outputs.base_sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -74,10 +73,6 @@ jobs:
             echo "::error::PR comparison base must resolve to a full commit SHA"
             exit 1
           fi
-          # A copied branch's push.before is its previous head, which may no
-          # longer be reachable after a rebase. Check the actual PR range,
-          # including the parent branch when this PR is stacked.
-          printf 'base_sha=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
@@ -201,12 +196,25 @@ jobs:
           python scripts/select_full_ci.py "${args[@]}"
 
   fast-ci:
-    name: Fast CI
+    name: Require Fast CI
     needs: verify-target
-    uses: ./.github/workflows/fast-ci.yml
-    with:
-      expected_sha: ${{ github.sha }}
-      base_sha: ${{ needs.verify-target.outputs.whitespace-base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify the standalone workflow and every Fast CI job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/require_fast_ci.py
 
   platform-wheels:
     name: Platform Wheels
@@ -374,7 +382,7 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
-    needs: [fast-ci, select-full-ci, application-test-wheel]
+    needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
     if: >-
       ${{
         always() &&
@@ -584,11 +592,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     timeout-minutes: 10
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      image: ${{ matrix.container_image }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -597,13 +611,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup-python-rust
-        with:
-          python-version: "3.12"
+      - uses: ./.github/actions/setup-manylinux-python-rust
       - run: python -m pip install 'maturin>=1.12,<2'
       - name: Build the application test wheel once
-        run: python -m maturin build --release --out ../../application-test-dist
-        working-directory: python/aisimulate
+        run: python scripts/build_manylinux_wheel.py --output-dir application-test-dist
       - name: Stage the application test wheel in Artifactory
         shell: bash
         env:
@@ -675,6 +686,7 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
+          python -m pip install pip-licenses==5.5.5
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
@@ -740,6 +752,40 @@ jobs:
           -n auto
           --timeout=600
         working-directory: python/aisimulate
+
+  python-compliance:
+    name: Python Dependency Licenses
+    # SPDX headers are covered by the spdx-headers checks in fast-ci; this
+    # job is only the dependency-license gate, which is architecture-
+    # independent. Gated on the application-wheel scope (and listed in that
+    # job's needs) so a disallowed license blocks wheel builds and staging.
+    needs: [fast-ci, select-full-ci]
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Check Python dependency licenses
+        run: python scripts/check_python_licenses.py
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
@@ -822,10 +868,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      image: ${{ matrix.container_image }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -833,9 +885,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-python-rust
-        with:
-          python-version: "3.12"
+      - uses: ./.github/actions/setup-manylinux-python-rust
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist
@@ -873,6 +923,7 @@ jobs:
       - application-wheel
       - application-test-wheel
       - application-tests
+      - python-compliance
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
@@ -899,6 +950,7 @@ jobs:
               "rust-feature-modes": "rust_feature_modes",
               "public-api-rust": "public_api_rust",
               "application-wheel": "application_wheel",
+              "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
               "python-compatibility": "python_compatibility",

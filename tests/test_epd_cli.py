@@ -84,10 +84,12 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
-@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
 def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
-    raw = _recommendation(mode)
+    raw = _recommendation("disaggregated" if mode == "heterogeneous" else mode)
+    if mode == "heterogeneous":
+        raw["engine"]["workers"]["decode"]["hardware"] = "gb200"
     if relative_stop:
         raw["traffic"]["stop"] = {"requests_per_load_unit": 2.0}
     # Exercise strict aggregate SLA and retention in the selected prediction.
@@ -272,7 +274,7 @@ def test_prediction_callback_cannot_drop_or_change_epd(change):
             ("disaggregated", "prefill"),
             ("disaggregated", "decode"),
         )
-        for change in ("scheduler", "prefill_interval", "cache", "prefix")
+        for change in ("scheduler", "prefill_interval", "prefill_decode_interval", "cache", "prefix")
     ],
 )
 def test_epd_sweeper_rejects_changed_language_prediction(mode, role, change):
@@ -298,6 +300,8 @@ def test_epd_sweeper_rejects_changed_language_prediction(mode, role, change):
             worker["scheduler"]["max_sequences"] = 1
         elif change == "prefill_interval":
             worker["scheduler"]["prefill_schedule_interval"] = 2
+        elif change == "prefill_decode_interval":
+            worker["scheduler"]["prefill_decode_interval"] = 2
         elif change == "cache":
             worker["kv_cache"]["capacity"]["blocks"] = 8192
         elif change == "prefix":
@@ -357,6 +361,7 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
             if role == "encoder":
                 continue
             worker["scheduler"].pop("prefill_schedule_interval", None)
+            worker["scheduler"].pop("prefill_decode_interval", None)
             worker["kv_cache"].pop("block_size", None)
             worker.pop("startup_seconds", None)
         return value
@@ -449,3 +454,61 @@ def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, c
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert "AFD does not support analytical EPD encoder pools" in captured.err
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("selector", ["memory", "all"])
+@pytest.mark.parametrize("explicit_blocks", [False, True])
+def test_native_epd_detail_preserves_language_capacity_and_encoder_gap(
+    tmp_path, capsys, mode, selector, explicit_blocks
+):
+    from jsonschema import validate
+
+    raw = _prediction(mode)
+    roles = [role for role in raw["engine"]["workers"] if role != "encoder"]
+    if not explicit_blocks:
+        for role in roles:
+            raw["engine"]["workers"][role]["kv_cache"] = {"block_size": 1}
+    path = tmp_path / "epd.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "detailed"
+    assert (
+        main(["predict", "-c", str(path), "--detail", selector, "--format", "json", "--output-dir", str(output)]) == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((output / "prediction.json").read_text())
+    assert stdout["details"] == saved["details"]
+    assert stdout["summary"] == saved["summary"]
+    assert saved["summary"]["metric_semantics"] == "analytical_epd_overlay"
+    assert "native_report" not in saved["metadata"]
+    assert "per_request" not in saved
+    assert not any(key.startswith(("goodput", "p99")) for key in saved["summary"])
+    details = saved["details"]
+    validate(
+        details,
+        json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text()),
+    )
+    if explicit_blocks:
+        assert "memory" not in details["sections"]
+        assert "encoder" in details["skipped"]["memory"]
+        assert all(role in details["skipped"]["memory"] for role in roles)
+    else:
+        memory = details["sections"]["memory"]
+        assert memory["status"] == "partial"
+        assert memory["roles"]["encoder"]["status"] == "unavailable"
+        assert "memory_breakdown" not in memory["roles"]["encoder"]
+        for role in roles:
+            estimate = memory["roles"][role]
+            assert estimate["status"] == "available"
+            assert estimate["stage"] == "before_native_capacity_adjustments"
+            assert estimate["total_gpu_capacity_bytes"] > estimate["total_kv_size_bytes"] > 0
+            assert estimate == saved["memory_diagnostics"][role]
+    plain = tmp_path / "plain"
+    assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain)]) == 0
+    plain_summary = json.loads(capsys.readouterr().out)
+    assert plain_summary.keys() == stdout["summary"].keys()
+    for name, value in stdout["summary"].items():
+        # Native floating-point reductions can differ in their final bits.
+        expected = pytest.approx(value, rel=1e-12, abs=1e-12) if isinstance(value, (int, float)) else value
+        assert plain_summary[name] == expected
+    assert "memory_diagnostics" not in json.loads((plain / "prediction.json").read_text())

@@ -123,10 +123,10 @@ import sys
 from pathlib import Path
 
 path, filename, sha256, size = sys.argv[1:]
-source_sha = os.environ.get("GITHUB_SHA", "")
+source_sha = os.environ.get("WHEEL_SOURCE_SHA") or os.environ.get("GITHUB_SHA", "")
 run_id = os.environ.get("GITHUB_RUN_ID", "")
 if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
-    raise SystemExit("GITHUB_SHA must be a full lowercase commit SHA")
+    raise SystemExit("WHEEL_SOURCE_SHA or GITHUB_SHA must be a full lowercase commit SHA")
 if not run_id.isdigit():
     raise SystemExit("GITHUB_RUN_ID must be numeric")
 payload = {

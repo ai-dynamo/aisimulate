@@ -8,6 +8,7 @@ import pandas as pd
 from aiconfigurator_core.sdk.common import ColumnsAgg
 from aiconfigurator_core.sdk.config import RuntimeConfig
 from aiconfigurator_core.sdk.performance_result import MoECommFallback
+from aiconfigurator_core.sdk.step_estimate import StepEstimate
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class InferenceSummary:
         self._context_power_avg = 0.0
         self._generation_power_avg = 0.0
         self._e2e_power_avg = 0.0
+        self._aggregate_energy_breakdown: dict[str, StepEstimate] | None = None
 
         # summary dataframe (built lazily from _deferred_row when available)
         self._summary_df = None
@@ -346,6 +348,12 @@ class InferenceSummary:
         by operation latency prevents numerous tiny covered operations from
         masking an uncovered operation that dominates end-to-end execution.
         """
+        if self._aggregate_energy_breakdown is not None:
+            groups = self._aggregate_energy_breakdown.values()
+            total_latency = sum(group.latency_ms for group in groups)
+            covered_latency = sum(group.covered_latency_ms for group in groups)
+            return min(max(covered_latency / total_latency, 0.0), 1.0) if total_latency > 0 else 0.0
+
         latency_groups = (
             (self._encoder_latency_dict, self._encoder_energy_wms_dict),
             (self._context_latency_dict, self._context_energy_wms_dict),
@@ -362,6 +370,14 @@ class InferenceSummary:
             if energies.get(op_name, 0.0) > 0
         )
         return min(max(latency_with_energy / total_latency, 0.0), 1.0)
+
+    def set_aggregate_energy_breakdown(self, groups: dict[str, StepEstimate]) -> None:
+        """Set scheduled aggregate evidence, including colocated encoder work."""
+        self._aggregate_energy_breakdown = groups
+
+    def get_aggregate_energy_breakdown(self) -> dict[str, StepEstimate] | None:
+        """Return schedule-weighted mixed/decode/encoder evidence, when available."""
+        return self._aggregate_energy_breakdown
 
     def has_sufficient_power_data(self, threshold: float = 0.9) -> bool:
         """

@@ -17,7 +17,9 @@ collect_mla_module.py, so the wrappers change neither WHICH kernel runs nor
 HOW a case is timed.
 """
 
-__compat__ = "vllm==0.27.0"
+# The historical filename also serves the source/runtime-qualified 0.25.0
+# MLA family override; each campaign manifest still selects one exact runtime.
+__compat__ = "vllm>=0.25.0,<=0.27.0,!=0.25.1,!=0.26.0"
 
 from collector.vllm import collect_mla_module as _impl
 

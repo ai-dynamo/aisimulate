@@ -34,11 +34,12 @@ pub struct ForwardPassPerfDiagnostics {
     /// after at least one inferred workload kind has enough correction samples.
     pub source: ForwardPassPerfSource,
     /// Whether the active model can currently produce estimates, or why it
-    /// cannot. Native models are immediately ready; regression readiness is
-    /// determined by its single role-bound store.
+    /// cannot. Native models are immediately ready; regression is ready when
+    /// any logical store has a fit. A query for another store can still return
+    /// `None`; see `regression_store_diagnostics` for individual readiness.
     pub readiness: ForwardPassPerfReadiness,
     /// Number of retained tuning observations. This is the total across the
-    /// three inferred workload kinds for Native and the single store count for
+    /// three inferred workload kinds for Native and all logical stores for
     /// Regression.
     pub retained_observations: usize,
     /// Number of populated native-correction regions whose workload kind has at least
@@ -90,6 +91,97 @@ pub enum ForwardPassWorkerType {
     Aggregated,
 }
 
+/// Full-iteration workload used to select an independent regression store.
+/// Idle ranks do not contribute, and any locally mixed rank takes precedence
+/// over separate prefill-only and decode-only ranks.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardPassRegressionWorkloadKind {
+    PureDecode,
+    ContainsLocallyMixed,
+    CrossRankAggregated,
+    PurePrefill,
+}
+
+/// Retained sample count and fit readiness for one logical regression store.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForwardPassRegressionStoreDiagnostics {
+    pub workload_kind: ForwardPassRegressionWorkloadKind,
+    /// Whether this store has a usable fit, not merely enough samples.
+    pub ready: bool,
+    pub retained_observations: usize,
+}
+
+#[derive(Clone, Debug)]
+struct RegressionStores {
+    stores: Vec<(ForwardPassRegressionWorkloadKind, BucketedRegression)>,
+}
+
+impl RegressionStores {
+    fn new(worker_type: ForwardPassWorkerType, options: &ForwardPassPerfOptions) -> Self {
+        use ForwardPassRegressionWorkloadKind::*;
+        let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
+            ForwardPassWorkerType::Prefill => &[PurePrefill],
+            ForwardPassWorkerType::Decode => &[PureDecode],
+            ForwardPassWorkerType::Aggregated => &[
+                PureDecode,
+                ContainsLocallyMixed,
+                CrossRankAggregated,
+                PurePrefill,
+            ],
+        };
+        Self {
+            stores: kinds
+                .iter()
+                .map(|kind| (*kind, BucketedRegression::new(options)))
+                .collect(),
+        }
+    }
+
+    fn store(&self, workload_kind: ForwardPassRegressionWorkloadKind) -> &BucketedRegression {
+        &self
+            .stores
+            .iter()
+            .find(|(kind, _)| *kind == workload_kind)
+            .expect("validated regression workload must match an allocated store")
+            .1
+    }
+
+    fn store_mut(
+        &mut self,
+        workload_kind: ForwardPassRegressionWorkloadKind,
+    ) -> &mut BucketedRegression {
+        &mut self
+            .stores
+            .iter_mut()
+            .find(|(kind, _)| *kind == workload_kind)
+            .expect("validated regression workload must match an allocated store")
+            .1
+    }
+
+    fn any_ready(&self) -> bool {
+        self.stores.iter().any(|(_, store)| store.is_ready())
+    }
+
+    fn observation_count(&self) -> usize {
+        self.stores
+            .iter()
+            .map(|(_, store)| store.observation_count())
+            .sum()
+    }
+
+    fn diagnostics(&self) -> Vec<ForwardPassRegressionStoreDiagnostics> {
+        self.stores
+            .iter()
+            .map(|(kind, store)| ForwardPassRegressionStoreDiagnostics {
+                workload_kind: *kind,
+                ready: store.is_ready(),
+                retained_observations: store.observation_count(),
+            })
+            .collect()
+    }
+}
+
 /// Forward-pass-level performance model with optional online tuning.
 ///
 /// This API intentionally stays at AIC's forward-pass abstraction. It does not
@@ -110,9 +202,11 @@ pub enum ForwardPassWorkerType {
 ///   used for tuning
 ///
 /// Regression instead binds one immutable [`ForwardPassWorkerType`] at
-/// construction and owns one two-dimensional store. Its common axis order is
-/// `[critical attention, global FFN/MoE]`; Prefill and Decode enforce strict
-/// role compatibility, while Aggregated accepts any phase composition.
+/// construction. Prefill and Decode each own one two-dimensional store and
+/// enforce strict role compatibility. Aggregated accepts any phase composition
+/// and owns four independent stores selected from all active ranks: pure decode,
+/// contains locally mixed work, cross-rank aggregated, and pure prefill.
+/// All stores use `[critical attention, global FFN/MoE]` feature axes.
 /// Regression retention buckets use `log1p` coordinates, but fitting and
 /// prediction use standardized raw feature values.
 ///
@@ -151,7 +245,7 @@ enum ForwardPassPerfMode {
     },
     Regression {
         worker_type: ForwardPassWorkerType,
-        regression: BucketedRegression,
+        regression: RegressionStores,
     },
 }
 
@@ -218,7 +312,8 @@ impl ForwardPassPerfModel {
     ///
     /// This mode is for native-AIC-unsupported models. It returns `None` from
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
-    /// role-bound store has at least `options.min_observations` tuning samples.
+    /// selected logical store has a usable fit from at least
+    /// `options.min_observations` tuning samples.
     /// Correction factor getters always return `None` in this mode.
     pub fn from_regression(
         worker_type: ForwardPassWorkerType,
@@ -228,7 +323,7 @@ impl ForwardPassPerfModel {
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: BucketedRegression::new(&options),
+                regression: RegressionStores::new(worker_type, &options),
             },
             options,
             last_warning: None,
@@ -311,7 +406,7 @@ impl ForwardPassPerfModel {
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
     /// `ForwardPassPerfOptions`. Regression models return `Ok(None)` until
-    /// their single role-bound store has a ready fit. Empty scheduled work
+    /// the selected logical store has a ready fit. Empty scheduled work
     /// returns `Ok(Some(0.0))`.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
@@ -346,7 +441,7 @@ impl ForwardPassPerfModel {
                 else {
                     return Ok(Some(0.0));
                 };
-                Ok(regression.predict(&feature.x))
+                Ok(regression.store(feature.workload_kind).predict(&feature.x))
             }
         }
     }
@@ -373,7 +468,8 @@ impl ForwardPassPerfModel {
     /// empty regions keep the default factor `1.0`. Observations outside the
     /// configured correction-grid workload ranges are ignored by native
     /// correction models. Regression models validate compatibility with their
-    /// fixed worker type and update one two-dimensional constrained linear fit.
+    /// fixed worker type and update the selected logical store's
+    /// two-dimensional constrained linear fit.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
     pub fn tune_with_fpms(
@@ -408,7 +504,9 @@ impl ForwardPassPerfModel {
                     else {
                         continue;
                     };
-                    regression.add_observation(observation.feature.x, observation.wall_time_ms);
+                    regression
+                        .store_mut(observation.feature.workload_kind)
+                        .add_observation(observation.feature.x, observation.wall_time_ms);
                 }
             }
         }
@@ -437,7 +535,7 @@ impl ForwardPassPerfModel {
                 }
             }
             ForwardPassPerfMode::Regression { regression, .. } => {
-                let ready = regression.is_ready();
+                let ready = regression.any_ready();
                 ForwardPassPerfDiagnostics {
                     source: ForwardPassPerfSource::FallbackRegression,
                     readiness: if ready {
@@ -452,6 +550,19 @@ impl ForwardPassPerfModel {
                     last_warning: self.last_warning.clone(),
                 }
             }
+        }
+    }
+
+    /// Return readiness and retained counts for every allocated regression store.
+    ///
+    /// Dedicated roles return one entry. Aggregated returns four entries in
+    /// pure-decode, locally-mixed, cross-rank, pure-prefill order, including
+    /// empty stores. Native models return an empty list. Readiness of the
+    /// selected store determines whether a non-empty query has an estimate.
+    pub fn regression_store_diagnostics(&self) -> Vec<ForwardPassRegressionStoreDiagnostics> {
+        match &self.mode {
+            ForwardPassPerfMode::Native { .. } => Vec::new(),
+            ForwardPassPerfMode::Regression { regression, .. } => regression.diagnostics(),
         }
     }
 
@@ -644,6 +755,7 @@ impl IterationObservation {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RegressionIterationFeatures {
     pub(crate) x: [f64; 2],
+    pub(crate) workload_kind: ForwardPassRegressionWorkloadKind,
 }
 
 impl RegressionIterationFeatures {
@@ -657,6 +769,9 @@ impl RegressionIterationFeatures {
                 "at least one attention-DP rank metric is required".to_string(),
             ));
         }
+        let mut has_prefill = false;
+        let mut has_decode = false;
+        let mut has_locally_mixed = false;
         for metrics in metrics_by_rank {
             validate_forward_pass_metrics(metrics)?;
             let scheduled = &metrics.scheduled_requests;
@@ -673,15 +788,21 @@ impl RegressionIterationFeatures {
                 }
                 _ => {}
             }
+            let rank_has_prefill = scheduled.sum_prefill_tokens > 0;
+            let rank_has_decode = scheduled.num_decode_requests > 0;
+            has_prefill |= rank_has_prefill;
+            has_decode |= rank_has_decode;
+            has_locally_mixed |= rank_has_prefill && rank_has_decode;
         }
 
-        let has_scheduled_work = metrics_by_rank.iter().any(|metrics| {
-            let scheduled = &metrics.scheduled_requests;
-            scheduled.sum_prefill_tokens > 0 || scheduled.num_decode_requests > 0
-        });
-        if !has_scheduled_work {
-            return Ok(None);
-        }
+        use ForwardPassRegressionWorkloadKind::*;
+        let workload_kind = match (has_prefill, has_decode) {
+            (false, false) => return Ok(None),
+            (false, true) => PureDecode,
+            (true, false) => PurePrefill,
+            (true, true) if has_locally_mixed => ContainsLocallyMixed,
+            (true, true) => CrossRankAggregated,
+        };
 
         let alpha = options.regression_attention_kv_weight;
         let beta = options.regression_prefill_attention_pair_weight;
@@ -737,7 +858,7 @@ impl RegressionIterationFeatures {
                 "derived regression features must be finite and nonnegative".to_string(),
             ));
         }
-        Ok(Some(Self { x }))
+        Ok(Some(Self { x, workload_kind }))
     }
 }
 

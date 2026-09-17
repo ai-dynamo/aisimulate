@@ -8,6 +8,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Stable Agentic correlation data carried across replay-owned boundaries.
+///
+/// The static M1 graph already owns request, play, and conversation identity.
+/// Later replay phases may populate lane, tree, parent, and cache identities
+/// without changing the placement or engine request contracts again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgenticRuntimeIdentity {
+    pub request_id: String,
+    pub play_id: String,
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_id: Option<String>,
+}
+
 /// Where the prompt token identities carried by a lowered request came from.
 ///
 /// Length-only specifications still need deterministic token identities for
@@ -39,6 +59,8 @@ pub struct ReplayRequestContext {
     pub metadata: Value,
     #[serde(default)]
     pub prompt_token_source: ReplayPromptTokenSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agentic: Option<AgenticRuntimeIdentity>,
 }
 
 /// One materialized replay request before it enters a generalized engine.

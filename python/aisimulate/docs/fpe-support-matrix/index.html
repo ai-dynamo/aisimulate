@@ -643,8 +643,36 @@ async function fetchOneCsv(path) {
   return result.data;
 }
 
-async function fetchCsv() {
-  const indexPath = `${SUPPORT_MATRIX_PATH}/index.json`;
+function readBranch() {
+  return new URLSearchParams(window.location.search).get('branch') || 'main';
+}
+
+function writeBranch(branch) {
+  const params = new URLSearchParams(window.location.search);
+  if (branch === 'main') params.delete('branch');
+  else params.set('branch', branch);
+  const query = params.toString();
+  window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+}
+
+async function fetchBranches() {
+  if (isSourceTreePreview()) return [{ name: 'main', path: '.', status: 'available', preview: true }];
+  const response = await fetch(`${DEPLOYED_SUPPORT_MATRIX_PATH}/branches.json`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Failed to load FPE branches (HTTP ${response.status})`);
+  const catalog = await response.json();
+  if (catalog.schema_version !== 1 || !Array.isArray(catalog.branches) || !catalog.branches.length) {
+    throw new Error('Invalid FPE branch catalog');
+  }
+  return catalog.branches.map(branch => ({ ...branch, preview: catalog.preview === true }));
+}
+
+async function fetchCsv(branch) {
+  if (!branch) throw new Error(`Unknown FPE branch: ${readBranch()}`);
+  if (branch.status !== 'available') {
+    throw new Error(`No qualified FPE snapshot is available for ${branch.name}.`);
+  }
+  const base = branch.name === 'main' ? SUPPORT_MATRIX_PATH : `${SUPPORT_MATRIX_PATH}/${branch.path}`;
+  const indexPath = `${base}/index.json`;
   const indexRes = await fetch(dataUrl(indexPath), { cache: isLocalPreview() ? 'no-store' : 'default' });
   if (!indexRes.ok) {
     throw new Error(`Failed to fetch FPE support matrix index (HTTP ${indexRes.status})`);
@@ -653,11 +681,14 @@ async function fetchCsv() {
   const index = await indexRes.json();
   const files = Array.isArray(index.files) ? index.files : [];
   if (!files.length) throw new Error('FPE support matrix index is empty');
+  if ((!branch.preview && !index.snapshot) || (index.snapshot && index.snapshot.branch !== branch.name)) {
+    throw new Error('FPE snapshot is missing or belongs to a different branch');
+  }
 
   const chunks = await Promise.all(
-    files.map(file => fetchOneCsv(`${SUPPORT_MATRIX_PATH}/${file}`))
+    files.map(file => fetchOneCsv(`${base}/${file}`))
   );
-  return chunks.flat();
+  return { rows: chunks.flat(), snapshot: index.snapshot || null };
 }
 
 // ── React Components ────────────────────────────────────────────────
@@ -670,7 +701,7 @@ function GitHubIcon() {
   );
 }
 
-function Header() {
+function Header({ branches, branch, onBranchChange }) {
   const [dark, setDark] = useState(() => {
     const saved = localStorage.getItem('sm-theme');
     return saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -690,8 +721,14 @@ function Header() {
           <span className="text-sm text-slate-500 dark:text-slate-400"> - FPE Support Matrix</span></h1>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-          <span className="font-semibold">Data:</span>
-          <code className="px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">main</code>
+          <label htmlFor="fpe-branch" className="font-semibold">Branch:</label>
+          <select id="fpe-branch" value={branch} onChange={event => onBranchChange(event.target.value)}
+                  className="px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+            {!branches.some(item => item.name === branch) && <option value={branch}>{branch}</option>}
+            {branches.map(item => <option key={item.name} value={item.name}>
+              {item.name}{item.status === 'unavailable' ? ' (unavailable)' : ''}
+            </option>)}
+          </select>
         </div>
         <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener"
            title="View on GitHub"
@@ -1428,6 +1465,30 @@ function ErrorBanner({ message, onRetry }) {
   );
 }
 
+function UnavailableNotice({ branch, onRetry }) {
+  const runsUrl = branch.startsWith('release/')
+    ? `https://github.com/${REPO}/actions/workflows/release-nightly-ci.yml`
+    : `https://github.com/${REPO}/actions/workflows/fpe-support-matrix.yml?query=${encodeURIComponent(`branch:${branch}`)}`;
+  return (
+    <section role="status" className="max-w-2xl mx-auto my-16 p-8 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+      <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Results not available yet</h2>
+      <p className="mt-3 text-slate-600 dark:text-slate-300">
+        Support matrix results for <code>{branch}</code> are not currently available.
+        Results will appear here after a successful coverage refresh is published. Please check back later.
+      </p>
+      <div className="mt-6 flex flex-wrap items-center gap-4 text-sm">
+        <button onClick={onRetry}
+                className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold cursor-pointer hover:bg-indigo-700 transition-colors">
+          Check again
+        </button>
+        <a href={runsUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline">
+          View coverage runs
+        </a>
+      </div>
+    </section>
+  );
+}
+
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
@@ -1441,7 +1502,12 @@ function Footer() {
 function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [unavailableBranch, setUnavailableBranch] = useState(null);
   const [csvRows, setCsvRows] = useState([]);
+  const [snapshot, setSnapshot] = useState(null);
+  const [branches, setBranches] = useState([]);
+  const [branch, setBranch] = useState(readBranch);
+  const loadGeneration = useRef(0);
 
   const [activeSystem, setActiveSystem] = useState(null);
   const [searchQuery, setSearchQuery] = useState(readSearchQuery);
@@ -1452,11 +1518,29 @@ function App() {
   const [modal, setModal] = useState(null);
 
   const loadCsv = useCallback(() => {
+    const generation = ++loadGeneration.current;
     setLoading(true);
     setError(null);
-    fetchCsv()
-      .then(rows => {
+    setUnavailableBranch(null);
+    setCsvRows([]);
+    setSnapshot(null);
+    setModal(null);
+    fetchBranches()
+      .then(catalog => {
+        if (generation !== loadGeneration.current) return null;
+        setBranches(catalog);
+        const selected = catalog.find(item => item.name === branch);
+        if (selected?.status === 'unavailable') {
+          setUnavailableBranch(selected.name);
+          return null;
+        }
+        return fetchCsv(selected);
+      })
+      .then(result => {
+        if (!result || generation !== loadGeneration.current) return;
+        const { rows, snapshot } = result;
         setCsvRows(rows);
+        setSnapshot(snapshot);
         const systems = sortSystems([...new Set(rows.map(r => r.System))]);
         if (systems.includes(PREFERRED_DEFAULT_SYSTEM)) {
           setActiveSystem(PREFERRED_DEFAULT_SYSTEM);
@@ -1467,11 +1551,26 @@ function App() {
         setSortAsc(true);
         setSearchQuery(readSearchQuery());
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+      .catch(err => { if (generation === loadGeneration.current) setError(err.message); })
+      .finally(() => { if (generation === loadGeneration.current) setLoading(false); });
+  }, [branch]);
 
-  useEffect(() => { loadCsv(); }, [loadCsv]);
+  useEffect(() => {
+    loadCsv();
+    return () => { ++loadGeneration.current; };
+  }, [loadCsv]);
+
+  const handleBranchChange = useCallback(value => {
+    ++loadGeneration.current;
+    setLoading(true);
+    setError(null);
+    setUnavailableBranch(null);
+    setSnapshot(null);
+    setCsvRows([]);
+    setModal(null);
+    writeBranch(value);
+    setBranch(value);
+  }, []);
 
   const systems = useMemo(() => sortSystems([...new Set(csvRows.map(r => r.System))]), [csvRows]);
   const totalPass = useMemo(() => csvRows.filter(r => r.Status === 'PASS').length, [csvRows]);
@@ -1520,11 +1619,13 @@ function App() {
 
   return (
     <>
-      <Header />
+      <Header branches={branches} branch={branch} onBranchChange={handleBranchChange} />
 
       {error && <ErrorBanner message={error} onRetry={loadCsv} />}
 
-      {loading ? <LoadingSpinner /> : !error && (
+      {loading ? <LoadingSpinner /> : unavailableBranch ? (
+        <UnavailableNotice branch={unavailableBranch} onRetry={loadCsv} />
+      ) : !error && (
         <>
           <Controls
             searchQuery={searchQuery} onSetSearch={handleSetSearchQuery}
@@ -1533,6 +1634,15 @@ function App() {
           />
           <SystemTabs systems={systems} activeSystem={activeSystem} onSelectSystem={handleSelectSystem} />
           <div className="max-w-[1600px] mx-auto p-6">
+            <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+              {snapshot ? <>
+                {'Qualified snapshot: '}
+                <a href={snapshot.run_url} target="_blank" rel="noopener noreferrer" className="underline">
+                  {snapshot.generated_at}
+                </a>{' · '}Source <code>{snapshot.source_sha.slice(0, 12)}</code>
+                {snapshot.tooling_sha && <> · Probe tooling <code>{snapshot.tooling_sha.slice(0, 12)}</code></>}
+              </> : 'Historical repository snapshot; refresh provenance is unavailable.'}
+            </p>
             <Legend />
             <MatrixTable
               matrixRows={matrixRows} columns={columns}

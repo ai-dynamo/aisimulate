@@ -63,7 +63,10 @@ class TRTLLMBackend(BaseBackend):
         # attention width differs from the residual stream, but keeps raw ``h``
         # for the DEEPSEEK family — an existing accounting quirk predating
         # DeepSeek-V4's attention expansion.
-        if model_family in {"GEMMA4MIX", "STEP3P7"}:
+        # DeepSeek-V4 expands attention to num_heads * head_dim, but its
+        # routed-token workspace still carries residual hidden_size features.
+        # VLLMBackend aliases this hook, so the correction applies there too.
+        if model_family in {"GEMMA4MIX", "STEP3P7", "DEEPSEEKV4"}:
             return getattr(model, "_hidden_size", h)
         return h
 

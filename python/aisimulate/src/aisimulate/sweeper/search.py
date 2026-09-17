@@ -41,6 +41,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..power import POWER_FIELDS, normalize_power_summary
 from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_afd_measurements
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
@@ -59,6 +60,7 @@ from .provider import (
     SearchSpaceFragment,
     SweepConfigProvider,
     SweepContext,
+    validate_router_prefill_hardware,
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
@@ -96,18 +98,18 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _EvalResult:
     candidate: Candidate | None
-    observe_metrics: dict[str, float] | None
+    observe_metrics: dict[str, float | None] | None
     outcome: str
     reason: str
     reason_category: ReasonCategory | None
     runner_metadata: dict[str, Any]
-    report_metrics: dict[str, float] | None = None
+    report_metrics: dict[str, float | None] | None = None
     config_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class _ReplayEvaluation:
-    metrics: dict[str, float] | None
+    metrics: dict[str, float | None] | None
     metadata: dict[str, Any]
     outcome: str
     reason: str
@@ -377,31 +379,6 @@ def _validate_provider_replay_spec(name: str, spec: Any) -> None:
         canonical_json(spec)
     except (TypeError, ValueError) as exc:
         raise TypeError(f"adapter {name!r} returned an invalid/non-JSON replay spec: {exc}") from exc
-
-
-def _validate_router_prefill_hardware(spec: AdapterReplaySpec, sample: dict[str, Any]) -> None:
-    """Reject legacy Router AIC hooks that ignore the resolved prefill SKU.
-
-    Inspect the materialized hook so corrected providers and non-AIC policies
-    remain usable without importing Dynamo or interpreting its search schema.
-    """
-    if sample["deployment_mode"] != "disagg":
-        return
-    expected = sample["prefill_hardware_sku"]
-    for hook in spec.runtime_hooks:
-        if hook.provider != "dynamo.router" or hook.kind != "placement_policy":
-            continue
-        router_config = hook.config.get("router_config")
-        if not isinstance(router_config, dict) or router_config.get("router_prefill_load_model") != "aic":
-            continue
-        perf_config = hook.config.get("aic_perf_config")
-        actual = perf_config.get("aic_system") if isinstance(perf_config, dict) else None
-        if actual != expected:
-            raise InfeasibleCandidate(
-                f"Router AIC prefill system {actual!r} does not match effective prefill_hardware_sku={expected!r}; "
-                "use a Dynamo Router provider that consumes the effective prefill SKU, "
-                "or select a non-AIC prefill load model"
-            )
 
 
 def _merge_adapter_spaces(
@@ -711,7 +688,8 @@ def _materialize_one(
                 candidate_context,
             )
             _validate_provider_replay_spec(name, adapter_spec)
-            _validate_router_prefill_hardware(adapter_spec, sample)
+            if sample["deployment_mode"] == "disagg":
+                validate_router_prefill_hardware(adapter_spec, sample["prefill_hardware_sku"])
             # Frozen dataclasses do not freeze nested JSON containers. Snapshot
             # the return value so an adapter can safely reuse an output buffer
             # without mutating candidates already prepared in this round.
@@ -814,7 +792,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 reason="replay failed: TypeError: runner report metadata must be a dictionary",
                 reason_category=ReasonCategory.RUNNER_CONTRACT,
             )
-        metrics: dict[str, float] = {}
+        metrics: dict[str, float | None] = {}
         for name, value in report.metrics.items():
             if type(name) is not str:
                 return _ReplayEvaluation(
@@ -824,6 +802,9 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                     reason=(f"replay failed: TypeError: runner metric names must be strings, got {name!r}"),
                     reason_category=ReasonCategory.INVALID_METRICS,
                 )
+            if value is None and name in POWER_FIELDS:
+                metrics[name] = None
+                continue
             if isinstance(value, bool) or not isinstance(value, Real):
                 return _ReplayEvaluation(
                     metrics=None,
@@ -843,6 +824,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 )
             metrics[name] = normalized
         try:
+            metrics.update(normalize_power_summary(metrics))
             validate_json_value(report.metadata, path="runner report metadata")
         except (TypeError, ValueError) as exc:
             return _ReplayEvaluation(
@@ -1340,7 +1322,7 @@ class Sweeper:
                 reason: str = "",
                 reason_category: ReasonCategory | None = None,
                 runner_metadata: dict[str, Any] | None = None,
-                provenance_metrics: dict[str, float] | None = None,
+                provenance_metrics: dict[str, float | None] | None = None,
                 replay_spec: ReplaySpec | None = None,
             ) -> None:
                 tally[outcome] += 1
@@ -1358,11 +1340,12 @@ class Sweeper:
                 else:
                     status = CandidateStatus.FAILED
                 snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
-                record_metrics = deepcopy(
+                reported_metrics = (
                     provenance_metrics
                     if provenance_metrics is not None
-                    else (candidate.metrics if candidate is not None else {})
+                    else (candidate.metrics if candidate is not None else None)
                 )
+                record_metrics = deepcopy(reported_metrics) if reported_metrics is not None else {}
                 record = CandidateRecord(
                     candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
                     status=status,
@@ -1385,7 +1368,7 @@ class Sweeper:
                     provenance=make_candidate_provenance(
                         snapshot,
                         replay_spec=replay_spec,
-                        metrics=record_metrics,
+                        metrics=reported_metrics,
                         runner_metadata=runner_metadata,
                     ),
                 )
