@@ -15,7 +15,7 @@ import aisimulate.resources as resources
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import ResourceConfig, split_config_sections
 from aisimulate.resources import (
-    GIB,
+    GB,
     HostResources,
     ResourceEstimate,
     ResourceLimitError,
@@ -30,7 +30,7 @@ from aisimulate.resources import (
 
 @pytest.fixture
 def host():
-    return HostResources(32 * GIB, 16 * GIB, 8)
+    return HostResources(32 * GB, 16 * GB, 8)
 
 
 def _config():
@@ -60,23 +60,52 @@ def test_reported_dynamo_allocation_is_rejected_without_materialization(host):
     plan = build_plan(bounds, stack="dynamo", host=host, requested_parallelism=8)
     assert plan["estimate"]["request_count"] == 6_451_200
     assert plan["estimate"]["input_token_bytes"] == 264_241_152_000
-    assert plan["estimate"]["lower_bound_bytes"] / GIB == 246.09375
+    assert plan["estimate"]["lower_bound_bytes"] / GB == 264.241152
     assert plan["effective_parallelism"] == 0
-    with pytest.raises(ResourceLimitError, match="246.09 GiB"):
+    with pytest.raises(ResourceLimitError, match="264.24 GB"):
         require_plan(plan)
     assert raw == original
 
 
 def test_budget_reserves_headroom_and_leaves_cpu(host):
     budget = resolve_budget(ResourceConfig(), host)
-    assert budget["memory_limit_bytes"] == 16 * GIB - int(3.2 * GIB)
-    assert budget["reserved_host_memory_bytes"] == int(3.2 * GIB)
+    assert budget["memory_limit_bytes"] == 14_400_000_000
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
     assert budget["cpu_limit"] == 7
-    assert resolve_budget(ResourceConfig(), HostResources(32 * GIB, 16 * GIB, 0.5))["cpu_limit"] == 1
+    assert resolve_budget(ResourceConfig(), HostResources(32 * GB, 16 * GB, 0.5))["cpu_limit"] == 1
+
+
+@pytest.mark.parametrize(
+    ("available", "expected_budget"),
+    [
+        (900_000_000, 0),
+        (1_000_000_000, 0),
+        (1_000_000_001, 1),
+        (4_000_000_000, 3_000_000_000),
+        (16_000_000_000, 14_400_000_000),
+    ],
+)
+def test_default_reserve_is_one_decimal_gb_on_large_hosts(available, expected_budget):
+    budget = resolve_budget(ResourceConfig(), HostResources(512 * GB, available, 8))
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
+    assert budget["memory_limit_bytes"] == expected_budget
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected_reserve", "expected_budget"),
+    [
+        ({"reserve_memory_gb": 1.5}, 1_500_000_000, 2_500_000_000),
+        ({"reserve_memory_fraction": 0.1}, 3_200_000_000, 800_000_000),
+    ],
+)
+def test_explicit_reserve_overrides(settings, expected_reserve, expected_budget):
+    budget = resolve_budget(ResourceConfig(**settings), HostResources(32 * GB, 4 * GB, 8))
+    assert budget["reserved_host_memory_bytes"] == expected_reserve
+    assert budget["memory_limit_bytes"] == expected_budget
 
 
 def test_low_memory_never_falls_back_to_one_worker():
-    host = HostResources(8 * GIB, GIB, 4)
+    host = HostResources(8 * GB, GB, 4)
     plan = build_plan({"isl": 8, "osl": 2, "request_count": 1}, stack="engine", host=host)
     assert plan["effective_parallelism"] == 0
     with pytest.raises(ResourceLimitError):
@@ -84,19 +113,19 @@ def test_low_memory_never_falls_back_to_one_worker():
 
 
 def test_explicit_budgets_are_validated_against_live_limits(host):
-    with pytest.raises(ResourceLimitError, match="headroom"):
-        resolve_budget(ResourceConfig(memory_limit_gib=20.0), host)
+    with pytest.raises(ResourceLimitError, match="20.00 GB exceeds available headroom 15.00 GB"):
+        resolve_budget(ResourceConfig(memory_limit_gb=20.0), host)
     with pytest.raises(ResourceLimitError, match="CPU allowance"):
         resolve_budget(ResourceConfig(cpu_limit=16), host)
-    assert resolve_budget(ResourceConfig(memory_limit_gib=4.0, cpu_limit=2), host)["memory_limit_bytes"] == 4 * GIB
+    assert resolve_budget(ResourceConfig(memory_limit_gb=4.0, cpu_limit=2), host)["memory_limit_bytes"] == 4_000_000_000
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("memory_limit_gib", True),
-        ("memory_limit_gib", 0),
-        ("memory_limit_gib", float("inf")),
+        ("memory_limit_gb", True),
+        ("memory_limit_gb", 0),
+        ("memory_limit_gb", float("inf")),
         ("cpu_limit", True),
         ("reserve_memory_fraction", 1.0),
     ],
@@ -115,16 +144,16 @@ def test_cgroup_limits_use_ancestors_and_current_usage(tmp_path, host):
     child = base / "parent/child"
     child.mkdir(parents=True)
     for directory, limit, usage, cpu in [
-        (base, 32 * GIB, 4 * GIB, "max 100000"),
-        (child.parent, 8 * GIB, 7 * GIB, "150000 100000"),
-        (child, 6 * GIB, GIB, "max 100000"),
+        (base, 32 * GB, 4 * GB, "max 100000"),
+        (child.parent, 8 * GB, 7 * GB, "150000 100000"),
+        (child, 6 * GB, GB, "max 100000"),
     ]:
         (directory / "memory.max").write_text(str(limit))
         (directory / "memory.current").write_text(str(usage))
         (directory / "cpu.max").write_text(cpu)
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 6 * GIB
-    assert actual.available_memory_bytes == GIB
+    assert actual.total_memory_bytes == 6 * GB
+    assert actual.available_memory_bytes == GB
     assert actual.cpu_count == 1.5
     (child / "memory.current").unlink()
     assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 0
@@ -156,12 +185,12 @@ def test_plugin_estimate_is_versioned(host):
 
 def test_execution_section_is_core_and_roundtrips():
     raw = _config()
-    raw["execution"] = {"resources": {"memory_limit_gib": 4.0}}
+    raw["execution"] = {"resources": {"memory_limit_gb": 4.0}}
     core, adapters = split_config_sections(raw, command="recommend")
     assert not adapters
     config = CoreRecommendationConfig.model_validate(core)
     roundtrip = CoreRecommendationConfig.model_validate(config.model_dump(mode="json"))
-    assert roundtrip.execution.resources.memory_limit_gib == 4.0
+    assert roundtrip.execution.resources.memory_limit_gb == 4.0
 
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
@@ -242,13 +271,13 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     cpu = tmp_path / "sys/fs/cgroup/cpu"
     memory.mkdir(parents=True)
     cpu.mkdir(parents=True)
-    (memory / "memory.limit_in_bytes").write_text(str(4 * GIB))
-    (memory / "memory.usage_in_bytes").write_text(str(GIB))
+    (memory / "memory.limit_in_bytes").write_text(str(4 * GB))
+    (memory / "memory.usage_in_bytes").write_text(str(GB))
     (cpu / "cpu.cfs_quota_us").write_text("50000")
     (cpu / "cpu.cfs_period_us").write_text("100000")
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 4 * GIB
-    assert actual.available_memory_bytes == 3 * GIB
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
     assert actual.cpu_count == 0.5
 
 
@@ -289,11 +318,11 @@ def test_namespace_relative_descendant_keeps_ancestor_limits(tmp_path, host):
     (proc / "self/mountinfo").write_text("42 30 0:27 /container /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
     root = tmp_path / "sys/fs/cgroup"
     (root / "child").mkdir(parents=True)
-    (root / "memory.max").write_text(str(4 * GIB))
-    (root / "memory.current").write_text(str(GIB))
+    (root / "memory.max").write_text(str(4 * GB))
+    (root / "memory.current").write_text(str(GB))
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 4 * GIB
-    assert actual.available_memory_bytes == 3 * GIB
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
 
 
 def test_missing_container_mount_probe_fails_closed(tmp_path, host):

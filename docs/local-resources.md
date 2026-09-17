@@ -21,20 +21,27 @@ Optional resource settings, with defaults shown:
 ```yaml
 execution:
   resources:
-    memory_limit_gib: auto
+    memory_limit_gb: auto
     cpu_limit: auto
-    reserve_memory_gib: 2.0
-    reserve_memory_fraction: 0.1
+    reserve_memory_gb: 1.0
+    reserve_memory_fraction: 0.0
     available_memory_fraction: 0.9
 ```
 
-Let A be available RAM and R the larger of 2 GiB and 10% of effective physical
-RAM. The default memory budget is max(0, min(0.9 A, A - R)). Linux cgroup v1/v2
-memory limits, current usage, ancestor limits, affinity and CPU quotas constrain
-the host snapshot. Swap does not increase the budget. Automatic CPU selection
-leaves one CPU free when more than one whole CPU is available. An explicit
-positive `memory_limit_gib` or integer `cpu_limit` must fit the live host limits.
-Unavailable resource probes stop execution with an explanation.
+Memory settings use decimal GB: 1 GB is 1,000,000,000 bytes. Let A be available
+RAM. The default host reserve is 1 GB, with no additional percentage-of-total-RAM
+reserve. The default memory budget is max(0, min(0.9 A, A - 1 GB)); the separate
+90%-of-available-RAM cap can leave more than 1 GB unused. If configured,
+`reserve_memory_fraction` raises the reserve to the larger of `reserve_memory_gb`
+and that fraction of effective physical RAM.
+
+Linux cgroup v1/v2 memory limits, current usage, ancestor limits, affinity and CPU
+quotas constrain the host snapshot. Swap does not increase the budget. Automatic
+CPU selection leaves one CPU free when more than one whole CPU is available.
+CPU capacity caps the number of parallel simulations; it does not estimate CPU
+speed or simulation duration. An explicit positive `memory_limit_gb` or integer
+`cpu_limit` must fit the live host limits. Unavailable resource probes stop
+execution with an explanation.
 
 The plan reserves coordinator RSS plus 256 MiB and a 512 MiB baseline within
 each candidate estimate. Recommendation execution parallelism is the minimum
@@ -57,7 +64,7 @@ observing a fictitious model score.
 
 For a synthetic Dynamo workload with 64,512 concurrent requests, 100 requests
 per load unit and 10,240 input tokens, the compatibility estimator calculates
-6,451,200 requests and 264,241,152,000 bytes (246.09375 GiB) of eager input-token
+6,451,200 requests and 264,241,152,000 bytes (about 264.24 GB) of eager input-token
 vectors alone. A laptop budget rejects this request before request allocation.
 This is an allocation calculation, not measured RSS or a diagnosis of an OS
 panic. The regression tests use an allocation sentinel; they do not allocate

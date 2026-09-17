@@ -23,7 +23,7 @@ import psutil
 
 from .config.common import ResourceConfig
 
-GIB = 1024**3
+GB = 1_000_000_000
 MIB = 1024**2
 WORKER_BASELINE_BYTES = 512 * MIB
 COORDINATOR_RESERVE_BYTES = 256 * MIB
@@ -151,16 +151,15 @@ def discover_host() -> HostResources:
 
 
 def resolve_budget(policy: ResourceConfig, host: HostResources) -> dict[str, Any]:
-    reserve = max(int(policy.reserve_memory_gib * GIB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
+    reserve = max(int(policy.reserve_memory_gb * GB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
     headroom = max(0, host.available_memory_bytes - reserve)
-    if policy.memory_limit_gib == "auto":
+    if policy.memory_limit_gb == "auto":
         budget = min(int(policy.available_memory_fraction * host.available_memory_bytes), headroom)
     else:
-        budget = int(policy.memory_limit_gib * GIB)
+        budget = int(policy.memory_limit_gb * GB)
         if budget > headroom:
             raise ResourceLimitError(
-                f"requested host memory budget {budget / GIB:.2f} GiB "
-                f"exceeds available headroom {headroom / GIB:.2f} GiB"
+                f"requested host memory budget {budget / GB:.2f} GB exceeds available headroom {headroom / GB:.2f} GB"
             )
     cpus = max(1, math.floor(host.cpu_count) - (1 if host.cpu_count > 1 else 0))
     if policy.cpu_limit != "auto":
@@ -421,8 +420,8 @@ def require_plan(plan: dict[str, Any]) -> None:
         estimate = plan["estimate"]
         raise ResourceLimitError(
             f"resource_limited: {plan['reason']}; allocation model={estimate['allocation_model']}, "
-            f"requests={estimate['request_count']}, lower bound={estimate['lower_bound_bytes'] / GIB:.2f} GiB, "
-            f"host budget={plan['budget']['memory_limit_bytes'] / GIB:.2f} GiB. "
+            f"requests={estimate['request_count']}, lower bound={estimate['lower_bound_bytes'] / GB:.2f} GB, "
+            f"host budget={plan['budget']['memory_limit_bytes'] / GB:.2f} GB. "
             "Choose an explicit smaller workload or an execution host with sufficient resources.",
             plan=plan,
         )

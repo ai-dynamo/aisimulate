@@ -111,10 +111,10 @@ class EvaluationConfig(StrictModel):
 class ResourceConfig(StrictModel):
     """Execution-host limits, independent of the simulated GPU configuration."""
 
-    memory_limit_gib: PositiveFiniteFloat | Literal["auto"] = "auto"
+    memory_limit_gb: PositiveFiniteFloat | Literal["auto"] = "auto"
     cpu_limit: PositiveStrictInt | Literal["auto"] = "auto"
-    reserve_memory_gib: float = Field(default=2.0, strict=True, ge=0, allow_inf_nan=False)
-    reserve_memory_fraction: float = Field(default=0.1, strict=True, ge=0, lt=1, allow_inf_nan=False)
+    reserve_memory_gb: float = Field(default=1.0, strict=True, ge=0, allow_inf_nan=False)
+    reserve_memory_fraction: float = Field(default=0.0, strict=True, ge=0, lt=1, allow_inf_nan=False)
     available_memory_fraction: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
 
 
