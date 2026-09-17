@@ -41,11 +41,50 @@ and [Hopper absorbed MLA](https://github.com/sgl-project/sglang/blob/4289f36ef96
 The installed Blackwell backend source hash matches that immutable revision:
 `b83137cfc31a095425062aab3d80835cd670b4190cf13ada14c7802b63fddb8d`.
 
-The reported 74 Blackwell failures now have a measured FP8/FP8 profile slice.
-The reported 10 H200 FP8/BF16 queries require a predictor precision-mapping
-fix: the measured serving path uses BF16 compute. No FP8/BF16 rows were
-fabricated. The original 84-point manifest was unavailable, so this report
-does not claim a completed 84-point end-to-end replay.
+The 74 Blackwell failures now have a measured FP8/FP8 profile slice and pass
+the original replay. The 10 H200 FP8/BF16 queries still require a predictor
+precision-mapping fix: the measured serving path uses BF16 compute.
+No FP8/BF16 rows were fabricated.
+
+## Original 84-point replay
+
+The exact point set was recovered from the E2E Gym
+`inferencex-coverage-20260917` audit, release `db-dump/2026-09-14`.
+The source `predictions.json.gz` SHA256 is
+`dca0cee0e750295e6d7f7d33af8b085d38276ecb63a00a0acdee8c8deebc2d6b`.
+
+| GPU | Original points | Baseline failures | New-profile successes | Remaining failures |
+| --- | ---: | ---: | ---: | ---: |
+| B300 | 45 | 45 | 45 | 0 |
+| B200 | 29 | 29 | 29 | 0 |
+| H200 | 10 | 10 | 0 | 10 |
+| Total | 84 | 84 | 74 | 10 |
+
+- Both arms used the original AISimulate runtime from
+  `93419f7ca0cf971b56c843d19a456b8af82e4bcc`. Python runner, AIC materializer,
+  and both native extension hashes match the original audit.
+- Comparing 1,592 installed package files found exactly three differences:
+  the B200/B300/H200 `context_mla_perf.parquet` files. This isolates the
+  profile change from subsequent simulator changes on main.
+- All 84 original error messages were reproduced. Baseline and new-profile
+  replay specs were byte-identical for every point. Original source fields,
+  query version `0.5.14`, quantization, and workload settings were preserved.
+  The Gym adapter was pinned to `734e9cf31fdbca74a1be496a309026ab7a58f119`;
+  its hash is recorded separately from the original audit adapter.
+- The 74 successful points completed all 18,950 expected requests, with
+  positive finite metrics and zero truncated outputs. All 10 H200 failures
+  retain the original error and have no prediction metrics. No fallback was used.
+- Source silicon images were SGLang `0.5.12-cu130` (65 points) and
+  `0.5.12.post1` (19 points), while the original profile query was `0.5.14`.
+  This replay establishes coverage recovery, not version-matched accuracy.
+- An initial audit wrapper incorrectly required optional `max_model_len`.
+  Its logs and native reports are retained; both arms were rerun after fixing
+  the wrapper. No engine or deployment setting changed for that retry.
+
+Point identities, metrics, errors, commands, and hashes are in the
+[replay evidence](mla-precision-20260917-replay.json). Full inputs, native
+per-request reports, scripts, and retry logs are retained locally at
+`/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/`.
 
 ## Runtime and measurement
 
