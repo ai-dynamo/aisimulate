@@ -1776,7 +1776,7 @@ def test_release_artifact_handoffs_cannot_mix_versions():
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
 
 
-def _nightly_condition(job: str, **overrides) -> bool:
+def _nightly_condition(job: str, *, cancelled: bool = False, **overrides) -> bool:
     """Evaluate the checked-in predicate with explicit Actions context values."""
     values = {
         "github.event_name": "schedule",
@@ -1794,8 +1794,24 @@ def _nightly_condition(job: str, **overrides) -> bool:
     }
     expression = _workflow("nightly-ci.yml")["jobs"][job]["if"]
     expression = re.sub(r"(?:github|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
-    expression = expression.replace("!cancelled()", "True").replace("&&", " and ").replace("||", " or ")
+    expression = expression.replace("!cancelled()", repr(not cancelled)).replace("&&", " and ").replace("||", " or ")
     return eval(expression, {"__builtins__": {}})
+
+
+@pytest.mark.parametrize("job", ["license-evidence", "fpe-support-matrix"])
+def test_nightly_validation_survives_skipped_approval_but_requires_successful_inputs(job):
+    configuration = _workflow("nightly-ci.yml")["jobs"][job]
+    # A status function overrides Actions' implicit success(), which would
+    # otherwise reject the skipped approval ancestor of a scheduled first run.
+    assert "!cancelled()" in configuration["if"]
+    assert _nightly_condition(job)
+    assert not _nightly_condition(job, cancelled=True)
+    for dependency in configuration["needs"]:
+        if dependency == "changes-guard":
+            assert not _nightly_condition(job, **{"needs.changes-guard.outputs.should-build": "false"})
+            continue
+        for result in ("failure", "skipped", "cancelled"):
+            assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
 
 
 @pytest.mark.parametrize("job", ["build-artifacts", "trigger-gitlab-security"])
