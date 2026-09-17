@@ -89,3 +89,11 @@ public overview, qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. See the root
 THIRD_PARTY_NOTICES.md and LICENSE. Plotly and other tabs are not included.
+
+## Isolated pre-merge validation
+
+This temporary branch uses the existing manual Pages workflow entry point to
+run the FPM matrix resolver and reusable branch workflow from PR #253. It has
+no Pages deployment job. Dispatch `pages.yml` on
+`simonec/fpm-gym-pipeline-validation` with an eligible branch and exact source
+SHA. Production publication rejects these non-main workflow artifacts.

@@ -1,185 +1,133 @@
-name: GitHub Pages
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: FPM Accuracy Validation
 
 on:
   workflow_dispatch:
-  schedule:
-    # Refresh committed release snapshots; prediction campaigns run separately.
-    - cron: "17 9 * * *"
-  workflow_run:
-    # Retain the old main workflow name for runs started before the rename.
-    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI", "E2E Accuracy Matrix", "FPM Accuracy Matrix"]
-    types: [completed]
-    branches: [main, 'release/**']
-  pull_request:
-    paths:
-      - ".github/workflows/pages.yml"
-      - "scripts/build_pages_site.py"
-      - "scripts/build_e2e_accuracy_overview.py"
-      - "scripts/prepare_fpe_pages.py"
-      - "scripts/prepare_e2e_accuracy_pages.py"
-      - "scripts/run_e2e_accuracy.py"
-      - "scripts/fetch_accuracy_measurements.py"
-      - ".github/workflows/e2e-accuracy.yml"
-      - ".github/workflows/e2e-accuracy-branch.yml"
-      - ".github/e2e-accuracy-dataset.json"
-      - "tests/test_pages_site.py"
-      - "tests/test_e2e_accuracy_overview.py"
-      - "tests/test_e2e_accuracy_ui.mjs"
-      - "tests/test_e2e_accuracy_nightly.py"
-      - "tests/test_e2e_accuracy_workflow.mjs"
-      - "scripts/run_release_fpe.py"
-      - ".github/workflows/release-nightly-ci.yml"
-      - ".github/workflows/fpe-release-qualify.yml"
-      - "scripts/check_fpe_support_matrix_browser.py"
-      - "pages/fpm-accuracy/**"
-      - "scripts/fpm_accuracy/**"
-      - "scripts/run_fpm_accuracy.py"
-      - "scripts/prepare_fpm_accuracy_pages.py"
-      - "scripts/check_fpm_accuracy_browser.py"
-      - "tests/fpm_accuracy/**"
-      - "tests/test_fpm_accuracy_workflow.mjs"
-      - ".github/workflows/fpm-accuracy.yml"
-      - ".github/workflows/fpm-accuracy-branch.yml"
-      - "pages/index.html"
-      - "pages/support-matrix/**"
-      - "pages/e2e-accuracy/**"
-      - "pages/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/pages.yml"
-      - "scripts/build_pages_site.py"
-      - "scripts/build_e2e_accuracy_overview.py"
-      - "scripts/prepare_fpe_pages.py"
-      - "scripts/prepare_e2e_accuracy_pages.py"
-      - "scripts/run_e2e_accuracy.py"
-      - "scripts/fetch_accuracy_measurements.py"
-      - ".github/workflows/e2e-accuracy.yml"
-      - ".github/workflows/e2e-accuracy-branch.yml"
-      - ".github/e2e-accuracy-dataset.json"
-      - "scripts/check_fpe_support_matrix_browser.py"
-      - "scripts/run_release_fpe.py"
-      - ".github/workflows/release-nightly-ci.yml"
-      - ".github/workflows/fpe-release-qualify.yml"
-      - "pages/fpm-accuracy/**"
-      - "scripts/fpm_accuracy/**"
-      - "scripts/run_fpm_accuracy.py"
-      - "scripts/prepare_fpm_accuracy_pages.py"
-      - "scripts/check_fpm_accuracy_browser.py"
-      - "tests/fpm_accuracy/**"
-      - "tests/test_fpm_accuracy_workflow.mjs"
-      - ".github/workflows/fpm-accuracy.yml"
-      - ".github/workflows/fpm-accuracy-branch.yml"
-      - "pages/index.html"
-      - "pages/support-matrix/**"
-      - "pages/e2e-accuracy/**"
-      - "pages/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+    inputs:
+      expected_sha:
+        description: Full source commit to evaluate (must belong to the selected branch)
+        required: true
+        type: string
+      branch:
+        description: Evaluated main or release >= 0.12.0 branch
+        required: true
+        default: main
+        type: string
 
 permissions:
-  # Build and validate repository content without Pages access.
   contents: read
 
+# Every completed campaign keeps its own provenance; never cancel a release
+# evaluation merely because a scheduled campaign starts.
 concurrency:
-  group: pages
+  group: fpm-accuracy-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.ref == 'refs/heads/main' &&
-      (github.event_name != 'workflow_run' ||
-      ((github.event.workflow_run.conclusion == 'success' ||
-      ((github.event.workflow_run.name == 'E2E Accuracy Matrix' ||
-      github.event.workflow_run.name == 'FPM Accuracy Matrix') &&
-      github.event.workflow_run.conclusion == 'failure')) &&
-      github.event.workflow_run.head_repository.full_name == github.repository)))
+  resolve:
+    name: Resolve exact accuracy source
+    if: github.repository == 'ai-dynamo/aisimulate' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/simonec/fpm-gym-pipeline-validation'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     permissions:
       contents: read
       actions: read
+    outputs:
+      matrix: ${{ steps.source.outputs.matrix }}
+      hf_revision: ${{ steps.source.outputs.hf_revision }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          # workflow_run payloads never choose executable repository content.
-          ref: ${{ github.event_name == 'pull_request' && github.ref || 'main' }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Fetch release snapshot refs
-        run: git fetch --no-tags --prune origin "+refs/heads/release/*:refs/remotes/origin/release/*"
-      - name: Prepare qualified main and release FPE snapshots
-        if: github.event_name != 'pull_request'
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        id: source
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-        run: python scripts/prepare_fpe_pages.py --repository "$GH_REPOSITORY" --output-dir fpe-pages-data
-      - name: Prepare qualified accuracy snapshots
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
-      - name: Prepare qualified FPM accuracy snapshots
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/prepare_fpm_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-fpm"
-      - name: Build public deployment with qualified FPE and accuracy data
-        if: github.event_name != 'pull_request'
-        run: |
-          python scripts/build_pages_site.py --accuracy-refs --output-dir _site \
-            --fpe-data-dir fpe-pages-data --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy" \
-            --fpm-artifacts "${RUNNER_TEMP}/qualified-fpm"
-      - name: Build pull request preview from repository data
-        if: github.event_name == 'pull_request'
-        run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
-      - name: Test public artifact and accuracy contracts
-        run: |
-          python -m pip install pytest==8.4.2 -r scripts/fpm_accuracy/requirements.txt
-          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/fpm_accuracy -q
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EVALUATED_BRANCH: ${{ inputs.branch }}
         with:
-          node-version: "22"
-      - name: Test accuracy UI state
-        run: node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs tests/test_fpm_accuracy_workflow.mjs
-      - name: Test FPE branch selection in Chromium
-        run: |
-          python -m pip install playwright==1.63.0
-          python -m playwright install --with-deps chromium
-          python scripts/check_fpe_support_matrix_browser.py
-          python scripts/check_fpm_accuracy_browser.py
-      - name: Upload GitHub Pages artifact
-        if: >-
-          github.event_name != 'pull_request' &&
-          github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: _site
+          script: |
+            const {createHash} = require('node:crypto');
+            function eligibleBranch(name) {
+              if (name === 'main') return true;
+              const match = /^release\/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(name || '');
+              if (!match) return false;
+              const [major, minor] = match.slice(1).map(Number);
+              return major > 0 || minor >= 12;
+            }
+            const hf = await fetch('https://huggingface.co/api/datasets/nvidia/aisimulate-fpm-dataset/revision/main');
+            if (!hf.ok) throw new Error('Cannot resolve HF dataset revision');
+            const hfRevision = (await hf.json()).sha;
+            if (!/^[0-9a-f]{40}$/.test(hfRevision || '')) throw new Error('Invalid HF revision');
+            core.setOutput('hf_revision', hfRevision);
+            let sha = process.env.EXPECTED_SHA;
+            let branch = process.env.EVALUATED_BRANCH;
+            let nightlyRun = '';
+            if (context.eventName === 'schedule') {
+              sha = context.sha;
+              branch = 'main';
+              const {data} = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'nightly-ci.yml', head_sha: sha,
+                branch: 'main', event: 'schedule', per_page: 10,
+              });
+              for (const run of data.workflow_runs) {
+                if (run.head_sha !== sha || run.head_branch !== 'main' || run.event !== 'schedule' ||
+                    run.path !== '.github/workflows/nightly-ci.yml' ||
+                    run.repository.full_name !== context.repo.owner + '/' + context.repo.repo ||
+                    run.head_repository.full_name !== run.repository.full_name) {
+                  throw new Error('Untrusted nightly producer');
+                }
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                  ...context.repo, run_id: run.id, filter: 'latest', per_page: 100,
+                });
+                if (!jobs.some(job => job.name === 'Build artifacts (amd64)' && job.conclusion === 'success')) {
+                  continue;
+                }
+                const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64' && !artifact.expired)) {
+                  nightlyRun = String(run.id);
+                  break;
+                }
+              }
+              core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
+                'No reusable wheel for this main SHA; build the exact revision.');
+            }
+            const entries = [{branch, sha, nightly_run: nightlyRun}];
+            if (context.eventName === 'schedule') {
+              const branches = await github.paginate(github.rest.repos.listBranches, {
+                ...context.repo, per_page: 100,
+              });
+              for (const release of branches.filter(item => item.name !== 'main' && eligibleBranch(item.name))
+                .sort((a, b) => a.name.localeCompare(b.name))) {
+                entries.push({branch: release.name, sha: release.commit.sha, nightly_run: ''});
+              }
+            }
+            if (entries.length > 256) throw new Error('Accuracy matrix exceeds the 256-job limit');
+            const keys = new Set();
+            for (const entry of entries) {
+              if (!/^[0-9a-f]{40}$/.test(entry.sha || '') ||
+                  !eligibleBranch(entry.branch)) {
+                throw new Error('Specify a full source SHA and main or release >= 0.12.0 branch');
+              }
+              entry.artifact_key = createHash('sha256').update(entry.branch).digest('hex').slice(0, 16);
+              if (keys.has(entry.artifact_key)) throw new Error('Duplicate accuracy branch artifact key');
+              keys.add(entry.artifact_key);
+            }
+            core.setOutput('matrix', JSON.stringify({include: entries}));
 
-  deploy:
-    if: >-
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
+  branches:
+    name: FPM accuracy (${{ matrix.branch }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/fpm-accuracy-branch.yml
     permissions:
-      # Read the private Pages configuration and publish the site.
-      pages: write
-      # Authenticate the deployment to GitHub Pages.
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      contents: read
+      actions: read
+    with:
+      sha: ${{ matrix.sha }}
+      branch: ${{ matrix.branch }}
+      artifact_key: ${{ matrix.artifact_key }}
+      nightly_run: ${{ matrix.nightly_run }}
+      hf_revision: ${{ needs.resolve.outputs.hf_revision }}
