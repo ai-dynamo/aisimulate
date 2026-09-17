@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -236,10 +237,15 @@ def _run_process(
     RSS polling is best effort on macOS. Preallocation guards remain mandatory.
     stdout/stderr are inherited rather than accumulated in parent memory.
     """
-    host = discover_host()
-    budget = resolve_budget(policy, host)
-    if budget["memory_limit_bytes"] <= host.process_memory_bytes:
-        raise ResourceLimitError("no host memory remains for an execution process")
+    host = budget = None
+    try:
+        host = discover_host()
+        budget = resolve_budget(policy, host)
+        if budget["memory_limit_bytes"] <= host.process_memory_bytes:
+            raise ResourceLimitError("no host memory remains for an execution process")
+    except ResourceLimitError as exc:
+        exc.plan = {"host": asdict(host) if host is not None else None, "budget": budget, **exc.plan}
+        raise
     env = dict(os.environ)
     env.update(dict.fromkeys(_THREAD_VARIABLES, "1"))
     env["TOKENIZERS_PARALLELISM"] = "false"
@@ -316,10 +322,10 @@ def _run_process(
     }
 
 
-def _save_runtime_report(output: str, report: dict[str, Any], *, overwrite: bool) -> None:
+def _save_report(output: str, filename: str, report: dict[str, Any], *, overwrite: bool) -> None:
     root = Path(output)
     root.mkdir(parents=True, exist_ok=True)
-    path = root / "resource-runtime.json"
+    path = root / filename
     if overwrite and (path.is_file() or path.is_symlink()):
         path.unlink()
     # Exclusive creation prevents a diagnostic from overwriting unrelated evidence.
@@ -372,6 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
         event_output = str(output / "execution-events.jsonl")
+    resource_plan = None
     try:
         report = run_process(
             [sys.executable, "-m", "aisimulate.resource_worker", "cli", *arguments],
@@ -379,6 +386,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             events_output=event_output,
         )
     except ResourceLimitError as exc:
+        resource_plan = {
+            "schema_version": 1,
+            "stack": args.stack,
+            "host": None,
+            "budget": None,
+            "estimate": None,
+            "requested_resources": policy.model_dump(mode="json"),
+            **exc.plan,
+        }
         report = {
             "schema_version": 1,
             "status": "resource_limited",
@@ -395,10 +411,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if report["status"] != "completed":
         sys.stderr.write(f"aisimulate: {report.get('reason', report['status'])}\n")
     if raw is not None:
-        try:
-            _save_runtime_report(args.output_dir, report, overwrite=args.overwrite)
-        except (OSError, ValueError) as exc:
-            sys.stderr.write(f"could not save resource runtime report: {exc}\n")
+        for filename, payload in (("resource-plan.json", resource_plan), ("resource-runtime.json", report)):
+            if payload is not None:
+                try:
+                    _save_report(args.output_dir, filename, payload, overwrite=args.overwrite)
+                except (OSError, ValueError) as exc:
+                    sys.stderr.write(f"could not save {filename}: {exc}\n")
     if report["status"] == "resource_limited":
         return 3
     if report["status"] == "cancelled":

@@ -60,9 +60,11 @@ separately from `evaluated`; the selected recommendations cover only completed
 evaluations, not every requested candidate.
 
 Resource checks run automatically on every `predict` and `recommend` command.
-A refused prediction exits with status 3 before creating its runner and writes
+A prediction refused by preflight exits with status 3 before creating its runner and writes
 `resource-plan.json`, including the host snapshot, reserved memory, allocation
-model, lower bound and estimated peak. Admitted work proceeds automatically;
+model, lower bound and estimated peak. Refusals during earlier host discovery or
+budget resolution also write the plan, with null for any unavailable host, budget
+or workload estimate. Admitted work proceeds automatically;
 there is no separate dry-run option.
 
 Execution runs inside an owned subprocess tree. The supervisor fixes the memory

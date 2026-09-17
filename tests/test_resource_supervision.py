@@ -157,7 +157,7 @@ def _cli_arguments(tmp_path):
 @pytest.mark.parametrize("detailed_plan", [False, True])
 def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monkeypatch, probe, detailed_plan):
     from aisimulate import supervision
-    from aisimulate.resources import ResourceLimitError
+    from aisimulate.resources import HostResources, ResourceLimitError
 
     details = {"budget": {"memory_limit_bytes": 100}, "peak_observed_rss_bytes": 90} if detailed_plan else {}
 
@@ -166,8 +166,20 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
             "resource probe failed", plan={"status": "resource_limited", "reason": "probe", **details}
         )
 
+    monkeypatch.setattr(supervision, "discover_host", lambda: HostResources(16 * GB, 8 * GB, 4))
     monkeypatch.setattr(supervision, probe, refuse)
     assert supervision.main(_cli_arguments(tmp_path)) == 3
+    plan = json.loads((tmp_path / "output/resource-plan.json").read_text())
+    assert plan["schema_version"] == 1
+    assert plan["status"] == "resource_limited"
+    assert plan["reason"] == "probe"
+    assert plan["estimate"] is None
+    assert plan["budget"] == details.get("budget")
+    assert plan["requested_resources"] == ResourceConfig().model_dump(mode="json")
+    if probe == "discover_host":
+        assert plan["host"] is None
+    else:
+        assert plan["host"]["available_memory_bytes"] == 8 * GB
     report = json.loads((tmp_path / "output/resource-runtime.json").read_text())
     assert report["schema_version"] == 1
     assert report["status"] == "resource_limited"
@@ -243,6 +255,11 @@ def test_overwrite_clears_stale_results_before_early_resource_refusal(tmp_path):
     assert not (recommendations / "0001.yaml").exists()
     assert (output / "notes.txt").read_text() == "keep"
     assert json.loads((output / "resource-runtime.json").read_text())["status"] == "resource_limited"
+    plan = json.loads((output / "resource-plan.json").read_text())
+    assert plan["status"] == "resource_limited"
+    assert plan["budget"]["memory_limit_bytes"] == 1000
+    assert plan["host"]["process_memory_bytes"] > 1000
+    assert plan["estimate"] is None
 
 
 def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path):
