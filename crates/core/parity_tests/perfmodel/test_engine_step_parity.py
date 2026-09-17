@@ -2363,6 +2363,77 @@ class TestRustEngineStepFpmHybridParity:
 
 
 class TestRustEngineStepFpmParity:
+    @pytest.mark.parametrize("database_mode", ["SILICON", "HYBRID"])
+    def test_auto_skips_absent_op_tables(self, fpm_systems_root, database_mode):
+        from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        cfg = ForwardPassPerfModelConfig(
+            model=_FPM_MODEL,
+            system="b200_sxm",
+            backend="vllm",
+            backend_version=_FPM_VERSION,
+            worker_type="decode",
+            tp=2,
+            moe_tp_size=1,
+            moe_ep_size=2,
+            gemm_quant_mode="fp8_block",
+            moe_quant_mode="fp8_block",
+            fmha_quant_mode="bfloat16",
+            kvcache_quant_mode="fp8",
+            comm_quant_mode="half",
+            systems_paths=(str(fpm_systems_root),),
+            database_mode=database_mode,
+        )
+        model = RustForwardPassPerfModel.best_available(cfg)
+        try:
+            provenance = model.diagnostics()["provenance"]
+            assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+            assert "gemm_perf.parquet" in provenance["selection_failures"][0]
+            # Exact measured fixture row: four decode requests, 4,100 total KV.
+            assert model.estimate_forward_pass_time_ms(
+                {
+                    "version": 1,
+                    "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                }
+            ) == pytest.approx(4.5)
+        finally:
+            model.close()
+        from dataclasses import replace
+
+        from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+
+        with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
+            RustForwardPassPerfModel.best_available(replace(cfg, estimation_mode="op_level"))
+
+    def test_sol_does_not_require_op_tables(self, fpm_systems_root):
+        from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="Qwen/Qwen3-32B",
+                system="b200_sxm",
+                backend="vllm",
+                backend_version=_FPM_VERSION,
+                worker_type="decode",
+                tp=2,
+                systems_paths=(str(fpm_systems_root),),
+                database_mode="SOL",
+            )
+        )
+        try:
+            assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
+            assert (
+                model.estimate_forward_pass_time_ms(
+                    {
+                        "version": 1,
+                        "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                    }
+                )
+                > 0
+            )
+        finally:
+            model.close()
+
     """forward_model='fpm' regression vs the frozen Python reference.
 
     The Python FPM walk is gone (Phase 2 PR-3); the live side below is the

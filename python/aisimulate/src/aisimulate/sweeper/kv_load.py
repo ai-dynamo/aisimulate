@@ -10,6 +10,7 @@ from functools import cache
 from typing import Any
 
 from .config import Workload
+from .forward_pass_estimator import resolve_systems_paths
 from .kv_estimate import estimate_kv_tokens
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
@@ -36,6 +37,7 @@ def _per_rank_capacity_tokens(
     hardware_sku: str,
     backend: str,
     backend_version: str,
+    systems_paths: tuple[str, ...],
     max_num_tokens: int,
     max_batch_size: int,
     memory_fraction: float,
@@ -47,6 +49,7 @@ def _per_rank_capacity_tokens(
         hardware_sku=hardware_sku,
         backend=backend,
         backend_version=backend_version,
+        systems_paths=list(systems_paths),
         max_num_tokens=max_num_tokens,
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
@@ -75,12 +78,14 @@ def _role_capacity_tokens(
     if fixed_blocks is not None:
         per_rank_tokens = int(fixed_blocks) * block_size
     else:
+        resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config", {})
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
-            model_name=str(sample["model_name"]),
-            hardware_sku=str(sample.get(f"{role}_hardware_sku") or sample["hardware_sku"]),
-            backend=str(sample["backend"]),
-            backend_version=backend_version,
+            model_name=str(resolved.get("model", sample["model_name"])),
+            hardware_sku=str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
+            backend=str(resolved.get("backend", sample["backend"])),
+            backend_version=resolved.get("backend_version", backend_version),
+            systems_paths=resolve_systems_paths(resolved.get("systems_paths")),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),

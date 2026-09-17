@@ -233,7 +233,7 @@ class KvTransferConfig(StrictModel):
 class EstimatorPolicyConfig(StrictModel):
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL", "SOL_FULL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] = Field(default_factory=lambda: ["default"])
+    systems_paths: list[str] | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
@@ -246,6 +246,8 @@ class EstimatorPolicyConfig(StrictModel):
     @field_validator("systems_paths")
     @classmethod
     def _nonempty_system_roots(cls, value):
+        if value is None:
+            return value
         if not value or any(not path.strip() for path in value):
             raise ValueError("systems_paths must contain at least one nonempty root")
         return value
@@ -258,7 +260,7 @@ class EstimatorPolicyConfig(StrictModel):
         custom_policy = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths != ["default"]
+            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)

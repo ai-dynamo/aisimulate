@@ -84,7 +84,7 @@ configuration for each candidate.
 | `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select an explicit mode |
 | `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
 | `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
-| `systems_paths` | `[default]` | ordered request-scoped system/data roots; `default` is the packaged Core root |
+| `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility sequence length |

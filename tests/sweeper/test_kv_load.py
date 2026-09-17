@@ -14,6 +14,40 @@ from aisimulate.sweeper.parallel_enum import (
 )
 
 
+def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch):
+    from aisimulate.sweeper import kv_load
+
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root in roots:
+        root.mkdir()
+    calls = []
+
+    def capacity(*args, systems_paths, **kwargs):
+        calls.append(systems_paths)
+        return 6400 if systems_paths == [str(roots[0])] else 12800
+
+    monkeypatch.setattr(kv_load, "estimate_kv_tokens", capacity)
+    kv_load._per_rank_capacity_tokens.cache_clear()
+    sample = _sample("agg")
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    capacities = []
+    try:
+        for root in [roots[0], roots[1], roots[0]]:
+            sample["forward_pass_estimators"] = {"agg": {"config": {"systems_paths": [str(root)]}}}
+            result = resolve_kv_load(
+                sample,
+                workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, request_count=1),
+                parallel_config=parallel,
+                ratio=1.0,
+                backend_version="v",
+            )
+            capacities.append(result.role_capacity_tokens["agg"])
+        assert capacities == [6400, 12800, 6400]
+        assert calls == [[str(roots[0])], [str(roots[1])]]
+    finally:
+        kv_load._per_rank_capacity_tokens.cache_clear()
+
+
 def _sample(mode: str) -> dict:
     sample = {
         "deployment_mode": mode,

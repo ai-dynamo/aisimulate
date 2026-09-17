@@ -211,8 +211,6 @@ def _runner_supports_parallel_config(
 
 def _estimator_root_kwargs(search_space, role):
     paths = search_space.systems_paths_for(role)
-    if paths == ["default"]:
-        return {}
     from .forward_pass_estimator import resolve_systems_paths
 
     return {"systems_paths": list(resolve_systems_paths(paths))}

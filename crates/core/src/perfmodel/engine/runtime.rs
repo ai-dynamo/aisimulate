@@ -510,7 +510,10 @@ impl Engine {
 
     pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
         let Some((prefill, decode)) = self.fpm_ops() else {
-            return Ok(());
+            return super::readiness::validate(
+                &self.db,
+                self.context_ops.iter().chain(&self.generation_ops),
+            );
         };
         self.db
             .fpm_forward

@@ -484,7 +484,7 @@ class SearchSpace(BaseModel):
     hardware_sku: str  # e.g. "h200_sxm"
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL", "SOL_FULL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] = Field(default_factory=lambda: ["default"], min_length=1)
+    systems_paths: list[str] | None = Field(default=None, min_length=1)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
@@ -636,7 +636,7 @@ class SearchSpace(BaseModel):
             return self.decode_hardware_sku or self.hardware_sku
         raise ValueError(f"unknown engine role {role!r}")
 
-    def systems_paths_for(self, role: str) -> list[str]:
+    def systems_paths_for(self, role: str) -> list[str] | None:
         return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
 
     @field_validator(
@@ -726,6 +726,8 @@ class SearchSpace(BaseModel):
     @field_validator("systems_paths")
     @classmethod
     def _validate_estimator_roots(cls, value):
+        if value is None:
+            return value
         if any(not path.strip() for path in value):
             raise ValueError("systems_paths entries must be nonempty")
         return value
@@ -756,7 +758,7 @@ class SearchSpace(BaseModel):
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths != ["default"]
+            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)

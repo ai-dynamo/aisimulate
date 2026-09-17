@@ -258,10 +258,8 @@ class RustForwardPassPerfModel:
         import aiconfigurator_core
 
         payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-        if payload.get("estimation_mode") != "fpm_regression":
-            _configure_default_data_roots()
-        if payload.get("systems_paths"):
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload["systems_paths"]))
+        if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
         if "transfer_policy" in payload:
             payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
         estimator_config = payload.get("estimator_config")
@@ -380,6 +378,12 @@ def _validate_worker_type(worker_type: str) -> str:
 
 def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
     packaged = os.fspath(pkg_resources.files("aiconfigurator_core") / "systems")
+    if not entries:
+        from aiconfigurator_core.sdk.perf_database import get_systems_paths
+
+        configured = get_systems_paths()
+        env_root = os.environ.get("AICONFIGURATOR_SYSTEMS_PATH")
+        entries = tuple([env_root] if configured == [packaged] and env_root else configured)
     resolved: list[str] = []
     for entry in entries:
         if not isinstance(entry, str) or not entry.strip():

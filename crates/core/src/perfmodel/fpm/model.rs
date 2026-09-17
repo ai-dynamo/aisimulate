@@ -685,9 +685,7 @@ fn resolve_systems_roots(config: &ForwardPassPerfModelConfig) -> Result<Vec<Path
     if !config.systems_paths.is_empty() {
         return Ok(config.systems_paths.clone());
     }
-    crate::py::resolve_systems_root(None)
-        .map(|root| vec![root])
-        .map_err(|err| AicError::DataRoot(format!("resolve systems path: {err}")))
+    crate::py::resolve_forward_pass_systems_roots()
 }
 
 fn transfer_policy_tokens(policy: crate::common::enums::TransferPolicy) -> Vec<String> {

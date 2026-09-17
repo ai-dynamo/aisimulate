@@ -4,12 +4,171 @@
 """Canonical construction through the real Python/Rust boundary."""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
+
+
+@pytest.fixture
+def custom_systems(tmp_path):
+    from importlib.resources import files
+
+    packaged = Path(str(files("aiconfigurator_core") / "systems"))
+    for entry in packaged.iterdir():
+        (tmp_path / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+    (tmp_path / "review_h200.yaml").write_text((packaged / "h200_sxm.yaml").read_text())
+    return tmp_path
+
+
+@pytest.mark.parametrize("discovery", ["sdk", "ordered_sdk", "environment"])
+def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch, discovery):
+    import aiconfigurator_core
+    from aiconfigurator_core.sdk import perf_database
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisimulate.sweeper.search import Sweeper
+
+    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", perf_database.get_systems_paths())
+    monkeypatch.delenv("AICONFIGURATOR_SYSTEMS_PATH", raising=False)
+    roots = [str(custom_systems)]
+    if discovery == "ordered_sdk":
+        empty = custom_systems / "empty"
+        empty.mkdir()
+        roots.insert(0, str(empty))
+    if discovery in {"sdk", "ordered_sdk"}:
+        perf_database.set_systems_paths(roots)
+    else:
+        perf_database.set_systems_paths("default")
+        monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(custom_systems))
+    cfg = SmartSearchConfig(
+        search_space={
+            "model_name": "Qwen/Qwen3-32B",
+            "hardware_sku": "review_h200",
+            "backend": ["vllm"],
+            "backend_version": "0.24.0",
+            "deployment_mode": ["agg"],
+            "gpu_budget": 2,
+            "context_length": 4096,
+            "parallel_configs": [{"tp": 2, "replicas": 1}],
+            "agg_max_num_batched_tokens": [8192],
+            "agg_max_num_seqs": [256],
+            "agg_num_gpu_blocks": 256,
+            "agg_block_size": 64,
+        },
+        workload={"isl": 128, "osl": 2, "request_count": 1, "concurrency": 1},
+        sweep={"max_rounds": 1, "candidates_per_round": 1, "parallel_evals": 1},
+    )
+    assert cfg.search_space.systems_paths is None
+    cfg = SmartSearchConfig.model_validate_json(cfg.model_dump_json())
+    result = Sweeper(runner_factory=EngineReplayRunnerFactory(), show_progress=False).run(cfg, top_n=None)
+    assert result.model_dump(mode="json")["counts"]["feasible"] == 1
+    raw = aiconfigurator_core.RustForwardPassPerfModel.best_available(
+        json.dumps(
+            {
+                "model": "Qwen/Qwen3-32B",
+                "system": "review_h200",
+                "backend": "vllm",
+                "backend_version": "0.24.0",
+                "worker_type": "aggregated",
+                "tp": 2,
+            }
+        )
+    )
+    assert json.loads(raw.diagnostics())["provenance"]["config"]["systems_paths"] == [str(custom_systems)]
+    from aisimulate.sweeper.forward_pass_estimator import resolve_systems_paths
+
+    assert resolve_systems_paths(None) == tuple(roots)
+    assert resolve_systems_paths(["default"]) != (str(custom_systems),)
+
+
+def test_prediction_pins_populated_version_slots(custom_systems):
+    from dataclasses import replace
+
+    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config.cli import CorePredictionConfig
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    next_version = resolve_query_version("review_h200", "vllm", "next", systems_paths=[str(custom_systems)])
+    for requested, literal in [("current", "0.24.0"), ("next", next_version), ("0.24.0", "0.24.0")]:
+        cfg = CorePredictionConfig.model_validate(
+            {
+                "engine": {
+                    "model": "Qwen/Qwen3-32B",
+                    "hardware": "review_h200",
+                    "backend": "vllm",
+                    "backend_version": requested,
+                    "context_length": 4096,
+                    "systems_paths": [str(custom_systems)],
+                    "workers": {
+                        "aggregated": {
+                            "parallelism": {"tensor": 2},
+                            "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                        }
+                    },
+                },
+                "traffic": {
+                    "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+                    "load": {"type": "concurrency", "concurrency": 1},
+                    "stop": {"requests": 1},
+                },
+            }
+        )
+        replay = prediction_to_replay_spec(cfg)
+        assert replay.backend_deployment.backend_version == literal
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            assert runner.run(replay).metrics["completed_requests"] == 1
+            if requested == "current":
+                bad = replace(replay, backend_deployment=replace(replay.backend_deployment, backend_version="0.19.0"))
+                with pytest.raises(ValueError, match="conflicts with"):
+                    runner.run(bad)
+        finally:
+            runner.close()
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("ratio", [0.5, 1.0])
+def test_kv_relative_load_uses_resolved_roots(custom_systems, mode, ratio):
+    from dataclasses import asdict
+
+    from aisimulate.sweeper.config import SearchSpace, Workload
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisimulate.sweeper.kv_load import resolve_kv_load
+    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+    from aisimulate.sweeper.sample import unroll_sample
+
+    role = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = role if mode == "agg" else DisaggParallelConfig(prefill=role, decode=role)
+    space = SearchSpace(
+        model_name="Qwen/Qwen3-32B",
+        hardware_sku="review_h200",
+        backend=["vllm"],
+        deployment_mode=[mode],
+        systems_paths=[str(custom_systems)],
+        gpu_budget=4,
+    )
+    roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+    selection = {"deployment_mode": mode, "backend": "vllm"}
+    for name in roles:
+        selection.update({f"{name}_max_num_batched_tokens": 8192, f"{name}_max_num_seqs": 256})
+    sample = unroll_sample(search_space=space, selection=selection, parallel_config=parallel)
+    estimators = ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+    sample["forward_pass_estimators"] = {name: asdict(estimator) for name, estimator in estimators.items()}
+    result = resolve_kv_load(
+        sample,
+        workload=Workload(isl=128, osl=2, kv_load_ratio=ratio, request_count=1),
+        parallel_config=parallel,
+        ratio=ratio,
+        backend_version="0.24.0",
+    )
+    assert result.concurrency == max(1, int(ratio * result.concurrency_capacity))
+    assert set(result.role_capacity_tokens) == set(roles)
+    assert all(tokens > 0 for tokens in result.role_capacity_tokens.values())
 
 
 def request(**changes):

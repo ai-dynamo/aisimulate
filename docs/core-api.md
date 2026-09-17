@@ -145,7 +145,11 @@ Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
 including when fallback is denied. For an explicit mode, deny permits only
 that estimator; allow tries the requested estimator first, then the remaining
 estimators in the same global priority order. Each native mode tries the
-ordered `systems_paths` before moving to another estimator. Selection occurs
+ordered `systems_paths` before moving to another estimator. Omitted roots preserve
+configured SDK discovery (or the systems-path environment override when the SDK
+uses its packaged default); an explicit `default` entry selects the packaged root.
+The resolved paths are shared by preflight, construction and capacity estimation.
+Selection occurs
 at construction; queries do not silently switch estimators on a data-domain error.
 
 Invalid caller configuration does not trigger fallback. A constructed regression

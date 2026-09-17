@@ -6,9 +6,7 @@
 from __future__ import annotations
 
 import json
-import os
 from copy import deepcopy
-from importlib import resources
 from typing import Any
 
 from aiconfigurator_core.sdk import (
@@ -25,18 +23,12 @@ class ForwardPassEstimatorResolutionError(ValueError):
     """A configured forward-pass estimator identity cannot be resolved exactly."""
 
 
-def resolve_systems_paths(configured: list[str]) -> tuple[str, ...]:
+def resolve_systems_paths(configured: list[str] | None) -> tuple[str, ...]:
     """Expand and validate request-scoped system roots without setting globals."""
 
-    packaged = os.fspath(resources.files("aiconfigurator_core") / "systems")
-    resolved: list[str] = []
-    for entry in configured:
-        path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
-        if not os.path.isdir(path):
-            raise ForwardPassEstimatorResolutionError(f"systems_paths entry is not an existing directory: {entry!r}")
-        if path not in resolved:
-            resolved.append(path)
-    return tuple(resolved)
+    from aiconfigurator_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
+
+    return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ())))
 
 
 _DEFAULT_BLOCK_SIZE = {"vllm": 64, "sglang": 1, "trtllm": 32}

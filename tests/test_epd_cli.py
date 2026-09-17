@@ -388,7 +388,7 @@ def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, bac
     def database(system, backend, version, **kwargs):
         return None if backend == "vllm" else original_database(system, backend, version, **kwargs)
 
-    def latest_version(system, backend):
+    def latest_version(system, backend, **kwargs):
         return None if backend == "vllm" else original_version(system, backend)
 
     raw = _recommendation()

@@ -1093,7 +1093,7 @@ def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_v
 
     calls = []
 
-    def resolve(hardware, backend):
+    def resolve(hardware, backend, **kwargs):
         calls.append((hardware, backend))
         return "0.24.0" if same_version or hardware == "h200_sxm" else "0.23.0"
 
@@ -1145,7 +1145,7 @@ def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeyp
 def test_pd_predict_keeps_legacy_version_defaults_without_hardware_override(monkeypatch, override):
     from aisimulate.compiler import prediction_to_replay_spec
 
-    def resolve(hardware, backend):
+    def resolve(hardware, backend, **kwargs):
         assert hardware == "gb200"
         return "0.24.0"
 

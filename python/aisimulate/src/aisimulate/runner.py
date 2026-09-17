@@ -1310,7 +1310,30 @@ def _materialize_engine_role(
             "rank.num_gpu_blocks explicitly or use AIC timing"
         )
     if deployment_backend_version:
+
+        def resolved_version(value):
+            if value not in {"current", "previous", "next"}:
+                return value
+            from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+            from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+            identity = timing_model.get("config", {}) if isinstance(timing_model, dict) else {}
+            roots = identity.get("systems_paths")
+            if roots is None and identity.get("systems_path") is not None:
+                roots = [identity["systems_path"]]
+            return resolve_query_version(
+                identity.get("system", system),
+                backend,
+                value,
+                systems_paths=list(resolve_systems_paths(roots)),
+            )
+
+        if uses_aic_timing:
+            deployment_backend_version = resolved_version(deployment_backend_version)
         configured_version = aic_timing_overrides.get("backend_version")
+        if uses_aic_timing:
+            configured_version = resolved_version(configured_version)
         if configured_version is not None and configured_version != deployment_backend_version:
             raise ValueError(
                 f"engine provider {role} backend version {configured_version!r} "
@@ -1320,6 +1343,7 @@ def _materialize_engine_role(
         if uses_aic_timing:
             timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
             timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
+            timing_backend_version = resolved_version(timing_backend_version)
             if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="

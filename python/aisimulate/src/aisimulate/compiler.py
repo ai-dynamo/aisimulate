@@ -44,6 +44,7 @@ def prediction_to_replay_spec(
         workload=workload,
         afd_performance_model=afd_performance_model,
     )
+    deployment = _pin_estimator_version_aliases(deployment)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -66,6 +67,54 @@ def prediction_to_replay_spec(
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
+
+
+def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
+    if deployment.backend_version not in {"current", "previous", "next"}:
+        return deployment
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    updates = {}
+    metadata = dict(deployment.performance_model_metadata)
+    versions = set()
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        args = getattr(deployment, field)
+        timing = (args or {}).get("timing_model", {})
+        if timing.get("provider") != "aic" or "estimation_mode" not in timing.get("config", {}):
+            continue
+        config = dict(timing["config"])
+        memory = {
+            name: config.pop(name)
+            for name in (
+                "gpu_memory_utilization",
+                "mem_fraction_static",
+                "free_gpu_memory_fraction",
+                "cuda_graph_reserved_bytes",
+            )
+            if name in config
+        }
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            diagnostics = model.diagnostics()
+        finally:
+            model.close()
+        if diagnostics["readiness"] != "ready":
+            raise ValueError("regression estimator is not ready; replay requires training observations")
+        resolved = diagnostics["provenance"]["config"]
+        versions.add(resolved["backend_version"])
+        updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
+        metadata[role] = {"provider": "aic", "config": resolved, "selection": diagnostics}
+    if len(versions) > 1:
+        raise ValueError(
+            f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
+        )
+    if versions:
+        updates.update(backend_version=versions.pop(), performance_model_metadata=metadata)
+    return replace(deployment, **updates)
 
 
 def _prediction_encoder(config: CorePredictionConfig, workload):
@@ -124,7 +173,7 @@ def _deployment(
             paths = engine.systems_paths
             if worker is not None and worker.timing.systems_paths is not None:
                 paths = worker.timing.systems_paths
-            root_kwargs[role] = {} if paths == ["default"] else {"systems_paths": list(resolve_systems_paths(paths))}
+            root_kwargs[role] = {"systems_paths": list(resolve_systems_paths(paths))}
             if (
                 worker is not None
                 and worker.hardware is not None
@@ -411,6 +460,8 @@ def _worker_engine_args(
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
         from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
 
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
         timing = worker.timing
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
         canonical = ForwardPassPerfModelConfig(
@@ -432,7 +483,7 @@ def _worker_engine_args(
             else engine.estimator_config,
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
-            systems_paths=tuple(timing.systems_paths or engine.systems_paths),
+            systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
         timing_config = canonical.to_dict()
         for key in (

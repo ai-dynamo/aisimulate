@@ -148,6 +148,17 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
     }
 }
 
+/// Discover the ordered roots using the same SDK/environment policy as the Python facade.
+pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
+    Python::with_gil(|py| {
+        py.import("aiconfigurator_core.sdk.rust_engine_step")?
+            .getattr("_resolve_forward_pass_systems_paths")?
+            .call1((Vec::<String>::new(),))?
+            .extract::<Vec<PathBuf>>()
+    })
+    .map_err(|error: PyErr| AicError::DataRoot(format!("resolve systems paths: {error}")))
+}
+
 /// Resolve the bundled `systems/` directory for [`AicEngine::from_spec`].
 ///
 /// Mirrors the systems-root half of `DataRoots::discover` but does NOT require
