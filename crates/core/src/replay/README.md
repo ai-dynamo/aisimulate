@@ -29,6 +29,153 @@ the same contract. The dependency points only toward this crate.
   and attention-DP
 - `disagg.rs` for disaggregated prefill/decode replay
 
+### AgentX input boundary
+
+AISimulate owns raw Weka ingestion. `WekaImporter` deterministically preflights
+a published Weka JSON object, JSONL corpus, or directory and lowers it to
+Agentic Mooncake v2 rows. A JSONL file may contain multiple plays and published
+AgentX plays may contain multiple request models;
+`load_weka_agentic_graph` validates those rows as a `ValidatedAgenticGraph`.
+Agentic Mooncake v2 is the optional materialized interchange format, not a
+required preprocessing step. A downstream Dynamo integration should call this
+public loader and must not maintain a second Weka parser or lowering pipeline.
+
+Run `python3 scripts/qualify_weka_samples.py` from the repository root to check
+the importer against two revision-pinned rows from the public SemiAnalysis
+`cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
+and deleted when the check exits; the complete 570 MB corpus is not downloaded.
+
+### Agentic driver/runtime contract
+
+M1 execution consumes one completely preloaded, immutable
+`ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
+client or extends the graph dynamically. The replay runtime is the sole owner
+of logical time. At each timestamp it collects engine feedback and applies it
+as one `AgenticRuntimeFeedback`, ordered by immutable graph ordinal: output
+progress first, causal terminals second, and resource quiescence last.
+
+A causal terminal resolves a request's client-visible outcome; successful
+completion releases completion-triggered graph edges. Client lanes limit whole
+plays, including background requests. A successful play releases its lane only
+after all authored nodes complete, including delayed or blocked nodes. Under the
+current failure policy, a failed play skips undispatched nodes and releases its
+lane after every already-dispatched request becomes terminal. Merely finishing
+the root or a blocking join does not finish still-running background requests.
+
+Quiescence means the engine/router/handoff state owned by a request has settled.
+It controls resource settlement and final drain, independently of client lane
+reuse. The next play can therefore submit while an earlier play retains P/D
+source holds or has pending cancellation actions; engine admission still queues
+requests when those resources are unavailable. Late cleanup records the earlier
+play's settlement without releasing the lane again. Request quiescence does not
+require flushing reusable prefix-cache entries or ending an agent conversation.
+
+In this in-process timing model, final decode or an observed request failure
+stands in for the client response terminal. HTTP/SSE delivery and client task
+teardown latency are not modeled. The strict failed-play policy above is an
+explicit replay contract, not a claim of full AIPerf error-policy parity.
+
+Equal-time event phases are engine pass completion, worker ready,
+transfer completion, admission, telemetry, then scaling. Within a phase,
+stable worker/pass/handoff identities replace insertion order as the primary
+tie-breaker.
+
+Both aggregated and disaggregated runtimes expose an internal `step()` seam.
+It returns only after a semantic timestamp reaches a fixed point and preserves
+all engine, placement, router, handoff, and KV state, so resuming does not
+rebuild the simulation. Agentic requests carry a stable identity envelope
+(request, play, conversation, and optional lane/tree/cache identities) across
+the workload-to-runtime boundary. The driver can emit a canonical lifecycle
+JSONL transcript and domain-separated digest for conformance tests.
+
+AgentX timing preserves authored starts while completion-triggered dependency
+delays use recorded end-to-start gaps: `max(0, target_start - source_end)`. A request without
+`api_time` has a zero-width recorded interval; this does not synthesize source
+duration or change engine-modeled completion. An overlapping child is released
+from its parent's dispatch using the recorded start-to-start gap, a
+post-completion child from the parent's causal
+terminal, and a blocking parent resumes only after every join predecessor.
+Background children add no implicit join. Zero-output requests remain valid
+prefill-only/KV-warmup work.
+
+Every play reports exactly one `completed`, `failed`, or `incomplete` outcome.
+The outcome remains `incomplete` until server cleanup finishes, even if the
+client lane has advanced to another play. `settled_at_ms` records that cleanup
+time; outcomes remain in authored play order when plays settle out of order.
+Rejected, canceled, and failed request terminals all fail the play, skip work
+that has not dispatched, and let already-dispatched siblings settle. The
+canonical failure is the minimum `(causal_terminal_ms, graph_node_ordinal)`;
+status severity is deliberately not a tie-breaker. This rule keeps the failure
+reason independent of engine callback order.
+For a failed play, `causal_terminal_ms` records this primary failure, which may
+precede client lane release while already-dispatched siblings finish.
+
+### Public AgentX M1 qualification
+
+The built-in Python/CLI engine stack qualifies aggregated vLLM and SGLang with
+HBM-only KV cache and speculative decoding disabled. Use a Weka or Agentic
+Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; M1 starts at
+turn zero and runs the play to settlement. The public engine boundary rejects
+agentic TensorRT-LLM, host offload, and speculative decoding configurations.
+Generic native runtime conformance, including P/D, has a broader scope than
+this public qualification.
+
+Default Python results retain `agentic_qualification: functional_only` in
+`ReplayReport.metadata`. CLI JSON/artifacts retain the same marker, and table
+output explicitly identifies functional replay. Fixed timing in the gates
+below checks lifecycle semantics; it does not measure prediction accuracy or
+AgentX benchmark fidelity. Warmup, profiling barriers, fixed-duration lane
+recycling, and public P/D qualification belong to later milestones.
+
+After the development setup in [`DEVELOPMENT.md`](../../../../DEVELOPMENT.md),
+run these commands from the repository root:
+
+```sh
+cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
+python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_m1'
+python/aisimulate/.venv/bin/python scripts/qualify_agentx_m1.py --output /tmp/agentx-m1.json
+```
+
+The last command is an opt-in network gate. It verifies the revision-pinned
+published samples used by `qualify_weka_samples.py`, selects the first play,
+and freshly materializes its v2 counterpart through `WekaImporter`. For each
+backend and each input format, it runs the public Python runner twice and the
+CLI once. Graph identity, lifecycle digest/event count, play outcomes, and
+per-request records must match within that backend; all requests and the play
+must complete. CLI stdout, saved prediction, and request artifacts must agree.
+The summary records dataset revision, source/graph digests, and results for
+all four backend/input combinations. Raw and materialized sample data remain
+temporary. Use `--trace <local-weka-path>` to run the same matrix offline.
+Progress on stderr names each of the four backend/input groups and numbers
+the 12 replays: Python first run, Python repeat for determinism, then CLI for
+artifact parity. Each native request-progress bar belongs to the labeled
+Python run immediately above it. Preparation steps, elapsed times, per-group
+results, and the saved summary path remain visible; a failure identifies its
+phase and includes captured subprocess diagnostics. Stdout remains JSON, so
+redirecting it to a file does not hide progress or mix text into the report.
+
+The native integration tests additionally compare full lifecycle transcript
+bytes and normalized reports, cover overlapping children, blocking joins,
+parent resumption, client lane reuse across two plays, and context rejection
+that skips the undispatched parent continuation. Python tests exercise the
+default public runner while rejecting any attempted Dynamo import.
+
+These gates cover the AISimulate portion of AIC-1815. Dynamo compatibility
+qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
+and must be rerun against matching AISimulate artifacts before declaring the
+cross-repository M1 milestone complete.
+
+When Dynamo upgrades its AISimulate dependency to include these capability
+fields, `DynamoReplayRunnerFactory` must explicitly declare its qualified
+AgentX backend, host-offload, and speculative-decoding support. Matching this
+M1 boundary requires `supported_agentic_backends=("vllm", "sglang")`,
+`supports_agentic_host_offload=False`, and
+`supports_agentic_speculative_decoding=False`, with corresponding rejection
+tests. Shared `RunnerCapabilities` defaults preserve generic runner behavior;
+they do not certify a downstream factory's AgentX support. Coordinate the
+factory change with the dependency upgrade because older AISimulate revisions
+do not accept these constructor fields.
+
 ## File Map
 
 - `src/replay/replayer.rs`
@@ -50,6 +197,9 @@ the same contract. The dependency points only toward this crate.
 - `src/replay/runtime_utils.rs`
   Shared helpers used by `agg.rs` and `disagg.rs`: event scheduling,
   `ReadyWorkerCompletions`, and `next_timestamp`.
+- `src/replay/telemetry.rs`
+  Serializable, policy-neutral telemetry snapshots and the optional observer
+  contract.
 - `src/replay/progress.rs`
   `ReplayProgress`, the indicatif-based progress bar used by the harnesses.
 - `src/replay/report.rs`
@@ -92,6 +242,7 @@ It only advances `now_ms` to the next meaningful timestamp:
 
 - next request arrival
 - next worker completion event
+- next telemetry or scaling tick while work remains
 
 ### Worker Model
 
@@ -126,6 +277,7 @@ pub(crate) enum SimulationEventKind<Events> {
     EnginePassCompletion(EnginePassCompletion<Events>),
     TransferComplete { handoff_id },
     WorkerReady { stage, worker_id },
+    TelemetryTick,
     ScalingTick,
 }
 ```
@@ -135,7 +287,13 @@ pub(crate) enum SimulationEventKind<Events> {
 - `TransferComplete` advances a disaggregated request after modeled handoff
   timing.
 - `WorkerReady` marks the point at which a worker returns to the admission pool after a pass completes.
+- `TelemetryTick` samples settled replay state without invoking or changing a
+  scaling policy.
 - `ScalingTick` gives the injected scaling policy a settled cluster snapshot.
+
+At a shared timestamp, Replay settles workload events first, publishes the
+telemetry sample second, and invokes scaling last. A scaling decision therefore
+cannot rewrite the state represented by a coincident telemetry sample.
 
 ## Placement and Scaling Integration
 
@@ -165,8 +323,37 @@ flowchart LR
     C -->|Queued| E["policy owns pending admission"]
     F["engine observations and lifecycle"] --> G["PlacementPolicy::observe / request_terminal"]
     G --> H["released placements"]
-    H --> D
+H --> D
 ```
+
+### Optional telemetry sampling
+
+`Replayer::with_telemetry_observer` attaches a separate observer at a positive,
+finite virtual-time interval. This cadence is independent of Planner's scaling
+ticks and does not need to be a multiple of any engine tick duration. Periodic
+timestamps are derived from the original sampling time and ordinal, rather
+than repeated floating-point addition.
+
+The observer receives:
+
+- a gauge-only baseline after the initial timestamp settles
+- periodic samples with traffic and additive scheduler counters for each
+  completed interval
+- a final sample when a positive elapsed tail remains after the last periodic
+  boundary, or when the final timestamp has pending zero-duration interval
+  observations
+
+Gauge rows describe only live worker ranks. Cache-hit token and preemption
+counters from a rank that retires during an interval are folded into one
+role-level aggregate before its live state is dropped, so telemetry storage is
+O(live ranks) plus O(1) retired history. Arriving-request traffic has its own
+accumulator, so neither the baseline nor telemetry sampling drains Planner's
+traffic window. When no observer is attached, Replay allocates no telemetry
+rank state and performs no telemetry callbacks.
+
+Telemetry heartbeats are observational: they do not keep a deadlocked replay
+alive or advance a replay past its configured time cap. A heartbeat is only
+interleaved when canonical replay work exists at or before the cap.
 
 ### Why KV events are captured only where needed
 
@@ -186,10 +373,22 @@ The disaggregated runtime in `src/replay/disagg.rs` models two distinct stages:
 - a prefill router and prefill worker pool
 - a decode router and decode worker pool
 
-Attention-DP is currently supported only by aggregated offline replay. Disaggregated replay
-requires both prefill and decode `dp_size` to be `1`; ranked prefill/decode routing and handoff
-semantics are not yet modeled, so larger values are rejected explicitly instead of using the old
-aggregate approximation.
+vLLM and TensorRT-LLM use source-first handoff; SGLang uses destination-first handoff. The
+TensorRT-LLM path applies `GUARANTEED_NO_EVICT` to reserve decode completion headroom while the
+destination owns transferred prompt KV.
+
+Attention-DP is supported independently in the prefill and decode pools. Each request is routed
+from one concrete prefill `(worker, dp_rank)` to one concrete decode `(worker, dp_rank)`, while KV
+transfer remains one aggregate request-level event. Rank-wise KV layout conversion and network
+contention are not modeled. Native host offload remains unsupported for disaggregated replay.
+
+Authored rank hints match Dynamo's request contract: `dp_rank` selects the aggregated or decode
+rank, while `prefill_dp_rank` optionally overrides the prefill rank. In disaggregated replay an
+omitted `prefill_dp_rank` falls back to `dp_rank`; each hint is validated against its role's
+independent DP size.
+
+SGLang attention-DP roles mirror its launch-time per-rank normalization: chunked-prefill size is
+divided by DP size and schedule conservativeness is scaled by `0.3` before scheduler construction.
 
 It keeps one logical clock and one completion-event heap, but request ownership moves through a
 two-stage state machine instead of the aggregated single-pool lifecycle.

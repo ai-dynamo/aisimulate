@@ -33,6 +33,7 @@ mod runtime_utils;
 pub(crate) mod scaling;
 mod spec;
 pub(crate) mod state;
+mod telemetry;
 
 #[derive(Clone)]
 pub(crate) struct OfflineDisaggReplayConfig {
@@ -107,8 +108,9 @@ pub(crate) fn normalize_trace_requests(
 
 pub use crate::engine::{HandoffId, HandoffTransferTiming};
 pub use artifact::{
-    ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility, ReplayArtifactOutput,
-    ReplayArtifactRequest, ReplayArtifacts,
+    ReplayArtifactHostOffloadEvent, ReplayArtifactHostOffloadEventData,
+    ReplayArtifactHostStoreBlockMapping, ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility,
+    ReplayArtifactOutput, ReplayArtifactRequest, ReplayArtifacts,
 };
 pub use canonical::{
     CANONICAL_RESULT_EXCLUSIONS, CANONICAL_SCHEMA_VERSION, CanonicalReplayCoverage,
@@ -151,21 +153,32 @@ pub use handoff::{
 };
 pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
-pub use protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
+pub use protocol::{
+    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{
-    PerRequestAdmissionRecord, PerRequestRecord, PerRequestRoutingRecord, ReplayReport,
-    ReplayRequestPool, ReplayRoutingOutcome, ReplayTerminalStatus,
-    ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds, TraceDistributionStats,
-    TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats, TraceRequestCounts,
-    TraceThroughputStats, TraceTrajectoryStats,
+    POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
+    PerRequestRoutingRecord, ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics,
+    ReplayPowerDiagnostics, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
+    ReplayTerminalStatus, ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds,
+    TraceDistributionStats, TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats,
+    TracePowerStats, TraceRequestCounts, TraceThroughputStats, TraceTrajectoryStats,
 };
 pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
 };
+pub use telemetry::{
+    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+};
+
+// Typed power diagnostics are exported by the native Replay/PyO3 engine path.
+// Dynamo's external Python report adapters require their own passthrough and
+// qualification; Rust type re-exports alone do not establish adapter parity.

@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from aiconfigurator_core.sdk.memory import estimate_kv_cache
 from aiconfigurator_core.sdk.perf_database import get_latest_database_version
 
+from .forward_pass_estimator import resolve_systems_paths
 from .parallel_enum import ParallelShape
 
 # Runtime knobs the estimate needs; defaults mirror AIC's memory-estimation tests.
@@ -46,9 +47,31 @@ def memory_fraction_kind(backend: str) -> str:
     return "of_free" if backend == "trtllm" else "of_total"
 
 
-def resolve_backend_version(hardware_sku: str, backend: str) -> str:
-    """Latest perf-DB version for the SKU/backend (required by the native estimate)."""
-    version = get_latest_database_version(hardware_sku, backend)
+def resolve_backend_version(
+    hardware_sku: str,
+    backend: str,
+    *,
+    requested_version: str | None = None,
+    systems_paths: list[str] | None = None,
+) -> str:
+    """Pinned or latest perf-DB version for the native memory estimate."""
+
+    resolved_paths = list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None
+    if requested_version is not None:
+        from aiconfigurator_core.sdk.perf_database import get_supported_databases
+
+        available = get_supported_databases(**({"systems_paths": resolved_paths} if resolved_paths is not None else {}))
+        versions = available.get(hardware_sku, {}).get(backend, [])
+        if requested_version not in versions:
+            raise NoPerfDatabase(
+                f"backend_version={requested_version!r} is unavailable for "
+                f"hardware_sku={hardware_sku!r}, backend={backend!r}; "
+                f"available versions: {versions}"
+            )
+        return requested_version
+    version = get_latest_database_version(
+        hardware_sku, backend, **({"systems_paths": resolved_paths} if resolved_paths is not None else {})
+    )
     if version is None:
         raise NoPerfDatabase(
             f"no perf database for hardware_sku={hardware_sku!r}, backend={backend!r}; "
@@ -64,15 +87,12 @@ def estimate_kv_tokens(
     hardware_sku: str,
     backend: str,
     backend_version: str,
+    systems_paths: list[str] | None = None,
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
-    gemm_quant_mode: str | None = None,
-    moe_quant_mode: str | None = None,
-    kvcache_quant_mode: str | None = None,
-    fmha_quant_mode: str | None = None,
-    comm_quant_mode: str | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -95,11 +115,8 @@ def estimate_kv_tokens(
             moe_tp_size=shape.moe_tp,
             moe_ep_size=shape.moe_ep,
             nextn=nextn,
-            gemm_quant_mode=gemm_quant_mode,
-            moe_quant_mode=moe_quant_mode,
-            kvcache_quant_mode=kvcache_quant_mode,
-            fmha_quant_mode=fmha_quant_mode,
-            comm_quant_mode=comm_quant_mode,
+            **(model_controls or {}),
+            systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
         )
     except ValueError as exc:
@@ -124,15 +141,12 @@ def feasible_shape_tokens(
     backend: str,
     max_seq_len: int,
     backend_version: str | None = None,
+    systems_paths: list[str] | None = None,
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
-    gemm_quant_mode: str | None = None,
-    moe_quant_mode: str | None = None,
-    kvcache_quant_mode: str | None = None,
-    fmha_quant_mode: str | None = None,
-    comm_quant_mode: str | None = None,
 ) -> dict[ParallelShape, int]:
     """Map each *feasible* shape to its KV-cache token capacity.
 
@@ -141,7 +155,7 @@ def feasible_shape_tokens(
     per distinct shape, so repeated shapes across replica counts are free.
     """
     if backend_version is None:
-        backend_version = resolve_backend_version(hardware_sku, backend)
+        backend_version = resolve_backend_version(hardware_sku, backend, systems_paths=systems_paths)
     feasible: dict[ParallelShape, int] = {}
     for shape in dict.fromkeys(shapes):  # dedup, preserve first-seen order
         tokens = estimate_kv_tokens(
@@ -150,15 +164,12 @@ def feasible_shape_tokens(
             hardware_sku=hardware_sku,
             backend=backend,
             backend_version=backend_version,
+            systems_paths=systems_paths,
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
-            nextn=nextn,
-            gemm_quant_mode=gemm_quant_mode,
-            moe_quant_mode=moe_quant_mode,
-            kvcache_quant_mode=kvcache_quant_mode,
-            fmha_quant_mode=fmha_quant_mode,
-            comm_quant_mode=comm_quant_mode,
+            **({"model_controls": model_controls} if model_controls else {}),
+            **({"nextn": nextn} if nextn else {}),
         )
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens

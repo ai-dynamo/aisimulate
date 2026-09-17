@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.helpers import check_is_moe
-from aiconfigurator_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, nodes_for
+from aiconfigurator_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, communication_dtype_for, nodes_for
 
 #: Model families whose classes construct a large-EP graph when the enumerator
 #: sets ``ModelConfig.moe_comm_backend``. The enumerator must never assign a
@@ -422,37 +422,47 @@ def _default_moe_block_ops(
 # ---------------------------------------------------------------------------
 
 
-def _dispatch_dtype(comm_backend: str, quant_mode) -> str:
+def _dispatch_dtype(comm_backend: str, quant_mode, *, system: str | None, inference_phase: str) -> str:
     """Comm-table dtype key for the prepare/dispatch phases.
 
-    DeepEP rows have no dtype axis — the adapted tables key everything under
-    ``"default"`` (moe_comm.py ``_adapt_legacy_deepep``). The trtllm nvlink
+    DeepEP-LL decode dispatches FP8 activations plus scale metadata. Legacy
+    rows still have no dtype axis, so the Rust calibration resolver may map
+    this explicit ``"fp8"`` request to their sole ``"default"`` slice.
+    DeepEP-HT keeps the legacy ``"default"`` key. The trtllm nvlink
     rows key the run's ``moe_dtype`` string, i.e. the ``MoEQuantMode`` member
     name (``_adapt_legacy_trtllm_alltoall`` passes the parquet string through
     and the legacy loader spells it via ``MoEQuantMode[...]``); ``fp8_block``
     resolves to the ``fp8`` rows at query time — the same behavioral aliasing
     the legacy ``_normalize_quant_mode_for_table`` applied.
     """
-    if comm_backend.startswith("deepep"):
-        return "default"
-    return quant_mode.name
+    return communication_dtype_for(
+        system=system,
+        comm_backend=comm_backend,
+        model_quantization=quant_mode,
+        communication_phase="dispatch",
+        inference_phase=inference_phase,
+    )
 
 
-def _combine_dtype(comm_backend: str, quant_mode, inference_phase: str) -> str:
+def _combine_dtype(comm_backend: str, quant_mode, inference_phase: str, *, system: str | None) -> str:
     """Comm-table dtype key for the combine phase.
 
-    DeepEP: ``"default"`` (no dtype axis). nvlink: the adapted tables pin the
+    DeepEP-LL decode combine returns BF16 activations. Legacy rows still
+    resolve through their sole ``"default"`` slice. DeepEP-HT remains
+    ``"default"``. nvlink: the adapted tables pin the
     low-precision combine kernel under ``"fp4"``; the legacy graph enables it
     only in GENERATION for nvfp4 runs (``use_low_precision_combine=
     (moe_quant_mode == nvfp4)``, deepseek.py:1005-1011) while the context
     post_dispatch site (deepseek.py:798-812) never passes the flag — context
     combine stays on the standard rows keyed by the run dtype.
     """
-    if comm_backend.startswith("deepep"):
-        return "default"
-    if inference_phase == "generation" and quant_mode == common.MoEQuantMode.nvfp4:
-        return "fp4"
-    return quant_mode.name
+    return communication_dtype_for(
+        system=system,
+        comm_backend=comm_backend,
+        model_quantization=quant_mode,
+        communication_phase="combine",
+        inference_phase=inference_phase,
+    )
 
 
 def _large_ep_shared_expert_ops(
@@ -580,6 +590,8 @@ def _large_ep_block_ops(
         # parallelism contributes to that attention width just like TP does;
         # generation remains unsharded here.
         "attention_tp_size": cfg.tp_size * cfg.cp_size if is_deepep and is_context else 1,
+        "workload_distribution": workload_distribution,
+        "enable_eplb": cfg.enable_eplb,
     }
 
     # Routed path: router GEMM (spec section 4.4.4 — always emitted here; the
@@ -601,7 +613,12 @@ def _large_ep_block_ops(
                 f"{prefix}_moe_{comm_phase}",
                 scale_factor,
                 phase=comm_phase,
-                comm_dtype=_dispatch_dtype(comm_backend, quant_mode),
+                comm_dtype=_dispatch_dtype(
+                    comm_backend,
+                    quant_mode,
+                    system=getattr(cfg, "system", None),
+                    inference_phase=inference_phase,
+                ),
                 **a2a_kwargs,
             )
         )
@@ -628,7 +645,12 @@ def _large_ep_block_ops(
             f"{prefix}_moe_combine",
             scale_factor,
             phase="combine",
-            comm_dtype=_combine_dtype(comm_backend, quant_mode, inference_phase),
+            comm_dtype=_combine_dtype(
+                comm_backend,
+                quant_mode,
+                inference_phase,
+                system=getattr(cfg, "system", None),
+            ),
             **a2a_kwargs,
         )
     )

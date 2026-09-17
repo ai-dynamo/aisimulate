@@ -20,6 +20,7 @@ pub(crate) enum AggRequestPhase {
 pub(crate) struct AggRequestState {
     request: Option<ReplayRequestPayload>,
     pub(crate) phase: AggRequestPhase,
+    scheduler_id: Option<usize>,
     pub(crate) prefill_completed: bool,
     pub(crate) input_tokens: usize,
     pub(crate) output_tokens: usize,
@@ -32,23 +33,33 @@ impl AggRequestState {
         Self {
             request: Some(request),
             phase: AggRequestPhase::QueuedAtRouter,
+            scheduler_id: None,
             prefill_completed: false,
             input_tokens,
             output_tokens,
         }
     }
 
-    pub(crate) fn new_running(input_tokens: usize, output_tokens: usize) -> Self {
+    pub(crate) fn new_running(
+        input_tokens: usize,
+        output_tokens: usize,
+        scheduler_id: usize,
+    ) -> Self {
         Self {
             request: None,
             phase: AggRequestPhase::Running,
+            scheduler_id: Some(scheduler_id),
             prefill_completed: false,
             input_tokens,
             output_tokens,
         }
     }
 
-    pub(crate) fn take_queued_request(&mut self, uuid: Uuid) -> Result<DirectRequest> {
+    pub(crate) fn take_queued_request(
+        &mut self,
+        uuid: Uuid,
+        scheduler_id: usize,
+    ) -> Result<DirectRequest> {
         if self.phase != AggRequestPhase::QueuedAtRouter {
             bail!("offline replay expected queued request state for {uuid}");
         }
@@ -57,7 +68,12 @@ impl AggRequestState {
             .take()
             .ok_or_else(|| anyhow!("offline replay missing queued request payload for {uuid}"))?;
         self.phase = AggRequestPhase::Running;
+        self.scheduler_id = Some(scheduler_id);
         Ok(request.into_direct_request())
+    }
+
+    pub(crate) fn scheduler_id(&self) -> Option<usize> {
+        self.scheduler_id
     }
 }
 
@@ -83,6 +99,8 @@ pub(crate) struct DisaggRequestState {
     pub(crate) coordinator: HandoffCoordinatorCore,
     pub(crate) counted_in_flight: bool,
     replay_hashes: Option<ReplayRequestHashes>,
+    prefill_dp_rank: Option<u32>,
+    decode_dp_rank: Option<u32>,
     prefill_worker_idx: Option<usize>,
     decode_worker_idx: Option<usize>,
     pub(crate) prefill_routed: bool,
@@ -114,6 +132,11 @@ impl DisaggRequestState {
     ) -> Self {
         #[cfg(not(test))]
         let _ = arrival_ms;
+        let decode_dp_rank = request.metadata().preferred_dp_rank;
+        let prefill_dp_rank = request
+            .metadata()
+            .preferred_prefill_dp_rank
+            .or(decode_dp_rank);
         Self {
             original: Some(request),
             session_id,
@@ -131,6 +154,8 @@ impl DisaggRequestState {
             ),
             counted_in_flight: true,
             replay_hashes,
+            prefill_dp_rank,
+            decode_dp_rank,
             prefill_worker_idx: None,
             decode_worker_idx: None,
             prefill_routed: false,
@@ -157,6 +182,26 @@ impl DisaggRequestState {
         self.original
             .as_ref()
             .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))
+    }
+
+    pub(crate) fn select_prefill_dp_rank(&mut self) -> Result<()> {
+        let prefill_dp_rank = self.prefill_dp_rank;
+        self.original
+            .as_mut()
+            .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))?
+            .metadata_mut()
+            .preferred_dp_rank = prefill_dp_rank;
+        Ok(())
+    }
+
+    pub(crate) fn select_decode_dp_rank(&mut self) -> Result<()> {
+        let decode_dp_rank = self.decode_dp_rank;
+        self.original
+            .as_mut()
+            .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))?
+            .metadata_mut()
+            .preferred_dp_rank = decode_dp_rank;
+        Ok(())
     }
 
     pub(crate) fn input_length(&self) -> Result<usize> {

@@ -13,6 +13,7 @@ from aiconfigurator.sdk import common, config, models, perf_database
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.errors import NoFeasibleConfigError
 from aiconfigurator.sdk.inference_summary import InferenceSummary
+from aiconfigurator.sdk.performance_result import merge_moe_comm_fallbacks
 from aiconfigurator.sdk.picking import (
     _AUTOSCALE_TTFT_CORRECTION_FACTOR,
     _RATE_MATCHING_DECODE_DEGRADATION_FACTOR,
@@ -435,6 +436,12 @@ class DisaggInferenceSession:
             disagg_summary.set_per_ops_data(per_ops_data)
         if per_ops_source:
             disagg_summary.set_per_ops_source(per_ops_source)
+        disagg_summary.set_moe_comm_fallbacks(
+            merge_moe_comm_fallbacks(
+                prefill_summary.get_moe_comm_fallbacks(),
+                decode_summary.get_moe_comm_fallbacks(),
+            )
+        )
 
         return disagg_summary
 
@@ -2030,6 +2037,22 @@ class AFDInferenceSession:
         total_gpus = cfg.n_a_workers * cfg.tp_a + cfg.n_f_workers
         tokens_per_s_per_gpu = tokens_per_s / total_gpus if total_gpus > 0 else 0.0
 
+        # Preserve full-precision layer ingredients for downstream simulation.
+        # The existing scalar report columns stay rounded for human display.
+        afd_layer_measurements = {}
+        for measurement_phase, metrics in (
+            ("prefill", prefill_metrics),
+            ("decode", decode_metrics),
+        ):
+            if metrics is not None:
+                afd_layer_measurements[measurement_phase] = {
+                    "attention_ms": float(metrics["t_a_layer"]),
+                    "ffn_ms": float(metrics["t_f_layer"]),
+                    "a_to_f_ms": float(metrics["t_a2f_layer"]),
+                    "f_to_a_ms": float(metrics["t_f2a_layer"]),
+                    "num_layers": int(metrics["num_layers"]),
+                }
+
         # HBM / OOM — take the worst of any simulated phase.
         def _max_memory_dict(key: str) -> dict[str, float]:
             vals = [m[key] for m in (prefill_metrics, decode_metrics) if m is not None]
@@ -2128,6 +2151,7 @@ class AFDInferenceSession:
             "nextn": self._nextn,
             "combined_with_pd": bool(cfg.combined_with_pd),
             "boundary_on_attn": bool(cfg.boundary_on_attn),
+            "afd_layer_measurements": afd_layer_measurements,
             "num_total_gpus": total_gpus,
             "memory": round(max(a_memory_gb, f_memory_gb), 2),
             "backend": self._backend.name.value,

@@ -19,6 +19,9 @@ pub enum ReplayError {
     #[error("scaling policy error: {0}")]
     Scaling(String),
 
+    #[error("telemetry observer error: {0}")]
+    Telemetry(String),
+
     #[error("replay reached quiescence with {unfinished_requests} unfinished request(s)")]
     Deadlock { unfinished_requests: usize },
 
@@ -32,6 +35,10 @@ pub(crate) fn placement_boundary(error: anyhow::Error) -> anyhow::Error {
 
 pub(crate) fn scaling_boundary(error: anyhow::Error) -> anyhow::Error {
     ReplayError::Scaling(format!("{error:#}")).into()
+}
+
+pub(crate) fn telemetry_boundary(error: anyhow::Error) -> anyhow::Error {
+    ReplayError::Telemetry(format!("{error:#}")).into()
 }
 
 pub(crate) fn engine_boundary(error: anyhow::Error) -> anyhow::Error {

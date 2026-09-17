@@ -26,7 +26,7 @@ def load_family_map(path: str | Path = CATALOG_PATH) -> dict[str, str] | None:
     with catalog_path.open(encoding="utf-8") as catalog_file:
         catalog = yaml.safe_load(catalog_file) or {}
     if not isinstance(catalog, dict):
-        raise ValueError("op catalog must be a mapping at the top level")  # noqa: TRY004 (caught alongside ValueError by validate_resolution)
+        raise ValueError("op catalog must be a mapping at the top level")
     families = catalog.get("families")
     if not isinstance(families, list) or not families:
         raise ValueError("op catalog must define a non-empty families list")

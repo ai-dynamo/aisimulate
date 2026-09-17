@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/cli/main.py
 
 import argparse
 import logging
@@ -13,7 +15,11 @@ import pandas as pd
 import yaml
 
 from aiconfigurator import __version__
-from aiconfigurator.cli.estimate_detail_report import detail_requests_time, format_estimate_detail_report
+from aiconfigurator.cli.estimate_detail_report import (
+    detail_requests_time,
+    format_estimate_detail_report,
+    format_moe_comm_fallback,
+)
 from aiconfigurator.cli.report_and_save import log_final_summary, save_results
 from aiconfigurator.cli.utils import merge_experiment_results_by_mode, process_experiment_result
 from aiconfigurator.generator.api import (
@@ -24,18 +30,31 @@ from aiconfigurator.generator.api import (
 )
 from aiconfigurator.logging_utils import setup_logging
 from aiconfigurator.sdk import common, perf_database
+from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
 from aiconfigurator.sdk.config_builders import resolve_nextn_auto
 from aiconfigurator.sdk.errors import (
+    EmpiricalNotImplementedError,
     ExperimentOutcome,
+    MissingSystemFlopsError,
     NoFeasibleConfigError,
+    PerfDataNotAvailableError,
+    SolNotImplementedError,
     is_expected_cli_error,
 )
+from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN
 from aiconfigurator.sdk.rust_engine_step import validate_engine_step_backend
 from aiconfigurator.sdk.speculative import normalize_speculative_decoding
 from aiconfigurator.sdk.task_v2 import Task, _lookup_num_gpus_per_node, _warn_large_ep_flag
 from aiconfigurator.sdk.utils import ListFlowDumper, get_model_config_from_model_path
 
 logger = logging.getLogger(__name__)
+
+_SOL_DETAIL_UNAVAILABLE_ERRORS = (
+    PerfDataNotAvailableError,
+    EmpiricalNotImplementedError,
+    MissingSystemFlopsError,
+    SolNotImplementedError,
+)
 
 
 def _latest_support_matrix_version(
@@ -179,11 +198,49 @@ def _parse_nextn(value: str) -> int | str:
     return parsed
 
 
+def _speculative_block_from_args(args) -> dict | None:
+    """Assemble the Task ``speculative:`` block from --spec-* flags.
+
+    Returns None when --spec-method is absent; Task-level validation owns the
+    consistency rules (acceptance bound, nextn mutual exclusion, key checks).
+    """
+    method = getattr(args, "spec_method", None)
+    if not method:
+        for flag in ("spec_draft_model_path", "spec_num_draft_tokens", "spec_accepted_tokens"):
+            if getattr(args, flag, None) is not None:
+                raise SystemExit(f"--{flag.replace('_', '-')} requires --spec-method.")
+        return None
+    params: dict = {}
+    if getattr(args, "spec_num_draft_tokens", None) is not None:
+        if method == "mtp":
+            token_key = "depth"
+        elif method in ("ngram", "draft_model", "eagle3"):
+            token_key = "num_speculative_tokens"
+        else:
+            token_key = "num_draft_tokens"
+        params[token_key] = args.spec_num_draft_tokens
+    block: dict = {"method": method, "params": params}
+    if getattr(args, "spec_draft_model_path", None):
+        block["draft_model_path"] = args.spec_draft_model_path
+    if getattr(args, "spec_accepted_tokens", None) is not None:
+        block["accepted_tokens"] = args.spec_accepted_tokens
+    return block
+
+
 def _resolve_and_validate_nextn(args) -> None:
     """Fail fast on inconsistent MTP input; resolve --nextn auto to the checkpoint depth.
 
     Mutates ``args.nextn`` in place so everything downstream sees a plain int.
     """
+    speculative = _speculative_block_from_args(args)
+    if speculative is not None:
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        try:
+            resolution = resolve_speculative_block(speculative, nextn=args.nextn, nextn_accepted=args.nextn_accepted)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        args.nextn, args.nextn_accepted = resolution.nextn, resolution.nextn_accepted
     if args.nextn == "auto":
         try:
             resolved = resolve_nextn_auto(args.model_path)
@@ -286,6 +343,22 @@ def _parse_afd_max_candidates(value: str) -> int:
     return parsed
 
 
+def _add_attention_backend_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--attention-backend",
+        type=str,
+        choices=ATTENTION_BACKEND_CHOICES,
+        default=None,
+        help="Attention kernel backend used by the deployment. Applies to every model graph with standard "
+        "dense ContextAttention/GenerationAttention ops and to supported DeepSeek MLA/WideEP paths. "
+        "Support depends on the serving backend, performance tables, and backend version; unsupported named "
+        "values fail closed. For modeling, unset/default uses the mapped framework default when available and "
+        "otherwise the safe default fallback. SGLang WideEP maps unset/default to flashinfer and also supports "
+        "fa3. The deployment generator emits supported named SGLang values, omits unset/default, and rejects "
+        "fla for SGLang 0.5.14.",
+    )
+
+
 def _add_default_mode_arguments(parser):
     parser.add_argument(
         "--model-path",
@@ -380,8 +453,9 @@ def _add_default_mode_arguments(parser):
         type=str,
         default=None,
         help="[expert] Performance-database version used for the simulation/search "
-        "(search fidelity). Default: latest measured version; marker-only shared-layer versions "
-        "require an explicit value. Alias: --backend-version.",
+        "(search fidelity). Accepts a queryable slot version or the aliases "
+        "current / previous / next (see systems/query_versions.yaml). "
+        "Default: current. Alias: --backend-version.",
     )
     parser.add_argument(
         "--database-mode",
@@ -420,6 +494,16 @@ def _add_default_mode_arguments(parser):
     )
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
+    )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--disable-encoder-dp",
@@ -553,6 +637,7 @@ def _add_default_mode_arguments(parser):
         help="Explicit SGLang MoE backend. Use 'megamoe' to model DeepSeek-V4 MegaMoE on Blackwell. "
         "'deepep_moe' is deprecated and ignored (large-EP is explored automatically from data coverage).",
     )
+    _add_attention_backend_argument(parser)
 
 
 def _add_recommend_mode_arguments(parser):
@@ -647,6 +732,16 @@ def _add_recommend_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
+    )
     parser.add_argument(
         "--ttft",
         type=float,
@@ -675,11 +770,11 @@ def _add_recommend_mode_arguments(parser):
     parser.add_argument(
         "--nextn",
         type=_parse_nextn,
-        default=0,
+        default=None,
         help="MTP (Multi-Token Prediction) draft length, or 'auto' to use the checkpoint's "
-        "num_nextn_predict_layers (absent/0 keeps MTP disabled). When the depth is > 0, enables "
-        "speculative decoding in the configuration search and requires --nextn-accepted. "
-        "Default: 0 (disabled); MTP is never enabled implicitly when the flag is omitted.",
+        "num_nextn_predict_layers and then DSPARK architecture metadata. When the depth is > 0, "
+        "enables speculative decoding and requires a measured --nextn-accepted value. Omitted or "
+        "0 keeps speculation disabled unless a DSPARK model is paired with --nextn-accepted.",
     )
     parser.add_argument(
         "--nextn-accepted",
@@ -727,6 +822,7 @@ def _add_recommend_mode_arguments(parser):
         help="Explicit SGLang MoE backend. Use 'megamoe' to model DeepSeek-V4 MegaMoE on Blackwell. "
         "'deepep_moe' is deprecated and ignored (large-EP is explored automatically from data coverage).",
     )
+    _add_attention_backend_argument(parser)
 
 
 def _add_experiments_mode_arguments(parser):
@@ -745,6 +841,7 @@ def _add_experiments_mode_arguments(parser):
             "Affects terminal output and saved CSV only; SLA filtering always uses inter-token latency."
         ),
     )
+    _add_attention_backend_argument(parser)
 
 
 def _add_generate_mode_arguments(parser):
@@ -779,6 +876,33 @@ def _add_generate_mode_arguments(parser):
         type=str,
         default=common.BackendName.trtllm.value,
         help="Backend name (default: trtllm).",
+    )
+
+
+def _add_speculative_scheme_arguments(parser):
+    """Speculation scheme flags for the single-point estimate command."""
+    parser.add_argument(
+        "--spec-method",
+        default=None,
+        help="Speculative decoding method (ngram, draft_model, eagle3, dflash, dspark, or mtp). "
+        "Non-MTP methods support agg/static estimates and require --spec-accepted-tokens.",
+    )
+    parser.add_argument(
+        "--spec-draft-model-path",
+        default=None,
+        help="Draft checkpoint (Hugging Face repo or local path) providing the draft config.json.",
+    )
+    parser.add_argument(
+        "--spec-num-draft-tokens",
+        type=int,
+        default=None,
+        help="Drafted tokens per round (MTP depth for --spec-method mtp).",
+    )
+    parser.add_argument(
+        "--spec-accepted-tokens",
+        type=float,
+        default=None,
+        help="Measured average accepted draft tokens per round; no built-in acceptance assumption.",
     )
 
 
@@ -856,8 +980,9 @@ def _add_estimate_mode_arguments(parser):
         type=str,
         default=None,
         help="[expert] Performance-database version used for the simulation/search "
-        "(search fidelity). Default: latest measured version; marker-only shared-layer versions "
-        "require an explicit value. Alias: --backend-version.",
+        "(search fidelity). Accepts a queryable slot version or the aliases "
+        "current / previous / next (see systems/query_versions.yaml). "
+        "Default: current. Alias: --backend-version.",
     )
     parser.add_argument("--isl", type=int, default=1024, help="Input sequence length. Default: 1024.")
     parser.add_argument("--osl", type=int, default=1024, help="Output sequence length. Default: 1024.")
@@ -875,6 +1000,16 @@ def _add_estimate_mode_arguments(parser):
     )
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
+    )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
+    parser.add_argument(
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--disable-encoder-dp",
@@ -1249,6 +1384,7 @@ def _add_estimate_mode_arguments(parser):
         "there is no built-in acceptance assumption — use a measured value from "
         "your deployment.",
     )
+    _add_speculative_scheme_arguments(parser)
     parser.add_argument(
         "--stride",
         type=int,
@@ -1276,6 +1412,7 @@ def _add_estimate_mode_arguments(parser):
         "Controls how many KV blocks TRT-LLM pre-allocates per sequence. "
         "Set this to match your actual deployment to get an accurate KV cache capacity warning.",
     )
+    _add_attention_backend_argument(parser)
 
 
 def _add_support_mode_arguments(parser):
@@ -1442,6 +1579,25 @@ def _database_mode_requires_declared_perf_database(database_mode: str | None) ->
     }
 
 
+def _resolve_version_for_matching(system_name: str, backend_name: str, backend_version: str | None) -> str | None:
+    """Alias-aware form of a requested version for membership checks.
+
+    `get_supported_databases` enumerates resolved LITERALS, so every
+    comparison against it must resolve the requested alias per
+    (system, backend) first — otherwise `--backend-version current` is
+    rejected while its literal passes. Raw versions pass through untouched
+    (allow_unlisted: matching decides membership, not the slot gate);
+    unresolvable aliases (gate off / slot unpopulated) fall back to the raw
+    string so the membership check fails with the normal guidance.
+    """
+    if backend_version is None:
+        return None
+    try:
+        return perf_database.resolve_query_version(system_name, backend_name, backend_version, allow_unlisted=True)
+    except (ValueError, KeyError):
+        return backend_version
+
+
 def _ensure_backend_version_available(
     system_name: str,
     backend_name: str,
@@ -1469,7 +1625,35 @@ def _ensure_backend_version_available(
         raise SystemExit(1)
 
     versions = supported.get(system_name, {}).get(backend_name, [])
+    if backend_version in ("current", "previous", "next"):
+        # An alias that fails to resolve deserves the alias-specific error
+        # ("has no 'previous' version; available slots: ..."), not the
+        # generic missing-directory guidance that circularly suggests aliases.
+        try:
+            backend_version = perf_database.resolve_query_version(system_name, backend_name, backend_version)
+        except ValueError as e:
+            # User-facing gate message: no traceback wanted, so not
+            # logger.exception.
+            logger.error("%s", e)  # noqa: TRY400
+            raise SystemExit(1) from e
+    else:
+        backend_version = _resolve_version_for_matching(system_name, backend_name, backend_version)
     if backend_version is None or backend_version in versions:
+        return
+
+    # Old-style raw-version escape: the loader-level unlisted-version gate
+    # (perf_database resolve) honors this variable; the precheck must not be
+    # stricter than the loader, or the documented escape is unreachable.
+    if os.environ.get("AIC_ALLOW_UNLISTED_VERSIONS", "").lower() in ("1", "true", "yes"):
+        logger.warning(
+            "AIC_ALLOW_UNLISTED_VERSIONS is set: querying raw version %s/%s on %s "
+            "outside the queryable slots %s. This data is not maintained to the "
+            "queryable bar; results may have partial op coverage.",
+            backend_name,
+            backend_version,
+            system_name,
+            versions,
+        )
         return
 
     systems_paths = perf_database.get_systems_paths()
@@ -1494,12 +1678,16 @@ def _ensure_backend_version_available(
     if versions:
         logger.error("Available versions: %s", ", ".join(versions))
         logger.error(
-            "Fix: switch --backend-version to one of the available versions, "
-            "remove --backend-version to use latest, "
-            "or add a declared version directory with %s (legacy: %s) when this version "
-            "intentionally reuses shared-layer data.",
-            perf_database.REUSE_YAML_MARKER,
-            perf_database.SHARED_LAYER_REUSE_MARKER,
+            "Fix: switch --backend-version to one of the available slot versions "
+            "or the aliases current / previous / next, or remove "
+            "--backend-version to use current. Versions outside the slots "
+            "are data coordinates, not queryable versions "
+            "(see systems/query_versions.yaml).",
+        )
+        logger.error(
+            "Old-style raw-version query (data outside the slots is not "
+            "maintained to the queryable bar): re-run the same command with "
+            "AIC_ALLOW_UNLISTED_VERSIONS=1.",
         )
     else:
         logger.error("Available versions: none")
@@ -1545,12 +1733,18 @@ def build_default_tasks(
     max_seq_len: int | None = None,
     enable_wideep: bool = False,
     moe_backend: str | None = None,
+    attention_backend: str | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
     serving_mode: str = "auto",
     afd_max_a_batch_size: int = 1024,
     afd_max_candidates: int = 10_000,
     afd_candidate_overflow: str = "error",
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
 ) -> dict[str, Task]:
     """Build task configs for the selected default-mode serving modes.
 
@@ -1565,6 +1759,12 @@ def build_default_tasks(
         database_mode: Database mode for performance estimation.
         isl: Input sequence length.
         osl: Output sequence length.
+        video_height: Video frame height in pixels.
+        video_width: Video frame width in pixels.
+        video_frames: Frames per video.
+        num_videos: Number of videos per request.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames``; zero derives the token count from dimensions.
         ttft: Time to first token target in ms.
         tpot: Time per output token target in ms.
         request_latency: Optional end-to-end request latency target (ms).
@@ -1631,6 +1831,7 @@ def build_default_tasks(
             sys_backends = supported.get(system, {})
             if not requires_declared_perf_database:
                 sys_versions = sys_backends.get(backend_name, [])
+                resolved_bv = _resolve_version_for_matching(system, backend_name, backend_version)
                 if not sys_versions:
                     logger.warning(
                         "No measured database for backend %s on system=%s; including it for %s estimates.",
@@ -1638,7 +1839,7 @@ def build_default_tasks(
                         system,
                         database_mode,
                     )
-                elif backend_version is not None and backend_version not in sys_versions:
+                elif resolved_bv is not None and resolved_bv not in sys_versions:
                     logger.warning(
                         "No measured database version %s for backend %s on system=%s; including it for %s estimates.",
                         backend_version,
@@ -1651,7 +1852,9 @@ def build_default_tasks(
             if backend_name not in sys_backends:
                 logger.warning("Skipping backend %s: not supported for system %s.", backend_name, system)
                 continue
-            if backend_version is not None and backend_version not in sys_backends.get(backend_name, []):
+            if backend_version is not None and _resolve_version_for_matching(
+                system, backend_name, backend_version
+            ) not in sys_backends.get(backend_name, []):
                 logger.warning(
                     "Skipping backend %s: version %s not available for system %s.",
                     backend_name,
@@ -1679,7 +1882,8 @@ def build_default_tasks(
             systems_to_check = [("prefill", system), ("decode", decode_system)]
         for role, sys_name in systems_to_check:
             versions = supported.get(sys_name, {}).get(backend, [])
-            if backend_version is not None and versions and backend_version not in versions:
+            resolved_bv = _resolve_version_for_matching(sys_name, backend, backend_version)
+            if resolved_bv is not None and versions and resolved_bv not in versions:
                 logger.warning(
                     "No measured database version %s for %s system=%s backend=%s; using %s estimates.",
                     backend_version,
@@ -1709,7 +1913,10 @@ def build_default_tasks(
                 decode_system,
             )
             return False
-        if backend_version is not None and backend_version not in decode_versions:
+        if (
+            backend_version is not None
+            and _resolve_version_for_matching(decode_system, backend_name, backend_version) not in decode_versions
+        ):
             logger.warning(
                 "Skipping disagg for backend %s: version %s not available for decode system %s.",
                 backend_name,
@@ -1731,6 +1938,7 @@ def build_default_tasks(
         "transfer_policy": transfer_policy,
         "free_gpu_memory_fraction": free_gpu_memory_fraction,
         "max_seq_len": max_seq_len,
+        "attention_backend": attention_backend,
         "engine_step_backend": engine_step_backend,
     }
     if forward_model is not None:
@@ -1743,6 +1951,12 @@ def build_default_tasks(
         global_kwargs["image_height"] = image_height
         global_kwargs["image_width"] = image_width
         global_kwargs["num_images_per_request"] = num_images
+    if video_height or video_width or video_frames or num_videos or num_video_tokens:
+        global_kwargs["video_height"] = video_height
+        global_kwargs["video_width"] = video_width
+        global_kwargs["video_frames"] = video_frames
+        global_kwargs["num_videos_per_request"] = num_videos
+        global_kwargs["num_video_tokens"] = num_video_tokens
     if not enable_encoder_dp:
         global_kwargs["enable_encoder_dp"] = False
 
@@ -1863,6 +2077,7 @@ def build_experiment_tasks(
     config: dict[str, Any] | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    attention_backend: str | None = None,
 ) -> dict[str, Task]:
     """Build task configs from YAML file or config dict.
 
@@ -1973,6 +2188,8 @@ def build_experiment_tasks(
             overrides["engine_step_backend"] = engine_step_backend
         if forward_model is not None and "forward_model" not in exp_config:
             overrides["forward_model"] = forward_model
+        if attention_backend is not None and "attention_backend" not in exp_config:
+            overrides["attention_backend"] = attention_backend
 
         try:
             task_config = {**exp_config, "database_mode": database_mode}
@@ -2511,6 +2728,7 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
         forward_model=args.forward_model,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
     )
     workload.update({name: getattr(args, name) for name in _QUANT_ENUM_TABLES if getattr(args, name, None)})
     encoder_kwargs = dict(
@@ -2580,6 +2798,7 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
             **encoder_kwargs,
         )
     row = apply_row_power_coverage_gate(row)
+    _warn_moe_comm_fallbacks(row)
     logger.info("EPD %s single-point estimate:", estimate_mode)
     keys = (
         "ttft",
@@ -2606,6 +2825,16 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
             logger.info("  %-16s unavailable (%.0f%% power-data coverage)", key, row.get("power_coverage", 0.0) * 100)
             continue
         logger.info("  %-16s %s", key, f"{value:.3f}" if isinstance(value, float) else value)
+
+
+def _warn_moe_comm_fallbacks(result) -> None:
+    """Warn when an estimate executed against substitute MoE topology data."""
+    fallbacks = result.get(MOE_COMM_FALLBACKS_COLUMN, ()) if isinstance(result, dict) else result.moe_comm_fallbacks
+    for fallback in fallbacks:
+        logger.warning(
+            "Estimated MoE communication latency used fallback silicon data: %s.",
+            format_moe_comm_fallback(fallback),
+        )
 
 
 def _run_estimate_mode(args):
@@ -2657,6 +2886,11 @@ def _run_estimate_mode(args):
         image_height=args.image_height,
         image_width=args.image_width,
         num_images=args.num_images,
+        video_height=args.video_height,
+        video_width=args.video_width,
+        video_frames=args.video_frames,
+        num_videos=args.num_videos,
+        num_video_tokens=args.num_video_tokens,
         enable_encoder_dp=not args.disable_encoder_dp,
         batch_size=args.batch_size,
         ctx_tokens=args.ctx_tokens,
@@ -2674,9 +2908,11 @@ def _run_estimate_mode(args):
         max_seq_len=args.max_seq_len,
         engine_step_backend=args.engine_step_backend,
         forward_model=args.forward_model,
+        attention_backend=getattr(args, "attention_backend", None),
         prefix=args.prefix,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
         stride=args.stride,
     )
 
@@ -2722,14 +2958,19 @@ def _run_estimate_mode(args):
         )
 
     result = cli_estimate(**estimate_kwargs)
+    _warn_moe_comm_fallbacks(result)
     sol_result = None
+    sol_detail_error = None
     if needs_sol_detail:
         if args.database_mode == common.DatabaseMode.SOL.name:
             sol_result = result
         else:
             sol_estimate_kwargs = dict(estimate_kwargs)
             sol_estimate_kwargs["database_mode"] = common.DatabaseMode.SOL.name
-            sol_result = cli_estimate(**sol_estimate_kwargs)
+            try:
+                sol_result = cli_estimate(**sol_estimate_kwargs)
+            except _SOL_DETAIL_UNAVAILABLE_ERRORS as exc:
+                sol_detail_error = str(exc)
 
     print("\n" + "=" * 60)
     print(f"  Performance Estimate ({result.mode})")
@@ -2742,6 +2983,19 @@ def _run_estimate_mode(args):
     print(f"  OSL:              {result.osl}")
     if args.image_height > 0 and args.image_width > 0 and args.num_images > 0:
         print(f"  Images:           {args.num_images} x {args.image_height}x{args.image_width}")
+        print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
+    has_video_dimensions = args.video_height > 0 and args.video_width > 0
+    if args.video_frames > 0 and args.num_videos > 0 and (has_video_dimensions or args.num_video_tokens > 0):
+        if has_video_dimensions:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.video_height}x{args.video_width}"
+            )
+        else:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.num_video_tokens} tokens/video"
+            )
         print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
 
     # ``--prefix`` and ``--nextn`` are common parameters applied to every
@@ -2891,6 +3145,8 @@ def _run_estimate_mode(args):
             report = format_estimate_detail_report(result, sol_result, detail=detail_arg)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
+        if sol_detail_error is not None:
+            report = f"SOL comparison unavailable: {sol_detail_error}\n\n{report}"
         if report:
             print("\n" + "-" * 60)
             print(f"  Detailed Breakdown ({detail_arg})")
@@ -2963,6 +3219,11 @@ def _run_recommend(args) -> None:
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             ttft=args.ttft,
             tpot=args.tpot,
             request_latency=args.request_latency,
@@ -2975,6 +3236,7 @@ def _run_recommend(args) -> None:
             max_seq_len=args.max_seq_len,
             enable_wideep=getattr(args, "enable_wideep", False),
             moe_backend=getattr(args, "moe_backend", None),
+            attention_backend=getattr(args, "attention_backend", None),
             top_n=args.top_n,
             save_dir=args.save_dir,
             engine_step_backend=args.engine_step_backend,
@@ -3059,8 +3321,15 @@ def main(args):
             raise SystemExit("recommend mode requires --model-path")
         if not getattr(args, "system", None):
             raise SystemExit("recommend mode requires --system")
-        _resolve_and_validate_nextn(args)
-        _run_recommend(args)
+        # Preserve omitted, explicit zero, and "auto" as distinct recommend API
+        # inputs. cli_recommend owns DSPARK fallback and acceptance validation.
+        try:
+            _run_recommend(args)
+        except Exception as exc:
+            if is_expected_cli_error(exc):
+                logger.debug("Traceback for recommend mode", exc_info=True)
+                raise SystemExit("Error: " + str(exc)) from exc
+            raise
         return
 
     if args.mode == "default":
@@ -3122,6 +3391,11 @@ def main(args):
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             enable_encoder_dp=not args.disable_encoder_dp,
             enable_epd=args.enable_epd,
             encoder_tp=args.encoder_tp,
@@ -3144,6 +3418,7 @@ def main(args):
             afd_candidate_overflow=getattr(args, "afd_candidate_overflow", "error"),
             enable_wideep=getattr(args, "enable_wideep", False),
             moe_backend=getattr(args, "moe_backend", None),
+            attention_backend=getattr(args, "attention_backend", None),
         )
     elif args.mode == "exp":
         try:
@@ -3152,6 +3427,8 @@ def main(args):
                 build_kwargs["engine_step_backend"] = args.engine_step_backend
             if args.forward_model is not None:
                 build_kwargs["forward_model"] = args.forward_model
+            if getattr(args, "attention_backend", None) is not None:
+                build_kwargs["attention_backend"] = args.attention_backend
             tasks = build_experiment_tasks(**build_kwargs)
         except (ValueError, TypeError) as exc:
             logger.exception("Failed to build experiment task configs")

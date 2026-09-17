@@ -38,6 +38,7 @@ pub struct GeneralizedMockerEngine<C: RankEngine> {
     dp_size: NonZeroU32,
     ranks: Vec<C>,
     next_pass_id: u64,
+    next_wave_step: u64,
     pending_pass: Option<PendingGroupPass<C::PendingPass>>,
     poisoned: Option<String>,
 }
@@ -56,6 +57,10 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
     /// Stable identities of the scheduler ranks in DP-rank order.
     pub fn rank_identities(&self) -> impl ExactSizeIterator<Item = RankIdentity> + '_ {
         (0..self.dp_size.get()).map(|dp_rank| self.identity.rank(dp_rank, self.dp_size))
+    }
+
+    pub(crate) fn ranks_mut(&mut self) -> impl ExactSizeIterator<Item = &mut C> + '_ {
+        self.ranks.iter_mut()
     }
 
     /// Construct every rank in a logical engine.
@@ -90,12 +95,17 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             dp_size,
             ranks,
             next_pass_id: 0,
+            next_wave_step: 0,
             pending_pass: None,
             poisoned: None,
         })
     }
 
     /// Apply a command to one rank.
+    ///
+    /// When the engine is idle and internal work is due at or before
+    /// `now_ms`, this returns a retryable error without mutation. The caller
+    /// must call [`Self::process_internal_work`] and then retry the command.
     pub fn apply_command_effects(
         &mut self,
         command: SchedulerCommand<C::Command>,
@@ -110,6 +120,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             "attention-DP rank {dp_rank} is out of range for dp_size {}",
             self.dp_size
         );
+        if !pass_in_flight
+            && let Some(deadline_ms) = self.next_internal_deadline_ms()
+            && deadline_ms <= now_ms
+        {
+            bail!(
+                "engine internal work is due at {deadline_ms}ms by command time {now_ms}ms; process internal work and retry the command"
+            );
+        }
         let effects = {
             let rank = &mut self.ranks[dp_rank as usize];
             let pending_pass = self.pending_pass.as_mut().and_then(|group| {
@@ -137,6 +155,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         // atomic; fail-stop poisoning is reserved for the grouped operations
         // below, where an earlier sibling may already have committed.
         let effects = effects?;
+        self.reset_wave_if_drained();
         Ok(EngineEffects::one(dp_rank, effects))
     }
 
@@ -207,11 +226,18 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             .next_pass_id
             .checked_add(1)
             .context("generalized engine pass ID overflow")?;
+        let wave_step = self.next_wave_step;
+        let next_wave_step = wave_step
+            .checked_add(1)
+            .context("generalized engine wave step overflow")?;
 
         let mut end_ms = now_ms;
         let mut same_timestamp_retry = SameTimestampRetry::NotApplicable;
         let mut started = Vec::new();
         let mut pending = Vec::new();
+        for rank in &mut self.ranks {
+            rank.prepare_group_pass(wave_step, self.dp_size);
+        }
         for dp_rank in 0..self.ranks.len() {
             if !self.ranks[dp_rank].is_ready() || self.ranks[dp_rank].waiting_for_external_command()
             {
@@ -233,6 +259,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             let pass = pass.map_err(|error| self.poison(error))?;
             end_ms = end_ms.max(pass.end_ms);
             same_timestamp_retry = match (same_timestamp_retry, pass.same_timestamp_retry) {
+                (
+                    SameTimestampRetry::Countdown { remaining: a },
+                    SameTimestampRetry::Countdown { remaining: b },
+                ) => SameTimestampRetry::Countdown {
+                    remaining: a.max(b),
+                },
+                (_, countdown @ SameTimestampRetry::Countdown { .. })
+                | (countdown @ SameTimestampRetry::Countdown { .. }, _) => countdown,
                 (_, SameTimestampRetry::Retry) => SameTimestampRetry::Retry,
                 (SameTimestampRetry::Retry, _) => SameTimestampRetry::Retry,
                 (_, SameTimestampRetry::Exhausted) => SameTimestampRetry::Exhausted,
@@ -249,8 +283,15 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             });
         }
 
+        let any_rank_prefilled = self.ranks.iter().any(RankEngine::prefill_in_pass);
+        let any_rank_ran_model = self.ranks.iter().any(RankEngine::model_work_in_pass);
+        for rank in &mut self.ranks {
+            rank.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
+        }
+
         debug_assert!(!pending.is_empty());
         self.next_pass_id = next_pass_id;
+        self.next_wave_step = next_wave_step;
         self.pending_pass = Some(PendingGroupPass {
             pass_id,
             started_at_ms: now_ms,
@@ -339,6 +380,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             }
         }
         debug_assert!(pending_by_rank.next().is_none());
+        self.reset_wave_if_drained();
         Ok(EnginePassCompleted {
             pass_id,
             effects: EngineEffects { by_rank: effects },
@@ -347,7 +389,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
 
     /// Earliest valid internal-work deadline across all ranks.
     pub fn next_internal_deadline_ms(&self) -> Option<f64> {
-        if self.poisoned.is_some() {
+        if self.poisoned.is_some() || self.pending_pass.is_some() {
             return None;
         }
         self.ranks
@@ -364,7 +406,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
     ) -> Result<EngineEffects<C::InternalEffects>> {
         self.ensure_healthy()?;
         validate_time(now_ms, "internal-work time")?;
-        let pass_in_flight = self.pending_pass.is_some();
+        // A rank may model a physical deadline inside an eagerly committed
+        // model step, but the framework cannot consume that completion until
+        // the shared pass boundary. Besides preserving visibility ordering,
+        // returning before consulting any rank makes this a true no-op: no
+        // residency activation, observer event, or rank-local clock advance.
+        if self.pending_pass.is_some() {
+            return Ok(EngineEffects::default());
+        }
         let mut effects = Vec::new();
         for dp_rank in 0..self.ranks.len() {
             let is_due = self.ranks[dp_rank]
@@ -374,7 +423,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
                 continue;
             }
             let rank_effects = self.ranks[dp_rank]
-                .process_internal_work(now_ms, pass_in_flight)
+                .process_internal_work(now_ms, false)
                 .with_context(|| {
                     format!("processing internal work for attention-DP rank {dp_rank}")
                 });
@@ -384,6 +433,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
                 effects: rank_effects,
             });
         }
+        self.reset_wave_if_drained();
         Ok(EngineEffects { by_rank: effects })
     }
 
@@ -402,6 +452,12 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             );
         }
         Ok(())
+    }
+
+    fn reset_wave_if_drained(&mut self) {
+        if self.pending_pass.is_none() && self.ranks.iter().all(RankEngine::is_drained) {
+            self.next_wave_step = 0;
+        }
     }
 
     fn poison(&mut self, error: anyhow::Error) -> anyhow::Error {

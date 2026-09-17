@@ -20,6 +20,7 @@ struct FakeConfig {
     fail_execute_rank: Option<u32>,
     fail_complete_rank: Option<u32>,
     fail_internal_rank: Option<u32>,
+    prepared_steps: Rc<RefCell<Vec<(u32, u64, u32)>>>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
@@ -34,6 +35,7 @@ struct FakeRank {
     fail_execute: bool,
     fail_complete: bool,
     fail_internal: bool,
+    prepared_steps: Rc<RefCell<Vec<(u32, u64, u32)>>>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
@@ -59,6 +61,7 @@ impl RankEngine for FakeRank {
             fail_execute: config.fail_execute_rank == Some(identity.dp_rank),
             fail_complete: config.fail_complete_rank == Some(identity.dp_rank),
             fail_internal: config.fail_internal_rank == Some(identity.dp_rank),
+            prepared_steps: Rc::clone(&config.prepared_steps),
             log: Rc::clone(&config.log),
         })
     }
@@ -80,6 +83,10 @@ impl RankEngine for FakeRank {
             self.ready = true;
             self.drained = false;
         }
+        if command == "cancel" {
+            self.ready = false;
+            self.drained = true;
+        }
         Ok(context.allow_immediate_admission())
     }
 
@@ -89,6 +96,12 @@ impl RankEngine for FakeRank {
 
     fn waiting_for_external_command(&self) -> bool {
         self.external_wait
+    }
+
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: NonZeroU32) {
+        self.prepared_steps
+            .borrow_mut()
+            .push((self.identity.dp_rank, wave_step, dp_size.get()));
     }
 
     fn execute_pass(
@@ -376,10 +389,73 @@ fn config(
             fail_execute_rank: None,
             fail_complete_rank: None,
             fail_internal_rank: None,
+            prepared_steps: Rc::new(RefCell::new(Vec::new())),
             log: Rc::clone(&log),
         },
         log,
     )
+}
+
+#[test]
+fn attention_dp_wave_step_is_shared_and_resets_after_drain() -> Result<()> {
+    let (rank, _) = config(vec![true, false], vec![1.0, 1.0], vec![None, None]);
+    let prepared_steps = Rc::clone(&rank.prepared_steps);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(34),
+        GeneralizedEngineConfig::attention_dp(NonZeroU32::new(2).unwrap(), rank),
+    )?;
+
+    let first = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 0.5)?;
+    engine.complete_pass(first.pass_id, first.end_ms)?;
+
+    let second = engine.execute_pass(1.0)?.expect("rank 1 is ready");
+    engine.complete_pass(second.pass_id, second.end_ms)?;
+    assert!(engine.is_drained());
+
+    engine.apply_command_effects(SchedulerCommand::new(0, "wake"), 3.0)?;
+    let third = engine.execute_pass(3.0)?.expect("new wave is ready");
+    engine.complete_pass(third.pass_id, third.end_ms)?;
+
+    assert_eq!(
+        prepared_steps.borrow().as_slice(),
+        &[
+            (0, 0, 2),
+            (1, 0, 2),
+            (0, 1, 2),
+            (1, 1, 2),
+            (0, 0, 2),
+            (1, 0, 2),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn attention_dp_wave_step_resets_after_cancel_to_idle() -> Result<()> {
+    let (rank, _) = config(vec![true, false], vec![1.0, 1.0], vec![None, None]);
+    let prepared_steps = Rc::clone(&rank.prepared_steps);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(35),
+        GeneralizedEngineConfig::attention_dp(NonZeroU32::new(2).unwrap(), rank),
+    )?;
+
+    let first = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 0.5)?;
+    engine.complete_pass(first.pass_id, first.end_ms)?;
+    assert!(!engine.is_drained(), "rank 1 keeps the current wave alive");
+
+    engine.apply_command_effects(SchedulerCommand::new(1, "cancel"), 2.0)?;
+    assert!(engine.is_drained());
+    engine.apply_command_effects(SchedulerCommand::new(0, "wake"), 3.0)?;
+    let restarted = engine.execute_pass(3.0)?.expect("new wave is ready");
+    engine.complete_pass(restarted.pass_id, restarted.end_ms)?;
+
+    assert_eq!(
+        prepared_steps.borrow().as_slice(),
+        &[(0, 0, 2), (1, 0, 2), (0, 0, 2), (1, 0, 2)]
+    );
+    Ok(())
 }
 
 #[test]
@@ -643,7 +719,7 @@ fn attention_dp_cancellation_mutates_only_the_target_ranks_retained_pass() -> Re
 }
 
 #[test]
-fn internal_work_uses_earliest_deadline_and_group_busy_context() -> Result<()> {
+fn internal_work_waits_for_the_group_pass_boundary() -> Result<()> {
     let (rank, log) = config(
         vec![true, false],
         vec![10.0, 0.0],
@@ -656,16 +732,46 @@ fn internal_work_uses_earliest_deadline_and_group_busy_context() -> Result<()> {
     assert_eq!(engine.next_internal_deadline_ms(), Some(5.0));
 
     let started = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    assert_eq!(
+        engine.next_internal_deadline_ms(),
+        None,
+        "physical deadlines are hidden while the group pass is in flight"
+    );
     let effects = engine.process_internal_work(5.0)?;
-    assert_eq!(effects.by_rank.len(), 1);
-    assert_eq!(effects.by_rank[0].dp_rank, 1);
-    assert_eq!(engine.next_internal_deadline_ms(), Some(8.0));
-    assert!(log.borrow().contains(&"internal:1:true".to_string()));
+    assert!(effects.is_empty());
+    assert!(
+        !log.borrow()
+            .iter()
+            .any(|entry| entry.starts_with("internal:")),
+        "direct internal-work calls must not mutate a rank mid-pass"
+    );
+
+    // An arrival/submit between the physical deadline and the model-step
+    // boundary may update its command-owned state, but must not make the
+    // overdue transfer visible.
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 7.0)?;
+    assert!(log.borrow().contains(&"command:1:wake:true".to_string()));
+    assert!(engine.process_internal_work(7.0)?.is_empty());
+    assert!(
+        !log.borrow()
+            .iter()
+            .any(|entry| entry.starts_with("internal:")),
+        "the command must not smuggle internal settlement into the pass"
+    );
 
     engine.complete_pass(started.pass_id, 10.0)?;
+    assert_eq!(engine.next_internal_deadline_ms(), Some(5.0));
     let effects = engine.process_internal_work(10.0)?;
-    assert_eq!(effects.by_rank[0].dp_rank, 0);
+    assert_eq!(
+        effects
+            .by_rank
+            .iter()
+            .map(|effect| effect.dp_rank)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
     assert!(log.borrow().contains(&"internal:0:false".to_string()));
+    assert!(log.borrow().contains(&"internal:1:false".to_string()));
     Ok(())
 }
 
@@ -803,6 +909,33 @@ fn targeted_command_rejection_does_not_poison_the_group() -> Result<()> {
         .execute_pass(0.0)?
         .expect("valid work remains executable after a command rejection");
     engine.complete_pass(started.pass_id, started.end_ms)?;
+    assert!(engine.is_drained());
+    Ok(())
+}
+
+#[test]
+fn idle_overdue_cancel_requires_internal_work_before_mutation() -> Result<()> {
+    let (rank, log) = config(vec![true], vec![0.0], vec![Some(5.0)]);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(44),
+        GeneralizedEngineConfig::single_rank(rank),
+    )?;
+
+    let error = engine
+        .apply_command_effects(SchedulerCommand::new(0, "cancel"), 10.0)
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("process internal work and retry"),
+        "{message}"
+    );
+    assert!(log.borrow().is_empty(), "preflight must not enter the rank");
+    assert!(engine.is_ready(), "the valid cancel must remain unapplied");
+
+    let internal = engine.process_internal_work(10.0)?;
+    assert_eq!(internal.by_rank.len(), 1);
+    let cancelled = engine.apply_command_effects(SchedulerCommand::new(0, "cancel"), 10.0)?;
+    assert!(cancelled.by_rank[0].effects);
     assert!(engine.is_drained());
     Ok(())
 }

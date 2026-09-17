@@ -65,47 +65,49 @@ pytestmark = pytest.mark.integration
 # sglang/vllm emit `CustomAllReduce` — trtllm comm quant, and the
 # SGLang/TRT-LLM-only Fallback-MLA chain) uncovered here.
 #
-# Cases drawn straight from `SMOKE_CASES` (plus one `POWER_CASES` member) so
-# this tracks the same matrix. All compute (no error-symmetry cases), so every
-# surface yields a real number.
+# Cases drawn straight from `SMOKE_CASES` so this tracks the same matrix. All
+# compute (no error-symmetry cases), so every surface yields a real number.
 #
-#   vllm   : the original 5 b200_sxm/vllm/0.19.0 cases, plus the
-#            Qwen3-30B-A3B b200_sxm/vllm/0.22.0 POWER_CASES member — every
-#            0.19.0/0.5.x/1.3.0rc10 identity is latency-only (energy_wms == 0
-#            in every per-op golden), so this is the one subset case whose
-#            per-op energy comparison actually executes.
+#   vllm   : the original 5 b200_sxm/vllm cases (current slot). The former
+#            b200_sxm/vllm/0.22.0 POWER_CASES member was removed with the
+#            2026-08 prune (its gemm tables are gone; no engine-step-complete
+#            power identity remains). Per-op energy on current-slot goldens
+#            is well-typed zero; the energy MATH is anchored by the rust
+#            synthetic energy oracles instead.
 #   sglang : Kimi-K2.5 (Fallback-MLA + MoE) and MiniMax-M2.5 (MoE), both
 #            b200_sxm/sglang/0.5.10. SGLang's MoEDispatch flavor is the same
 #            `CustomAllReduce` else-branch as vllm; its distinct value is the
 #            Fallback-MLA path and the sglang perf tables.
 #   trtllm : gpt-oss-20b (MoE -> exercises the `TrtllmAlltoall` flavor +
 #            trtllm comm quant + trtllm MoE) and Nemotron-Super-49B (dense,
-#            CustomAllReduce-heavy), both b200_sxm/trtllm/1.3.0rc10. The MoE
+#            CustomAllReduce-heavy), both b200_sxm/trtllm/current (1.3.0rc20). The MoE
 #            case is the load-bearing one: it is the only subset member that
 #            hits the trtllm dispatch-flavor branch.
 _SUBSET_IDS_BY_BACKEND = {
     "vllm": [
-        "minimax-m25-b200-vllm-019-isl1024-osl2",
-        "kimi-k25-b200-vllm-019-isl1024-osl2",
-        "minimax-m25-b200-vllm-019-sampled-prefix",
-        "minimax-m27-b200-vllm-019-isl1024-osl2",
-        "qwen3-30b-a3b-b200-vllm-019-isl1024-osl2",
-        "qwen3-30b-a3b-b200-vllm-022-power",
+        "minimax-m25-b200-vllm-isl1024-osl2",
+        "kimi-k25-b200-vllm-isl1024-osl2",
+        "minimax-m25-b200-vllm-sampled-prefix",
+        "minimax-m27-b200-vllm-isl1024-osl2",
+        "qwen3-30b-a3b-b200-vllm-isl1024-osl2",
     ],
     "sglang": [
-        "kimi-k25-b200-sglang-0510-isl1024-osl2",
-        "minimax-m25-b200-sglang-0510-isl1024-osl2",
+        "kimi-k25-b200-sglang-isl1024-osl2",
+        "minimax-m25-b200-sglang-isl1024-osl2",
     ],
     "trtllm": [
-        "gpt-oss-20b-b200-trtllm-130rc10-isl1024-osl2",
-        "nemotron-nas-b200-trtllm-130rc10-isl1024-osl2",
+        "gpt-oss-20b-b200-trtllm-isl1024-osl2",
+        "nemotron-nas-b200-trtllm-isl1024-osl2",
     ],
 }
 
-# Subset members on power-carrying database identities: their per-op goldens
-# must carry nonzero energy_wms, so the energy comparison branch is proven to
-# execute (see the anti-vacuous guard in TestCompileEnginePerOpParity).
-_POWER_SUBSET_IDS = {"qwen3-30b-a3b-b200-vllm-022-power"}
+# The B200 TRT-LLM current slot carries imported 1.3.0rc20 power data.
+# Require a nonzero energy comparison for both covered subset members so a
+# future all-zero golden refresh cannot make energy parity pass vacuously.
+_POWER_SUBSET_IDS = {
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2",
+    "nemotron-nas-b200-trtllm-isl1024-osl2",
+}
 
 # Preserve the per-backend ordering (vllm, then sglang, then trtllm) so the
 # parametrize ids group readably and the determinism sweep covers vllm first.
@@ -167,7 +169,14 @@ def _quiet(func, *args, **kwargs):
 
 
 def _build_python_model(case: EngineStepParityCase):
-    database = _quiet(perf_database.get_database, case.system_name, case.backend_name, case.backend_version)
+    database = _quiet(
+        perf_database.get_database,
+        case.system_name,
+        case.backend_name,
+        case.backend_version,
+        # parity cases are frozen data coordinates by design
+        allow_unlisted_version=True,
+    )
     if database is None:
         pytest.skip(f"no perf database for {case.system_name}/{case.backend_name}/{case.backend_version}")
     model_config = config.ModelConfig(
@@ -222,10 +231,10 @@ class TestOpTransferRoundTrip:
         )
         spec = json.loads(spec_json)
 
-        # Vision is decomposed into encoder child ops; for these text-only
-        # models `encoder_ops` is empty, so context_ops count is exact.
-        encoder_ops = list(getattr(model, "encoder_ops", []) or [])
-        expected_ctx = len(encoder_ops) + len(model.context_ops)
+        # The encoder runs separately through the ad-hoc operation FFI, even
+        # when a model (such as Kimi K2.5) hosts a vision tower. The compiled
+        # context phase contains only the language-model operations.
+        expected_ctx = len(model.context_ops)
         expected_gen = len(model.generation_ops)
 
         assert len(spec["context_ops"]) == expected_ctx, (
@@ -243,9 +252,9 @@ class TestOpTransferRoundTrip:
             assert tag != "Vision", "compiled spec must never contain a Vision op"
 
         # The op names round-trip through the wire in order: spec op name ==
-        # the Python op `_name` for each list (after the encoder prefix).
+        # the Python op `_name` for each language-model phase.
         spec_ctx_names = [next(iter(d.values()))["name"] for d in spec["context_ops"]]
-        py_ctx_names = [op._name for op in encoder_ops] + [op._name for op in model.context_ops]
+        py_ctx_names = [op._name for op in model.context_ops]
         assert spec_ctx_names == py_ctx_names, "context op names/order drifted"
 
         spec_gen_names = [next(iter(d.values()))["name"] for d in spec["generation_ops"]]
@@ -292,7 +301,7 @@ def _assert_within(name: str, python_value: float, new_value: float, *, backend:
 
 # Chunked-prefill shapes: shared by the parametrized test and the golden
 # pin path (pin_goldens.py) so the fixture keys track the test matrix.
-_CHUNKED_PREFILL_CASE_ID = "minimax-m25-b200-vllm-019-isl1024-osl2"
+_CHUNKED_PREFILL_CASE_ID = "minimax-m25-b200-vllm-isl1024-osl2"
 _CHUNKED_PREFILL_SHAPES = [
     (512, 4, 4096, 128, 0),  # chunked prefill: ctx_tokens < isl
     (512, 4, 4096, 128, 256),  # chunked + cached prefix
@@ -394,6 +403,40 @@ _ACCEPTED_SOURCE_TAG_DIVERGENCES = {
 
 class TestCompileEnginePerOpParity:
     @pytest.mark.parametrize("case", _SUBSET_CASES)
+    @pytest.mark.parametrize("phase", ["prefill", "decode"])
+    def test_phase_per_op_matches_scalar_prediction(self, case: EngineStepParityCase, phase: str) -> None:
+        """Replay's evidence path must preserve the original scalar latency."""
+        handle = _compile_handle(case)
+        prefill = phase == "prefill"
+        # Match AicTimingModel's per-phase inputs, including one decode step
+        # and its default stride. The scalar helpers call run_static with
+        # these same coordinates; no golden values are regenerated here.
+        prefix = case.prefix if prefill else 0
+        ctx_entries, gen_entries = handle.run_static_per_op(
+            batch_size=case.batch_size,
+            beam_width=1,
+            isl=case.isl,
+            osl=1 if prefill else 2,
+            prefix=prefix,
+            seq_imbalance_correction_scale=1.0,
+            gen_seq_imbalance_correction_scale=1.0,
+            mode="static_ctx" if prefill else "static_gen",
+            stride=32,
+        )
+        if prefill:
+            scalar_ms = handle.predict_prefill_latency(case.batch_size, case.isl, prefix)
+            entries = ctx_entries
+            assert not gen_entries
+        else:
+            scalar_ms = handle.predict_decode_latency(case.batch_size, case.isl, 2)
+            entries = gen_entries
+            assert not ctx_entries
+        assert entries and scalar_ms > 0.0
+        # Permit only floating-point reduction-order roundoff, rather than
+        # the wider cross-implementation tolerance used for frozen goldens.
+        assert sum(entry[1] for entry in entries) == pytest.approx(scalar_ms, rel=1e-12, abs=1e-12)
+
+    @pytest.mark.parametrize("case", _SUBSET_CASES)
     def test_static_per_op_matches_golden(self, case: EngineStepParityCase) -> None:
         case_id = _SUBSET_CASE_IDS[case]
         golden = load_parity_golden("per_op.json")["cases"].get(case_id)
@@ -452,7 +495,7 @@ class TestCompileEnginePerOpParity:
 
 
 # Shared by the imbalance tests and the golden pin path.
-_IMBALANCE_CASE_ID = "minimax-m25-b200-vllm-019-isl1024-osl2"
+_IMBALANCE_CASE_ID = "minimax-m25-b200-vllm-isl1024-osl2"
 _IMBALANCE_CTX_SCALE = 1.3
 _IMBALANCE_GEN_SCALE = 0.85
 
@@ -534,18 +577,40 @@ class TestImbalanceScaleParity:
 
 _WIDEEP_SGLANG_MODEL = "deepseek-ai/DeepSeek-V3"
 _WIDEEP_SGLANG_SYSTEM = "h200_sxm"
-_WIDEEP_SGLANG_VERSION = "0.5.6.post2"
+_WIDEEP_SGLANG_VERSION = "0.5.14"
+
+_GB200_WIDEEP_SGLANG_MODEL = "deepseek-ai/DeepSeek-R1"
+_GB200_WIDEEP_SGLANG_SYSTEM = "gb200"
+_GB200_WIDEEP_SGLANG_VERSION = "0.5.14"
 
 
 def _build_wideep_sglang():
-    """(model, backend, database, spec_json) for the SGLang WideEP config;
-    shared by the parity tests (handle side) and the golden capture (python
-    references)."""
+    """Runnable H200 Stage-1 DeepEP config for parity and golden capture.
+
+    This remains numerical rather than graph-only: the historical H200
+    ``wideep_sglang`` goldens exercise measured DeepEP expert compute alongside
+    the new LL communication model.
+    """
     from aiconfigurator.sdk import common
 
-    database = _quiet(perf_database.get_database, _WIDEEP_SGLANG_SYSTEM, "sglang", _WIDEEP_SGLANG_VERSION)
-    if database is None:
-        pytest.skip(f"no perf database for {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION}")
+    database = _quiet(
+        perf_database.get_database,
+        _WIDEEP_SGLANG_SYSTEM,
+        "sglang",
+        _WIDEEP_SGLANG_VERSION,
+        # Current-slot primary data plus approved cross-version donors for
+        # the large-EP tables form the production H200 query shape.
+    )
+    assert database is not None, f"missing shipped {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION} database"
+    compute_eps = database.moe_expert_compute_coverage(
+        hidden_size=7168,
+        inter_size=2048,
+        topk=8,
+        num_experts=256,
+        quant_mode=common.MoEQuantMode.fp8_block,
+        inference_phase="generation",
+    )
+    assert 8 in compute_eps, "H200 parity requires the shipped DeepEP expert-compute EP8 curve"
     model_config = config.ModelConfig(
         tp_size=8,
         moe_tp_size=1,
@@ -575,6 +640,60 @@ def _build_wideep_sglang():
     return model, backend, database, spec_json
 
 
+def _build_gb200_wideep_sglang():
+    """Runnable GB200 Stage-1 DeepEP config for parity and golden capture."""
+    from aiconfigurator.sdk import common
+
+    database = _quiet(
+        perf_database.get_database,
+        _GB200_WIDEEP_SGLANG_SYSTEM,
+        "sglang",
+        _GB200_WIDEEP_SGLANG_VERSION,
+        # Current-slot primary data plus approved cross-version donors for
+        # the large-EP tables form the production GB200 query shape.
+    )
+    assert database is not None, (
+        f"missing shipped {_GB200_WIDEEP_SGLANG_SYSTEM}/sglang/{_GB200_WIDEEP_SGLANG_VERSION} database"
+    )
+    compute_eps = database.moe_expert_compute_coverage(
+        hidden_size=7168,
+        inter_size=2048,
+        topk=8,
+        num_experts=256,
+        quant_mode=common.MoEQuantMode.fp8_block,
+        inference_phase="generation",
+    )
+    assert 32 in compute_eps, "GB200 parity requires the shipped DeepEP expert-compute EP32 curve"
+    model_config = config.ModelConfig(
+        tp_size=1,
+        pp_size=1,
+        attention_dp_size=32,
+        moe_tp_size=1,
+        moe_ep_size=32,
+        moe_comm_backend={"context": "deepep_ht", "generation": "deepep_ll"},
+        num_gpus_per_node=4,
+        gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+        moe_quant_mode=common.MoEQuantMode.fp8_block,
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        fmha_quant_mode=common.FMHAQuantMode.fp8_block,
+    )
+    model = _quiet(get_model, _GB200_WIDEEP_SGLANG_MODEL, model_config, "sglang")
+    backend = get_backend("sglang")
+    spec_json = _quiet(
+        engine.build_engine_spec_json,
+        model,
+        model_path=_GB200_WIDEEP_SGLANG_MODEL,
+        system=_GB200_WIDEEP_SGLANG_SYSTEM,
+        backend="sglang",
+        backend_version=_GB200_WIDEEP_SGLANG_VERSION,
+        kv_block_size=None,
+        systems_path=None,
+        nextn=0,
+        database=database,
+    )
+    return model, backend, database, spec_json
+
+
 def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
     import aiconfigurator_core
 
@@ -582,30 +701,119 @@ def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
 
 
 class TestWideEpDeepEpParity:
-    """SGLang large-EP DeepSeek (deepep_ht/deepep_ll) end-to-end parity.
+    """H200 SGLang DeepEP HT/LL end-to-end numerical parity.
 
-    Covers three previously-divergent surfaces at once: the WideEP MLA
-    per-rank-heads table coordinate (tp=8 -> heads=16; the bridge used to emit
-    raw tp), the deepep MoE compute routing (Rust used to read `moe_perf`
-    where Python reads the wideep context/generation tables), and the DeepEP
-    dispatch flavor emission (the emitter used to map every sglang dispatch to
-    CustomAllReduce). Data lives on h200_sxm/sglang/0.5.6.post2 (the only
-    shipped version with the deepep dispatch parquets)."""
+    The original H200 scenario remains numerical and now covers the LL
+    communication model without changing the measured DeepEP expert-compute
+    boundary. Approved cross-version donors supply the large-EP tables where
+    required.
+    """
 
     def test_wideep_static_parity(self) -> None:
         _model, _backend, _database, spec_json = _build_wideep_sglang()
         handle = _handle_from_spec_json(spec_json)
         new_ctx, new_gen, _ = handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
-        _assert_within("wideep_static_ctx", _golden_reference("wideep_sglang::static_ctx"), new_ctx, backend="sglang")
-        _assert_within("wideep_static_gen", _golden_reference("wideep_sglang::static_gen"), new_gen, backend="sglang")
+        _assert_within(
+            "wideep_static_ctx",
+            _golden_reference("wideep_sglang::static_ctx"),
+            new_ctx,
+            backend="sglang",
+        )
+        _assert_within(
+            "wideep_static_gen",
+            _golden_reference("wideep_sglang::static_gen"),
+            new_gen,
+            backend="sglang",
+        )
 
     def test_wideep_mixed_and_decode_parity(self) -> None:
         _model, _backend, _database, spec_json = _build_wideep_sglang()
         handle = _handle_from_spec_json(spec_json)
         new_mixed = handle.mixed_step_latency(1024, 2, 1024, 4, 0)
         new_decode = handle.decode_step_latency(2, 1024, 4)
-        _assert_within("wideep_mixed", _golden_reference("wideep_sglang::mixed_step"), new_mixed, backend="sglang")
-        _assert_within("wideep_decode", _golden_reference("wideep_sglang::decode_step"), new_decode, backend="sglang")
+        _assert_within(
+            "wideep_mixed",
+            _golden_reference("wideep_sglang::mixed_step"),
+            new_mixed,
+            backend="sglang",
+        )
+        _assert_within(
+            "wideep_decode",
+            _golden_reference("wideep_sglang::decode_step"),
+            new_decode,
+            backend="sglang",
+        )
+
+    def test_h200_ll_graph_uses_measured_deepep_compute(self) -> None:
+        """Pin the LL communication and measured expert-compute boundary."""
+        _model, _backend, _database, spec_json = _build_wideep_sglang()
+        spec = json.loads(spec_json)
+        context_ops = spec["context_ops"]
+        generation_ops = spec["generation_ops"]
+
+        context_mla = [op["WideEpContextMla"] for op in context_ops if "WideEpContextMla" in op]
+        generation_mla = [op["WideEpGenerationMla"] for op in generation_ops if "WideEpGenerationMla" in op]
+        assert len(context_mla) == len(generation_mla) == 1
+        assert context_mla[0]["num_heads"] == generation_mla[0]["num_heads"] == 16
+
+        context_a2a = [op["MoeAllToAll"] for op in context_ops if "MoeAllToAll" in op]
+        generation_a2a = [op["MoeAllToAll"] for op in generation_ops if "MoeAllToAll" in op]
+        assert {op["phase"] for op in context_a2a} == {"dispatch", "combine"}
+        assert {op["comm_backend"] for op in context_a2a} == {"deepep_ht"}
+        assert {op["phase"] for op in generation_a2a} == {"dispatch", "combine"}
+        assert {op["comm_backend"] for op in generation_a2a} == {"deepep_ll"}
+        assert {op["phase"]: op["comm_dtype"] for op in generation_a2a} == {
+            "dispatch": "fp8",
+            "combine": "bfloat16",
+        }
+        assert any("MoeExpertCompute" in op for op in context_ops)
+        assert not any("Moe" in op for op in context_ops)
+        assert any("MoeExpertCompute" in op for op in generation_ops)
+        assert not any("Moe" in op for op in generation_ops)
+        assert not any("CustomAllReduce" in op for op in context_ops + generation_ops)
+
+        # The numerical H200 spec traverses the full JSON -> bincode -> handle
+        # wire; this is not a substitute graph-only scenario.
+        _handle_from_spec_json(spec_json)
+
+
+class TestGb200WideEpDeepEpParity:
+    """Keep the new GB200 numerical coverage alongside, not instead of, H200."""
+
+    def test_gb200_wideep_static_parity(self) -> None:
+        _model, _backend, _database, spec_json = _build_gb200_wideep_sglang()
+        handle = _handle_from_spec_json(spec_json)
+        new_ctx, new_gen, _ = handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
+        _assert_within(
+            "wideep_gb200_static_ctx",
+            _golden_reference("wideep_sglang_gb200::static_ctx"),
+            new_ctx,
+            backend="sglang",
+        )
+        _assert_within(
+            "wideep_gb200_static_gen",
+            _golden_reference("wideep_sglang_gb200::static_gen"),
+            new_gen,
+            backend="sglang",
+        )
+
+    def test_gb200_wideep_mixed_and_decode_parity(self) -> None:
+        _model, _backend, _database, spec_json = _build_gb200_wideep_sglang()
+        handle = _handle_from_spec_json(spec_json)
+        new_mixed = handle.mixed_step_latency(1024, 2, 1024, 4, 0)
+        new_decode = handle.decode_step_latency(2, 1024, 4)
+        _assert_within(
+            "wideep_gb200_mixed",
+            _golden_reference("wideep_sglang_gb200::mixed_step"),
+            new_mixed,
+            backend="sglang",
+        )
+        _assert_within(
+            "wideep_gb200_decode",
+            _golden_reference("wideep_sglang_gb200::decode_step"),
+            new_decode,
+            backend="sglang",
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -618,9 +826,9 @@ def _build_wideep_trtllm():
     shared by the parity test (handle side) and the golden capture."""
     from aiconfigurator.sdk import common
 
-    database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc10")
+    database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc20")
     if database is None:
-        pytest.skip("no perf database for gb200/trtllm/1.3.0rc10")
+        pytest.skip("no perf database for gb200/trtllm/1.3.0rc20")
     model_config = config.ModelConfig(
         tp_size=1,
         attention_dp_size=8,
@@ -641,7 +849,7 @@ def _build_wideep_trtllm():
         model_path="deepseek-ai/DeepSeek-V3",
         system="gb200",
         backend="trtllm",
-        backend_version="1.3.0rc10",
+        backend_version="1.3.0rc20",
         kv_block_size=None,
         systems_path=None,
         nextn=0,

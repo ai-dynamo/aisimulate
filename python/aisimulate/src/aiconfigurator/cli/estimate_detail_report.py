@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aiconfigurator.sdk.performance_result import MoECommFallback
+
 if TYPE_CHECKING:
     from aiconfigurator.cli.api import EstimateResult
     from aiconfigurator.sdk.inference_summary import InferenceSummary
@@ -89,6 +91,10 @@ def format_estimate_detail_report(
         section_lines: list[str] = []
         if section == "time":
             section_lines = _format_time_detail(result, sol_result, width=width, top_n_ops=top_n_ops)
+        elif section == "energy" and result.mode == "agg" and result.summary is not None:
+            section_lines = _format_aggregate_energy_section(
+                result.summary, bar_width=max(width - 40, 10), top_n=top_n_ops
+            )
         elif result.summary is not None and (
             section == "memory" or result.mode in ("static", "static_ctx", "static_gen")
         ):
@@ -103,6 +109,11 @@ def format_estimate_detail_report(
         elif section == "summary":
             section_lines = _format_raw_summary(result)
 
+        if section == "source" and result.moe_comm_fallbacks:
+            if section_lines:
+                section_lines.append("")
+            section_lines.extend(_format_moe_comm_fallbacks(result.moe_comm_fallbacks))
+
         if not section_lines:
             continue
         if out:
@@ -110,6 +121,21 @@ def format_estimate_detail_report(
         out.extend(section_lines)
 
     return "\n".join(out)
+
+
+def format_moe_comm_fallback(fallback: MoECommFallback) -> str:
+    """Format one executed topology substitution for CLI output."""
+    return (
+        f"{fallback.inference_phase}/{fallback.comm_backend}: "
+        f"requested EP{fallback.requested_ep_size}/node{fallback.requested_node_num}; "
+        f"using EP{fallback.measurement_ep_size}/node{fallback.measurement_node_num} silicon data"
+    )
+
+
+def _format_moe_comm_fallbacks(fallbacks: tuple[MoECommFallback, ...]) -> list[str]:
+    lines = ["MoE communication fallback provenance (executed)"]
+    lines.extend(f"  {format_moe_comm_fallback(fallback)}" for fallback in fallbacks)
+    return lines
 
 
 def _format_raw_summary(result: EstimateResult) -> list[str]:
@@ -356,6 +382,35 @@ def _format_summary_time_section(summary: InferenceSummary, bar_width: int, top_
     if enc_total == 0 and ctx_total == 0 and gen_total == 0:
         lines.append("Time Breakdown")
         lines.append("  <no per-op latency data>")
+    return lines
+
+
+def _format_aggregate_energy_section(summary: InferenceSummary, bar_width: int, top_n: int) -> list[str]:
+    groups = summary.get_aggregate_energy_breakdown()
+    if not groups:
+        return ["Energy Breakdown", "  <no energy data>"]
+    titles = {"mix_step": "Mixed steps", "genonly_step": "Decode-only steps", "encoder": "Encoder"}
+    lines = ["Energy Breakdown (scheduled active work per GPU)"]
+    rendered_group = False
+    for name, group in groups.items():
+        if group.latency_ms <= 0:
+            continue
+        rendered_group = True
+        coverage = group.covered_latency_ms / group.latency_ms
+        power = (
+            f"{group.energy_wms / group.latency_ms:.1f} W"
+            if coverage >= 0.9 and group.energy_wms > 0
+            else "unavailable"
+        )
+        lines.append(
+            f"{titles[name]} energy (total = {group.energy_wms:.3f} W·ms, coverage = {coverage:.1%}, avg P = {power})"
+        )
+        if group.energy_wms > 0:
+            lines.extend(_format_op_bars(group.per_op_energy_wms, top_n=top_n, bar_width=bar_width, unit="W·ms"))
+        else:
+            lines.append("  <no energy data>")
+    if not rendered_group:
+        lines.append("  <no measurable energy data>")
     return lines
 
 

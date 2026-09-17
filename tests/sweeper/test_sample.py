@@ -31,9 +31,7 @@ def _agg_selection(**overrides) -> dict:
     return values
 
 
-AGG_CONFIG = ReplicaParallelConfig(
-    shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-)
+AGG_CONFIG = ReplicaParallelConfig(shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
 DISAGG_CONFIG = DisaggParallelConfig(
     prefill=ReplicaParallelConfig(ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8), 1),
     decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), 2),
@@ -113,6 +111,25 @@ def test_disagg_unroll_preserves_both_roles():
     assert "agg_max_num_seqs" not in sample
 
 
+def test_disagg_unroll_materializes_effective_role_hardware():
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        prefill_max_num_batched_tokens=16384,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=512,
+    )
+
+    sample = unroll_sample(
+        search_space=_space(prefill_hardware_sku="prefill_sku"),
+        selection=selection,
+        parallel_config=DISAGG_CONFIG,
+    )
+
+    assert sample["prefill_hardware_sku"] == "prefill_sku"
+    assert sample["decode_hardware_sku"] == "example_sku"
+
+
 def test_unroll_folds_only_backend_pinned_values():
     sample = unroll_sample(
         search_space=_space(
@@ -121,7 +138,7 @@ def test_unroll_folds_only_backend_pinned_values():
             context_length=4096,
             startup_time=300.0,
             aic_nextn=2,
-            nextn_accepted=1.25,
+            nextn_accepted=1.5,
             agg_block_size=32,
             agg_gpu_memory_utilization=0.8,
             agg_enable_prefix_caching=False,
@@ -135,7 +152,6 @@ def test_unroll_folds_only_backend_pinned_values():
     assert sample["context_length"] == 4096
     assert sample["startup_time"] == 300.0
     assert sample["aic_nextn"] == 2
-    assert sample["nextn_accepted"] == 1.25
     assert sample["agg_block_size"] == 32
     assert sample["agg_gpu_memory_utilization"] == 0.8
     assert sample["agg_enable_prefix_caching"] is False
@@ -149,9 +165,7 @@ def test_unroll_folds_only_backend_pinned_values():
         ("disagg", AGG_CONFIG, "DisaggParallelConfig"),
     ],
 )
-def test_unroll_rejects_parallel_config_for_wrong_topology(
-    mode, parallel_config, message
-):
+def test_unroll_rejects_parallel_config_for_wrong_topology(mode, parallel_config, message):
     selection = _agg_selection(deployment_mode=mode)
     if mode == "disagg":
         selection.update(

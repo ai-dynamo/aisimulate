@@ -42,6 +42,7 @@ class TRTLLMBackend(BaseBackend):
     ACTIVATION_COEFFICIENTS: ClassVar[dict[str, dict[int, float]]] = {
         "GPT": {1: 10, 2: 6, 4: 5, 8: 5},
         "LLAMA": {1: 11, 2: 6.5, 4: 5, 8: 5},
+        "MUSEGLIMMER": {1: 11, 2: 6.5, 4: 5, 8: 5},
         "MOE": {1: 22, 2: 13, 4: 10, 8: 10},
         "GEMMA4MIX": {1: 22, 2: 13, 4: 10, 8: 10},
         "STEP3P7": {1: 22, 2: 13, 4: 10, 8: 10},
@@ -62,7 +63,10 @@ class TRTLLMBackend(BaseBackend):
         # attention width differs from the residual stream, but keeps raw ``h``
         # for the DEEPSEEK family — an existing accounting quirk predating
         # DeepSeek-V4's attention expansion.
-        if model_family in {"GEMMA4MIX", "STEP3P7"}:
+        # DeepSeek-V4 expands attention to num_heads * head_dim, but its
+        # routed-token workspace still carries residual hidden_size features.
+        # VLLMBackend aliases this hook, so the correction applies there too.
+        if model_family in {"GEMMA4MIX", "STEP3P7", "DEEPSEEKV4"}:
             return getattr(model, "_hidden_size", h)
         return h
 

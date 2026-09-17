@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/config_builders.py
 
 """Shared ModelConfig construction helpers.
 
@@ -9,6 +11,8 @@ Keeping them in ``sdk`` prevents lower-level code from importing CLI code.
 
 from __future__ import annotations
 
+import logging
+
 from aiconfigurator_core.sdk.common import (
     CommQuantMode,
     FMHAQuantMode,
@@ -17,6 +21,8 @@ from aiconfigurator_core.sdk.common import (
     MoEQuantMode,
 )
 from aiconfigurator_core.sdk.config import ModelConfig
+
+logger = logging.getLogger(__name__)
 
 
 def build_model_config(
@@ -32,9 +38,9 @@ def build_model_config(
     comm_quant_mode: str | None = None,
     forward_model: str | None = None,
     enable_encoder_dp: bool = True,
-    moe_backend: str | None = None,
     attention_backend: str | None = None,
-    enable_wideep: bool = False,
+    speculation=None,
+    moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
 ) -> ModelConfig:
@@ -52,11 +58,11 @@ def build_model_config(
         comm_quant_mode=CommQuantMode[comm_quant_mode] if comm_quant_mode else None,
         forward_model=forward_model or "op_level",
         enable_encoder_dp=enable_encoder_dp,
+        attention_backend=attention_backend,
         moe_backend=moe_backend,
-        attention_backend=attention_backend or "flashinfer",
-        enable_wideep=enable_wideep,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
+        speculation=speculation,
     )
 
 
@@ -102,9 +108,80 @@ def resolve_nextn_auto(model_path: str) -> int:
     return int(cfg.get("num_nextn_predict_layers") or 0)
 
 
+def resolve_dspark_nextn(model_path: str) -> int | None:
+    """Resolve the DSPARK draft depth for the recommend/sizing path.
+
+    DSPARK architectures use a standalone trained draft model whose block size
+    is a fixed architectural constant — not stored in the main checkpoint, so
+    ``nextn='auto'`` always returns 0 for these models.
+
+    Returns the architectural block size when the model uses DSPARK. Accepted
+    draft-token progress remains an explicit workload input in the upper SDK
+    layer and is intentionally not inferred here. Returns ``None`` for other
+    architectures or when expected model-config access fails. Unexpected or
+    malformed metadata errors propagate. Raises ``ValueError`` when
+    ``model_path`` is empty, matching ``resolve_nextn_auto``.
+    """
+    from aiconfigurator_core.sdk.common import DSPARK_NEXTN
+    from aiconfigurator_core.sdk.utils import HuggingFaceDownloadError, get_model_config_from_model_path
+
+    if not model_path:
+        raise ValueError("resolve_dspark_nextn requires a model path.")
+    try:
+        info = get_model_config_from_model_path(model_path)
+    except (HuggingFaceDownloadError, OSError) as exc:
+        logger.warning("Could not resolve DSPARK draft depth for %r: %s", model_path, exc)
+        return None
+    return DSPARK_NEXTN.get(info["architecture"])
+
+
 def apply_nextn(
     model_config: ModelConfig,
     nextn: int | None,
 ) -> None:
     """Apply the MTP compute-side draft depth onto a ModelConfig."""
     model_config.nextn = normalize_nextn(nextn)
+
+
+def resolve_speculation(model_config: ModelConfig):
+    """Normalize (nextn, speculation) into a single resolved SpeculationConfig.
+
+    Exactly one speculative source is allowed:
+
+    * ``nextn > 0`` with no explicit scheme desugars to ``mtp`` at that depth
+      (legacy sugar, keeps every existing entry point valid).
+    * an explicit ``mtp`` scheme writes its depth back onto ``nextn`` so model
+      families keep building their draft scaling from ``_nextn``.
+    * a non-MTP scheme requires ``nextn == 0`` — mixing sources is an error,
+      never a silent precedence.
+
+    Return the resolved config without persisting synthesized legacy MTP.
+    Explicit MTP still updates ``nextn`` before model construction.
+    """
+    from aiconfigurator_core.sdk.speculation.base import SpeculationConfig
+
+    spec = model_config.speculation
+    nextn = normalize_nextn(model_config.nextn)
+
+    if spec is None:
+        spec = SpeculationConfig(kind="mtp", params={"depth": nextn}) if nextn > 0 else (spec or SpeculationConfig())
+    elif spec.kind == "mtp":
+        # Same contract as legacy nextn: integer draft length (1.9 must be
+        # rejected here exactly as normalize_nextn rejects it).
+        depth = validate_nextn(spec.params.get("depth", 0))
+        if depth < 1:
+            raise ValueError(f"speculation kind 'mtp' requires params['depth'] >= 1, got {depth}.")
+        if nextn and nextn != depth:
+            raise ValueError(
+                f"Conflicting speculative inputs: nextn={nextn} but speculation mtp depth={depth}. "
+                "Set only one (nextn is legacy sugar for the mtp scheme)."
+            )
+        model_config.nextn = depth
+    else:
+        if nextn > 0:
+            raise ValueError(
+                f"Conflicting speculative inputs: nextn={nextn} cannot be combined with "
+                f"speculation kind {spec.kind!r}. nextn is MTP-only sugar; set it to 0."
+            )
+
+    return spec

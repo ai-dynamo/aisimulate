@@ -28,6 +28,8 @@ PAYLOAD_SUFFIXES = {
     ".typed",
     ".yaml",
 }
+LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _wheel_files(wheel: Path) -> tuple[set[str], Message]:
@@ -89,6 +91,18 @@ def _one_wheel(dist_dir: Path, pattern: str) -> Path:
     return matches[0]
 
 
+def _verify_legal_files(wheel: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        for legal_file in LEGAL_FILES:
+            matches = [name for name in names if name.endswith(f".dist-info/licenses/{legal_file}")]
+            if len(matches) != 1:
+                raise RuntimeError(f"{wheel.name}: expected one packaged {legal_file}, found {matches}")
+            expected = (PACKAGE_ROOT / legal_file).read_bytes()
+            if archive.read(matches[0]) != expected:
+                raise RuntimeError(f"{wheel.name}: packaged {legal_file} differs from the project copy")
+
+
 def _add_source_tree(expected: set[str], source_root: Path, package_root: str) -> None:
     for path in source_root.rglob("*"):
         if path.is_file() and path.suffix in PAYLOAD_SUFFIXES:
@@ -102,6 +116,14 @@ def _source_payloads() -> set[str]:
     for package in ("aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core"):
         _add_source_tree(expected, source_root / package, package)
     expected.discard("aiconfigurator/sdk/config_adapter/README.md")
+    collector_root = Path(__file__).resolve().parents[1] / "collector"
+    expected.update({"collector/__init__.py", "collector/model_cases.py"})
+    for pattern in ("cases/**/*.yaml", "fpm_forward/**/*.py", "fpm_forward/runtime/fpm_exec.sh"):
+        expected.update(
+            (Path("collector") / path.relative_to(collector_root)).as_posix()
+            for path in collector_root.glob(pattern)
+            if path.is_file()
+        )
     return expected
 
 
@@ -181,6 +203,8 @@ def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
     failed = [label for label, passed in checks.items() if not passed]
     if failed:
         raise RuntimeError(f"{wheel.name}: missing {', '.join(failed)}")
+
+    _verify_legal_files(wheel)
 
     requirements = metadata.get_all("Requires-Dist", [])
     split_dependencies = sorted(

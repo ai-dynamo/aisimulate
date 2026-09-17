@@ -7,6 +7,8 @@
 //! admission and preemption differences live in `policy`.
 
 mod core;
+mod g3_offload;
+mod host_offload;
 mod policy;
 mod request;
 

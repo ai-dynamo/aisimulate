@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,8 @@ from collector.op_catalog import CATALOG_PATH, family_for_perf_file, load_family
 from collector.registry_types import OpEntry
 
 MANIFEST_PATH = Path(__file__).with_name("framework_manifest.yaml")
+RUNTIME_MANIFEST_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST"
+RUNTIME_MANIFEST_SHA256_ENV = "AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256"
 
 _DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -27,6 +31,9 @@ class CollectorRuntime:
     framework: str  # manifest key: sglang | trtllm | vllm | wideep_sglang | wideep_trtllm
     version: str
     images: dict[str, str]
+    source_commit: str | None = None
+    abi: dict[str, str] | None = None
+    backend_abi: dict[str, dict[str, str]] | None = None
     source_repo: str | None = None
     collector_dir: str | None = None
     data_backend: str | None = None
@@ -36,11 +43,32 @@ class CollectorRuntime:
     def image(self, variant: str = "default") -> str:
         return self.images.get(variant) or self.images["default"]
 
+    def abi_for_backend(self, backend: str) -> dict[str, str]:
+        """Return the common ABI with an optional backend-specific override."""
+
+        resolved = dict(self.abi or {})
+        resolved.update((self.backend_abi or {}).get(backend, {}))
+        return resolved
+
 
 def load_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
     manifest_path = Path(path)
-    with manifest_path.open(encoding="utf-8") as manifest_file:
-        manifest = yaml.safe_load(manifest_file) or {}
+    expected_digest = None
+    # Explicit non-default API paths stay authoritative. External collection tools
+    # can supply a hash-bound declaration to the unchanged collector CLI.
+    if manifest_path == MANIFEST_PATH:
+        override = os.environ.get(RUNTIME_MANIFEST_ENV)
+        expected_digest = os.environ.get(RUNTIME_MANIFEST_SHA256_ENV)
+        if (override is None) != (expected_digest is None):
+            raise ValueError("Runtime manifest override requires both path and SHA-256")
+        if override is not None:
+            if not override or re.fullmatch(r"[0-9a-f]{64}", expected_digest or "") is None:
+                raise ValueError("Runtime manifest override requires a non-empty path and SHA-256")
+            manifest_path = Path(override)
+    content = manifest_path.read_bytes()
+    if expected_digest is not None and hashlib.sha256(content).hexdigest() != expected_digest:
+        raise ValueError("Runtime manifest SHA-256 differs from the supplied declaration")
+    manifest = yaml.safe_load(content) or {}
     if not isinstance(manifest, dict):
         raise TypeError("collector framework manifest must be a mapping")
     validate_manifest(manifest)
@@ -84,6 +112,13 @@ def _runtime_from_spec(
         framework=framework_key,
         version=runtime_spec["version"],
         images=dict(runtime_spec["images"]),
+        source_commit=runtime_spec.get("source_commit"),
+        abi=dict(runtime_spec["abi"]) if runtime_spec.get("abi") else None,
+        backend_abi=(
+            {backend: dict(abi) for backend, abi in runtime_spec["backend_abi"].items()}
+            if runtime_spec.get("backend_abi")
+            else None
+        ),
         source_repo=source_repo,
         collector_dir=spec.get("collector_dir"),
         data_backend=spec.get("data_backend"),
@@ -96,7 +131,9 @@ _REGISTRY_MODULES = {
     "sglang": "collector.sglang.registry",
     "trtllm": "collector.trtllm.registry",
     "vllm": "collector.vllm.registry",
+    "vllm_xpu": "collector.vllm.registry",
     "wideep_sglang": "collector.wideep.sglang.registry",
+    "wideep_vllm": "collector.wideep.vllm.registry",
     "wideep_trtllm": "collector.wideep.trtllm.registry",
 }
 
@@ -105,7 +142,8 @@ def _registry_entries(framework_key: str) -> list[OpEntry]:
     module_path = _REGISTRY_MODULES.get(framework_key)
     if module_path is None:
         raise KeyError(f"No collector registry is known for framework {framework_key!r}")
-    return list(importlib.import_module(module_path).REGISTRY)
+    registry_name = "REGISTRY_XPU" if framework_key == "vllm_xpu" else "REGISTRY"
+    return list(getattr(importlib.import_module(module_path), registry_name))
 
 
 def _resolve_from(
@@ -135,6 +173,23 @@ def _resolve_from(
     return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=family)
 
 
+def _model_pinned_runtime(
+    manifest: dict[str, Any],
+    framework_key: str,
+    model_path: str | None,
+) -> CollectorRuntime | None:
+    """Return an exact model-scoped runtime override, when declared."""
+    if not model_path:
+        return None
+    spec = manifest["frameworks"].get(framework_key)
+    if spec is None:
+        return None
+    runtime_spec = (spec.get("models") or {}).get(model_path)
+    if runtime_spec is None:
+        return None
+    return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=None)
+
+
 def resolve_op_runtime(
     framework: str,
     op: str,
@@ -152,17 +207,22 @@ def resolve_op_runtime(
     raise KeyError(f"{framework_key} registry has no op {op!r}")
 
 
-def _runtime_identity(runtime: CollectorRuntime) -> tuple[str, tuple[tuple[str, str], ...]]:
-    """Executor identity: version plus the pinned images. Two runtimes with the
-    same package version but different images are different containers. `family`
-    stays out — it is routing metadata, not an executor property."""
-    return runtime.version, tuple(sorted(runtime.images.items()))
+def _runtime_identity(runtime: CollectorRuntime) -> tuple:
+    """Immutable executor inputs; family is routing metadata, not identity."""
+    return (
+        runtime.version,
+        tuple(sorted(runtime.images.items())),
+        runtime.source_commit,
+        tuple(sorted((runtime.abi or {}).items())),
+        tuple((backend, tuple(sorted(abi.items()))) for backend, abi in sorted((runtime.backend_abi or {}).items())),
+    )
 
 
 def _describe_runtime(runtime: CollectorRuntime) -> str:
     """Version plus images, for errors where the version alone cannot distinguish."""
     images = ", ".join(f"{variant}={image}" for variant, image in sorted(runtime.images.items()))
-    return f"{runtime.version} [{images}]"
+    source = f", source={runtime.source_commit}" if runtime.source_commit else ""
+    return f"{runtime.version} [{images}{source}]"
 
 
 def require_collector_runtime(
@@ -171,14 +231,17 @@ def require_collector_runtime(
     *,
     requested_ops: set[str],
     wideep_ops: set[str] | None = None,
+    model_path: str | None = None,
     path: str | Path = MANIFEST_PATH,
     catalog_path: str | Path = CATALOG_PATH,
 ) -> CollectorRuntime:
     """Resolve the single runtime the requested ops pin, and enforce it exactly.
 
-    Collector V3 semantics: every op resolves independently (family override or
-    framework default); one executor container serves exactly one runtime, so
-    any spread across versions is an error telling the caller to split the run.
+    Collector V3 semantics: every op resolves independently (model override,
+    family override, or framework default); one executor container serves
+    exactly one runtime, so any spread across versions is an error telling the
+    caller to split the run. An exact model pin overrides family/default
+    resolution for every op in that model's run.
     """
     wideep_ops = wideep_ops or set()
     manifest = load_manifest(path)
@@ -199,14 +262,15 @@ def require_collector_runtime(
             missing = ops - {e.op for e in entries}
             if missing:
                 raise KeyError(f"{key} registry has no op(s): {sorted(missing)}")
-        by_identity: dict[tuple[str, tuple[tuple[str, str], ...]], CollectorRuntime] = {}
+        model_runtime = _model_pinned_runtime(manifest, key, model_path)
+        by_identity: dict[tuple, CollectorRuntime] = {}
         op_runtimes: dict[str, CollectorRuntime] = {}
         for entry in entries:
-            runtime = _resolve_from(manifest, family_map, key, entry)
+            runtime = model_runtime or _resolve_from(manifest, family_map, key, entry)
             by_identity.setdefault(_runtime_identity(runtime), runtime)
             op_runtimes[entry.op] = runtime
         if len(by_identity) > 1:
-            if len({version for version, _ in by_identity}) > 1:
+            if len({runtime.version for runtime in by_identity.values()}) > 1:
                 split = ", ".join(f"{op}→{rt.version}" for op, rt in sorted(op_runtimes.items()))
                 raise RuntimeError(
                     f"{framework} ops resolve to multiple runtime versions ({split}); "
@@ -315,6 +379,13 @@ def _validate_framework_spec(name: str, spec: object, frameworks: dict[str, Any]
         raise TypeError(f"frameworks.{name}.families must be a mapping")
     for family, override in families.items():
         _validate_runtime_spec(f"frameworks.{name}.families.{family}", override)
+    models = spec.get("models") or {}
+    if not isinstance(models, dict):
+        raise TypeError(f"frameworks.{name}.models must be a mapping")
+    for model_id, override in models.items():
+        if not isinstance(model_id, str) or not model_id:
+            raise ValueError(f"frameworks.{name}.models keys must be non-empty strings")
+        _validate_runtime_spec(f"frameworks.{name}.models.{model_id}", override)
 
 
 def _validate_runtime_spec(name: str, spec: object) -> None:
@@ -333,3 +404,30 @@ def _validate_runtime_spec(name: str, spec: object) -> None:
                 f"{name}.images.{variant} must be digest-pinned (...@sha256:<64 hex>); "
                 "bare internal image names without '/' are exempt"
             )
+    source_commit = spec.get("source_commit")
+    if source_commit is not None and (
+        not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+    ):
+        raise ValueError(f"{name}.source_commit must be a full 40-character lowercase git SHA")
+    abi = spec.get("abi")
+    if abi is not None and (
+        not isinstance(abi, dict)
+        or not abi
+        or not all(isinstance(key, str) and isinstance(value, str) and key and value for key, value in abi.items())
+    ):
+        raise ValueError(f"{name}.abi must map non-empty names to non-empty pinned values")
+    backend_abi = spec.get("backend_abi")
+    if backend_abi is not None:
+        if not isinstance(backend_abi, dict) or not backend_abi:
+            raise ValueError(f"{name}.backend_abi must be a non-empty mapping")
+        for backend, override in backend_abi.items():
+            if (
+                not isinstance(backend, str)
+                or not backend
+                or not isinstance(override, dict)
+                or not override
+                or not all(
+                    isinstance(key, str) and isinstance(value, str) and key and value for key, value in override.items()
+                )
+            ):
+                raise ValueError(f"{name}.backend_abi must map backend names to non-empty pinned string mappings")

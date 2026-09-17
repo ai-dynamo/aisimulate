@@ -62,9 +62,16 @@ class ModelHardware:
     vram_per_gpu: int
     gpus_per_node: int
     max_context: int | None  # model's max context length (the default max_seq_len)
+    num_experts: int = 0
 
 
-def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) -> ModelHardware:
+def resolve_model_hardware(
+    model_name: str,
+    hardware_sku: str,
+    *,
+    backend: str,
+    systems_paths: list[str] | None = None,
+) -> ModelHardware:
     """Read the model weights + SKU spec (via AIC) to derive is_moe / mla / wideep
     and the model's max context length."""
     model_config = get_model_config_from_model_path(model_name)
@@ -73,8 +80,11 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
     allow_pure_tp = is_moe and architecture in _GQA_MOE_ARCHITECTURES
     mla = is_moe and not allow_pure_tp
     max_context = model_config.get("context")
+    num_experts = int(model_config.get("num_experts") or model_config.get("n_routed_experts") or 0)
 
-    system_spec = perf_database.load_system_spec(hardware_sku)
+    system_spec = perf_database.load_system_spec(
+        hardware_sku, **({"systems_paths": systems_paths} if systems_paths is not None else {})
+    )
     if not system_spec:
         raise ValueError(
             f"unknown hardware_sku {hardware_sku!r}: no system config found on AIConfigurator Core's systems path"
@@ -97,6 +107,7 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
         vram_per_gpu=vram_per_gpu,
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
+        num_experts=num_experts,
     )
 
 
@@ -113,15 +124,10 @@ def parallel_configs_for(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
-    enable_wideep: bool = False,
-    moe_backend: str | None = None,
-    gemm_quant_mode: str | None = None,
-    moe_quant_mode: str | None = None,
-    kvcache_quant_mode: str | None = None,
-    fmha_quant_mode: str | None = None,
-    comm_quant_mode: str | None = None,
-    nextn: int = 0,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
+    systems_paths: list[str] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
+    nextn: int = 0,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -141,7 +147,12 @@ def parallel_configs_for(
     :class:`NoViableParallelConfig` when no shape can hold the sequence within the
     budget.
     """
-    mh = resolve_model_hardware(model_name, hardware_sku, backend=backend)
+    mh = resolve_model_hardware(
+        model_name,
+        hardware_sku,
+        backend=backend,
+        systems_paths=systems_paths,
+    )
     seq_len = max_seq_len if max_seq_len is not None else mh.max_context
     if seq_len is None:
         raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
@@ -155,8 +166,7 @@ def parallel_configs_for(
         backend=backend,
         gpu_budget=gpu_budget,
         min_gpu_budget=min_gpu_budget,
-        enable_wideep=mh.enable_wideep or enable_wideep,
-        moe_backend=moe_backend,
+        enable_wideep=mh.enable_wideep,
         allow_moe_pure_tp=True,
     )
     if deployment_mode == "disagg":
@@ -186,16 +196,13 @@ def parallel_configs_for(
             hardware_sku=hardware_sku,
             backend=backend,
             backend_version=backend_version,
+            systems_paths=systems_paths,
             max_seq_len=seq_len,
             max_num_tokens=role_tokens,
             max_batch_size=role_batch,
             memory_fraction=role_memory,
-            gemm_quant_mode=gemm_quant_mode,
-            moe_quant_mode=moe_quant_mode,
-            kvcache_quant_mode=kvcache_quant_mode,
-            fmha_quant_mode=fmha_quant_mode,
-            comm_quant_mode=comm_quant_mode,
-            nextn=nextn,
+            **({"model_controls": model_controls} if model_controls else {}),
+            **({"nextn": nextn} if nextn else {}),
         )
 
     if deployment_mode == "agg":

@@ -21,6 +21,12 @@ import pyarrow as pa
 import pyarrow.csv as pc
 import pyarrow.parquet as pq
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+from power_data import power_metric_issues as _power_metric_issues
+
 PERF_DATA_PREFIX = "aic-core/src/aiconfigurator_core/systems/data"
 COMMENT_MARKER = "<!-- perf-parquet-diff-comment -->"
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
@@ -32,6 +38,7 @@ MEASUREMENT_COLUMNS = frozenset(
     {
         "latency",
         "power",
+        "power_limit",
         "energy",
         "avg_ms",
         "dispatch_avg_t_us",
@@ -108,6 +115,7 @@ class Comparison:
     base_hash: str | None
     head_hash: str | None
     row_diff: RowDiff | None
+    power_issues: list[str] = field(default_factory=list)
 
 
 def _git(args: list[str], *, input_data: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -788,6 +796,7 @@ def _compare(base_ref: str, head_ref: str, entry: DiffEntry, detail_dir: Path | 
         base_hash=base_snapshot.content_hash if base_snapshot else None,
         head_hash=head_snapshot.content_hash if head_snapshot else None,
         row_diff=row_diff,
+        power_issues=_power_metric_issues(head_snapshot.table) if head_snapshot else [],
     )
 
 
@@ -891,6 +900,7 @@ def render_report(
         f"- Deleted parquet files: {len(deleted)}",
         f"- Legacy `*_perf.txt` files added or modified: {len(legacy_perf_changes)}",
         f"- Row-level changes: +{added_rows} / -{removed_rows} / ~{modified_rows}",
+        f"- Invalid power-metric files: {sum(bool(c.power_issues) for c in comparisons)}",
     ]
     if full_diff_artifacts is not None:
         diff_artifact_label = "file" if len(full_diff_artifacts) == 1 else "files"
@@ -932,6 +942,15 @@ def render_report(
             lines.append(f"\n...and {len(legacy_perf_changes) - 50} more legacy text perf changes.")
         lines.append("")
 
+    invalid_power = [comparison for comparison in comparisons if comparison.power_issues]
+    if invalid_power:
+        lines.extend(["### Invalid Power Metrics", ""])
+        rows = [["File", "Issues"]]
+        for comparison in invalid_power:
+            rows.append([comparison.path, "; ".join(comparison.power_issues)])
+        lines.extend(_render_table(rows))
+        lines.append("")
+
     lines.extend(_render_inline_diff_previews(comparisons))
 
     has_row_detail_files = any(c.row_diff and c.row_diff.detail_files for c in comparisons)
@@ -964,7 +983,7 @@ def should_fail_strict(comparisons: list[Comparison], legacy_perf_changes: list[
         for item in comparisons
         if item.base_path and item.base_path.endswith(".txt") and not (item.columns_match and item.content_match)
     ]
-    return bool(converted_bad or legacy_perf_changes)
+    return bool(converted_bad or legacy_perf_changes or any(item.power_issues for item in comparisons))
 
 
 def main() -> int:

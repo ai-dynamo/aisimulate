@@ -104,11 +104,14 @@ import itertools
 import json
 import logging
 import math
+import multiprocessing
 import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -1047,6 +1050,113 @@ def detect_machine_fingerprint(
     return findings
 
 
+def _configure_worker_logging(level: int) -> None:
+    logging.basicConfig(level=level, format="%(levelname)s %(message)s")
+
+
+def _check_table_group(
+    entry,
+    *,
+    anomaly_factor,
+    mono_tolerance,
+    spike_factor,
+    min_bucket_points,
+    noise_floor,
+    spec_root,
+    fingerprint_factor,
+):
+    """Audit one system/op; return fingerprints for the global comparison."""
+    (system, op_file), by_backend = entry
+    anomalies: list[dict] = []
+    gaps: list[dict] = []
+    fp_cache: dict[tuple[str, str], dict[str, tuple[str, pd.Series]]] = {}
+    # Latest version per backend.
+    loaded: list[OpTable] = []
+    for backend, versions in sorted(by_backend.items()):
+        version, path = max(versions, key=lambda vp: _version_key(vp[0]))
+        try:
+            table, npos_by_ks, kernel_costs = _load_op_table(path, backend, version)
+        except _SchemaUnsupportedError as exc:
+            # Deliberately informational, not gated: a new op family's
+            # schema must be added to _SINGLE_LATENCY_COLUMNS /
+            # _LATENCY_COMPONENT_SETS before this tool can audit it, and
+            # the report says so instead of silently skipping.
+            gaps.append(
+                {
+                    "kind": "unsupported_schema",
+                    "system": system,
+                    "op_file": op_file,
+                    "backend": backend,
+                    "version": version,
+                    "error": str(exc)[:200],
+                }
+            )
+            logger.warning("unsupported schema %s: %s", path, exc)
+            continue
+        except Exception as exc:
+            anomalies.append(
+                {
+                    "kind": "unreadable_table",
+                    "system": system,
+                    "op_file": op_file,
+                    "backend": backend,
+                    "version": version,
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                }
+            )
+            logger.warning("unreadable table %s: %s", path, exc)
+            continue
+        for cost in kernel_costs:
+            gaps.append(
+                {
+                    "kind": "kernel_choice_cost",
+                    "system": system,
+                    "op_file": op_file,
+                    "backend": backend,
+                    "version": version,
+                    **cost,
+                }
+            )
+        if npos_by_ks and op_file not in _DELTA_LATENCY_OP_FILES:
+            anomalies.append(
+                {
+                    "kind": "nonpositive_latency",
+                    "system": system,
+                    "op_file": op_file,
+                    "backend": backend,
+                    "version": version,
+                    "rows": sum(npos_by_ks.values()),
+                    "by_kernel_source": npos_by_ks,
+                }
+            )
+        if table is not None:
+            loaded.append(table)
+    if not loaded:
+        return anomalies, gaps, fp_cache
+
+    for t in loaded:
+        anomalies.extend(_check_curve(system, op_file, t, mono_tolerance, spike_factor, noise_floor))
+        if fingerprint_factor:
+            sig_hash = pd.util.hash_pandas_object(t.frame[t.shape_cols], index=False)
+            series = pd.Series(np.log(t.frame["latency"].to_numpy(dtype=np.float32)), index=sig_hash.to_numpy())
+            fp_cache.setdefault((op_file, t.backend), {})[system] = (t.version, series[~series.index.duplicated()])
+        if op_file == "gemm_perf.parquet" and spec_root is not None:
+            spec = _load_gpu_spec(spec_root, system)
+            if spec:
+                sol_anoms, sol_effs = _check_gemm_sol(system, op_file, t, spec)
+                anomalies.extend(sol_anoms)
+                gaps.extend(sol_effs)
+
+    if len(loaded) < 2:
+        return anomalies, gaps, fp_cache
+    for a, b in itertools.combinations(loaded, 2):
+        pair_anoms, pair_gaps = _check_pair(system, op_file, a, b, anomaly_factor, min_bucket_points)
+        anomalies.extend(pair_anoms)
+        gaps.extend(pair_gaps)
+    logger.info("%s/%s: %d backends compared", system, op_file, len(loaded))
+    return anomalies, gaps, fp_cache
+
+
 def run_checks(
     data_root: Path,
     systems: list[str] | None,
@@ -1059,8 +1169,11 @@ def run_checks(
     noise_floor: float,
     spec_root: Path | None = None,
     fingerprint_factor: float | None = 2.0,
+    workers: int = 1,
 ) -> tuple[list[dict], list[dict]]:
     """Returns (anomalies, gaps) across the selected slice of the data tree."""
+    if workers < 1:
+        raise ValueError("workers must be positive")
     # (system, op_file) -> backend -> [(version, path)]
     tables: dict[tuple[str, str], dict[str, list[tuple[str, Path]]]] = {}
     for system, backend, version, op_file, path in _iter_op_tables(data_root):
@@ -1076,91 +1189,36 @@ def run_checks(
     gaps: list[dict] = []
     # (op_file, backend) -> system -> (version, latency Series indexed by shape hash)
     fp_cache: dict[tuple[str, str], dict[str, tuple[str, pd.Series]]] = {}
-    for (system, op_file), by_backend in sorted(tables.items()):
-        # Latest version per backend.
-        loaded: list[OpTable] = []
-        for backend, versions in sorted(by_backend.items()):
-            version, path = max(versions, key=lambda vp: _version_key(vp[0]))
-            try:
-                table, npos_by_ks, kernel_costs = _load_op_table(path, backend, version)
-            except _SchemaUnsupportedError as exc:
-                # Deliberately informational, not gated: a new op family's
-                # schema must be added to _SINGLE_LATENCY_COLUMNS /
-                # _LATENCY_COMPONENT_SETS before this tool can audit it, and
-                # the report says so instead of silently skipping.
-                gaps.append(
-                    {
-                        "kind": "unsupported_schema",
-                        "system": system,
-                        "op_file": op_file,
-                        "backend": backend,
-                        "version": version,
-                        "error": str(exc)[:200],
-                    }
-                )
-                logger.warning("unsupported schema %s: %s", path, exc)
-                continue
-            except Exception as exc:
-                anomalies.append(
-                    {
-                        "kind": "unreadable_table",
-                        "system": system,
-                        "op_file": op_file,
-                        "backend": backend,
-                        "version": version,
-                        "error": f"{type(exc).__name__}: {exc}"[:200],
-                    }
-                )
-                logger.warning("unreadable table %s: %s", path, exc)
-                continue
-            for cost in kernel_costs:
-                gaps.append(
-                    {
-                        "kind": "kernel_choice_cost",
-                        "system": system,
-                        "op_file": op_file,
-                        "backend": backend,
-                        "version": version,
-                        **cost,
-                    }
-                )
-            if npos_by_ks and op_file not in _DELTA_LATENCY_OP_FILES:
-                anomalies.append(
-                    {
-                        "kind": "nonpositive_latency",
-                        "system": system,
-                        "op_file": op_file,
-                        "backend": backend,
-                        "version": version,
-                        "rows": sum(npos_by_ks.values()),
-                        "by_kernel_source": npos_by_ks,
-                    }
-                )
-            if table is not None:
-                loaded.append(table)
-        if not loaded:
-            continue
+    check_group = partial(
+        _check_table_group,
+        anomaly_factor=anomaly_factor,
+        mono_tolerance=mono_tolerance,
+        spike_factor=spike_factor,
+        min_bucket_points=min_bucket_points,
+        noise_floor=noise_floor,
+        spec_root=spec_root,
+        fingerprint_factor=fingerprint_factor,
+    )
 
-        for t in loaded:
-            anomalies.extend(_check_curve(system, op_file, t, mono_tolerance, spike_factor, noise_floor))
-            if fingerprint_factor:
-                sig_hash = pd.util.hash_pandas_object(t.frame[t.shape_cols], index=False)
-                series = pd.Series(np.log(t.frame["latency"].to_numpy(dtype=np.float32)), index=sig_hash.to_numpy())
-                fp_cache.setdefault((op_file, t.backend), {})[system] = (t.version, series[~series.index.duplicated()])
-            if op_file == "gemm_perf.parquet" and spec_root is not None:
-                spec = _load_gpu_spec(spec_root, system)
-                if spec:
-                    sol_anoms, sol_effs = _check_gemm_sol(system, op_file, t, spec)
-                    anomalies.extend(sol_anoms)
-                    gaps.extend(sol_effs)
+    def collect(results):
+        for group_anomalies, group_gaps, fingerprints in results:
+            anomalies.extend(group_anomalies)
+            gaps.extend(group_gaps)
+            for key, by_system in fingerprints.items():
+                fp_cache.setdefault(key, {}).update(by_system)
 
-        if len(loaded) < 2:
-            continue
-        for a, b in itertools.combinations(loaded, 2):
-            pair_anoms, pair_gaps = _check_pair(system, op_file, a, b, anomaly_factor, min_bucket_points)
-            anomalies.extend(pair_anoms)
-            gaps.extend(pair_gaps)
-        logger.info("%s/%s: %d backends compared", system, op_file, len(loaded))
+    if workers == 1:
+        collect(map(check_group, sorted(tables.items())))
+    else:
+        # map preserves the serial report order; worker failures propagate.
+        # Cross-system and cross-op detectors run only after all groups return.
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_configure_worker_logging,
+            initargs=(logger.getEffectiveLevel(),),
+        ) as executor:
+            collect(executor.map(check_group, sorted(tables.items())))
     if fingerprint_factor:
         anomalies.extend(detect_machine_fingerprint(fp_cache, fingerprint_factor))
     return anomalies, gaps
@@ -1365,7 +1423,8 @@ def render_markdown(
         "Below speed-of-light (physically impossible measurements)",
         "system | op_file | backend | dtype | points | worst x of SOL | worst example",
         [
-            f"{a['system']} | {a['op_file']} | {a['backend']}/{a['version']} | {a['gemm_dtype']} | "
+            f"{a['system']} | {a['op_file']} | {a['backend']}/{a['version']} | "
+            f"{a.get('gemm_dtype') or a.get('moe_dtype', '')} | "
             f"{a['points']} | {a['worst_fraction_of_sol']:.2f} | "
             f"{_fmt_shape(a['example_shape'])}: {a['example_latency']:.4g} vs SOL {a['example_sol']:.4g}"
             for a in sorted(v["below_sol"], key=lambda x: x["worst_fraction_of_sol"])
@@ -1575,6 +1634,7 @@ def main() -> None:
         default=Path("aic-core/src/aiconfigurator_core/systems/data"),
         help="Root of the systems/data tree.",
     )
+    parser.add_argument("--workers", type=int, default=1, help="Parallel system/op table workers (default: serial).")
     parser.add_argument("--systems", nargs="*", default=None, help="Restrict to these systems.")
     parser.add_argument("--backends", nargs="*", default=None, help="Restrict to these backends.")
     parser.add_argument("--op-files", nargs="*", default=None, help="Restrict to these op file basenames.")
@@ -1679,6 +1739,8 @@ def main() -> None:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     if args.anomaly_factor <= 1.0:
         parser.error("--anomaly-factor must be > 1")
     if not 0.0 < args.mono_tolerance <= 1.0:
@@ -1710,6 +1772,7 @@ def main() -> None:
         noise_floor=args.noise_floor,
         spec_root=args.systems_spec_root,
         fingerprint_factor=args.fingerprint_factor or None,
+        workers=args.workers,
     )
 
     kmap = load_kernel_map(args.kernel_map)

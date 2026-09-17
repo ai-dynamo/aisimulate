@@ -7,6 +7,7 @@ from aiconfigurator.cli.api import EstimateResult
 from aiconfigurator.cli.estimate_detail_report import format_estimate_detail_report
 from aiconfigurator.sdk.config import RuntimeConfig
 from aiconfigurator.sdk.inference_summary import InferenceSummary
+from aiconfigurator.sdk.performance_result import MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -18,6 +19,7 @@ def _estimate_result(
     summary: InferenceSummary | None = None,
     per_ops_data: dict | None = None,
     per_ops_source: dict | None = None,
+    moe_comm_fallbacks: tuple[MoECommFallback, ...] = (),
 ) -> EstimateResult:
     return EstimateResult(
         ttft=float(raw.get("ttft", 0.0) or 0.0),
@@ -32,12 +34,13 @@ def _estimate_result(
         model_path="test-model",
         system_name="test-system",
         backend_name="test-backend",
-        backend_version="test-version",
+        backend_version="current",
         raw=raw,
         mode=mode,
         summary=summary,
         per_ops_data=per_ops_data,
         per_ops_source=per_ops_source,
+        moe_comm_fallbacks=moe_comm_fallbacks,
     )
 
 
@@ -145,3 +148,69 @@ def test_format_estimate_detail_report_uses_raw_per_ops_source() -> None:
     assert "Decode (static_gen)" in report
     assert "generation_attention" in report
     assert "empirical" in report
+
+
+def test_source_detail_renders_executed_moe_comm_fallback_topology() -> None:
+    result = _estimate_result(
+        mode="static",
+        raw={"ttft": 100.0, "tpot": 10.0, "request_latency": 250.0},
+        summary=_static_summary({"context_moe_dispatch": 5.0}, {}),
+        moe_comm_fallbacks=(
+            MoECommFallback(
+                inference_phase="context",
+                comm_backend="deepep_ht",
+                requested_ep_size=32,
+                requested_node_num=8,
+                measurement_ep_size=8,
+                measurement_node_num=1,
+            ),
+        ),
+    )
+
+    report = format_estimate_detail_report(result, detail="source")
+
+    assert "context_moe_dispatch" in report
+    assert "MoE communication fallback provenance (executed)" in report
+    assert "context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data" in report
+
+
+@pytest.mark.parametrize("covered,power_text", [(9.0, "100.0 W"), (8.9, "unavailable"), (0.0, "unavailable")])
+def test_default_agg_energy_detail_uses_scheduled_groups(covered, power_text):
+    from aiconfigurator.sdk.step_estimate import StepEstimate
+
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_aggregate_energy_breakdown(
+        {
+            "mix_step": StepEstimate(
+                latency_ms=10.0,
+                energy_wms=1000.0 if covered else 0.0,
+                covered_latency_ms=covered,
+                per_op_energy_wms={"mixed_gemm": 1000.0 if covered else 0.0},
+            ),
+            "genonly_step": StepEstimate(latency_ms=0.0, energy_wms=0.0),
+        }
+    )
+    result = _estimate_result(mode="agg", raw={}, summary=summary)
+    text = format_estimate_detail_report(result, detail="energy")
+    assert "Energy Breakdown (scheduled active work per GPU)" in text
+    assert "Mixed steps energy" in text
+    assert f"avg P = {power_text}" in text
+    assert "Decode-only steps energy" not in text
+    assert "Context energy" not in text
+    if covered:
+        assert "mixed_gemm" in text
+    else:
+        assert "<no energy data>" in text
+
+
+def test_default_agg_energy_detail_explains_zero_latency_groups():
+    from aiconfigurator.sdk.step_estimate import StepEstimate
+
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_aggregate_energy_breakdown(
+        {name: StepEstimate(latency_ms=0.0, energy_wms=0.0) for name in ("mix_step", "genonly_step", "encoder")}
+    )
+    result = _estimate_result(mode="agg", raw={}, summary=summary)
+    text = format_estimate_detail_report(result, detail="energy")
+    assert "Energy Breakdown (scheduled active work per GPU)" in text
+    assert "<no measurable energy data>" in text

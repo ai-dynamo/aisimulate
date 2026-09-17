@@ -16,6 +16,7 @@ const DEFAULT_MAX_PREFILL_TOKENS: usize = 16_384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4_096;
 const DEFAULT_SCHEDULE_CONSERVATIVENESS: f64 = 1.0;
+const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 32.0;
 
 fn default_num_gpu_blocks() -> usize {
     16_384
@@ -31,6 +32,10 @@ fn default_max_num_seqs() -> usize {
 
 fn default_max_num_batched_tokens() -> usize {
     8_192
+}
+
+fn default_prefill_schedule_interval() -> usize {
+    1
 }
 
 fn default_true() -> bool {
@@ -59,6 +64,10 @@ fn default_clip_max_new_tokens() -> usize {
 
 fn default_schedule_conservativeness() -> f64 {
     DEFAULT_SCHEDULE_CONSERVATIVENESS
+}
+
+fn default_host_offload_bandwidth_gbps() -> f64 {
+    DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS
 }
 
 /// Scheduler semantics selected for an AISimulate rank.
@@ -121,7 +130,7 @@ pub enum SglangSchedulePolicy {
 }
 
 /// Serializable SGLang scheduler controls.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SglangConfig {
     /// Waiting-queue policy.
@@ -191,6 +200,117 @@ pub struct TrtllmConfig {
     pub capacity_scheduler_policy: TrtllmCapacityPolicy,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G3Scope {
+    WorkerLocal,
+    ClusterShared,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G3OffloadConfig {
+    pub scope: G3Scope,
+    pub num_g3_blocks: usize,
+    #[serde(default = "G3OffloadConfig::default_latency")]
+    pub latency_to_first_byte_ms: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub write_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_write_bandwidth_gbps: f64,
+}
+
+impl G3OffloadConfig {
+    fn default_latency() -> f64 {
+        0.1
+    }
+
+    fn default_worker_bandwidth() -> f64 {
+        10.0
+    }
+
+    fn default_shared_bandwidth() -> f64 {
+        80.0
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.num_g3_blocks > 0,
+            "g3_offload.num_g3_blocks must be positive"
+        );
+        for value in [
+            self.latency_to_first_byte_ms,
+            self.read_bandwidth_gbps,
+            self.write_bandwidth_gbps,
+            self.shared_read_bandwidth_gbps,
+            self.shared_write_bandwidth_gbps,
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "g3_offload timing must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Physical controls for framework-native G1-to-host offload.
+///
+/// Framework policy remains selected by [`EngineConfig::backend`]. This
+/// descriptor intentionally contains only shared capacity and transfer
+/// parameters so additional framework profiles can reuse it without exposing
+/// unsupported policy combinations. Physical bytes per block are derived from
+/// [`EngineConfig::block_size`] and [`EngineConfig::kv_cache_bytes_per_token`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct NativeHostOffloadConfig {
+    /// Physical host-cache capacity in KV blocks.
+    pub num_host_blocks: usize,
+    /// Modeled device-to-host bandwidth in decimal GB/s. Zero is instantaneous.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub d2h_bandwidth_gbps: f64,
+    /// Modeled host-to-device bandwidth in decimal GB/s. Zero is instantaneous.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub h2d_bandwidth_gbps: f64,
+}
+
+impl NativeHostOffloadConfig {
+    pub const fn new(num_host_blocks: usize) -> Self {
+        Self {
+            num_host_blocks,
+            d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+        }
+    }
+
+    pub const fn with_bandwidths(mut self, d2h_gbps: f64, h2d_gbps: f64) -> Self {
+        self.d2h_bandwidth_gbps = d2h_gbps;
+        self.h2d_bandwidth_gbps = h2d_gbps;
+        self
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.num_host_blocks > 0,
+            "native_host_offload.num_host_blocks must be positive"
+        );
+        ensure!(
+            self.d2h_bandwidth_gbps.is_finite() && self.d2h_bandwidth_gbps >= 0.0,
+            "native_host_offload.d2h_bandwidth_gbps must be finite and non-negative"
+        );
+        ensure!(
+            self.h2d_bandwidth_gbps.is_finite() && self.h2d_bandwidth_gbps >= 0.0,
+            "native_host_offload.h2d_bandwidth_gbps must be finite and non-negative"
+        );
+        Ok(())
+    }
+}
+
 /// Serializable configuration for one scheduler rank.
 ///
 /// Attention-DP size and worker identity belong to
@@ -223,6 +343,13 @@ pub struct EngineConfig {
     /// Per-pass token budget.
     #[serde(default = "default_max_num_batched_tokens")]
     pub max_num_batched_tokens: usize,
+    /// Admit vLLM prefills only once every N attention-DP group passes.
+    #[serde(default = "default_prefill_schedule_interval")]
+    pub prefill_schedule_interval: usize,
+    /// SGLang scheduler rounds without prefill after a globally synchronized EXTEND.
+    /// Includes chunk continuation and idle rounds; zero disables the interval.
+    #[serde(default)]
+    pub prefill_decode_interval: usize,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -254,8 +381,16 @@ pub struct EngineConfig {
     pub emit_kv_events: bool,
     /// Retain block token IDs alongside neutral KV events.
     pub emit_kv_token_ids: bool,
-    /// KV-cache bytes occupied by one token for disaggregated transfer timing.
-    pub kv_bytes_per_token: Option<usize>,
+    /// Bytes transferred per prompt token for disaggregated handoff timing.
+    pub kv_transfer_bytes_per_token: Option<usize>,
+    /// Physical KV-cache bytes occupied by one token for host offload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_bytes_per_token: Option<usize>,
+    /// Optional framework-native host-offload simulation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_host_offload: Option<NativeHostOffloadConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g3_offload: Option<crate::engine::G3OffloadConfig>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -283,6 +418,10 @@ struct EngineConfigWire {
     max_num_seqs: usize,
     #[serde(default = "default_max_num_batched_tokens")]
     max_num_batched_tokens: usize,
+    #[serde(default = "default_prefill_schedule_interval")]
+    prefill_schedule_interval: usize,
+    #[serde(default)]
+    prefill_decode_interval: usize,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -305,8 +444,14 @@ struct EngineConfigWire {
     emit_kv_events: bool,
     #[serde(default)]
     emit_kv_token_ids: bool,
+    #[serde(default, alias = "kv_bytes_per_token")]
+    kv_transfer_bytes_per_token: Option<usize>,
     #[serde(default)]
-    kv_bytes_per_token: Option<usize>,
+    kv_cache_bytes_per_token: Option<usize>,
+    #[serde(default)]
+    native_host_offload: Option<NativeHostOffloadConfig>,
+    #[serde(default)]
+    g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
     #[serde(default)]
@@ -334,6 +479,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             max_model_len: wire.max_model_len,
             max_num_seqs: wire.max_num_seqs,
             max_num_batched_tokens: wire.max_num_batched_tokens,
+            prefill_schedule_interval: wire.prefill_schedule_interval,
+            prefill_decode_interval: wire.prefill_decode_interval,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -345,7 +492,10 @@ impl<'de> Deserialize<'de> for EngineConfig {
             preemption_mode: wire.preemption_mode,
             emit_kv_events: wire.emit_kv_events,
             emit_kv_token_ids: wire.emit_kv_token_ids,
-            kv_bytes_per_token: wire.kv_bytes_per_token,
+            kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
+            kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
+            native_host_offload: wire.native_host_offload,
+            g3_offload: wire.g3_offload,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
@@ -364,6 +514,8 @@ impl Default for EngineConfig {
             max_model_len: None,
             max_num_seqs: default_max_num_seqs(),
             max_num_batched_tokens: default_max_num_batched_tokens(),
+            prefill_schedule_interval: default_prefill_schedule_interval(),
+            prefill_decode_interval: 0,
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -375,7 +527,10 @@ impl Default for EngineConfig {
             preemption_mode: PreemptionMode::Lifo,
             emit_kv_events: false,
             emit_kv_token_ids: false,
-            kv_bytes_per_token: None,
+            kv_transfer_bytes_per_token: None,
+            kv_cache_bytes_per_token: None,
+            native_host_offload: None,
+            g3_offload: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -413,6 +568,18 @@ impl EngineConfig {
             "max_num_batched_tokens must be positive"
         );
         ensure!(
+            self.prefill_schedule_interval > 0,
+            "prefill_schedule_interval must be positive"
+        );
+        ensure!(
+            self.backend == Backend::Vllm || self.prefill_schedule_interval == 1,
+            "prefill_schedule_interval is supported only for backend=vllm; use prefill_decode_interval for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
+            "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
             "max_model_len must be positive"
         );
@@ -442,10 +609,6 @@ impl EngineConfig {
         }
         if self.backend == Backend::Sglang {
             ensure!(
-                !self.emit_kv_token_ids,
-                "emit_kv_token_ids=true is not supported for backend=sglang"
-            );
-            ensure!(
                 self.enable_chunked_prefill,
                 "enable_chunked_prefill=false is not supported for backend=sglang"
             );
@@ -456,9 +619,71 @@ impl EngineConfig {
             "emit_kv_token_ids requires emit_kv_events"
         );
         ensure!(
-            self.kv_bytes_per_token.is_none_or(|bytes| bytes > 0),
-            "kv_bytes_per_token must be positive"
+            self.kv_transfer_bytes_per_token
+                .is_none_or(|bytes| bytes > 0),
+            "kv_transfer_bytes_per_token must be positive"
         );
+        ensure!(
+            self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
+            "kv_cache_bytes_per_token must be positive"
+        );
+        if let Some(g3) = &self.g3_offload {
+            g3.validate()?;
+            anyhow::ensure!(
+                self.native_host_offload.is_some(),
+                "g3_offload requires native_host_offload"
+            );
+        }
+        if let Some(host_offload) = &self.native_host_offload {
+            host_offload.validate()?;
+            ensure!(
+                self.backend == Backend::Vllm,
+                "native_host_offload is supported only for backend=vllm"
+            );
+            ensure!(
+                self.worker_type == WorkerType::Aggregated,
+                "native_host_offload is supported only for worker_type=aggregated"
+            );
+            ensure!(
+                self.enable_prefix_caching,
+                "native_host_offload requires enable_prefix_caching=true"
+            );
+            ensure!(
+                self.aic_nextn.is_none(),
+                "native_host_offload does not support aic_nextn in the initial implementation"
+            );
+            let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "native_host_offload requires kv_cache_bytes_per_token to derive the physical host block size"
+                )
+            })?;
+            let block_bytes = self
+                .block_size
+                .checked_mul(kv_bytes_per_token)
+                .filter(|bytes| *bytes > 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "native_host_offload requires block_size * kv_cache_bytes_per_token to produce a positive, representable block size"
+                    )
+                })?;
+            let capacity_bytes = host_offload
+                .num_host_blocks
+                .checked_mul(block_bytes)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("native_host_offload capacity in bytes overflowed")
+                })?;
+            for (name, bandwidth) in [
+                ("d2h_bandwidth_gbps", host_offload.d2h_bandwidth_gbps),
+                ("h2d_bandwidth_gbps", host_offload.h2d_bandwidth_gbps),
+            ] {
+                let bytes_per_ms = bandwidth * 1_000_000.0;
+                ensure!(
+                    bytes_per_ms.is_finite()
+                        && (bandwidth == 0.0 || (capacity_bytes as f64 / bytes_per_ms).is_finite()),
+                    "native_host_offload.{name} produces an unrepresentable transfer duration"
+                );
+            }
+        }
         ensure!(
             self.kv_transfer_bandwidth
                 .is_none_or(|bandwidth| bandwidth.is_finite() && bandwidth >= 0.0),
@@ -498,6 +723,34 @@ impl EngineConfig {
 mod tests {
     use super::*;
 
+    type InvalidHostConfigCase = (fn(&mut EngineConfig), &'static str);
+
+    fn native_host_offload_config() -> EngineConfig {
+        EngineConfig {
+            block_size: 16,
+            kv_cache_bytes_per_token: Some(128 * 1024),
+            native_host_offload: Some(NativeHostOffloadConfig {
+                num_host_blocks: 4_096,
+                d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+                h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            }),
+            ..EngineConfig::default()
+        }
+    }
+
+    fn assert_invalid_host_config(mutate: impl FnOnce(&mut EngineConfig), expected_message: &str) {
+        let mut config = native_host_offload_config();
+        mutate(&mut config);
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains(expected_message),
+            "validation error did not contain {expected_message:?}"
+        );
+    }
+
     #[test]
     fn deserialization_uses_backend_native_block_size() {
         for (backend, expected) in [("vllm", 64), ("sglang", 1), ("trtllm", 32)] {
@@ -527,6 +780,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_kv_bytes_per_token_deserializes_to_transfer_geometry() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "kv_bytes_per_token": 131_072
+        }))
+        .unwrap();
+        assert_eq!(config.kv_transfer_bytes_per_token, Some(131_072));
+
+        let encoded = serde_json::to_value(config).unwrap();
+        assert_eq!(encoded["kv_transfer_bytes_per_token"], 131_072);
+        assert!(encoded.get("kv_bytes_per_token").is_none());
+    }
+
+    #[test]
+    fn transfer_geometry_rejects_duplicate_new_and_legacy_keys() {
+        let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "kv_transfer_bytes_per_token": 131_072,
+            "kv_bytes_per_token": 65_536
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field"));
+    }
+
+    #[test]
     fn deserialization_still_rejects_unknown_fields() {
         let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
             "backend": "vllm",
@@ -537,6 +813,144 @@ mod tests {
     }
 
     #[test]
+    fn native_host_offload_deserializes_with_default_bandwidths() {
+        assert_eq!(DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS, 32.0);
+        assert_eq!(
+            NativeHostOffloadConfig::new(1),
+            NativeHostOffloadConfig {
+                num_host_blocks: 1,
+                d2h_bandwidth_gbps: 32.0,
+                h2d_bandwidth_gbps: 32.0,
+            }
+        );
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "vllm",
+            "block_size": 16,
+            "kv_cache_bytes_per_token": 131_072,
+            "native_host_offload": {
+                "num_host_blocks": 4_096
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.native_host_offload,
+            Some(NativeHostOffloadConfig {
+                num_host_blocks: 4_096,
+                d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+                h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            })
+        );
+        config.validate().unwrap();
+
+        let decoded: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn native_host_offload_rejects_missing_or_unknown_fields() {
+        let missing_capacity = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "native_host_offload": {}
+        }))
+        .unwrap_err();
+        assert!(missing_capacity.to_string().contains("num_host_blocks"));
+
+        let unknown = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "native_host_offload": {
+                "num_host_blocks": 4_096,
+                "policy": "custom"
+            }
+        }))
+        .unwrap_err();
+        assert!(unknown.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn native_host_offload_validates_physical_controls() {
+        let cases: &[InvalidHostConfigCase] = &[
+            (
+                |config| {
+                    config.native_host_offload.as_mut().unwrap().num_host_blocks = 0;
+                },
+                "num_host_blocks",
+            ),
+            (
+                |config| {
+                    config
+                        .native_host_offload
+                        .as_mut()
+                        .unwrap()
+                        .d2h_bandwidth_gbps = f64::NAN;
+                },
+                "d2h_bandwidth_gbps",
+            ),
+            (
+                |config| {
+                    config
+                        .native_host_offload
+                        .as_mut()
+                        .unwrap()
+                        .h2d_bandwidth_gbps = -1.0;
+                },
+                "h2d_bandwidth_gbps",
+            ),
+            (
+                |config| {
+                    config.block_size = usize::MAX;
+                    config.kv_cache_bytes_per_token = Some(2);
+                },
+                "positive, representable block size",
+            ),
+            (
+                |config| config.kv_cache_bytes_per_token = None,
+                "requires kv_cache_bytes_per_token",
+            ),
+            (
+                |config| {
+                    config.native_host_offload.as_mut().unwrap().num_host_blocks = usize::MAX;
+                },
+                "capacity in bytes overflowed",
+            ),
+            (
+                |config| {
+                    config
+                        .native_host_offload
+                        .as_mut()
+                        .unwrap()
+                        .d2h_bandwidth_gbps = f64::MIN_POSITIVE;
+                },
+                "unrepresentable transfer duration",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    #[test]
+    fn native_host_offload_rejects_unsupported_scheduler_modes() {
+        let cases: &[InvalidHostConfigCase] = &[
+            (|config| config.backend = Backend::Sglang, "backend=vllm"),
+            (
+                |config| config.worker_type = WorkerType::Prefill,
+                "worker_type=aggregated",
+            ),
+            (
+                |config| config.enable_prefix_caching = false,
+                "enable_prefix_caching=true",
+            ),
+            (
+                |config| config.aic_nextn = Some(1),
+                "does not support aic_nextn",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    #[test]
     fn serialization_round_trip_preserves_runtime_neutral_controls() {
         let config = EngineConfig {
             backend: Backend::Sglang,
@@ -544,6 +958,7 @@ mod tests {
             num_gpu_blocks: 123,
             max_num_seqs: 7,
             max_num_batched_tokens: 456,
+            prefill_decode_interval: 4,
             worker_type: WorkerType::Decode,
             preemption_mode: PreemptionMode::Fifo,
             emit_kv_events: true,
@@ -557,6 +972,57 @@ mod tests {
         let encoded = serde_json::to_value(&config).unwrap();
         let decoded: EngineConfig = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn scheduler_intervals_default_and_validate_for_each_backend() {
+        for backend in ["vllm", "sglang", "trtllm"] {
+            let mut config: EngineConfig =
+                serde_json::from_value(serde_json::json!({ "backend": backend })).unwrap();
+            assert_eq!(config.prefill_schedule_interval, 1);
+            assert_eq!(config.prefill_decode_interval, 0);
+            config.validate().unwrap();
+
+            config.prefill_decode_interval = 20;
+            if backend == "sglang" {
+                config.validate().unwrap();
+                let decoded: EngineConfig =
+                    serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+                assert_eq!(decoded.prefill_decode_interval, 20);
+            } else {
+                assert!(
+                    config
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("prefill_decode_interval is supported only for backend=sglang")
+                );
+            }
+
+            config.prefill_decode_interval = 0;
+            config.prefill_schedule_interval = 4;
+            if backend == "vllm" {
+                config.validate().unwrap();
+            } else {
+                assert!(
+                    config
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("prefill_schedule_interval is supported only for backend=vllm")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deserialization_rejects_negative_prefill_decode_interval() {
+        let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "backend": "sglang",
+            "prefill_decode_interval": -1
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("expected usize"));
     }
 
     #[test]
@@ -596,6 +1062,18 @@ mod tests {
                 .to_string()
                 .contains("max_model_len")
         );
+
+        let config = EngineConfig {
+            prefill_schedule_interval: 0,
+            ..EngineConfig::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_schedule_interval")
+        );
     }
 
     #[test]
@@ -624,37 +1102,34 @@ mod tests {
     }
 
     #[test]
-    fn sglang_supports_disabled_prefix_caching() {
-        let config = EngineConfig {
-            enable_prefix_caching: false,
-            ..EngineConfig::for_backend(Backend::Sglang)
-        };
-        config.validate().unwrap();
-        crate::engine::EngineFactory::new(config).unwrap();
+    fn sglang_supports_prefix_caching_and_token_id_controls() {
+        for (enable_prefix_caching, emit_kv_token_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let config = EngineConfig {
+                enable_prefix_caching,
+                emit_kv_events: true,
+                emit_kv_token_ids,
+                ..EngineConfig::for_backend(Backend::Sglang)
+            };
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config).unwrap();
+        }
     }
 
     #[test]
-    fn sglang_rejects_remaining_unsupported_controls_at_validation_and_factory_boundaries() {
-        let cases = [
-            ("emit_kv_token_ids", true, true, true),
-            ("enable_chunked_prefill", false, true, false),
-        ];
-
-        for (field, emit_kv_token_ids, enable_prefix_caching, enable_chunked_prefill) in cases {
-            let config = EngineConfig {
-                emit_kv_events: emit_kv_token_ids,
-                emit_kv_token_ids,
-                enable_prefix_caching,
-                enable_chunked_prefill,
-                ..EngineConfig::for_backend(Backend::Sglang)
-            };
-            assert!(config.validate().unwrap_err().to_string().contains(field));
-            let error = match crate::engine::EngineFactory::new(config) {
-                Ok(_) => panic!("expected EngineFactory to reject {field}"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(field));
-        }
+    fn sglang_rejects_disabled_chunked_prefill_at_validation_and_factory_boundaries() {
+        let config = EngineConfig {
+            enable_chunked_prefill: false,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        let field = "enable_chunked_prefill";
+        assert!(config.validate().unwrap_err().to_string().contains(field));
+        let error = match crate::engine::EngineFactory::new(config) {
+            Ok(_) => panic!("expected EngineFactory to reject {field}"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(field));
     }
 
     #[test]

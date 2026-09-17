@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::engine::KvEvent;
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
+use crate::engine::config::NativeHostOffloadConfig;
 
 /// Sink for neutral KV-cache events emitted by a rank.
 pub(crate) trait KvCacheEventSink: Send + Sync {
@@ -182,6 +183,10 @@ pub(crate) struct MockEngineArgs {
     pub max_num_seqs: Option<usize>,
     #[builder(default = "Some(8_192)")]
     pub max_num_batched_tokens: Option<usize>,
+    #[builder(default = "1")]
+    pub prefill_schedule_interval: usize,
+    #[builder(default = "0")]
+    pub prefill_decode_interval: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]
@@ -201,7 +206,11 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "42")]
     pub aic_mtp_seed: u64,
     #[builder(default = "None")]
-    pub kv_bytes_per_token: Option<usize>,
+    pub kv_transfer_bytes_per_token: Option<usize>,
+    #[builder(default = "None")]
+    pub kv_cache_bytes_per_token: Option<usize>,
+    #[builder(default = "None")]
+    pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[builder(default = "None")]
     pub kv_transfer_bandwidth: Option<f64>,
     #[builder(default = "KvTransferTimingMode::FullPrompt")]

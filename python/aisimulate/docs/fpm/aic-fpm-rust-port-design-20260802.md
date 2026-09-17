@@ -114,9 +114,16 @@ FpmForwardOp {
   32 and the residual batch log2 distance remains at most 2. This connects the
   zero/first-block region without weakening the batch gate. The result must be
   finite and > 0. Energy 0.0, source Silicon.
-- **`query_pass_baseline(batch)`** (decode only): kv_floor =
-  `max(batch, decode-domain KV min)`, resolve `(B, kv_floor)` through the same
-  path.
+- **`query_pass_baseline(batch, total_kv)`** (decode only): exact batches use
+  their collected curve's minimum-KV latency. Off-lattice batches hold the
+  padded bracket curves at their own KV floors, then interpolate those
+  latencies on the batch axis — over exactly the rows the paired decode query
+  keeps at `total_kv`. A bracket row whose own curve does not cover the
+  coordinate is dropped from BOTH sides of `query - baseline`, so the shared
+  pass cost always cancels (blending a row the query could not use zeroes the
+  marginal in one ragged-coverage band and inflates it in the mirror band).
+  This is a baseline-only left-boundary hold; normal decode resolution remains
+  strict and never extrapolates below a curve's coverage.
 - **SOL roofline**: `sol_fn(coords)` = Σ over `sol_ops` of the op's
   **SOL-mode** latency, with Python's exact coordinate back-mapping — prefill
   `s = max(total_prefill/batch, 1.0)` (float), `prefix = total_kv/batch`
@@ -150,8 +157,10 @@ phases prefill/decode. Whole-model ops must never reach the name-filtered
   gen_tokens, isl' = isl + osl/2, osl = 2)` → samples decode at
   `s = isl + osl/2 + 1` (**the Python `+1` convention, NOT the existing Rust
   step convention `isl + osl/2`** — documented divergence, FPM follows Python);
-  `baseline = query_pass_baseline(gen_tokens·(nextn+1))` subtracted, clamped at
-  0, **only when `ctx_tokens > 0`**; gen-only keeps full decode; both-zero → 0.
+  `baseline = query_pass_baseline(gen_tokens·(nextn+1), kv)` subtracted at the
+  SAME `kv = gen_tokens·(nextn+1)·(isl + osl//2 + 1)` the decode query used,
+  clamped at 0, **only when `ctx_tokens > 0`**; gen-only keeps full decode;
+  both-zero → 0.
 - `decode_step_latency`: if FPM → full decode at the Python convention
   (`batch = gen_tokens·(nextn+1)`, `s = isl + osl/2 + 1`), no baseline.
 - `rank_latency_ms` (ForwardPassMetrics dispatch): FPM branch — prefill-only →
@@ -181,6 +190,10 @@ phases prefill/decode. Whole-model ops must never reach the name-filtered
   stays as the python-backend path (unchanged, still the reference).
 - run_agg's `engine_step_backend_key` (`:1249`) becomes truthful for FPM —
   parity/cache tooling that compared across the transition must clear caches.
+- Native replay's external AIC timing config accepts optional
+  `forward_model="fpm"` and passes it to `compile_engine`; omission preserves
+  the op-level default. This keeps standalone engine replay on the same FPM
+  selection path as TaskV2 and the CLI.
 
 ### 7. Tests
 
@@ -280,8 +293,10 @@ Documented, deliberate divergences (accepted, not bugs):
 
 - **SOL coverage**: `fpm_sol.rs` covers the vLLM MoE/dense families (Gemm,
   Embedding, Elementwise, Context/GenerationAttention, Moe, MoeDispatch,
-  CustomAllReduce, Nccl, P2P, Overlap/Fallback). DSA (GLM-5.2), MSA
-  (MiniMax-M3), and MLA-module families are NOT ported: exact-hit and
+  CustomAllReduce, Nccl, P2P, Overlap/Fallback), and the DSA
+  context/generation modules (GLM-5.2) via `perf_database::dsa`'s SOL ports
+  (context with `cp_size > 1` still returns a typed `SolNotImplemented`).
+  MSA (MiniMax-M3) and MLA-module families are NOT ported: exact-hit and
   in-curve queries work; transfer/hold paths miss with a structured error.
   Porting those SOLs is a tracked follow-up.
 - **MiniMax-M3 cannot compile to a Rust FPM spec at all**: `_to_opspec` has

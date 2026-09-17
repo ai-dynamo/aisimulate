@@ -104,6 +104,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             speculative: None,
             enable_shared_layer: None,
             strict_provenance: false,
+            tolerate_dirless_version: false,
             database_mode: Default::default(),
             transfer_policy: None,
             extra: BTreeMap::new(),
@@ -112,6 +113,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
         max_batch_size: 256,
         kv_cache_memory_fraction: KvCacheMemoryFraction::OfFree(0.9),
         gpu_memory_capacity_bytes_override: None,
+        cuda_graph_reserved_bytes: 1 << 30,
         tolerance_fraction,
         options: KvCacheEstimateOptions {
             allow_naive_fallback: false,
@@ -163,6 +165,10 @@ fn memory_round_trip_forwards_tolerance_and_parses_adjusted() {
     assert_eq!(raw.source, EstimateSource::Native);
     assert!(raw.total_kv_size_bytes > 0 && raw.kv_size_per_token_bytes > 0);
     assert!(raw.memory_breakdown.is_some());
+    assert_eq!(
+        raw.memory_breakdown.unwrap().cuda_graph_reserved_bytes,
+        1 << 30
+    );
     assert!(raw.tolerance_adjusted.is_none());
 
     // Tolerance forwarded: `fetch_python_estimate` must pass `tolerance_fraction`

@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/sdk/task_v2.py
 
 """
 Task — flat user-facing config for sweep_agg / sweep_disagg.
@@ -47,8 +49,15 @@ from aiconfigurator.sdk.models import (
     get_model_family,
     resolve_dsv4_moe_arch_mode,
     resolve_kimi_k3_moe_arch_mode,
+    resolve_vllm_moe_execution_mode,
 )
 from aiconfigurator.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
+from aiconfigurator.sdk.moe_comm_resolver import (
+    a2a_covers_parallel,
+    moe_compute_coverage,
+    resolve_model_config_moe_comm,
+    select_moe_comm_backend,
+)
 from aiconfigurator.sdk.operations.moe_comm import MOE_A2A_BACKENDS, nodes_for
 from aiconfigurator.sdk.perf_database import (
     get_latest_database_version,
@@ -56,12 +65,16 @@ from aiconfigurator.sdk.perf_database import (
     is_hopper_system,
     load_system_spec,
 )
+from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, merge_moe_comm_fallbacks
 from aiconfigurator.sdk.rust_engine_step import validate_engine_step_backend
 from aiconfigurator.sdk.speculative import (
     SpeculativeDecodingProfile,
     normalize_speculative_decoding,
 )
-from aiconfigurator.sdk.utils import enumerate_parallel_config, get_model_config_from_model_path
+from aiconfigurator.sdk.utils import (
+    enumerate_parallel_config,
+    get_model_config_from_model_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -554,8 +567,14 @@ class Task:
     # still never inferred.
     nextn: int | str = 0
     nextn_accepted: float | None = None
-    moe_backend: str | None = None
-    attention_backend: str | None = None  # 'flashinfer' (default) or 'fa3'; only consumed by MLA models
+    # Scheme configuration and measured acceptance; method="mtp" desugars to the legacy pair.
+    speculative: dict | None = field(default=None, kw_only=True)
+    moe_backend: common.MoEBackend | None = None
+    # Applies to every graph with standard dense ContextAttention/GenerationAttention ops and to
+    # supported DeepSeek MLA/WideEP paths. Named support is backend/table/version-specific and fails
+    # closed; None/default uses the mapped framework default or safe default fallback. SGLang WideEP
+    # maps None/default to flashinfer and also supports fa3.
+    attention_backend: common.AttentionBackend | None = None
     wideep_num_slots: int | None = None  # EPLB slot count; defaults to num_experts when None
     gemm_quant_mode: common.GEMMQuantMode | None = None
     moe_quant_mode: common.MoEQuantMode | None = None
@@ -700,7 +719,16 @@ class Task:
     afd_ttft_correction_factor: float | None = None
     afd_decode_latency_correction: float = 1.0
 
-    # ====== 11. Internal — resolved in __post_init__ ======
+    # ====== 11. Multimodal video inputs ======
+    # Appended to preserve the positional constructor contract of all existing
+    # Task fields. New callers should pass these by keyword.
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0
+
+    # ====== 12. Internal — resolved in __post_init__ ======
     _is_moe: bool = field(default=False, repr=False, init=False)
     _model_family: str = field(default="", repr=False, init=False)
     _raw_config: dict = field(default_factory=dict, repr=False, init=False)
@@ -712,6 +740,7 @@ class Task:
     # Which fmha_quant_mode values came from an explicit field (per role) --
     # handed from _resolve_quant_modes to _apply_fmha_data_fallback.
     _fmha_explicit: dict = field(default_factory=dict, repr=False, init=False)
+    _kvcache_explicit: dict = field(default_factory=dict, repr=False, init=False)
     # role -> large-EP coverage (see _large_ep_coverage). Depends on the model /
     # system / backend / MoE quant mode only, never on the candidate lists, so
     # it survives post-construction edits to those.
@@ -824,6 +853,12 @@ class Task:
     # =====================================================================
 
     def __post_init__(self) -> None:
+        self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = config.normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
         # Canonicalize at construction so downstream config and routing see
         # exactly one spelling for the only supported engine-step backend.
         self.engine_step_backend = validate_engine_step_backend(self.engine_step_backend)
@@ -844,6 +879,7 @@ class Task:
         # depend on it (non-negative integer nextn; finite acceptance in range).
         # nextn="auto" is the one exception: its depth comes from the checkpoint,
         # so it is resolved and validated in _resolve_model_identity.
+        self._resolve_speculative_block()
         if self.nextn != "auto":
             self.nextn, self.nextn_accepted = normalize_speculative_decoding(self.nextn, self.nextn_accepted)
         self._validate_deepseek_v4_hardware()
@@ -883,7 +919,7 @@ class Task:
             else (self.prefill_enable_wideep or self.decode_enable_wideep)
         )
         if wideep:
-            self.moe_backend = "deepep_moe"
+            self.moe_backend = common.MoEBackend.deepep_moe
 
     def _normalize_epd_encoder_dp(self) -> None:
         """enable_epd pins the colocated encoder-DP knob off: EPD encode
@@ -1090,12 +1126,15 @@ class Task:
         # data-driven fallback below must NOT fire on an EXPLICIT fp8 -- explicit
         # values are the user's contract and validate fails fast on them.
         fmha_explicit: dict[str, bool] = {}
+        kvcache_explicit: dict[str, bool] = {}
         for role in roles:
             for key in _QUANT_ENUM_TABLES:
                 explicit = self._role_attr(role, key)
                 from_hf = base.get(key)
                 if key == "fmha_quant_mode":
                     fmha_explicit[role] = explicit is not None
+                elif key == "kvcache_quant_mode":
+                    kvcache_explicit[role] = explicit is not None
                 # Native DeepSeek-V4 on sglang uses arch-specific MoE kernels; the
                 # shared helper (also called on the cli estimate path) returns the
                 # dedicated perf-DB quant mode. Acts at the HF-base layer so an
@@ -1115,6 +1154,18 @@ class Task:
                         )
                     if arch_mode is not None:
                         from_hf = arch_mode
+                    # HF-base-layer remap: vLLM executes W4A16_NVFP4-labeled
+                    # experts on the w4a4 nvfp4 lane (see the helper). Applied
+                    # to the HF-derived value only, so an explicit field still
+                    # overrides it — and validate fails fast on an explicit
+                    # w4a16_nvfp4, which vLLM has no data lane for.
+                    from_hf = resolve_vllm_moe_execution_mode(
+                        from_hf,
+                        self._role_attr(role, "backend_name"),
+                        self._raw_config.get("architectures", [None])[0]
+                        if isinstance(self._raw_config.get("architectures"), list)
+                        else self._raw_config.get("architecture"),
+                    )
                 fallback = _QUANT_FALLBACKS[key]
 
                 if explicit is not None:
@@ -1123,6 +1174,7 @@ class Task:
                 self._set_role_attr(role, key, resolved)
 
         self._fmha_explicit = fmha_explicit
+        self._kvcache_explicit = kvcache_explicit
 
     def _apply_fmha_data_fallback(self) -> None:
         """Data-driven FMHA resolution (second half of quant resolution).
@@ -1263,11 +1315,13 @@ class Task:
         """``{phase: {comm_backend: {ep_size, ...}}}`` explorable with large EP.
 
         Per spec section 4.5, an EP size is explorable for a phase when its
-        comm backend carries dispatch+combine rows for the model shape at
-        ``(ep, nodes_for(ep, gpus_per_node))`` (topology check against THIS
-        system), the backend's registry feasibility rules admit the config,
-        and the EP expert-compute table covers the shape under the role's MoE
-        quant mode for that phase. BOTH phases are probed for every role: a
+        comm backend carries dispatch+combine rows for the model shape at the
+        requested EP/node scale, or DeepEP HT/LL carries its marked node-1
+        substitute (legacy EP8 for SGLang, physical full-node EP otherwise).
+        The backend's registry feasibility
+        rules must admit the config, and the EP expert-compute table must cover
+        the shape under the role's MoE quant mode for that phase. BOTH phases
+        are probed for every role: a
         disagg worker only runs one of them, but its model object holds the
         whole graph and the memory model sizes weights off the context ops, so
         the phase the role does not run must be emitted in the same regime (the
@@ -1278,9 +1332,10 @@ class Task:
         backends cover the same EP); the caller picks the first one covering
         the tuple's EP.
 
-        Never raises on missing DATA: an absent model shape, system spec,
-        database or table yields ``{}`` -- the fused path then serves every
-        tuple. A caller BUG still raises: a str-typed ``moe_quant_mode`` is a
+        Missing data yields ``{}``; :meth:`build_model_config` permits the
+        fused path for intra-node tuples but rejects cross-node EP because
+        silently pricing it as fused omits A2A latency. A caller BUG still
+        raises: a str-typed ``moe_quant_mode`` is a
         ``TypeError``, not empty coverage (it would silently miss every
         enum-keyed compute row and disable large-EP exploration).
         """
@@ -1314,11 +1369,10 @@ class Task:
         # (a lightweight double injected by a caller) carries no coverage
         # information, which is the same answer as an absent table.
         a2a_probe = getattr(database, "moe_a2a_coverage", None)
-        compute_probe = getattr(database, "moe_expert_compute_coverage", None)
         coverage: dict[str, dict[str, set[int]]] = {}
-        if gpus_per_node and a2a_probe is not None and compute_probe is not None:
-            a2a = a2a_probe(shape.hidden_size, shape.topk, shape.num_experts)
+        if gpus_per_node and a2a_probe is not None:
             quant_mode = self._role_attr(role, "moe_quant_mode")
+            enable_eplb = bool(self._role_attr(role, "enable_eplb"))
             if quant_mode is not None and not isinstance(quant_mode, common.MoEQuantMode):
                 # The compute table is keyed by MoEQuantMode members; any
                 # other type (str, int, a sibling enum like
@@ -1329,17 +1383,37 @@ class Task:
                     f"{type(quant_mode).__name__} {quant_mode!r} "
                 )
             for phase in ("context", "generation"):
-                compute = compute_probe(
-                    shape.hidden_size, shape.moe_inter_size, shape.topk, shape.num_experts, quant_mode, phase
+                a2a = a2a_probe(shape.hidden_size, shape.topk, shape.num_experts, quant_mode, phase)
+                compute = moe_compute_coverage(
+                    database,
+                    backend_name=backend_name,
+                    hidden_size=shape.hidden_size,
+                    inter_size=shape.moe_inter_size,
+                    topk=shape.topk,
+                    num_experts=shape.num_experts,
+                    quant_mode=quant_mode,
+                    phase=phase,
                 )
                 per_backend: dict[str, set[int]] = {}
                 for name, backend_spec in MOE_A2A_BACKENDS.items():
                     if backend_name not in backend_spec.frameworks or phase not in backend_spec.inference_phases:
                         continue
+                    if name == "deepep_ll" and enable_eplb:
+                        # Stage 1 has no LL placement model for EPLB. Keep the
+                        # direct op-level error, but do not generate invalid
+                        # sweep candidates in the first place.
+                        continue
                     eps = {
                         ep
-                        for ep, node_num in a2a.get(name, ())
-                        if node_num == nodes_for(ep, gpus_per_node)
+                        for ep in compute
+                        if a2a_covers_parallel(
+                            a2a.get(name, set()),
+                            framework=backend_name,
+                            comm_backend=name,
+                            moe_ep_size=ep,
+                            expected_nodes=nodes_for(ep, gpus_per_node),
+                            gpus_per_node=gpus_per_node,
+                        )
                         and backend_spec.feasible(
                             topk=shape.topk,
                             num_experts=shape.num_experts,
@@ -1347,7 +1421,7 @@ class Task:
                             moe_ep_size=ep,
                             sm_version=sm_version,
                         )
-                    } & compute
+                    }
                     if eps:
                         per_backend[name] = eps
                 if per_backend:
@@ -1405,13 +1479,13 @@ class Task:
         coverage = self._large_ep_coverage(role)
         if not coverage:
             return None
-        resolved: dict[str, str] = {}
-        for phase in ("context", "generation"):
-            for name, eps in coverage.get(phase, {}).items():
-                if moe_ep in eps:
-                    resolved[phase] = name
-                    break
         required = set(self._role_phases(role)) | set(self._required_large_ep_phases(role))
+        resolved = select_moe_comm_backend(
+            coverage,
+            backend_name=self._role_attr(role, "backend_name"),
+            attention_dp_size=_dp,
+            moe_ep_size=moe_ep,
+        )
         missing = required - set(resolved)
         if missing:
             if missing == {"context"}:
@@ -1444,16 +1518,23 @@ class Task:
         )
 
     def _large_ep_eps(self, role: str) -> set[int]:
-        """EP sizes this role could run large-EP: covered in every phase it runs
-        AND in the context phase that sizes its weights (see
-        ``_required_large_ep_phases``)."""
+        """Covered EP sizes that actually span more than one physical node.
+
+        Single-node A2A data may resolve the communication backend for an
+        intra-node tuple, but it must not unlock the multi-node search ladder
+        or its larger replica budget.  Only coverage present in every required
+        phase *and* wider than the system's node width enables that expansion.
+        """
         coverage = self._large_ep_coverage(role)
         eps: set[int] | None = None
         for phase in set(self._role_phases(role)) | set(self._required_large_ep_phases(role)):
             per_backend = coverage.get(phase, {})
             phase_eps = set().union(*per_backend.values()) if per_backend else set()
             eps = phase_eps if eps is None else eps & phase_eps
-        return eps or set()
+        gpus_per_node = self._num_gpus_per_node(role)
+        if not gpus_per_node:
+            return set()
+        return {ep for ep in (eps or set()) if ep > gpus_per_node}
 
     def _role_has_large_ep_tuple(self, role: str) -> bool:
         """Whether any enumerated tuple for this role resolves a comm backend."""
@@ -1964,6 +2045,11 @@ class Task:
             image_height=self.image_height,
             image_width=self.image_width,
             num_images_per_request=self.num_images_per_request,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_videos_per_request=self.num_videos_per_request,
+            num_video_tokens=self.num_video_tokens,
             ttft=self.ttft,
             tpot=self.tpot,
             request_latency=self.request_latency,
@@ -1973,11 +2059,14 @@ class Task:
             rt.batch_size = batch_size
         return rt
 
-    def _prefill_effective_isl(self) -> int:
+    def _prefill_effective_isl(self, runtime_config: config.RuntimeConfig | None = None) -> int:
         """Text ISL + vision context tokens for one request."""
         from aiconfigurator.sdk.backends.base_backend import BaseBackend
 
-        return BaseBackend.effective_prefill_isl(self.primary_model_path, self.build_runtime_config())
+        return BaseBackend.effective_prefill_isl(
+            self.primary_model_path,
+            runtime_config or self.build_runtime_config(),
+        )
 
     def build_model_config(
         self,
@@ -1994,20 +2083,28 @@ class Task:
         the model classes build the large-EP graph for the tuples the data
         covers and the fused one for the rest.
         """
+        num_gpus_per_node = self._num_gpus_per_node(role)
         model_config = config.ModelConfig(
+            tp_size=parallel[0] if parallel is not None else 1,
+            pp_size=parallel[1] if parallel is not None else 1,
+            attention_dp_size=parallel[2] if parallel is not None else 1,
+            moe_tp_size=parallel[3] if parallel is not None else 1,
+            moe_ep_size=parallel[4] if parallel is not None else 1,
+            cp_size=parallel[5] if parallel is not None else 1,
             gemm_quant_mode=self._role_attr(role, "gemm_quant_mode"),
             moe_quant_mode=self._role_attr(role, "moe_quant_mode"),
             kvcache_quant_mode=self._role_attr(role, "kvcache_quant_mode"),
             fmha_quant_mode=self._role_attr(role, "fmha_quant_mode"),
             comm_quant_mode=self._role_attr(role, "comm_quant_mode"),
             nextn=self.nextn,
+            speculation=getattr(self, "_speculation_config", None),
             enable_encoder_dp=self.enable_encoder_dp,
             enable_eplb=self._role_attr(role, "enable_eplb"),
-            # attention_backend / wideep_num_slots are shared across roles (Task has no
-            # per-role variant) and fed to ModelConfig so get_model selects the MLA
-            # attention perf tables (fa3 vs flashinfer) and the EPLB slot count.
-            # workload_distribution remains non-configurable in v2 and ModelConfig's
-            # default matches v1's.
+            # moe_backend / attention_backend / wideep_num_slots are shared across roles
+            # (Task has no per-role variant) and fed to ModelConfig so get_model selects the
+            # right MoE kernel (deepep_moe / megamoe), MLA attention perf tables (fa3 vs
+            # flashinfer), and EPLB slot count. workload_distribution remains non-configurable
+            # in v2 and ModelConfig's default matches v1's.
             #
             # moe_backend="deepep_moe" is NOT forwarded: it used to select both the
             # sglang wideEP model classes and the wideep MoE compute tables for the
@@ -2015,17 +2112,33 @@ class Task:
             # would make a fused tuple price itself off the large-EP tables. MegaMoE
             # is a real DeepSeek-V4 kernel selection and passes through.
             moe_backend=self.moe_backend if self.moe_backend != "deepep_moe" else None,
-            # None means "unspecified" -> fall back to flashinfer (matches v1 and ModelConfig's default).
-            attention_backend=self.attention_backend or "flashinfer",
+            # None means "unspecified" and MUST stay None: the WideEP MLA ops apply
+            # their own "flashinfer" default, while dense attention (AIC-1715) reads
+            # this field as the kernel-LANE override — materializing a lane name here
+            # would silently pin every model to the flashinfer lane.
+            attention_backend=self.attention_backend,
             wideep_num_slots=self.wideep_num_slots,
             forward_model=self.forward_model or "op_level",
-            moe_comm_backend=(self._resolve_moe_comm_backend(role, parallel) if parallel is not None else None),
+            moe_comm_backend=None,
             # Hardware fact, injected alongside the comm backend: the large-EP
             # ops take the comm node span at construction and would otherwise
             # have no channel to it (models.helpers.large_ep_gpus_per_node).
-            num_gpus_per_node=self._num_gpus_per_node(role),
+            num_gpus_per_node=num_gpus_per_node,
+            system=self._role_attr(role, "system_name"),
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
+        if parallel is not None:
+            required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
+            resolve_model_config_moe_comm(
+                model_config,
+                model_path=self._role_attr(role, "model_path"),
+                backend_name=self._role_attr(role, "backend_name"),
+                database=self._try_load_role_database(role),
+                required_phases=required_phases,
+                fmha_quant_mode_explicit=self._fmha_explicit.get(role, False),
+                kvcache_quant_mode_explicit=self._kvcache_explicit.get(role, False),
+                coverage_snapshot=self._large_ep_coverage(role),
+            )
         return model_config
 
     def _model_config_factory(self, role: Literal["agg", "prefill", "decode"]):
@@ -2037,8 +2150,37 @@ class Task:
 
         return _build
 
+    def _resolve_speculative_block(self) -> None:
+        """Normalize the ``speculative:`` block into a SpeculationConfig.
+
+        ``method="mtp"`` desugars onto the legacy nextn pair so every existing
+        code path stays authoritative. Other methods build a scheme config
+        consumed by ``build_model_config`` / ``build_speculative_profile``;
+        the acceptance value is validated against the scheme's verify width
+        here so bad inputs fail at task construction, not mid-sweep.
+        """
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        resolution = resolve_speculative_block(self.speculative, nextn=self.nextn, nextn_accepted=self.nextn_accepted)
+        if resolution.speculation_config is not None and (self.serving_mode != "agg" or self.enable_epd):
+            raise ValueError(
+                "scheme-based speculative decoding currently supports aggregated serving without EPD only "
+                f"(got serving_mode={self.serving_mode!r}, enable_epd={self.enable_epd!r}); "
+                "method='mtp' uses the supported legacy nextn path."
+            )
+        self.nextn = resolution.nextn
+        self.nextn_accepted = resolution.nextn_accepted
+        self._speculation_config = resolution.speculation_config
+        self._speculative_accepted = resolution.accepted_tokens
+
     def build_speculative_profile(self) -> SpeculativeDecodingProfile:
         """Build the upper-layer expected-progress assumption for prediction."""
+        spec_config = getattr(self, "_speculation_config", None)
+        if spec_config is not None:
+            from aiconfigurator.sdk.speculation import build_spec_scheme
+
+            scheme = build_spec_scheme(None, spec_config)
+            return SpeculativeDecodingProfile.from_scheme(scheme, self._speculative_accepted)
         return SpeculativeDecodingProfile.from_inputs(self.nextn, self.nextn_accepted)
 
     def iter_parallel(self, role: Literal["agg", "prefill", "decode"]) -> Iterator[ParallelChoice]:
@@ -2061,20 +2203,24 @@ class Task:
                 f"decode_cp_candidates={cp_list}. Enable CP via prefill/agg instead."
             )
 
-        return iter(
-            enumerate_parallel_config(
-                num_gpu_list=_cands("num_gpu"),
-                tp_list=_cands("tp"),
-                pp_list=_cands("pp"),
-                dp_list=_cands("dp"),
-                moe_tp_list=_cands("moe_tp"),
-                moe_ep_list=_cands("moe_ep"),
-                cp_list=cp_list,
-                is_moe=self._is_moe,
-                backend=common.BackendName[self._role_attr(role, "backend_name")],
-                moe_backend=self.moe_backend,
-            )
+        backend = common.BackendName[self._role_attr(role, "backend_name")]
+        parallel = enumerate_parallel_config(
+            num_gpu_list=_cands("num_gpu"),
+            tp_list=_cands("tp"),
+            pp_list=_cands("pp"),
+            dp_list=_cands("dp"),
+            moe_tp_list=_cands("moe_tp"),
+            moe_ep_list=_cands("moe_ep"),
+            cp_list=cp_list,
+            is_moe=self._is_moe,
+            backend=backend,
+            moe_backend=self.moe_backend,
         )
+        if self._model_family == "MUSEGLIMMER" and backend == common.BackendName.sglang:
+            # Muse supports pure TP and pure prefill CP, but SGLang rejects a
+            # mixed attention TP/CP topology before model construction.
+            parallel = [cfg for cfg in parallel if cfg[5] == 1 or (cfg[0] == 1 and cfg[2] == 1)]
+        return iter(parallel)
 
     # =====================================================================
     # Validation
@@ -2104,8 +2250,12 @@ class Task:
             UnsupportedWideepConfigError specifically for wideep_* ops
             (lets callers distinguish from generic ``ValueError``).
         """
-        if self.attention_backend is not None and self.attention_backend not in ("flashinfer", "fa3"):
-            raise ValueError(f"attention_backend must be 'flashinfer' or 'fa3', got {self.attention_backend!r}.")
+        self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = config.normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
         if self.wideep_num_slots is not None and self.wideep_num_slots <= 0:
             raise ValueError(f"wideep_num_slots must be a positive integer, got {self.wideep_num_slots!r}.")
         self._check_encoder_knobs_require_epd()
@@ -2134,7 +2284,32 @@ class Task:
             self._validate_afd()
         else:
             raise ValueError(f"Invalid serving_mode: {self.serving_mode!r}")
+        self._validate_sglang_wideep_attention_backend()
         self._validate_database_quant_modes()
+
+    def _validate_sglang_wideep_attention_backend(self) -> None:
+        """Reject dense-only attention backends when a role can reach WideEP.
+
+        SGLang's WideEP MLA operators accept only ``flashinfer`` and ``fa3``;
+        ``default`` means their established framework default (``flashinfer``).
+        The wider attention-lane vocabulary remains valid for tasks whose
+        enumerated tuples are all dense/fused.
+        """
+        if self.attention_backend in (None, "default", "flashinfer", "fa3"):
+            return
+        roles = ("agg",) if self.serving_mode in ("agg", "afd") else ("prefill", "decode")
+        for role in roles:
+            if self._role_attr(role, "backend_name") != "sglang":
+                continue
+            if ("wideep_context_mla", "wideep_generation_mla") not in self._reachable_attention_op_keys(role):
+                continue
+            from aiconfigurator.sdk.errors import UnsupportedAttentionBackendError
+
+            raise UnsupportedAttentionBackendError(
+                f"SGLang WideEP MLA does not support attention_backend={self.attention_backend!r}; "
+                "supported values: ['fa3', 'flashinfer', 'default']. "
+                "Dense-only SGLang tasks may use the wider attention-backend vocabulary."
+            )
 
     def _validate_agg(self) -> None:
         if not self.model_path:
@@ -2172,6 +2347,18 @@ class Task:
             raise ValueError("afd mode requires system_name")
         if self.effective_total_gpus is None:
             raise ValueError("afd mode requires total_gpus or afd_total_gpus")
+        has_image_workload = self.num_images_per_request > 0 and self.image_height > 0 and self.image_width > 0
+        has_video_workload = config.has_video_input(
+            num_videos=self.num_videos_per_request,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_video_tokens=self.num_video_tokens,
+        )
+        if has_image_workload or has_video_workload:
+            raise NotImplementedError(
+                "AFD does not support image/video encoder workloads; use agg, disagg, or static estimation."
+            )
         if (
             isinstance(self.afd_max_a_batch_size, bool)
             or not isinstance(self.afd_max_a_batch_size, int)
@@ -2949,7 +3136,7 @@ class Task:
             backend=backend,
             database=database,
             runtime_config=runtime_config,
-            ctx_tokens=ctx_tokens if ctx_tokens is not None else self.isl,
+            ctx_tokens=ctx_tokens if ctx_tokens is not None else self._prefill_effective_isl(runtime_config),
             predictor=self.predictor,
             speculative_profile=self.build_speculative_profile(),
             **backend_kwargs,
@@ -2964,6 +3151,7 @@ class Task:
         if result is None:
             raise RuntimeError("run_single_agg produced no result; configuration may be invalid.")
         result["power_coverage"] = summary.get_power_data_coverage()
+        result[MOE_COMM_FALLBACKS_COLUMN] = merge_moe_comm_fallbacks(summary.get_moe_comm_fallbacks())
         if not self.enable_epd:
             return result
         result["(a)workers"] = 1
@@ -3072,6 +3260,8 @@ class Task:
         d_mc = self.build_model_config(
             role="decode", parallel=(decode_tp, decode_pp, decode_dp, decode_moe_tp, decode_moe_ep, 1)
         )
+        if self.enable_epd:
+            d_mc.language_only = True
         d_mc.tp_size = decode_tp
         d_mc.pp_size = decode_pp
         d_mc.attention_dp_size = decode_dp if self._is_moe else 1
@@ -3103,6 +3293,8 @@ class Task:
         # --- Rate-match the pair ---
         p_dict = p_summary.get_summary_df().iloc[0].to_dict()
         d_dict = d_summary.get_summary_df().iloc[0].to_dict()
+        p_dict[MOE_COMM_FALLBACKS_COLUMN] = p_summary.get_moe_comm_fallbacks()
+        d_dict[MOE_COMM_FALLBACKS_COLUMN] = d_summary.get_moe_comm_fallbacks()
         row = _rate_match_dict(
             p_dict,
             prefill_num_workers,

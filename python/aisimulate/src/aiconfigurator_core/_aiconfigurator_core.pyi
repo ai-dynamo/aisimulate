@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+_MoeCommFallbackPayload = tuple[str, str, int, int, int, int]
+_MoeCommFallbackMetadata = tuple[_MoeCommFallbackPayload, list[_MoeCommFallbackPayload]]
+_PerOpValueWithMetadata = tuple[str, float, float, str, _MoeCommFallbackMetadata | None]
+
 class AicEngine:
     @staticmethod
     def from_spec(bytes: bytes, systems_path: str | None = None) -> AicEngine: ...  # noqa: A002
@@ -62,6 +66,21 @@ class AicEngine:
         list[tuple[str, float, float, str]],
         list[tuple[str, float, float, str]],
     ]: ...
+    def _run_static_per_op_with_metadata(
+        self,
+        batch_size: int,
+        beam_width: int,
+        isl: int,
+        osl: int,
+        prefix: int,
+        seq_imbalance_correction_scale: float,
+        gen_seq_imbalance_correction_scale: float,
+        mode: str = "static",
+        stride: int = 32,
+    ) -> tuple[
+        list[_PerOpValueWithMetadata],
+        list[_PerOpValueWithMetadata],
+    ]: ...
     def mixed_step_breakdown_per_op(
         self,
         ctx_tokens: int,
@@ -76,6 +95,20 @@ class AicEngine:
         list[tuple[str, float, float, str]],
         list[tuple[str, float, float, str]],
     ]: ...
+    def _mixed_step_breakdown_per_op_with_metadata(
+        self,
+        ctx_tokens: int,
+        gen_tokens: int,
+        isl: int,
+        osl: int,
+        prefix: int = 0,
+        seq_imbalance_correction_scale: float = 1.0,
+        gen_seq_imbalance_correction_scale: float = 1.0,
+    ) -> tuple[
+        list[_PerOpValueWithMetadata],
+        list[_PerOpValueWithMetadata],
+        list[_PerOpValueWithMetadata],
+    ]: ...
     def decode_step_per_op(
         self,
         gen_tokens: int,
@@ -83,6 +116,13 @@ class AicEngine:
         osl: int,
         gen_seq_imbalance_correction_scale: float = 1.0,
     ) -> list[tuple[str, float, float, str]]: ...
+    def _decode_step_per_op_with_metadata(
+        self,
+        gen_tokens: int,
+        isl: int,
+        osl: int,
+        gen_seq_imbalance_correction_scale: float = 1.0,
+    ) -> list[_PerOpValueWithMetadata]: ...
     def evaluate_context_ops(
         self,
         indices: list[int],
@@ -111,18 +151,33 @@ class AicEngine:
         imbalance_correction_scale: float = 1.0,
         x: int | None = None,
     ) -> list[tuple[str, float, float, str]]: ...
+    def evaluate_context_attention_kernels_json(
+        self,
+        /,
+        ops_json: str,
+        batch_size: int,
+        s: int,
+        prefix: int = 0,
+        imbalance_correction_scale: float = 1.0,
+        visual_block_upper_triangle: bool = False,
+    ) -> list[tuple[str, float, float, str]]: ...
     def last_provenance(self) -> str | None: ...
 
 class RustForwardPassPerfModel:
     @staticmethod
-    def from_native(config_json: str, options_json: str | None = None) -> RustForwardPassPerfModel: ...
+    def best_available(config_json: str) -> RustForwardPassPerfModel: ...
     @staticmethod
-    def best_available(config_json: str, options_json: str | None = None) -> RustForwardPassPerfModel: ...
+    def normalize_config(config_json: str) -> str: ...
     @staticmethod
-    def from_regression(options_json: str | None = None) -> RustForwardPassPerfModel: ...
+    def legacy_estimator_config(options_json: str) -> str: ...
+    @staticmethod
+    def migrate_legacy_config(
+        config_json: str, worker_type: str, options_json: str | None = None, allow_regression: bool = False
+    ) -> str: ...
     def estimate_forward_pass_time_ms(self, fpm_json: str) -> float | None: ...
     def tune_with_fpms(self, iterations_json: str) -> None: ...
     def diagnostics(self) -> str: ...
+    def regression_store_diagnostics(self) -> str: ...
     def min_correction_factor(self) -> float | None: ...
     def max_correction_factor(self) -> float | None: ...
     def avg_correction_factor(self) -> float | None: ...

@@ -30,6 +30,7 @@ from aiconfigurator.sdk import common, perf_database
 from aiconfigurator.sdk import config as sdk_config
 from aiconfigurator.sdk.models import _get_model_info
 from aiconfigurator.sdk.models.helpers import _apply_model_quant_defaults
+from aiconfigurator.sdk.operations.attention import EncoderAttention
 from aiconfigurator.sdk.operations.util_empirical import PROVENANCE_ORDER, capture_provenance, worst_provenance
 from aiconfigurator.sdk.task_v2 import Task
 
@@ -40,6 +41,9 @@ STATUS_HYBRID_PASS = "HYBRID_PASS"
 STATUS_FAIL = "FAIL"
 STATUS_HW_INCOMPATIBLE = "HW_INCOMPATIBLE"
 STATUS_FRAMEWORK_INCOMPATIBLE = "FRAMEWORK_INCOMPATIBLE"
+# ErrMsg prefixes of the deterministic encoder preflights in run_single_test.
+ENCODER_UNSUPPORTED_PREFIX = "ENCODER_UNSUPPORTED:"
+ENCODER_DATA_UNAVAILABLE_PREFIX = "ENCODER_DATA_UNAVAILABLE:"
 VALID_STATUSES = frozenset(
     {STATUS_PASS, STATUS_HYBRID_PASS, STATUS_FAIL, STATUS_HW_INCOMPATIBLE, STATUS_FRAMEWORK_INCOMPATIBLE}
 )
@@ -56,12 +60,19 @@ SUPPORT_MATRIX_BASE_HEADER = [
 ]
 # "Source" = data provenance of PASS/HYBRID_PASS (silicon, or the worst empirical
 # transfer tier that fired: empirical/xshape/xquant/xprofile/xop). Empty otherwise.
-SUPPORT_MATRIX_HEADER = SUPPORT_MATRIX_BASE_HEADER + ["Command", "Source"]
+# The image fields persist the exact multimodal workload exercised by the row.
+# They stay empty for text-only checkpoints.
+SUPPORT_MATRIX_HEADER_WITH_SOURCE = SUPPORT_MATRIX_BASE_HEADER + ["Command", "Source"]
+SUPPORT_MATRIX_HEADER = SUPPORT_MATRIX_HEADER_WITH_SOURCE + ["ImageHeight", "ImageWidth", "NumImages"]
 _BYTES_PER_PARAM = 2
 _FP8_QUANT_MODE_NAMES = frozenset({"fp8", "fp8_static", "fp8_block", "w4afp8"})
 _NATIVE_FP4_QUANT_MODE_NAMES = frozenset({"nvfp4"})
 _FP8_SOFTWARE_FALLBACK_SYSTEMS = frozenset({"b60"})
 _DSV4_VLLM_NATIVE_W4A8_MIN_VERSION = Version("0.24.0")
+
+
+class ModelMetadataError(RuntimeError):
+    """Fatal failure while loading metadata needed to generate trustworthy rows."""
 
 
 def _combination_sort_key(combo: tuple[str, str, str, str]) -> tuple[tuple[int, str], str, str, str]:
@@ -85,9 +96,118 @@ class TestConstraints:
 
 
 @dataclass(frozen=True)
+class ImageWorkload:
+    image_height: int
+    image_width: int
+    num_images: int
+
+    def command_args(self) -> list[str]:
+        return [
+            "--image-height",
+            str(self.image_height),
+            "--image-width",
+            str(self.image_width),
+            "--num-images",
+            str(self.num_images),
+        ]
+
+    def csv_values(self) -> tuple[str, str, str]:
+        return str(self.image_height), str(self.image_width), str(self.num_images)
+
+
+@dataclass(frozen=True)
+class EncoderCoverage:
+    checkpoint_declares_encoder: bool
+    aic_encoder_implemented: bool
+    architecture: str
+
+    @property
+    def workload(self) -> ImageWorkload | None:
+        return SUPPORT_MATRIX_IMAGE_WORKLOAD if self.aic_encoder_implemented else None
+
+
+@dataclass(frozen=True)
 class HardwareIncompatibility:
     missing_datatypes: tuple[str, ...]
     reason: str
+
+
+# One deterministic image is enough to force encoder execution while keeping the
+# daily matrix bounded. This matches the existing tier-2 multimodal regression case.
+SUPPORT_MATRIX_IMAGE_WORKLOAD = ImageWorkload(image_height=1024, image_width=1024, num_images=1)
+
+
+def _get_encoder_coverage(model: str) -> EncoderCoverage:
+    """Return checkpoint declaration and AIC implementation state separately."""
+    try:
+        model_info = _get_model_info(model)
+    except Exception as exc:
+        raise ModelMetadataError(f"Failed to load model metadata for {model!r}: {exc}") from exc
+    raw_config = model_info.get("raw_config") or {}
+    vision_config = raw_config.get("vision_config")
+    architecture = model_info["architecture"]
+    # Some bundled configs intentionally retain only the normalized text fields
+    # needed by AIC.  The architecture registry is the durable declaration for
+    # those trimmed multimodal checkpoints (for example Llama 4 and Step-3.7).
+    checkpoint_declares_encoder = (isinstance(vision_config, dict) and bool(vision_config)) or (
+        architecture in common.MULTIMODAL_TEXT_CONFIG_KEY
+    )
+
+    # ``VisionEncoderConfig`` is emitted only when the config parser knows how to
+    # normalize this architecture's encoder: either as the model's extra_params
+    # (Qwen3-VL) or nested under a hybrid model config's ``vision_config``
+    # (Qwen3.5). The subsequent nonzero evidence gate catches a model
+    # implementation that fails to turn it into executable ops.
+    extra_params = model_info.get("extra_params")
+    aic_encoder_implemented = checkpoint_declares_encoder and (
+        isinstance(extra_params, common.VisionEncoderConfig)
+        or isinstance(getattr(extra_params, "vision_config", None), common.VisionEncoderConfig)
+    )
+    return EncoderCoverage(
+        checkpoint_declares_encoder=checkpoint_declares_encoder,
+        aic_encoder_implemented=aic_encoder_implemented,
+        architecture=architecture,
+    )
+
+
+def _encoder_unsupported_error(model: str, coverage: EncoderCoverage) -> str:
+    return (
+        f"{ENCODER_UNSUPPORTED_PREFIX} checkpoint "
+        f"{model!r} declares a vision encoder, but AIC has no encoder implementation "
+        f"for architecture {coverage.architecture!r}."
+    )
+
+
+def _encoder_perf_data_available(system: str, backend: str, version: str) -> bool | None:
+    """Return whether the encoder-attention perf table exists for this database.
+
+    ``None`` means no database exists for the combination at all; the regular
+    sweep path owns that failure. ``False`` means the ``encoder_attention``
+    table is absent, so the canonical image workload can never be answered on
+    this system/backend/version.
+    """
+    database = perf_database.get_database(system, backend, version)
+    if database is None:
+        return None
+    EncoderAttention.load_data(database)
+    data = getattr(database, "_encoder_attention_data", None)
+    return bool(data is not None and data.loaded)
+
+
+def _encoder_data_unavailable_error(
+    model: str, system: str, backend: str, version: str, workload: ImageWorkload
+) -> str:
+    return (
+        f"{ENCODER_DATA_UNAVAILABLE_PREFIX} "
+        f"{system}/{backend} v{version} has no encoder_attention perf data, so the canonical "
+        f"{workload.num_images}x{workload.image_height}x{workload.image_width} image workload "
+        f"for {model!r} cannot be exercised."
+    )
+
+
+def _image_workload_csv_values(model: str) -> tuple[str, str, str]:
+    workload = _get_encoder_coverage(model).workload
+    return workload.csv_values() if workload is not None else ("", "", "")
 
 
 def _support_matrix_row_command(
@@ -99,6 +219,7 @@ def _support_matrix_row_command(
     database_mode: str = "SILICON",
     transfer_policy: str | None = None,
     constraints: TestConstraints | None = None,
+    image_workload: ImageWorkload | None = None,
 ) -> str:
     """Return the repo-local CLI command that checks this model/system/backend path."""
     if constraints is None:
@@ -139,9 +260,81 @@ def _support_matrix_row_command(
         "--engine-step-backend",
         "rust",
     ]
+    if image_workload is not None:
+        parts.extend(image_workload.command_args())
     if transfer_policy:
         parts.extend(["--transfer-policy", transfer_policy])
     return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def _encoder_preflight_row_command(
+    *,
+    model: str,
+    system: str,
+    backend: str,
+    version: str,
+    mode: str,
+    expect_status: str,
+    expect_error_prefix: str,
+) -> str:
+    """Return a replay command for a deterministic support-matrix encoder preflight."""
+    parts = [
+        "uv",
+        "run",
+        "python",
+        "tools/support_matrix/generate_support_matrix.py",
+        "--model",
+        model,
+        "--system",
+        system,
+        "--backend",
+        backend,
+        "--backend-version",
+        version,
+        "--mode",
+        mode,
+        "--max-workers",
+        "1",
+        "--no-save",
+        "--expect-status",
+        expect_status,
+        "--expect-error-prefix",
+        expect_error_prefix,
+    ]
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def _assert_encoder_evidence(
+    pareto_df: pd.DataFrame,
+    *,
+    mode: str,
+    workload: ImageWorkload,
+    engine_step_backend: str,
+) -> None:
+    """Reject a nominally successful run that silently skipped its encoder."""
+    memory_column = "encoder_memory" if mode == "agg" else "(e)memory"
+    required_columns = ("encoder_latency", memory_column)
+    missing_columns = [column for column in required_columns if column not in pareto_df.columns]
+    if missing_columns:
+        raise RuntimeError(
+            "ENCODER_NOT_EXERCISED: "
+            f"{mode} {engine_step_backend} results for the canonical "
+            f"{workload.num_images}x{workload.image_height}x{workload.image_width} image workload "
+            f"are missing encoder evidence column(s): {', '.join(missing_columns)}."
+        )
+
+    invalid_columns = []
+    for column in required_columns:
+        values = pd.to_numeric(pareto_df[column], errors="coerce")
+        if values.isna().any() or (values <= 0).any():
+            invalid_columns.append(column)
+    if invalid_columns:
+        raise RuntimeError(
+            "ENCODER_NOT_EXERCISED: "
+            f"{mode} {engine_step_backend} results for the canonical "
+            f"{workload.num_images}x{workload.image_height}x{workload.image_width} image workload "
+            f"contain non-positive encoder evidence in: {', '.join(invalid_columns)}."
+        )
 
 
 # Tiered constraints by model size (parameter count)
@@ -438,7 +631,7 @@ _fork_ctx = multiprocessing.get_context("fork")
 
 def _process_combination_worker(
     combo: tuple[str, str, str, str],
-) -> list[tuple[str, str, str, str, str, str, str, str | None, str]]:
+) -> list[tuple[str, ...]]:
     """
     Run a single combination in a worker process. Uses the process-local SupportMatrix.
     Must be a module-level function for pickling by ProcessPoolExecutor.
@@ -454,6 +647,7 @@ def _process_combination_worker(
         include_commands=True,
     )
     architecture = _worker_matrix.get_architecture(model)
+    image_values = _image_workload_csv_values(model)
     return [
         (
             model,
@@ -466,9 +660,27 @@ def _process_combination_worker(
             error_dict[mode],
             command_dict[mode],
             provenance_dict.get(mode, ""),
+            *image_values,
         )
         for mode in status_dict
     ]
+
+
+def _terminate_process_pool(executor: ProcessPoolExecutor) -> None:
+    """Stop active workers before shutting down a pool after a fatal error.
+
+    Python 3.10-3.13 do not expose ``terminate_workers()``, so use the
+    executor-owned process table rather than terminating unrelated active
+    children. The normal completion path continues to use graceful shutdown.
+    """
+    processes = list((getattr(executor, "_processes", None) or {}).values())
+    for process in processes:
+        try:
+            if process.is_alive():
+                process.terminate()
+        except Exception:
+            logger.exception("Failed to terminate support-matrix worker process %s", process.pid)
+    executor.shutdown(wait=True, cancel_futures=True)
 
 
 class SupportMatrix:
@@ -491,7 +703,10 @@ class SupportMatrix:
 
     def get_architecture(self, huggingface_id: str) -> str:
         """Get the HuggingFace architecture for a model."""
-        return _get_model_info(huggingface_id)["architecture"]
+        try:
+            return _get_model_info(huggingface_id)["architecture"]
+        except Exception as exc:
+            raise ModelMetadataError(f"Failed to load model metadata for {huggingface_id!r}: {exc}") from exc
 
     def get_systems(self):
         return set(common.SupportedSystems)
@@ -536,6 +751,7 @@ class SupportMatrix:
         backend: str,
         version: str,
         constraints: TestConstraints,
+        image_workload: ImageWorkload | None = None,
         database_mode: str | None = None,
     ) -> Task:
         # ``database_mode`` is supplied per-pass by run_single_test's silicon-first /
@@ -559,6 +775,12 @@ class SupportMatrix:
             # (e.g. AIC_SM_TRANSFERS="off" or "xshape,xquant"). None -> all kinds on.
             "transfer_policy": os.environ.get("AIC_SM_TRANSFERS") or None,
         }
+        if image_workload is not None:
+            common_kwargs.update(
+                image_height=image_workload.image_height,
+                image_width=image_workload.image_width,
+                num_images_per_request=image_workload.num_images,
+            )
         if mode == "disagg":
             # v2 disagg forbids shared top-level worker fields; fan out to both roles.
             return Task(
@@ -591,6 +813,7 @@ class SupportMatrix:
         backend: str,
         version: str,
         constraints: TestConstraints,
+        image_workload: ImageWorkload | None = None,
         database_mode: str | None = None,
     ) -> pd.DataFrame | None:
         task = SupportMatrix._create_task(
@@ -600,6 +823,7 @@ class SupportMatrix:
             backend=backend,
             version=version,
             constraints=constraints,
+            image_workload=image_workload,
             database_mode=database_mode,
         )
         pareto_df = task.run()
@@ -642,7 +866,12 @@ class SupportMatrix:
             unsupported_modes = set(modes_to_test) - {"agg", "disagg"}
             if unsupported_modes:
                 raise ValueError(f"Unsupported support-matrix mode(s): {sorted(unsupported_modes)}")
-        constraints = _get_test_constraints(model)
+        try:
+            constraints = _get_test_constraints(model)
+        except Exception as exc:
+            raise ModelMetadataError(f"Failed to load model sizing metadata for {model!r}: {exc}") from exc
+        encoder_coverage = _get_encoder_coverage(model)
+        image_workload = encoder_coverage.workload
         statuses: dict[str, str] = {}
         error_messages = {}
         provenance: dict[str, str] = dict.fromkeys(modes_to_test, "")
@@ -656,9 +885,30 @@ class SupportMatrix:
                 database_mode="SILICON",
                 transfer_policy=transfer_policy,
                 constraints=constraints,
+                image_workload=image_workload,
             )
             for mode in modes_to_test
         }
+
+        if encoder_coverage.checkpoint_declares_encoder and not encoder_coverage.aic_encoder_implemented:
+            reason = _encoder_unsupported_error(model, encoder_coverage)
+            statuses = dict.fromkeys(modes_to_test, STATUS_FAIL)
+            error_messages = dict.fromkeys(modes_to_test, reason)
+            commands = {
+                mode: _encoder_preflight_row_command(
+                    model=model,
+                    system=system,
+                    backend=backend,
+                    version=version,
+                    mode=mode,
+                    expect_status=STATUS_FAIL,
+                    expect_error_prefix=ENCODER_UNSUPPORTED_PREFIX,
+                )
+                for mode in modes_to_test
+            }
+            if include_commands:
+                return statuses, error_messages, commands, provenance
+            return statuses, error_messages
 
         if system_spec is None:
             database = perf_database.get_database(system, backend, version)
@@ -683,6 +933,31 @@ class SupportMatrix:
                     return statuses, error_messages, commands, provenance
                 return statuses, error_messages
 
+        if image_workload is not None and _encoder_perf_data_available(system, backend, version) is False:
+            # The encoder is implemented, but this database has no encoder_attention
+            # table, so the image-bearing run can never be answered here. Classify
+            # deterministically instead of letting the sweep fail with a raw traceback,
+            # which the compare gate would treat as a PASS -> FAIL regression and
+            # Phase 2 would retry as if it were transient.
+            reason = _encoder_data_unavailable_error(model, system, backend, version, image_workload)
+            statuses = dict.fromkeys(modes_to_test, STATUS_FRAMEWORK_INCOMPATIBLE)
+            error_messages = dict.fromkeys(modes_to_test, reason)
+            commands = {
+                mode: _encoder_preflight_row_command(
+                    model=model,
+                    system=system,
+                    backend=backend,
+                    version=version,
+                    mode=mode,
+                    expect_status=STATUS_FRAMEWORK_INCOMPATIBLE,
+                    expect_error_prefix=ENCODER_DATA_UNAVAILABLE_PREFIX,
+                )
+                for mode in modes_to_test
+            }
+            if include_commands:
+                return statuses, error_messages, commands, provenance
+            return statuses, error_messages
+
         # By default the matrix runs SILICON first (including declared shared-layer
         # collected rows) and re-runs only structured data gaps (plus explicitly known
         # framework/data gaps) in HYBRID. A successful rescue is recorded as
@@ -704,12 +979,19 @@ class SupportMatrix:
                         backend=backend,
                         version=version,
                         constraints=constraints,
+                        image_workload=image_workload,
                         database_mode=db_mode,
                     )
                 # pareto_frontier_df is non-empty iff pareto_df is, so we only check pareto_df.
                 if pareto_df is None or pareto_df.empty:
                     raise RuntimeError("Configuration returned no results, failed to catch traceback")
-
+                if image_workload is not None:
+                    _assert_encoder_evidence(
+                        pareto_df,
+                        mode=mode,
+                        workload=image_workload,
+                        engine_step_backend="rust",
+                    )
                 tier = worst_provenance(prov_tags)
                 if db_mode == "SILICON" and tier != "silicon":
                     raise RuntimeError(
@@ -763,6 +1045,7 @@ class SupportMatrix:
                         database_mode="HYBRID",
                         transfer_policy=transfer_policy,
                         constraints=constraints,
+                        image_workload=image_workload,
                     )
 
             statuses[mode] = status
@@ -779,15 +1062,17 @@ class SupportMatrix:
         *,
         max_workers: int,
         pbar: tqdm,
-    ) -> tuple[list[tuple[str, str, str, str, str, str, str, str | None, str]], set[tuple[str, str, str, str]]]:
-        group_results: list[tuple[str, str, str, str, str, str, str, str | None, str]] = []
+    ) -> tuple[list[tuple[str, ...]], set[tuple[str, str, str, str]]]:
+        group_results: list[tuple[str, ...]] = []
         retry_combos: set[tuple[str, str, str, str]] = set()
         processed_futures = set()
 
-        with ProcessPoolExecutor(
+        executor = ProcessPoolExecutor(
             max_workers=min(max_workers, len(combinations)),
             mp_context=_fork_ctx,
-        ) as executor:
+        )
+        pool_terminated = False
+        try:
             futures = {executor.submit(_process_combination_worker, combo): combo for combo in combinations}
             for future in as_completed(futures):
                 combo = futures[future]
@@ -796,6 +1081,23 @@ class SupportMatrix:
                     group_results.extend(future.result())
                     processed_futures.add(future)
                     pbar.update(1)
+                except ModelMetadataError:
+                    for remaining in futures:
+                        if remaining is not future:
+                            remaining.cancel()
+                    logger.exception(
+                        "Fatal model metadata failure for %s/%s/%s/%s; aborting matrix generation",
+                        model,
+                        system,
+                        backend,
+                        version,
+                    )
+                    pool_terminated = True
+                    try:
+                        _terminate_process_pool(executor)
+                    except Exception:
+                        logger.exception("Failed to cleanly terminate the support-matrix process pool")
+                    raise
                 except BrokenExecutor:
                     logger.warning(
                         "Process pool broken while running %s/%s/%s/%s. "
@@ -823,6 +1125,9 @@ class SupportMatrix:
                     retry_combos.add(combo)
                     processed_futures.add(future)
                     pbar.update(1)
+        finally:
+            if not pool_terminated:
+                executor.shutdown(wait=True)
 
         return group_results, retry_combos
 
@@ -832,7 +1137,7 @@ class SupportMatrix:
         *,
         combinations: list[tuple[str, str, str, str]] | None = None,
         modes_to_test: tuple[str, ...] | list[str] | None = None,
-    ) -> list[tuple[str, str, str, str, str, str, str, str | None, str]]:
+    ) -> list[tuple[str, ...]]:
         """
         Test whether each combination is supported by AIC.
         Tests both agg and disagg modes for each combination and captures error messages.
@@ -880,9 +1185,20 @@ class SupportMatrix:
         combinations = (
             self.generate_combinations() if combinations is None else sorted(combinations, key=_combination_sort_key)
         )
+        # Validate deterministic model metadata in the parent before workers
+        # start. A missing/malformed checkpoint config invalidates every row for
+        # that model and must abort generation instead of becoming a retryable
+        # per-row failure.
+        for model in sorted({combo[0] for combo in combinations}):
+            self.get_architecture(model)
+            try:
+                _get_test_constraints(model)
+            except Exception as exc:
+                raise ModelMetadataError(f"Failed to load model sizing metadata for {model!r}: {exc}") from exc
+            _get_encoder_coverage(model)
         print(f"Total combinations to test: {len(combinations)}")
         print(f"Modes: {', '.join(modes_to_test)}")
-        results: list[tuple[str, str, str, str, str, str, str, str | None, str]] = []
+        results: list[tuple[str, ...]] = []
         retry_combos: set[tuple[str, str, str, str]] = set()
 
         global _worker_matrix, _worker_modes_to_test
@@ -908,8 +1224,10 @@ class SupportMatrix:
                     perf_database.unload_database(system, backend, version)
 
         # Also collect combos whose Phase 1 results had any failure
-        for model, _arch, system, backend, version, _mode, status, _err, _command, _source in results:
-            if status == STATUS_FAIL:
+        for model, _arch, system, backend, version, _mode, status, err, _command, _source, *_image in results:
+            # Encoder-unsupported is a deterministic checkpoint/AIC contract,
+            # not a transient worker failure, so a sequential retry cannot help.
+            if status == STATUS_FAIL and not str(err or "").startswith(ENCODER_UNSUPPORTED_PREFIX):
                 retry_combos.add((model, system, backend, version))
 
         # -- Phase 2: sequential single-process retry of all failures --
@@ -936,6 +1254,7 @@ class SupportMatrix:
                                     include_commands=True,
                                 )
                                 architecture = self.get_architecture(model)
+                                image_values = _image_workload_csv_values(model)
                                 for mode in status_dict:
                                     results.append(
                                         (
@@ -949,8 +1268,11 @@ class SupportMatrix:
                                             error_dict[mode],
                                             command_dict[mode],
                                             provenance_dict.get(mode, ""),
+                                            *image_values,
                                         )
                                     )
+                            except ModelMetadataError:
+                                raise
                             except Exception:
                                 logger.exception(
                                     "Sequential retry also failed for %s/%s/%s/%s",
@@ -960,12 +1282,15 @@ class SupportMatrix:
                                     version,
                                 )
                                 architecture = self.get_architecture(model)
+                                image_workload = _get_encoder_coverage(model).workload
+                                image_values = _image_workload_csv_values(model)
                                 for mode in modes_to_test:
                                     command = _support_matrix_row_command(
                                         model=model,
                                         system=system,
                                         backend=backend,
                                         version=version,
+                                        image_workload=image_workload,
                                     )
                                     results.append(
                                         (
@@ -979,6 +1304,7 @@ class SupportMatrix:
                                             traceback.format_exc().replace("\n", "\\n"),
                                             command,
                                             "",
+                                            *image_values,
                                         )
                                     )
                             finally:
@@ -994,7 +1320,7 @@ class SupportMatrix:
 
         return results
 
-    def _print_results_summary(self, results: list[tuple[str, str, str, str, str, str, str, str | None, str]]) -> None:
+    def _print_results_summary(self, results: list[tuple[str, ...]]) -> None:
         """Print summary of test results."""
         total_tests = len(results)
         silicon_passed = sum(1 for r in results if r[6] == STATUS_PASS)
@@ -1024,7 +1350,19 @@ class SupportMatrix:
         framework_incompatible_configs = []
 
         source_by_config: dict[tuple, str] = {}
-        for huggingface_id, architecture, system, backend, version, mode, status, _err, _command, source in results:
+        for (
+            huggingface_id,
+            architecture,
+            system,
+            backend,
+            version,
+            mode,
+            status,
+            _err,
+            _command,
+            source,
+            *_image,
+        ) in results:
             config = (huggingface_id, architecture, system, backend, version, mode)
             if status == STATUS_PASS:
                 silicon_passed_configs.append(config)
@@ -1078,15 +1416,33 @@ class SupportMatrix:
 
         Args:
             results: List of tuples
-                (huggingface_id, architecture, system, backend, version, mode, status, err_msg, command)
+                (huggingface_id, architecture, system, backend, version, mode,
+                status, err_msg, command, source, image_height, image_width, num_images)
             output_file: Path to the output directory, or a legacy output CSV file
         """
         output_path = Path(output_file)
 
-        def _row_values(row: tuple[str, ...]) -> tuple[str, str, str, str, str, str, str, str, str, str]:
+        def _row_values(row: tuple[str, ...]) -> tuple[str, ...]:
             source = ""
-            legacy_row = len(row) in {8, 9}
-            if len(row) == 10:
+            image_height = image_width = num_images = ""
+            legacy_source_row = len(row) in {8, 9}
+            if len(row) == 13:
+                (
+                    huggingface_id,
+                    architecture,
+                    system,
+                    backend,
+                    version,
+                    mode,
+                    status,
+                    err_msg,
+                    command,
+                    source,
+                    image_height,
+                    image_width,
+                    num_images,
+                ) = row
+            elif len(row) == 10:
                 huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source = row
             elif len(row) == 9:
                 huggingface_id, architecture, system, backend, version, mode, status, err_msg, command = row
@@ -1098,11 +1454,26 @@ class SupportMatrix:
                     backend=backend,
                     version=version,
                     constraints=_DEFAULT_TIER,
+                    image_workload=None,
                 )
             else:
                 raise ValueError(f"Invalid support-matrix result row length: {len(row)}")
 
-            if legacy_row:
+            if len(row) != 13:
+                try:
+                    encoder_coverage = _get_encoder_coverage(huggingface_id)
+                except Exception:
+                    # Preserve generic legacy-row upgrades whose model config is
+                    # not locally available. Known multimodal roster entries are
+                    # resolvable and must never be upgraded without evidence.
+                    encoder_coverage = None
+                if encoder_coverage is not None and encoder_coverage.checkpoint_declares_encoder:
+                    raise ValueError(
+                        "Legacy multimodal rows cannot be upgraded without explicit "
+                        "ImageHeight, ImageWidth, and NumImages evidence; provide a 13-column row."
+                    )
+
+            if legacy_source_row:
                 if status == STATUS_PASS:
                     # Legacy 8/9-column matrices predate Source. PASS meant a
                     # successful SILICON run, so preserve that meaning when
@@ -1111,7 +1482,7 @@ class SupportMatrix:
                 elif status == STATUS_HYBRID_PASS:
                     raise ValueError(
                         "Legacy HYBRID_PASS rows cannot be upgraded without an explicit empirical Source; "
-                        "provide a 10-column row."
+                        "provide a 10- or 13-column row."
                     )
                 else:
                     source = ""
@@ -1133,6 +1504,9 @@ class SupportMatrix:
                 err_msg or "",
                 command,
                 source or "",
+                image_height,
+                image_width,
+                num_images,
             )
 
         if output_path.suffix == ".csv":
@@ -1140,14 +1514,11 @@ class SupportMatrix:
                 writer = csv.writer(f, lineterminator="\n")
                 writer.writerow(SUPPORT_MATRIX_HEADER)
                 for row in results:
-                    huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source = (
-                        _row_values(row)
-                    )
+                    values = _row_values(row)
+                    status = values[6]
                     if status not in VALID_STATUSES:
                         raise ValueError(f"Invalid support-matrix status: {status}")
-                    writer.writerow(
-                        [huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source]
-                    )
+                    writer.writerow(values)
             print(f"\nResults saved to: {output_file}")
             return
 
@@ -1159,7 +1530,7 @@ class SupportMatrix:
             (_row_values(row) for row in results),
             key=lambda x: (common.get_support_matrix_system_sort_key(x[2]), x[0], x[1], x[3], x[4], x[5]),
         )
-        # _row_values rows are now 10-wide (… command, source)
+        # _row_values rows are now 13-wide (… command, source, image workload).
         grouped_results = {
             system: list(system_results) for system, system_results in groupby(sorted_results, key=lambda x: x[2])
         }
@@ -1182,6 +1553,9 @@ class SupportMatrix:
                     err_msg,
                     command,
                     source,
+                    image_height,
+                    image_width,
+                    num_images,
                 ) in system_results:
                     if status not in VALID_STATUSES:
                         raise ValueError(f"Invalid support-matrix status: {status}")
@@ -1197,6 +1571,9 @@ class SupportMatrix:
                             err_msg,
                             command,
                             source,
+                            image_height,
+                            image_width,
+                            num_images,
                         ]
                     )
 

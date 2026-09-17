@@ -4,8 +4,10 @@
 """Unit tests for the ``PerfDatabase`` coverage-probe API (PR 2's enumerator contract).
 
 ``moe_a2a_coverage``: ``comm_backend -> {(ep_size, node_num)}`` where BOTH the
-dispatch AND combine phases carry a non-empty token curve for the shape (any
-comm_dtype, any sms; the prepare phase is neither required nor sufficient).
+dispatch AND combine phases carry usable data for the shape. DeepEP-LL follows
+the runtime dtype chain and requires a viable OLS or system-t0 one-shot curve;
+legacy introspection for other backends accepts any dtype/SMS. The prepare
+phase is neither required nor sufficient.
 ``moe_expert_compute_coverage``: ``{moe_ep_size}`` with a non-empty token curve
 for the shape, unioned across kernel_source/distribution/num_slots at
 ``moe_tp_size == 1`` (the large-EP constraint).
@@ -21,14 +23,21 @@ The shipped-data section smokes the probes on real databases (h200_sxm sglang
 wideep-compute tables.
 """
 
+import json
 import os
 from pathlib import Path
 
 import pytest
 
+from aiconfigurator.sdk.moe_comm_resolver import a2a_covers_parallel
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.perf_database import LoadedOpData, PerfDataFilename, get_database
+from aiconfigurator_core.sdk.perf_database import (
+    LoadedOpData,
+    PerfDataFilename,
+    _moe_a2a_dtype_candidates,
+    get_database,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -97,6 +106,8 @@ def _key_paths(node):
 
 # Probed shape: hidden=7168, topk=8, experts=256 (DeepSeek-V3/R1).
 _SHAPE = (7168, 8, 256)
+_DTYPE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "deepep_ll_dtype_candidates.json"
+_CALIBRATION_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "deepep_ll_calibration_viability.json"
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +176,113 @@ def test_a2a_pair_covered_across_different_dtype_and_sms(a2a_cov_db):
     # dispatch is collected under ("default", sms=20), combine under
     # ("bfloat16", sms=0): the pair still counts (ANY dtype, ANY sms).
     assert (16, 2) in a2a_cov_db.moe_a2a_coverage(*_SHAPE)["deepep_ht"]
+
+
+def test_a2a_quantized_probe_requires_exact_serving_phase_dtypes(stub_perf_db):
+    stub_perf_db.system = "h100_sxm"
+    stub_perf_db._moe_a2a_data = _store(
+        [
+            (("trtllm_deepep_ht", "dispatch", "bfloat16", 8, 1, *_SHAPE, 0), {32: _leaf(0.1)}),
+            (("trtllm_deepep_ht", "combine", "bfloat16", 8, 1, *_SHAPE, 0), {32: _leaf(0.2)}),
+            (("trtllm_deepep_ll", "dispatch", "fp8", 8, 1, *_SHAPE, 0), {32: _leaf(0.3)}),
+            (("trtllm_deepep_ll", "combine", "fp8", 8, 1, *_SHAPE, 0), {32: _leaf(0.4)}),
+        ]
+    )
+
+    assert stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "context") == {
+        "trtllm_deepep_ht": {(8, 1)}
+    }
+    assert stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "generation") == {
+        "trtllm_deepep_ll": {(8, 1)}
+    }
+
+
+def test_deepep_ll_dtype_candidates_match_shared_runtime_fixture():
+    cases = json.loads(_DTYPE_FIXTURE.read_text())
+    for case in cases:
+        assert (
+            _moe_a2a_dtype_candidates(case["available"], case["requested"], case["phase"], case["backend"])
+            == case["expected"]
+        ), case["name"]
+
+
+def test_deepep_ll_coverage_matches_shared_runtime_viability_fixture(stub_perf_db):
+    stub_perf_db.system = "h100_sxm"
+    for case in json.loads(_CALIBRATION_FIXTURE.read_text()):
+        entries = []
+        for row in case["rows"]:
+            for phase in ("dispatch", "combine"):
+                dtype = row[f"{phase}_dtype"]
+                curve = {tokens: _leaf(latency) for tokens, latency in row["points"]}
+                entries.append((("deepep_ll", phase, dtype, row["ep"], row["nodes"], *_SHAPE, 0), curve))
+        stub_perf_db._moe_a2a_data = _store(entries)
+        pairs = stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "generation").get(
+            "deepep_ll", set()
+        )
+        viable = a2a_covers_parallel(
+            pairs,
+            framework="sglang",
+            comm_backend="deepep_ll",
+            moe_ep_size=case["target_ep"],
+            expected_nodes=case["target_nodes"],
+            gpus_per_node=8,
+        )
+        assert viable is case["expected"], case["name"]
+
+
+def test_deepep_ll_coverage_falls_back_per_shape_and_accepts_viable_one_shot(stub_perf_db):
+    stub_perf_db.system = "h100_sxm"
+    stub_perf_db._moe_a2a_data = _store(
+        [
+            # The typed rows are valid node-1 donors and also provide the
+            # system t0 pool, but do not have the requested EP16 topology.
+            (("deepep_ll", "dispatch", "fp8", 8, 1, *_SHAPE, 0), {32: _leaf(0.032), 64: _leaf(0.048)}),
+            (("deepep_ll", "combine", "bfloat16", 8, 1, *_SHAPE, 0), {32: _leaf(0.040), 64: _leaf(0.064)}),
+            # Dispatch uses a compatible legacy exact row with one point;
+            # it is viable because the typed donor supplied a system t0.
+            (("deepep_ll", "dispatch", "default", 16, 2, *_SHAPE, 0), {64: _leaf(0.080)}),
+            # Combine proves that a full-shape default exact row is still
+            # considered even though the phase contains a typed dtype.
+            (("deepep_ll", "combine", "default", 16, 2, *_SHAPE, 0), {32: _leaf(0.050), 64: _leaf(0.082)}),
+        ]
+    )
+
+    coverage = stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "generation")
+    assert coverage["deepep_ll"] >= {(8, 1), (16, 2)}
+
+
+def test_deepep_ll_coverage_rejects_one_shot_without_system_t0(stub_perf_db):
+    stub_perf_db.system = "h100_sxm"
+    stub_perf_db._moe_a2a_data = _store(
+        [
+            (("deepep_ll", "dispatch", "default", 16, 2, *_SHAPE, 0), {64: _leaf(0.080)}),
+            (("deepep_ll", "combine", "default", 16, 2, *_SHAPE, 0), {64: _leaf(0.090)}),
+        ]
+    )
+
+    assert stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "generation") == {}
+
+
+def test_deepep_ll_t0_pool_skips_invalid_typed_duplicate(stub_perf_db):
+    stub_perf_db.system = "h100_sxm"
+    stub_perf_db._moe_a2a_data = _store(
+        [
+            # The preferred typed copy is one-shot and cannot itself provide
+            # t0. The equivalent default copy has a viable OLS intercept.
+            (("deepep_ll", "dispatch", "fp8", 8, 1, *_SHAPE, 0), {64: _leaf(0.080)}),
+            (
+                ("deepep_ll", "dispatch", "default", 8, 1, *_SHAPE, 0),
+                {1: _leaf(0.017), 2: _leaf(0.018)},
+            ),
+            (
+                ("deepep_ll", "combine", "default", 8, 1, *_SHAPE, 0),
+                {1: _leaf(0.018), 2: _leaf(0.020)},
+            ),
+        ]
+    )
+
+    coverage = stub_perf_db.moe_a2a_coverage(*_SHAPE, common.MoEQuantMode.fp8_block, "generation")
+    assert coverage["deepep_ll"] == {(8, 1)}
 
 
 def test_a2a_prepare_neither_required_nor_sufficient(a2a_cov_db):
@@ -323,6 +441,25 @@ def test_ep_probe_does_not_vivify_defaultdict_store(stub_perf_db):
 
 
 # ---------------------------------------------------------------------------
+# legacy_moe_compute_coverage on a synthetic store
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_moe_compute_coverage_uses_regular_expert_kernel_table(stub_perf_db):
+    fp8_block = common.MoEQuantMode.fp8_block
+    stub_perf_db._moe_data = _store(
+        [
+            ((fp8_block, "balanced", 8, 256, 7168, 2048, 1, 64), {32: _leaf(0.1)}),
+            ((fp8_block, "power_law_1.2", 8, 256, 7168, 2048, 1, 128), {32: _leaf(0.2)}),
+            ((fp8_block, "balanced", 8, 256, 7168, 2048, 2, 256), {32: _leaf(0.3)}),
+        ]
+    )
+
+    assert stub_perf_db.legacy_moe_compute_coverage(7168, 2048, 8, 256, fp8_block) == {64, 128}
+    assert stub_perf_db.legacy_moe_compute_coverage(4096, 2048, 8, 256, fp8_block) == set()
+
+
+# ---------------------------------------------------------------------------
 # Shipped-data smoke: real databases, legacy-adapted tables
 # ---------------------------------------------------------------------------
 
@@ -332,7 +469,7 @@ def test_ep_probe_does_not_vivify_defaultdict_store(stub_perf_db):
     reason="shipped h200_sxm sglang 0.5.6.post2 DeepEP parquets not present",
 )
 def test_shipped_h200_sglang_a2a_coverage():
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None
 
     coverage = db.moe_a2a_coverage(*_SHAPE)
@@ -350,7 +487,7 @@ def test_shipped_h200_sglang_a2a_coverage():
     reason="shipped gb200 trtllm 1.3.0rc10 alltoall parquet not present",
 )
 def test_shipped_gb200_trtllm_a2a_coverage():
-    db = get_database("gb200", "trtllm", "1.3.0rc10")
+    db = get_database("gb200", "trtllm", "1.3.0rc10", allow_unlisted_version=True)
     assert db is not None
 
     coverage = db.moe_a2a_coverage(*_SHAPE)
@@ -368,7 +505,7 @@ def test_shipped_gb200_trtllm_a2a_coverage():
     reason="shipped h200_sxm sglang 0.5.6.post2 wideep context moe parquet not present",
 )
 def test_shipped_h200_sglang_ep_compute_coverage():
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None
 
     # deepep_moe fp8_block context data covers ep {2..256} at this shape.
@@ -381,7 +518,7 @@ def test_shipped_h200_sglang_ep_compute_coverage():
     reason="shipped gb200 trtllm 1.3.0rc10 wideep moe parquet not present",
 )
 def test_shipped_gb200_trtllm_ep_compute_coverage():
-    db = get_database("gb200", "trtllm", "1.3.0rc10")
+    db = get_database("gb200", "trtllm", "1.3.0rc10", allow_unlisted_version=True)
     assert db is not None
 
     # The legacy trtllm wideep table has no phase split; the adapter registers

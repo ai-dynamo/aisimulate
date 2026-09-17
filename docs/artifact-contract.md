@@ -21,6 +21,29 @@ Both artifacts use version `0.12.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
+For published versions, wheel platform tags, source installation, and internal
+nightly consumption, see the [installation guide](installation.md). The product
+version in a manifest does not establish publication on an index.
+
+## Packaged license files
+
+The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository
+legal files. The wheel build is rooted at `python/aisimulate/`, so exact copies
+are retained there and declared as wheel license files by `pyproject.toml`.
+Both are installed under the wheel's distribution metadata; the nested copies
+do not create a separate licensing boundary. `scripts/check_packaged_legal_files.py`
+fails CI if either packaging copy differs byte-for-byte from its root original,
+and the release-artifact validator checks the bytes installed in the wheel.
+
+Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
+building: the wheel becomes `0.12.0.devYYYYMMDD` (PEP 440) and the crate
+`0.12.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+dotted date is a numeric identifier so pre-release versions order
+numerically). The wheel form follows the ai-dynamo/dynamo nightly
+convention. The release script accepts only this suffix pair and still
+anchors both artifacts to the one product version; any other version shape
+fails the build.
+
 The bundled performance database makes the unified wheel about 164 MiB, above
 the default 100 MiB per-file upload limit on PyPI and TestPyPI. Before the first
 unified release, the release owner must obtain a project-specific upload-limit

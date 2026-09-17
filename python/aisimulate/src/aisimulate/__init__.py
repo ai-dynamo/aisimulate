@@ -14,12 +14,14 @@ except PackageNotFoundError:
     __version__ = "0+unknown"
 
 _LAZY_EXPORTS = {
+    "AFDCompanionPerformanceModel": ("aisimulate.runner", "AFDCompanionPerformanceModel"),
+    "AFDCompanionTiming": ("aisimulate.runner", "AFDCompanionTiming"),
+    "AICAFDCompanionPerformanceModel": ("aisimulate.runner", "AICAFDCompanionPerformanceModel"),
     "BackendDeploymentSpec": ("aisimulate.sweeper.replay", "BackendDeploymentSpec"),
     "CorePredictionConfig": ("aisimulate.config", "CorePredictionConfig"),
     "CoreRecommendationConfig": ("aisimulate.config", "CoreRecommendationConfig"),
     "EngineReplayRunner": ("aisimulate.runner", "EngineReplayRunner"),
     "EngineReplayRunnerFactory": ("aisimulate.runner", "EngineReplayRunnerFactory"),
-    "EngineRequestSpec": ("aisimulate.sweeper.replay", "EngineRequestSpec"),
     "InvalidRunnerError": ("aisimulate.runner", "InvalidRunnerError"),
     "ReplayOutputRequirements": ("aisimulate.sweeper.replay", "ReplayOutputRequirements"),
     "ReplayReport": ("aisimulate.sweeper.replay", "ReplayReport"),
@@ -48,12 +50,14 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "AFDCompanionPerformanceModel",
+    "AFDCompanionTiming",
+    "AICAFDCompanionPerformanceModel",
     "BackendDeploymentSpec",
     "CorePredictionConfig",
     "CoreRecommendationConfig",
     "EngineReplayRunner",
     "EngineReplayRunnerFactory",
-    "EngineRequestSpec",
     "InvalidRunnerError",
     "ReplayOutputRequirements",
     "ReplayReport",

@@ -8,6 +8,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Stable Agentic correlation data carried across replay-owned boundaries.
+///
+/// The static M1 graph already owns request, play, and conversation identity.
+/// Later replay phases may populate lane, tree, parent, and cache identities
+/// without changing the placement or engine request contracts again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgenticRuntimeIdentity {
+    pub request_id: String,
+    pub play_id: String,
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_id: Option<String>,
+}
+
 /// Where the prompt token identities carried by a lowered request came from.
 ///
 /// Length-only specifications still need deterministic token identities for
@@ -39,6 +59,8 @@ pub struct ReplayRequestContext {
     pub metadata: Value,
     #[serde(default)]
     pub prompt_token_source: ReplayPromptTokenSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agentic: Option<AgenticRuntimeIdentity>,
 }
 
 /// One materialized replay request before it enters a generalized engine.
@@ -56,6 +78,10 @@ pub struct DirectRequest {
     /// placement policies may choose whether to honor this preference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_dp_rank: Option<u32>,
+    /// Optional disaggregated-prefill override. The decode/aggregated preference above is the
+    /// fallback when this is absent, matching Dynamo's request-routing contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_prefill_dp_rank: Option<u32>,
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub priority: i32,

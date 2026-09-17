@@ -193,3 +193,17 @@ def split_config_sections(
             raise ValueError(f"adapter section {section!r} must be a mapping")
         adapters[section] = deepcopy(value)
     return core, adapters
+
+
+# Engine identity controls forwarded unchanged to the canonical Core constructor.
+ENGINE_MODEL_CONTROL_FIELDS = (
+    "enable_eplb",
+    "wideep_num_slots",
+    "moe_backend",
+    "attention_backend",
+    "gemm_quant_mode",
+    "moe_quant_mode",
+    "kvcache_quant_mode",
+    "fmha_quant_mode",
+    "comm_quant_mode",
+)

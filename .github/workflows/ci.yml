@@ -1,9 +1,21 @@
-name: CI
+# The Rust feature-mode, Python compatibility, engine-golden, platform-wheel,
+# collector-data, and prediction-regression jobs were adapted from NVIDIA
+# AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+name: Full CI
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed commit required for this run
+        required: true
+        type: string
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
+    # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
+    # validation may also be admitted explicitly through workflow_dispatch.
     branches:
       - main
       - "pull-request/*"
@@ -11,10 +23,229 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  verify-target:
+    name: Verify Exact Target
+    runs-on: ubuntu-latest
+    outputs:
+      comparison-base: ${{ steps.comparison-base.outputs.sha }}
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      RUN_SHA: ${{ github.sha }}
+    steps:
+      - name: Reject a mismatched requested commit
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -z "${EXPECTED_SHA}" ]]; then
+            echo "::error::manual Full CI requires a nonempty expected_sha"
+            exit 1
+          fi
+          if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
+            echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+      - name: Verify trusted PR copy matches originating head
+        id: pr-target
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+          if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+            exit 1
+          fi
+          pr_metadata="$(
+            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" \
+              --jq '[.head.sha, .base.sha] | @tsv'
+          )"
+          IFS=$'\t' read -r pr_head pr_base <<< "${pr_metadata}"
+          if [[ "${pr_head}" != "${RUN_SHA}" ]]; then
+            echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
+            exit 1
+          fi
+          if [[ ! "${pr_base}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PR comparison base must resolve to a full commit SHA"
+            exit 1
+          fi
+      - name: Resolve immutable comparison base
+        id: comparison-base
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          comparison_sha=""
+          if [[ "${GITHUB_EVENT_NAME}" == "push" &&
+                ( "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/heads/release/* ) &&
+                -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+            comparison_sha="${BEFORE_SHA}"
+          else
+            # PR/manual runs and newly created release branches compare with
+            # one snapshot of main, shared by the collector and prediction gates.
+            comparison_sha="$(gh api -X GET "repos/${REPOSITORY}/commits/main" --jq '.sha')"
+          fi
+          if [[ ! "${comparison_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::comparison base must resolve to a full commit SHA"
+            exit 1
+          fi
+          printf 'sha=%s\n' "${comparison_sha}" >> "${GITHUB_OUTPUT}"
+
+  select-full-ci:
+    name: Select Full CI Scope
+    needs: verify-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_all: ${{ steps.plan.outputs.run_all }}
+      platform_wheels: ${{ steps.plan.outputs.platform_wheels }}
+      collector_data: ${{ steps.plan.outputs.collector_data }}
+      prediction_regression: ${{ steps.plan.outputs.prediction_regression }}
+      cargo_deny: ${{ steps.plan.outputs.cargo_deny }}
+      rust: ${{ steps.plan.outputs.rust }}
+      rust_feature_modes: ${{ steps.plan.outputs.rust_feature_modes }}
+      public_api_rust: ${{ steps.plan.outputs.public_api_rust }}
+      application_wheel: ${{ steps.plan.outputs.application_wheel }}
+      application_tests: ${{ steps.plan.outputs.application_tests }}
+      python_compatibility: ${{ steps.plan.outputs.python_compatibility }}
+      engine_golden_regression: ${{ steps.plan.outputs.engine_golden_regression }}
+      release_artifact_contract: ${{ steps.plan.outputs.release_artifact_contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Resolve the trusted change set
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          paths="${RUNNER_TEMP}/full-ci-paths.b64"
+          force_all=false
+
+          case "${GITHUB_EVENT_NAME}:${GITHUB_REF}" in
+            workflow_dispatch:*|push:refs/heads/main|push:refs/heads/release/*)
+              force_all=true
+              : > "${paths}"
+              ;;
+            push:refs/heads/pull-request/*)
+              pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+              if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+                echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+                exit 1
+              fi
+              changed_files="$(
+                gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" \
+                  --jq '.changed_files'
+              )"
+              if (( changed_files > 3000 )); then
+                echo "::notice::PR has ${changed_files} changed files; running all components"
+                force_all=true
+                : > "${paths}"
+              else
+                gh api --paginate \
+                  "repos/${REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+                  --jq '.[] | (.filename, (.previous_filename // empty)) | @base64' \
+                  | LC_ALL=C sort -u > "${paths}"
+              fi
+              pr_head="$(
+                gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+              )"
+              if [[ "${pr_head}" != "${GITHUB_SHA}" ]]; then
+                echo "::error::PR head changed while resolving its changed-file set"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unsupported Full CI event/ref: ${GITHUB_EVENT_NAME}:${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          echo "force_all=${force_all}" >> "${GITHUB_OUTPUT}"
+          echo "paths=${paths}" >> "${GITHUB_OUTPUT}"
+      - name: Plan required Full CI components
+        id: plan
+        shell: bash
+        env:
+          FORCE_ALL: ${{ steps.scope.outputs.force_all }}
+          PATHS_FILE: ${{ steps.scope.outputs.paths }}
+        run: |
+          set -euo pipefail
+          args=(
+            --base64-paths-file "${PATHS_FILE}"
+            --github-output "${GITHUB_OUTPUT}"
+            --summary "${GITHUB_STEP_SUMMARY}"
+          )
+          if [[ "${FORCE_ALL}" == "true" ]]; then
+            args+=(--force-all)
+          fi
+          python scripts/select_full_ci.py "${args[@]}"
+
+  fast-ci:
+    name: Require Fast CI
+    needs: verify-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify the standalone workflow and every Fast CI job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/require_fast_ci.py
+
+  platform-wheels:
+    name: Platform Wheels
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.platform_wheels == 'true' }}
+    uses: ./.github/workflows/validate-platform-wheels.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  collector-data:
+    name: Collector Data
+    needs: [fast-ci, select-full-ci, verify-target]
+    if: ${{ needs.select-full-ci.outputs.collector_data == 'true' }}
+    uses: ./.github/workflows/collector-check.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
+
+  prediction-regression:
+    name: Prediction Regression
+    needs: [fast-ci, select-full-ci, verify-target]
+    if: ${{ needs.select-full-ci.outputs.prediction_regression == 'true' }}
+    uses: ./.github/workflows/prediction-regression-gate.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      old-ref: ${{ needs.verify-target.outputs.comparison-base }}
+
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.cargo_deny == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +266,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install cargo-deny 0.19.0
         env:
@@ -61,6 +294,8 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -72,24 +307,60 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
       - run: cargo test --workspace
+
+  rust-feature-modes:
+    name: Rust feature modes
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.rust_feature_modes == 'true' }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-feature-tests
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: "3.13"
+      - name: Prepare Python runtime and embedded Rust tests concurrently
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Separate Cargo directories avoid a build lock between maturin's
+          # release extension and the debug embedding test executables.
+          CARGO_TARGET_DIR="${RUNNER_TEMP}/python-extension-target" \
+            python -m pip install './python/aisimulate[dev]' &
+          package_pid=$!
+          export PYO3_PYTHON="${pythonLocation}/bin/python"
+          cargo test --workspace --features embed-python,replay-bench --no-run &
+          rust_pid=$!
+          result=0
+          wait "${package_pid}" || result=1
+          wait "${rust_pid}" || result=1
+          exit "${result}"
+      - name: Test with Python embedding enabled
+        run: |
+          export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
+          export PYO3_PYTHON="${pythonLocation}/bin/python"
+          cargo test --workspace --features embed-python,replay-bench
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.public_api_rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -101,21 +372,26 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -127,27 +403,44 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - run: python -m pip install 'maturin>=1.12,<2'
-      - run: python -m maturin build --release --out ../../dist
-        working-directory: python/aisimulate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: aisimulate-wheel-${{ matrix.arch }}
+          name: application-test-wheel-${{ matrix.arch }}
+          path: dist
+      - name: Verify exact staged wheel
+        run: python python/aisimulate/tools/verify_release_wheels.py dist
+      - name: Smoke-test exact staged wheel
+        run: |
+          python -m venv staged-wheel-smoke
+          staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
+          staged-wheel-smoke/bin/python -c \
+            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            assert aisimulate_core._build_smoke() > 0"
+      - name: Preserve wheel for trusted staging
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
           path: dist/*.whl
 
-  application-tests:
-    name: Application Tests (${{ matrix.arch }})
+  stage-application-wheel:
+    name: Stage Application Wheel (${{ matrix.arch }})
+    needs: [application-wheel, readiness]
+    # Manual PR validation builds and verifies wheels without acquiring release
+    # credentials. Only post-merge and release lifecycle pushes may stage them.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    environment: automated-release
     strategy:
       fail-fast: false
       matrix:
@@ -159,85 +452,416 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist
+      - name: Stage wheel in Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          for name in ARTIFACTORY_URL ARTIFACTORY_PYPI_REPO ARTIFACTORY_TOKEN; do
+            [ -n "${!name}" ] || {
+              echo "::error::environment secret ${name} is not configured"
+              exit 1
+            }
+          done
+          case "${ARTIFACTORY_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::ARTIFACTORY_URL must use HTTPS"
+              exit 1
+              ;;
+          esac
+          case "${ARTIFACTORY_PYPI_REPO}" in
+            ""|*/*|*..*)
+              echo "::error::invalid ARTIFACTORY_PYPI_REPO_NAME"
+              exit 1
+              ;;
+          esac
+
+          case "${GITHUB_REF}" in
+            refs/heads/main|refs/heads/release/*)
+              subpath="post-merge/${GITHUB_SHA}/${GITHUB_RUN_ID}"
+              ;;
+            *)
+              echo "::error::ref is not permitted to stage wheels: ${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || {
+            echo "::error::expected exactly one wheel, found ${#wheels[@]}"
+            exit 1
+          }
+          wheel="${wheels[0]}"
+          wheel_name="$(basename "${wheel}")"
+          sha="$(sha256sum "${wheel}" | cut -d' ' -f1)"
+          url="${ARTIFACTORY_URL%/}/${ARTIFACTORY_PYPI_REPO}/${subpath}/${wheel_name}"
+          headers="$(mktemp "${RUNNER_TEMP}/artifactory-head.XXXXXX")"
+          trap 'rm -f "${headers}"' EXIT
+
+          probe() {
+            curl -q --silent --show-error \
+              --head \
+              --output /dev/null \
+              --dump-header "${headers}" \
+              --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+              "${url}"
+          }
+
+          status="$(probe)"
+          case "${status}" in
+            200)
+              existing="$(
+                awk 'tolower($1) == "x-checksum-sha256:" {gsub("\\r", "", $2); print tolower($2)}' \
+                  "${headers}" | tail -n 1
+              )"
+              [ -n "${existing}" ] || {
+                echo "::error::existing wheel did not return an X-Checksum-Sha256 header"
+                exit 1
+              }
+              [ "${existing}" = "${sha}" ] || {
+                echo "::error::wheel already exists with a different checksum: ${wheel_name}"
+                exit 1
+              }
+              echo "already staged: ${wheel_name}"
+              ;;
+            404)
+              curl -q --fail --silent --show-error --retry 3 \
+                --output /dev/null \
+                -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+                -H "X-Checksum-Sha256: ${sha}" \
+                --upload-file "${wheel}" \
+                "${url}"
+              status="$(probe)"
+              [ "${status}" = 200 ] || {
+                echo "::error::wheel upload could not be read back (HTTP ${status})"
+                exit 1
+              }
+              uploaded="$(
+                awk 'tolower($1) == "x-checksum-sha256:" {gsub("\\r", "", $2); print tolower($2)}' \
+                  "${headers}" | tail -n 1
+              )"
+              [ "${uploaded}" = "${sha}" ] || {
+                echo "::error::uploaded wheel checksum does not match: ${wheel_name}"
+                exit 1
+              }
+              echo "staged: ${wheel_name}"
+              ;;
+            *)
+              echo "::error::Artifactory probe failed with HTTP ${status}"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "### Wheel staged to Artifactory"
+            echo "Path: \`${subpath}/${wheel_name}\`"
+            echo "SHA256: \`${sha}\`"
+            echo "Run attempt: \`${GITHUB_RUN_ATTEMPT}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  application-test-wheel:
+    name: Application Test Wheel (${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 10
+    container:
+      image: ${{ matrix.container_image }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: ./.github/actions/setup-manylinux-python-rust
+      - run: python -m pip install 'maturin>=1.12,<2'
+      - name: Build the application test wheel once
+        run: python scripts/build_manylinux_wheel.py --output-dir application-test-dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-test-wheel-${{ matrix.arch }}
+          path: application-test-dist/*.whl
+          if-no-files-found: error
+
+  application-tests:
+    name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard.suite }}, ${{ matrix.shard.group }})
+    needs: [fast-ci, select-full-ci, application-test-wheel]
+    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        shard:
+          - {suite: contracts, group: 1, groups: 1}
+          - {suite: unit, group: 1, groups: 4}
+          - {suite: unit, group: 2, groups: 4}
+          - {suite: unit, group: 3, groups: 4}
+          - {suite: unit, group: 4, groups: 4}
+          - {suite: integration, group: 1, groups: 1}
+          - {suite: cli-build, group: 1, groups: 4}
+          - {suite: cli-build, group: 2, groups: 4}
+          - {suite: cli-build, group: 3, groups: 4}
+          - {suite: cli-build, group: 4, groups: 4}
+          - {suite: support-matrix, group: 1, groups: 1}
+          - {suite: tools-build, group: 1, groups: 1}
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-test-wheel-${{ matrix.arch }}
+          path: application-test-dist
+      - name: Install the prebuilt application and test dependencies
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - run: python -m pip install maturin pytest pytest-asyncio
-      - run: python -m pip install './python/aisimulate[dev]'
-      - run: >-
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(application-test-dist/aisimulate-*.whl)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "::error::expected exactly one application test wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          python -m pip install uv
+          python -m uv pip install --system "${wheels[0]}[dev]"
+          echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
+      - name: Run repository and package contracts
+        if: matrix.shard.suite == 'contracts'
+        run: |
+          python -m pip install pip-licenses==5.5.5
+          python scripts/check_application_test_inventory.py --output application-test-inventory.json
+          python -m pytest -q \
+            python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
+            python/aisimulate/tests/cross_package
+          aiconfigurator version
+          python -m pytest -q -c pytest.ini tests -n 4
+      - name: Run unit tests
+        if: matrix.shard.suite == 'unit'
+        run: >-
           python -m pytest -q
-          python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
-          python/aisimulate/tests/cross_package/test_core_version_contract.py
-      - run: aiconfigurator version
-      - run: python -m pytest -q -c pytest.ini tests
-      - run: >-
+          tests/unit tests/golden
+          --splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}
+          --splitting-algorithm least_duration
+          -n 4
+          --timeout=180
+        working-directory: python/aisimulate
+      - name: Upload collected test assignments
+        if: always() && matrix.shard.suite == 'contracts'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-test-inventory-${{ matrix.arch }}
+          path: application-test-inventory.json
+          if-no-files-found: error
+      - name: Run recommendation E2E without parallel resource contention
+        if: matrix.shard.suite == 'cli-build' && matrix.shard.group == 1
+        run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+        working-directory: python/aisimulate
+      - name: Run migrated integration tests against the installed wheel
+        if: matrix.shard.suite == 'integration'
+        run: >-
+          python -m pytest -q -ra
+          tests/integration
+          -n 2
+          --timeout=600
+        working-directory: python/aisimulate
+      - name: Run remaining CLI build tests
+        if: matrix.shard.suite == 'cli-build'
+        run: >-
           python -m pytest -q
-          tests
-          -m 'unit or build'
-          --ignore=tests/unit/sdk/database/test_moe_dispatch.py
+          tests/e2e/cli
+          -m build
+          --ignore=tests/e2e/cli/test_cli_recommend.py
+          --splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}
+          --splitting-algorithm least_duration
+          -n 4
+          --timeout=180
+        working-directory: python/aisimulate
+      - name: Run support-matrix build tests
+        if: matrix.shard.suite == 'support-matrix'
+        run: >-
+          python -m pytest -q
+          tests/e2e/support_matrix
+          -m build
           -n auto
           --timeout=180
         working-directory: python/aisimulate
+      - name: Run tool build tests
+        if: matrix.shard.suite == 'tools-build'
+        run: >-
+          python -m pytest -q
+          tests/e2e/tools
+          -m build
+          -n auto
+          --timeout=600
+        working-directory: python/aisimulate
 
-  lint:
-    name: Lint (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+  python-compliance:
+    name: Python Dependency Licenses
+    # SPDX headers are covered by the spdx-headers checks in fast-ci; this
+    # job is only the dependency-license gate, which is architecture-
+    # independent. Gated on the application-wheel scope (and listed in that
+    # job's needs) so a disallowed license blocks wheel builds and staging.
+    needs: [fast-ci, select-full-ci]
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 15
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - run: python -m pip install ruff==0.14.1
-      - run: >-
-          ruff check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          tests
+      - name: Check Python dependency licenses
+        run: python scripts/check_python_licenses.py
+
+  python-compatibility:
+    name: Python ${{ matrix.python-version }} compatibility
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.python_compatibility == 'true' }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Verify interpreter and dependency compatibility
+        run: |
+          python -m pip check
+          python -c 'import sys, numpy; from packaging.version import Version; assert f"{sys.version_info.major}.{sys.version_info.minor}" == "${{ matrix.python-version }}"; assert Version("2.1") <= Version(numpy.__version__) < Version("3")'
+      - name: Test unified-package contracts
+        run: >-
+          python -m pytest -q
+          python/aisimulate/tests/cross_package
+
+  engine-golden-regression:
+    name: Engine Golden Regression
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.engine_golden_regression == 'true' }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 45
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: "3.13"
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Run engine-step golden regression suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
+          crates/core/parity_tests/perfmodel/test_engine_step_parity.py
+      - name: Run compiled-engine golden regression suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
+          crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+      - name: Check native prediction numerical sentinels
+        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: native-prediction-numerics
+          path: numerical-sentinels.json
+          if-no-files-found: error
+
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.release_artifact_contract == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      image: ${{ matrix.container_image }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+          persist-credentials: false
+      - uses: ./.github/actions/setup-manylinux-python-rust
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist
@@ -257,3 +881,99 @@ jobs:
           assert installed.isdisjoint(forbidden), installed & forbidden"
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
+
+  readiness:
+    name: Full CI Success
+    if: ${{ always() }}
+    needs:
+      - verify-target
+      - select-full-ci
+      - fast-ci
+      - platform-wheels
+      - collector-data
+      - prediction-regression
+      - cargo-deny
+      - rust
+      - rust-feature-modes
+      - public-api-rust
+      - application-wheel
+      - application-test-wheel
+      - application-tests
+      - python-compliance
+      - python-compatibility
+      - engine-golden-regression
+      - release-artifact-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report and require every Full CI job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PLAN_JSON: ${{ toJSON(needs.select-full-ci.outputs) }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          plan = json.loads(os.environ["PLAN_JSON"])
+          component_outputs = {
+              "platform-wheels": "platform_wheels",
+              "collector-data": "collector_data",
+              "prediction-regression": "prediction_regression",
+              "cargo-deny": "cargo_deny",
+              "rust": "rust",
+              "rust-feature-modes": "rust_feature_modes",
+              "public-api-rust": "public_api_rust",
+              "application-wheel": "application_wheel",
+              "python-compliance": "application_wheel",
+              "application-test-wheel": "application_tests",
+              "application-tests": "application_tests",
+              "python-compatibility": "python_compatibility",
+              "engine-golden-regression": "engine_golden_regression",
+              "release-artifact-contract": "release_artifact_contract",
+          }
+          expected = {
+              "verify-target": "success",
+              "select-full-ci": "success",
+              "fast-ci": "success",
+          }
+          invalid_outputs = []
+          for job, output in component_outputs.items():
+              selected = plan.get(output)
+              if selected not in {"true", "false"}:
+                  invalid_outputs.append(f"{output}={selected!r}")
+                  continue
+              expected[job] = "success" if selected == "true" else "skipped"
+          failures = []
+          summary = [
+              f"### Full CI evidence for `{os.environ.get('GITHUB_SHA', 'local')}`",
+              "",
+              "| Required job | Result |",
+              "| --- | --- |",
+          ]
+          for name, payload in sorted(needs.items()):
+              result = payload["result"]
+              wanted = expected.get(name)
+              if wanted is None:
+                  failures.append(f"{name}=unexpected dependency")
+                  continue
+              print(f"{name}: {result} (expected {wanted})")
+              outcome = "PASS" if result == wanted else "FAIL"
+              summary.append(f"| {name} | {outcome} (`{result}`, expected `{wanted}`) |")
+              if result != wanted:
+                  failures.append(f"{name}={result}, expected {wanted}")
+          if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(summary) + "\n")
+          if invalid_outputs:
+              failures.append("invalid selection outputs: " + ", ".join(invalid_outputs))
+          missing_dependencies = sorted(set(expected) - set(needs))
+          if missing_dependencies:
+              failures.append(
+                  "missing dependencies: " + ", ".join(missing_dependencies)
+              )
+          if failures:
+              print("::error::Full CI did not pass: " + "; ".join(failures))
+              raise SystemExit(1)
+          PY

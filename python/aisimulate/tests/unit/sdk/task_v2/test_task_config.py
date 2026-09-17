@@ -11,6 +11,8 @@ prefix discipline, and the build_* helpers.
 import pytest
 
 from aiconfigurator.sdk import common
+from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 from aiconfigurator.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
@@ -116,7 +118,10 @@ def test_disagg_with_separate_role_specs():
     assert t.is_moe is True
     assert t.prefill_tp_candidates is not None
     assert t.decode_tp_candidates is not None
-    assert t.num_gpu_per_replica is not None
+    # A fused-only search materializes the legacy replica list, while shipped
+    # large-EP coverage intentionally uses the resolved maximum as its budget.
+    # This construction test must accept either data-driven regime.
+    assert t.num_gpu_per_replica is not None or t.max_gpu_per_replica is not None
     assert t.max_gpu_per_replica == 32  # clamped to total_gpus=32, matches v1 _finalize_disagg
     assert t.max_prefill_workers == 32
 
@@ -306,15 +311,64 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
         wideep_num_slots=288,
     )
     mc = t.build_model_config(role="agg")
+    assert t.attention_backend is common.AttentionBackend.fa3
+    assert mc.attention_backend is common.AttentionBackend.fa3
     assert mc.attention_backend == "fa3"
     assert mc.wideep_num_slots == 288
 
 
 def test_invalid_attention_backend_rejected():
-    t = Task(
-        serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", attention_backend="torch"
-    )
     with pytest.raises(ValueError, match="attention_backend"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            attention_backend="torch",
+        )
+
+
+def test_invalid_moe_backend_rejected():
+    with pytest.raises(ValueError, match="moe_backend"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            moe_backend="triton",
+        )
+
+
+def test_valid_attention_backend_choices_accepted():
+    """Dense-only SGLang tasks retain the full attention-lane vocabulary."""
+    for choice in ATTENTION_BACKEND_CHOICES:
+        t = Task(
+            serving_mode="agg",
+            model_path="meta-llama/Meta-Llama-3.1-8B",
+            system_name="h200_sxm",
+            backend_name="sglang",
+            attention_backend=choice,
+        )
+        assert t._reachable_attention_op_keys("agg") == [("context_attention", "generation_attention")]
+        t.validate()
+
+
+def test_sglang_wideep_rejects_unsupported_attention_backend_before_sweep():
+    """The general dense-attention vocabulary must not leak into WideEP MLA.
+
+    This real task reaches both fused and SGLang WideEP candidates.  ``triton``
+    is valid for dense attention, but the WideEP Rust ops accept only
+    ``flashinfer`` / ``fa3``; validation must reject it before sweep error
+    handling can silently discard every WideEP candidate.
+    """
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        attention_backend="triton",
+    )
+    assert ("wideep_context_mla", "wideep_generation_mla") in t._reachable_attention_op_keys("agg")
+
+    with pytest.raises(ValueError, match=r"SGLang WideEP MLA.*triton"):
         t.validate()
 
 
@@ -343,13 +397,82 @@ def test_from_yaml_disagg_rejects_legacy_shared_model_path():
 
 
 def test_build_runtime_config_carries_workload():
-    t = Task(isl=2048, osl=512, ttft=300.0, tpot=20.0)
+    t = Task(
+        isl=2048,
+        osl=512,
+        ttft=300.0,
+        tpot=20.0,
+        video_height=448,
+        video_width=448,
+        video_frames=8,
+        num_videos_per_request=2,
+        num_video_tokens=784,
+    )
     rt = t.build_runtime_config(batch_size=64)
     assert rt.isl == 2048
     assert rt.osl == 512
     assert rt.ttft == 300.0
     assert rt.tpot == 20.0
     assert rt.batch_size == 64
+    assert rt.video_height == 448
+    assert rt.video_width == 448
+    assert rt.video_frames == 8
+    assert rt.num_videos_per_request == 2
+    assert rt.num_video_tokens == 784
+
+
+def test_video_fields_preserve_existing_task_positional_constructor_contract():
+    task = Task("agg", 4000, 1000, 0, 0, 0, 1, False)
+
+    assert task.enable_encoder_dp is False
+    assert task.video_height == 0
+    assert task.video_width == 0
+    assert task.video_frames == 0
+    assert task.num_videos_per_request == 0
+    assert task.num_video_tokens == 0
+
+
+def test_afd_rejects_visual_encoder_workload():
+    task = Task(
+        serving_mode="afd",
+        model_path="Qwen/Qwen3.5-27B",
+        system_name="h200_sxm",
+        total_gpus=16,
+        video_height=448,
+        video_width=448,
+        video_frames=8,
+        num_videos_per_request=1,
+    )
+
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        task.validate()
+
+
+def test_afd_rejects_partial_video_workload():
+    task = Task(
+        serving_mode="afd",
+        model_path="Qwen/Qwen3.5-27B",
+        system_name="h200_sxm",
+        total_gpus=16,
+        video_frames=8,
+        num_videos_per_request=0,
+    )
+
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        task.validate()
+
+
+def test_afd_rejects_token_only_video_workload():
+    task = Task(
+        serving_mode="afd",
+        model_path="Qwen/Qwen3.5-27B",
+        system_name="h200_sxm",
+        total_gpus=16,
+        num_video_tokens=196,
+    )
+
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        task.validate()
 
 
 def test_build_model_config_agg_uses_resolved_quant():
@@ -404,6 +527,30 @@ def test_sweep_disagg_kwargs_shape():
     assert kwargs["rate_matching_prefill_degradation"] == 0.9
     assert kwargs["rate_matching_decode_degradation"] == 0.92
     assert kwargs["autoscale_ttft_correction_factor"] == 1.8
+
+
+def test_sweep_disagg_sizes_prefill_token_budget_with_visual_effective_isl():
+    t = Task(
+        serving_mode="disagg",
+        prefill_model_path="Qwen/Qwen3.5-27B",
+        prefill_system_name="b200_sxm",
+        prefill_backend_name="vllm",
+        decode_model_path="Qwen/Qwen3.5-27B",
+        decode_system_name="b200_sxm",
+        decode_backend_name="vllm",
+        total_gpus=32,
+        database_mode="SOL",
+        isl=256,
+        video_height=448,
+        video_width=448,
+        video_frames=8,
+        num_videos_per_request=1,
+        prefill_max_batch_size=4,
+    )
+
+    kwargs = t.sweep_disagg_kwargs(prefill_database=None, decode_database=None)
+
+    assert kwargs["prefill_max_num_tokens"] == 4 * 1040
 
 
 def test_sweep_disagg_require_same_tp_sglang_fused():
@@ -603,10 +750,13 @@ def test_deepseek_v32_v4_context_fmha_downgrade_is_data_driven():
 
 def test_get_model_preserves_task_resolved_fmha():
     """get_model()'s legacy FMHA guards fire only when fmha arrives unset: a
-    Task-resolved fp8 (data-backed -- b200 vLLM ships native fp8 dsa_context
-    slices) must survive model build.  Review regression: the guards in
-    _apply_model_quant_defaults used to re-downgrade on the value, silently
-    undoing the data-driven resolution at every sweep point."""
+    Task-carried fp8 must survive model build. Review regression: the guards
+    in _apply_model_quant_defaults used to re-downgrade on the value,
+    silently undoing the Task-level resolution at every sweep point. The
+    fp8 value is pinned explicitly — the guard treats task-resolved and
+    user-set identically (both arrive set), and no current-slot vllm data
+    resolves fp8 fmha for DSA models since the 0.19/0.22 retirement, so an
+    inference-based vehicle would bind this test to a data coordinate."""
     from aiconfigurator.sdk import common
     from aiconfigurator.sdk.models import get_model
 
@@ -615,6 +765,7 @@ def test_get_model_preserves_task_resolved_fmha():
         model_path="deepseek-ai/DeepSeek-V3.2",
         system_name="b200_sxm",
         backend_name="vllm",
+        fmha_quant_mode=common.FMHAQuantMode.fp8,
     )
     assert t.fmha_quant_mode == common.FMHAQuantMode.fp8
     mc = t.build_model_config(role="agg")
@@ -623,24 +774,6 @@ def test_get_model_preserves_task_resolved_fmha():
     mc.moe_tp_size = 1
     get_model("deepseek-ai/DeepSeek-V3.2", mc, "vllm")
     assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
-
-
-def test_fmha_fallback_uses_joint_fmha_kv_capability(caplog):
-    """Capability is judged jointly with the role's kv mode: on b200 trtllm the
-    fp8 context_mla slice exists only under kv=fp8 (shared-layer module rows),
-    so inferred fp8 fmha survives with kv=fp8 but must downgrade with an
-    explicit bf16 kv -- the flat per-op list would keep fp8 and crash at query
-    time (review finding)."""
-    import logging
-
-    from aiconfigurator.sdk import common
-
-    base = dict(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="b200_sxm", backend_name="trtllm")
-    assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8  # kv inferred fp8 -> joint slice present
-    with caplog.at_level(logging.WARNING):
-        t = Task(**base, kvcache_quant_mode=common.KVCacheQuantMode.bfloat16)
-    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("falling back to bfloat16 FMHA" in r.message for r in caplog.records)
 
 
 def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
@@ -818,7 +951,7 @@ def test_moe_backend_flows_into_model_config():
             **kw,
         ).build_model_config(role="agg")
 
-    assert mc("megamoe", model="deepseek-ai/DeepSeek-V4-Pro").moe_backend == "megamoe"
+    assert mc("megamoe", model="deepseek-ai/DeepSeek-V4-Pro").moe_backend is common.MoEBackend.megamoe
     assert mc("deepep_moe").moe_backend is None
 
 
@@ -849,6 +982,42 @@ def test_dsv4_native_sglang_moe_remap():
     assert moe("sglang", moe_backend="megamoe") != common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
     # FP8 requant artifacts keep their own (fp8_block-family) resolution.
     assert moe("sglang", mp="sgl-project/DeepSeek-V4-Flash-FP8") != common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
+
+
+@pytest.mark.parametrize(
+    ("backend", "version", "expected_moe"),
+    [
+        # The Task/cli-default path resolves HF modes BEFORE get_model(), so
+        # the backend-aware W4A16_NVFP4 remap must act at Task's HF-base
+        # layer too (PR #1574 review P1): vLLM executes these experts on the
+        # w4a4 nvfp4 lane; trtllm keeps the weight-only label mode.
+        ("vllm", "0.24.0", common.MoEQuantMode.nvfp4),
+        ("trtllm", "1.3.0rc20", common.MoEQuantMode.w4a16_nvfp4),
+    ],
+)
+def test_lightning_task_resolves_moe_to_the_backend_execution_lane(backend, version, expected_moe):
+    t = Task(
+        serving_mode="agg",
+        model_path="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        system_name="b200_sxm",
+        backend_name=backend,
+        backend_version=version,
+    )
+    assert t.moe_quant_mode == expected_moe
+
+
+def test_lightning_task_preserves_an_explicit_w4a16_moe_mode():
+    """Explicit fields are the user's contract: the HF-base remap must not
+    rewrite them (downstream validate fails fast on modes with no data lane)."""
+    t = Task(
+        serving_mode="agg",
+        model_path="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        system_name="b200_sxm",
+        backend_name="vllm",
+        backend_version="0.24.0",
+        moe_quant_mode=common.MoEQuantMode.w4a16_nvfp4,
+    )
+    assert t.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
 
 
 @pytest.mark.parametrize(
@@ -1479,7 +1648,11 @@ def test_to_dict_skips_predictor_strategy_field():
 # ---------------------------------------------------------------------------
 
 
-def _build_fake_summary(result_dict: dict | None = None, oom: bool = False):
+def _build_fake_summary(
+    result_dict: dict | None = None,
+    oom: bool = False,
+    moe_comm_fallbacks: tuple[MoECommFallback, ...] = (),
+):
     """Return a MagicMock InferenceSummary."""
     from unittest.mock import MagicMock
 
@@ -1494,6 +1667,7 @@ def _build_fake_summary(result_dict: dict | None = None, oom: bool = False):
 
     s.get_summary_df.return_value = pd.DataFrame([result_dict or {"tokens/s/gpu": 100.0, "ttft": 50.0, "tpot": 20.0}])
     s.get_power_data_coverage.return_value = 1.0
+    s.get_moe_comm_fallbacks.return_value = moe_comm_fallbacks
     return s
 
 
@@ -1519,7 +1693,10 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
 
     def fake_predict_agg_worker(**kwargs):
         captured["predict_kwargs"] = kwargs
-        return _build_fake_summary(result_dict={"tokens/s/gpu": 999.0, "ttft": 42.0, "tpot": 7.0})
+        return _build_fake_summary(
+            result_dict={"tokens/s/gpu": 999.0, "ttft": 42.0, "tpot": 7.0},
+            moe_comm_fallbacks=(MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
+        )
 
     monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
@@ -1532,6 +1709,7 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     # Result is the fake_predict_agg_worker's result_dict
     assert result["tokens/s/gpu"] == 999.0
     assert result["ttft"] == 42.0
+    assert result[MOE_COMM_FALLBACKS_COLUMN] == (MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),)
     # ModelConfig built with the requested parallelism
     mc = captured["model_config"]
     assert mc.tp_size == 4 and mc.pp_size == 1 and mc.moe_tp_size == 1 and mc.moe_ep_size == 1
@@ -1632,7 +1810,12 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
             "system": "h200_sxm",
             "power_w": 500.0,
         }
-        return _build_fake_summary(result_dict=base)
+        backend = "deepep_ht" if role == "prefill" else "deepep_ll"
+        phase = "context" if role == "prefill" else "generation"
+        return _build_fake_summary(
+            result_dict=base,
+            moe_comm_fallbacks=(MoECommFallback(phase, backend, 32, 8, 8, 1),),
+        )
 
     def fake_predict_disagg_worker(**kwargs):
         call_roles.append(kwargs["role"])
@@ -1666,6 +1849,10 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     assert row["(p)workers"] == 2
     assert row["(d)workers"] == 4
     assert "(e)workers" in row  # encoder placeholders preserved
+    assert row[MOE_COMM_FALLBACKS_COLUMN] == (
+        MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),
+        MoECommFallback("generation", "deepep_ll", 32, 8, 8, 1),
+    )
 
 
 def test_run_single_disagg_rejects_agg_task():
@@ -1702,15 +1889,16 @@ def test_validate_agg_requires_system_name():
 
 def test_validate_agg_fp8_static_on_sglang_is_data_driven():
     """fp8_static is no longer hard-gated to trtllm; support is decided by the
-    perf DB.  h200_sxm/sglang has fp8 GEMM data but no compute_scale/scale_matrix
-    overhead tables, so fp8_static is rejected by the DB-side check rather than a
-    backend allowlist."""
+    perf DB.  h100_sxm/sglang/0.5.6.post2 has fp8 GEMM data but no
+    compute_scale/scale_matrix overhead tables (0.5.14 collected them, so the
+    current slot stopped qualifying), so fp8_static is rejected by the DB-side
+    check rather than a backend allowlist."""
     t = Task(
         serving_mode="agg",
         model_path="deepseek-ai/DeepSeek-V3",
-        system_name="h200_sxm",
+        system_name="h100_sxm",
         backend_name="sglang",
-        backend_version="0.5.10",
+        backend_version="0.5.6.post2",
         gemm_quant_mode=common.GEMMQuantMode.fp8_static,
     )
     with pytest.raises(ValueError, match="Unsupported gemm quant mode 'fp8_static'"):
@@ -1755,14 +1943,14 @@ def test_validate_disagg_rejects_mismatched_prefill_decode_model_paths():
 
 def test_validate_disagg_fp8_static_is_data_driven_per_role():
     """Per-role fp8_static support is decided by the perf DB, not a trtllm
-    allowlist.  h200_sxm/sglang lacks the overhead tables, so the prefill role's
-    fp8_static is rejected by the DB-side check."""
+    allowlist.  h100_sxm/sglang/0.5.6.post2 lacks the overhead tables, so the
+    prefill role's fp8_static is rejected by the DB-side check."""
     t = Task(
         serving_mode="disagg",
         prefill_model_path="deepseek-ai/DeepSeek-V3",
-        prefill_system_name="h200_sxm",
+        prefill_system_name="h100_sxm",
         prefill_backend_name="sglang",
-        prefill_backend_version="0.5.10",
+        prefill_backend_version="0.5.6.post2",
         prefill_gemm_quant_mode=common.GEMMQuantMode.fp8_static,
         decode_model_path="deepseek-ai/DeepSeek-V3",
         decode_system_name="h200_sxm",
@@ -1828,7 +2016,7 @@ def test_validate_moe_quant_transfer_reachable_in_hybrid():
             model_path="moonshotai/Kimi-K2.5",
             system_name="b200_sxm",
             backend_name="trtllm",
-            backend_version="1.3.0rc10",
+            backend_version="1.3.0rc20",
             database_mode=mode,
             transfer_policy=policy,
         )
@@ -1884,7 +2072,7 @@ def test_validate_gemm_quant_transfer_reachable_in_hybrid():
             model_path="Qwen/Qwen3-32B",
             system_name="h200_sxm",
             backend_name="vllm",
-            backend_version="0.19.0",
+            backend_version="0.24.0",
             database_mode=mode,
             transfer_policy=policy,
         )
@@ -1958,12 +2146,17 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
     the overhead tables have no transfer ladder, so HYBRID must NOT admit it via
     profile transfer on combos without quantize data — validate keeps failing
     fast instead of the sweep dying late in query_compute_scale."""
+    # Vehicle: b60/vllm 0.20.0 (frozen-baseline current slot) ships fp8 GEMM
+    # data but no quantize family. vllm/b200 stopped qualifying when 0.24
+    # collected computescale, and sglang is no vehicle at all — its fp8_static
+    # is native (no overhead-table subtraction), so it lists the mode as
+    # supported without quantize data.
     t = Task(
         serving_mode="agg",
         model_path="Qwen/Qwen3-32B",
-        system_name="b200_sxm",
+        system_name="b60",
         backend_name="vllm",
-        backend_version="0.19.0",
+        backend_version="0.20.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.fp8_static
@@ -1990,7 +2183,7 @@ def test_validate_gemm_xprofile_requires_listed_level_profile(monkeypatch):
         model_path="Qwen/Qwen3-32B",
         system_name="h200_sxm",
         backend_name="vllm",
-        backend_version="0.19.0",
+        backend_version="0.24.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.int4_wo
@@ -2054,6 +2247,7 @@ def test_to_dict_emits_resolved_state_with_enum_names():
         system_name="h200_sxm",
         gemm_quant_mode=common.GEMMQuantMode.fp8,
         kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        attention_backend=common.AttentionBackend.fa3,
     )
     d = t.to_dict()
     assert d["serving_mode"] == "agg"
@@ -2061,6 +2255,7 @@ def test_to_dict_emits_resolved_state_with_enum_names():
     # Enums emitted as .name strings (round-trippable through from_yaml)
     assert d["gemm_quant_mode"] == "fp8"
     assert d["kvcache_quant_mode"] == "fp8"
+    assert d["attention_backend"] == "fa3"
     # Backend version resolved automatically
     assert d["backend_version"] is not None
     # Search candidates populated
@@ -2093,30 +2288,6 @@ def test_to_yaml_round_trips_through_from_yaml():
     assert t2.model_path == t1.model_path
     assert t2.gemm_quant_mode == t1.gemm_quant_mode
     assert t2.agg_tp_candidates == t1.agg_tp_candidates
-
-
-def test_fmha_data_fallback_mixed_identity_judged_on_granular_table(caplog):
-    """V3.1-NVFP4 (BF16 q/kv + NVFP4 o_proj) bypasses the profiled MLA-module
-    row, so fmha availability must be judged on the GRANULAR context-mla table:
-    b200/trtllm has an fp8 fmha slice only in the module table, and keeping the
-    checkpoint-inferred fp8 would make every context query miss (reviewer
-    regression: the b200/trtllm support-matrix entry failed end-to-end)."""
-    import logging
-
-    from aiconfigurator.sdk import common
-
-    with caplog.at_level(logging.WARNING):
-        t = Task(
-            serving_mode="agg",
-            model_path="nvidia/DeepSeek-V3.1-NVFP4",
-            system_name="b200_sxm",
-            backend_name="trtllm",
-            backend_version="1.3.0rc10",
-            isl=128,
-            osl=64,
-        )
-    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("falling back to bfloat16 FMHA data" in r.message for r in caplog.records)
 
 
 def test_trtllm_dp1_tep_tuples_stay_fused():

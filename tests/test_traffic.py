@@ -30,6 +30,8 @@ def test_materializes_canonical_inline_requests_without_trace_io():
                     "arrival_time_ms": 1.5,
                     "input_token_ids": [10, 20, 30],
                     "output_tokens": 2,
+                    "dp_rank": 3,
+                    "prefill_dp_rank": 1,
                     "session_id": "session-a",
                     "metadata": {"source": "inline"},
                 },
@@ -47,6 +49,8 @@ def test_materializes_canonical_inline_requests_without_trace_io():
             "input_tokens": 3,
             "input_token_ids": [10, 20, 30],
             "output_tokens": 2,
+            "dp_rank": 3,
+            "prefill_dp_rank": 1,
             "session_id": "session-a",
             "metadata": {"source": "inline"},
         },
@@ -58,6 +62,24 @@ def test_materializes_canonical_inline_requests_without_trace_io():
             "metadata": None,
         },
     ]
+
+
+@pytest.mark.parametrize("field", ["dp_rank", "prefill_dp_rank"])
+@pytest.mark.parametrize("value", [-1, True, 1.5, 2**32])
+def test_inline_requests_reject_invalid_dp_ranks(field, value):
+    with pytest.raises(ValueError, match=rf"{field} must be an unsigned 32-bit integer"):
+        materialize_configured_traffic(
+            {
+                "requests": [
+                    {
+                        "arrival_time_ms": 0,
+                        "input_tokens": 1,
+                        "output_tokens": 1,
+                        field: value,
+                    }
+                ]
+            }
+        )
 
 
 @pytest.mark.parametrize("selector", ["trace", "trace_path"])

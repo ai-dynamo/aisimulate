@@ -222,7 +222,7 @@ pub use moe_a2a::MoeA2aTable;
 pub use moe_expert_compute::MoeExpertComputeTable;
 pub use msa::MsaTable;
 #[allow(unused_imports)]
-pub use source_resolution::{ResolveCtx, ResolveReport, SourceResolver, resolve_one};
+pub use source_resolution::{ResolveCtx, SourceResolver, resolve_one};
 pub use state_space::StateSpaceTable;
 pub use trtllm_alltoall::TrtllmAlltoallTable;
 pub use wideep_mla::WideEpMlaTable;
@@ -324,7 +324,7 @@ impl PerfDatabase {
     ///
     /// `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems`. `system` is a
     /// basename like `b200_sxm`. `backend` is `vllm` / `sglang` / `trtllm`.
-    /// `version` is the backend version directory name (e.g. `0.19.0`).
+    /// `version` is the backend version directory name (e.g. `0.24.0`).
     pub fn load(
         systems_root: &Path,
         system: &str,
@@ -368,9 +368,9 @@ impl PerfDatabase {
     /// [`PerfDatabase::load_with_sources`] with an estimate-only escape hatch:
     /// `tolerate_missing_data` skips the perf-data-directory existence gate so
     /// a system that ships only a spec yaml (Python's `allow_missing_data`
-    /// "estimate" databases) can still back a SOL view — every SOL answer is
-    /// analytic from the system spec, and any table-backed lookup raises its
-    /// own per-family miss lazily. Non-SOL callers must keep the loud gate:
+    /// "estimate" databases) can still back a formula-only SOL or EMPIRICAL
+    /// view, and any table-backed lookup raises its own per-family miss lazily.
+    /// SILICON/HYBRID callers must keep the loud gate:
     /// a typo'd version string should fail at load, not as per-op misses.
     pub fn load_with_sources_opts(
         systems_root: &Path,
@@ -505,7 +505,11 @@ impl PerfDatabase {
             attention: AttentionTable::with_sources(data_root.clone(), spec.clone(), &resolver)?,
             mla: MlaTable::with_sources(data_root.clone(), spec.clone(), &resolver)?,
             moe: MoeTable::with_sources(data_root.clone(), &resolver)?,
-            moe_a2a: MoeA2aTable::with_sources(data_root.clone(), &resolver)?,
+            moe_a2a: MoeA2aTable::with_sources_and_node_width(
+                data_root.clone(),
+                &resolver,
+                spec.node.num_gpus_per_node,
+            )?,
             moe_expert_compute: MoeExpertComputeTable::with_sources(
                 data_root.clone(),
                 spec.clone(),
@@ -539,6 +543,7 @@ impl PerfDatabase {
                 data_root.clone(),
                 backend,
                 version,
+                spec.gpu.sm_version,
                 &resolver,
             )?,
             // Deliberately NOT shared-layer aware: FPM whole-model data is
@@ -905,6 +910,7 @@ misc:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -916,11 +922,11 @@ mod tests {
 
     #[test]
     fn load_b200_sxm_vllm_database() {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.19.0")
-            .expect("b200_sxm/vllm/0.19.0 must load");
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .expect("b200_sxm/vllm/0.24.0 must load");
         assert_eq!(db.system, "b200_sxm");
         assert_eq!(db.backend, "vllm");
-        assert_eq!(db.version, "0.19.0");
+        assert_eq!(db.version, "0.24.0");
         let gemm_sources = resolve_op_sources(
             &PerfDbSources::default(),
             "gemm_perf.parquet",
@@ -932,6 +938,74 @@ mod tests {
             "resolved GEMM parquet must exist: {}",
             gemm_sources[0].0.display()
         );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_power_reaches_gemm_query() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let value = db
+            .gemm
+            .query(GemmQuantMode::Bfloat16, 16_384, 65_536, 51_200)
+            .expect("the shipped measured GEMM identity must be queryable");
+
+        assert!(value.latency > 0.0);
+        assert!(value.power > 0.0);
+        assert_eq!(
+            value.energy.to_bits(),
+            (value.power * value.latency).to_bits()
+        );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_attention_power_sentinels_reach_queries() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let lanes = vec!["torch_flow".to_string()];
+
+        let measured_context = db
+            .attention
+            .query_context(
+                &lanes,
+                4,
+                16_384,
+                96,
+                96,
+                64,
+                0,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+            )
+            .expect("the shipped measured context-attention identity must be queryable");
+        let sentinel_context = db
+            .attention
+            .query_context(
+                &lanes,
+                64,
+                2_048,
+                64,
+                1,
+                256,
+                0,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Fp8,
+            )
+            .expect("the shipped sentinel context-attention identity must be queryable");
+        assert!(measured_context.power > 0.0);
+        assert!(measured_context.energy > 0.0);
+        assert_eq!(sentinel_context.power.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(sentinel_context.energy.to_bits(), 0.0_f64.to_bits());
+
+        let measured_generation = db
+            .attention
+            .query_generation(&lanes, 32, 2, 64, 64, 64, 0, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped measured generation-attention identity must be queryable");
+        let sentinel_generation = db
+            .attention
+            .query_generation(&lanes, 32, 3, 32, 2, 128, 2_048, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped sentinel generation-attention identity must be queryable");
+        assert!(measured_generation.energy > 0.0);
+        assert_eq!(sentinel_generation.energy.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -947,7 +1021,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -958,7 +1032,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -981,8 +1055,8 @@ mod tests {
     fn missing_data_dir_is_tolerated_only_when_requested() {
         // Estimate-only escape hatch (#1552 review finding 8): a system with a
         // spec yaml but NO perf-data directory must load under the tolerant
-        // flag (SOL answers are analytic from the spec) and must keep failing
-        // loudly under the strict default.
+        // flag (formula-only SOL/EMPIRICAL answers do not require tables) and
+        // must keep failing loudly under the strict default.
         let strict = PerfDatabase::load_with_sources_opts(
             &systems_root(),
             "h100_pcie",
@@ -1027,7 +1101,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -1037,7 +1111,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             true,
             false,
             false,
@@ -1052,7 +1126,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             &PerfDbSources::default(),
         )
         .expect("map load must succeed");
@@ -1060,7 +1134,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             &PerfDbSources::default(),
         )
         .expect("map load must succeed");
@@ -1097,8 +1171,8 @@ mod tests {
 
     #[test]
     fn provenance_cell_accumulates_worst_tier_and_is_shared_with_views() {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.19.0")
-            .expect("b200_sxm/vllm/0.19.0 must load");
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .expect("b200_sxm/vllm/0.24.0 must load");
         assert_eq!(db.worst_provenance(), ProvenanceTier::Silicon);
 
         // Max-rank accumulation: a lower tier never overwrites a higher one.

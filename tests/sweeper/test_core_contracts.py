@@ -10,6 +10,7 @@ import math
 import pickle
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 
 import pytest
 
@@ -59,13 +60,7 @@ def _planner_hook(*, version: int = 1):
 
 def _replay_spec(*, hook: RuntimeHookSpec | None = None):
     adapter = (
-        {}
-        if hook is None
-        else {
-            "dynamo.planner": AdapterReplaySpec(
-                config={"enabled": True}, runtime_hooks=(hook,)
-            )
-        }
+        {} if hook is None else {"dynamo.planner": AdapterReplaySpec(config={"enabled": True}, runtime_hooks=(hook,))}
     )
     return ReplaySpec(
         backend_deployment=_deployment(),
@@ -136,6 +131,27 @@ def test_canonical_json_is_stable_and_strict():
         canonical_json(object())
 
 
+def test_replay_output_requirements_validate_enabled_telemetry_interval():
+    assert ReplayOutputRequirements().capture_telemetry is False
+    assert (
+        ReplayOutputRequirements(
+            capture_telemetry=True,
+            telemetry_sample_interval_ms=250.0,
+        ).telemetry_sample_interval_ms
+        == 250.0
+    )
+
+    for invalid in (0.0, -1.0, math.inf, math.nan, True, "one second"):
+        with pytest.raises(
+            ValueError,
+            match="telemetry_sample_interval_ms must be finite and positive",
+        ):
+            ReplayOutputRequirements(
+                capture_telemetry=True,
+                telemetry_sample_interval_ms=invalid,  # type: ignore[arg-type]
+            )
+
+
 def test_adapter_payload_json_validation_does_not_normalize_python_objects():
     @dataclass
     class PythonObject:
@@ -181,6 +197,29 @@ def test_runner_capabilities_accept_supported_spec_and_wildcards():
     capabilities.require_compatible(_replay_spec(hook=hook))
 
 
+def test_runner_capabilities_require_explicit_online_support():
+    spec = _replay_spec()
+    spec = ReplaySpec(
+        backend_deployment=spec.backend_deployment,
+        workload=spec.workload,
+        goal=spec.goal,
+        execution_mode="online",
+        concurrency=spec.concurrency,
+        adapters=spec.adapters,
+    )
+    offline = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    with pytest.raises(ValueError, match="execution mode 'online'"):
+        offline.require_compatible(spec)
+
+    online = RunnerCapabilities(
+        supported_execution_modes=("offline", "online"),
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    online.require_compatible(spec)
+
+
 def test_runner_capabilities_reject_spec_version_backend_and_hook():
     capabilities = RunnerCapabilities(
         supported_backend_topologies=(("vllm", "agg"),),
@@ -197,9 +236,7 @@ def test_runner_capabilities_reject_spec_version_backend_and_hook():
     with pytest.raises(ValueError, match="runner version 1"):
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION + 1)
 
-    wrong_backend = ReplaySpec(
-        backend_deployment=_deployment(backend="sglang"), workload={}, goal={}
-    )
+    wrong_backend = ReplaySpec(backend_deployment=_deployment(backend="sglang"), workload={}, goal={})
     with pytest.raises(ValueError, match="sglang.*agg"):
         capabilities.require_compatible(wrong_backend)
 
@@ -228,3 +265,56 @@ def test_public_contract_versions_start_at_one():
 
 def test_lazy_exports_are_listed_in_public_api():
     assert set(sweeper._LAZY_EXPORTS).issubset(sweeper.__all__)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, 10**400, Fraction(10**400)])
+def test_replay_report_rejects_nonfinite_ordinary_metrics(value):
+    with pytest.raises(ValueError, match="must be finite"):
+        ReplayReport(metrics={"output_throughput_tok_s": value})
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"power_w": 500.0, "power_coverage": 0.42},
+        {"power_w": 500.0, "power_coverage": None},
+        {"power_w": None, "power_coverage": 1.01},
+    ],
+)
+def test_replay_report_rejects_invalid_power_pairs(metrics):
+    with pytest.raises(ValueError, match="power_"):
+        ReplayReport(metrics=metrics)
+
+
+@pytest.mark.parametrize("field", ["power_w", "power_coverage"])
+@pytest.mark.parametrize("value", [10**400, Fraction(10**400)])
+def test_replay_report_rejects_overflowing_power(field, value):
+    metrics = {"power_w": None, "power_coverage": 0.9, field: value}
+    with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+        ReplayReport(metrics=metrics)
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"power_w": 500.0, "power_coverage": 0.9},
+        {"power_w": None, "power_coverage": 0.42},
+        {"power_w": None, "power_coverage": None},
+    ],
+)
+def test_replay_report_preserves_valid_power_availability(metrics):
+    assert ReplayReport(metrics=metrics).metrics == metrics
+
+
+@pytest.mark.parametrize("power_fields", [{}, {"power_coverage": 0.42}, {"power_w": None}])
+def test_replay_report_materializes_power_fields_without_mutating_input(power_fields):
+    metrics = {"output_throughput_tok_s": 10.0, **power_fields}
+    original = metrics.copy()
+    report = ReplayReport(metrics=metrics)
+    assert report.metrics == {
+        "output_throughput_tok_s": 10.0,
+        "power_w": None,
+        "power_coverage": power_fields.get("power_coverage"),
+    }
+    assert metrics == original
+    assert json.loads(canonical_json(report))["metrics"] == report.metrics

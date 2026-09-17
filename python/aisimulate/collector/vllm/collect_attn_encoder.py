@@ -10,7 +10,11 @@ Quant: bf16 only. vLLM upstream supports fp8 ViT FMHA via FLASHINFER;
 enabling that path here is left for the future.
 """
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
+# encoder_attention: 8/8 representative cases. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import torch
 from vllm.model_executor.models.vision import get_vit_attn_backend

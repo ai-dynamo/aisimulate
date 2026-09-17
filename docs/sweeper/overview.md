@@ -11,8 +11,8 @@ subtitle: Experimental backend-neutral configuration search
 > standard deprecation period.
 
 Sweeper searches deployment configurations with a black-box optimizer. It turns every suggestion
-into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns
-ranked candidates or a Pareto front.
+into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns a
+schema-versioned `SweepResult` with a complete candidate ledger and ranked or Pareto views.
 
 The `aisimulate` package owns only backend-neutral simulation behavior. Optional feature packages
 can register a `SweepConfigProvider` that contributes search dimensions and materializes its part
@@ -22,11 +22,13 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 
 - [Quickstart](quickstart.md) runs a small backend-neutral sweep.
 - [Tutorial](tutorial.md) explains a complete sweep configuration.
-- [Architecture](architecture.md) shows the provider, replay, and worker boundaries.
+- [Architecture](architecture.md) explains CLI integration, parallelism search, and the provider, replay, and worker boundaries.
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
-- [Results](results.md) describes `ReplaySpec` and `Candidate` output.
+- [AFD Topology Contract](afd-topology.md) defines Attention-FFN parallel shapes, validation, and
+  complete topology enumeration.
+- [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
 - [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
   the standalone configuration and execution workflow.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
@@ -41,7 +43,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
-candidates = Sweeper(runner_factory=my_runner_factory).run(config)
+result = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
 The public `aisimulate recommend --config ...` command validates the unified schema and selects a
@@ -54,5 +56,7 @@ runner through `--stack`. The `Sweeper` Python API remains available for callers
 - The runner advertises supported `ReplaySpec` versions, backend/topology pairs, and runtime hooks
   before a study starts.
 - Every `Sweeper.run` call owns fresh optimizer studies, result caches, runners, and worker pools.
-- KVBM search fields are rejected. The AI Simulate engine and replay path do not support those
-  fields and provide no adapter migration for the old host or disk offload settings.
+- Legacy KVBM search fields are rejected and have no adapter migration. Native vLLM host offload
+  uses a separate, fixed configuration supported by `predict` and `recommend`; it does not restore
+  the old host or disk offload search fields. See [Host Offload and Removed KVBM
+  Fields](configuration.md#host-offload-and-removed-kvbm-fields) for the supported scope.

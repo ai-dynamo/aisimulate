@@ -21,8 +21,8 @@ Native cases (Qwen3-32B on h200_sxm, TRT-LLM OfFree and vLLM OfTotal), asserting
 
 Requires the perf DB (LFS) for the SystemSpec capacity used by the native path,
 plus ``aiconfigurator_core`` importable (transitively, via ``sdk.memory``).
-Soft-skips when the import or the native breakdown is unavailable (e.g. no
-``git lfs pull``) so bare runs stay green.
+General native cases soft-skip when the import or native breakdown is unavailable.
+The required Eagle regression fails when its fixture cannot execute.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ memory = pytest.importorskip("aiconfigurator.sdk.memory")
 # (model, system, backend, backend_version, memory_fraction_kind) — the
 # native cases. h200_sxm perf DB supplies the SystemSpec capacity.
 NATIVE_CASES = [
-    ("Qwen/Qwen3-32B", "h200_sxm", "trtllm", "1.3.0rc10", "of_free"),
-    ("Qwen/Qwen3-32B", "h200_sxm", "vllm", "0.19.0", "of_total"),
+    ("Qwen/Qwen3-32B", "h200_sxm", "trtllm", "1.3.0rc20", "of_free"),
+    ("Qwen/Qwen3-32B", "h200_sxm", "vllm", "0.24.0", "of_total"),
 ]
 
 _FRACTION = 0.9
@@ -213,7 +213,7 @@ _EAGLE_PREFILL_CASE = dict(
     model_path="moonshotai/Kimi-K2.5",
     system="gb200",
     backend="trtllm",
-    backend_version="1.3.0rc10",
+    backend_version="current",
     # A realistic long-context prefill chunk (the reporter's agentic workload runs up
     # to ~200k ISL); the over-count scales with the chunk, so it surfaces here at a
     # modest draft length rather than only at nextn>=4 with an 8k chunk.
@@ -241,13 +241,9 @@ def test_eagle_prefill_kv_budget_nonnegative_kimi_gb200(nextn):
     of ``nextn`` -- the activation must match the ``nextn=0`` baseline exactly, not be
     scaled by ``(nextn+1)`` as the latency sweep does.
     """
-    try:
-        baseline = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=0)
-        est = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=nextn)
-    except ValueError as exc:
-        # A genuinely-missing perf DB / model soft-skips; the "no KV budget" regression
-        # (any other ValueError) is re-raised by the helper and fails the test.
-        _skip_if_fixture_unavailable(exc)
+    # This regression is required CI evidence: a missing fixture must fail.
+    baseline = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=0)
+    est = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=nextn)
 
     # Non-negative budget for any feasible draft length (the reported failure).
     assert est["total_kv_size_bytes"] > 0

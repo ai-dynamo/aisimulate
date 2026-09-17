@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Optional
 
 from aiconfigurator_core.sdk import common, config
 from aiconfigurator_core.sdk.utils import (
+    _get_language_quantization_config,
     get_model_config_from_model_path,
     parse_compressed_tensors_quant,
 )
@@ -47,11 +48,11 @@ def quant_exclude_patterns(raw_config: dict) -> list:
 
     Reads both declaration formats kept on ``raw_config`` by
     ``get_model_config_from_model_path``: the checkpoint's own
-    ``quantization_config`` (compressed-tensors ``ignore`` /
+    root or text-only ``quantization_config`` (compressed-tensors ``ignore`` /
     ``modules_to_not_convert`` / ``exclude_modules``) and the retained
     ``hf_quant_config`` (ModelOpt ``exclude_modules`` / ``ignore``).
     """
-    quant_config = raw_config.get("quantization_config")
+    quant_config = _get_language_quantization_config(raw_config)
     quant_config = quant_config if isinstance(quant_config, dict) else {}
 
     hf_quant_config = raw_config.get("hf_quant_config")
@@ -507,7 +508,7 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
         if isinstance(hf_quant_section, dict):
             add_quantized_layers(hf_quant_section.get("quantized_layers"))
 
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     if isinstance(quant_cfg, dict):
         add_quantized_layers(quant_cfg.get("quantized_layers"))
         config_groups = quant_cfg.get("config_groups")
@@ -533,7 +534,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
     # in the mixed-precision header. Prefer that explicit base description to
     # broad config-group targets such as ``Linear``: the latter are filtered
     # by ``ignore`` at runtime and must not reclassify attention/shared GEMMs.
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     base_quant_method = str(quant_cfg.get("quant_method", "")).lower() if isinstance(quant_cfg, dict) else ""
     weight_block_size = quant_cfg.get("weight_block_size") if isinstance(quant_cfg, dict) else None
     if base_quant_method == "fp8" and weight_block_size:
@@ -622,7 +623,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         # Parse the quantization_config to find which layer categories are quantized.
         # Only set overrides for quantized categories; unset modes fall through to the
         # global bfloat16 default in _apply_model_quant_defaults.
-        quant_cfg = raw_config.get("quantization_config") or {}
+        quant_cfg = _get_language_quantization_config(raw_config) or {}
         base_algo, ignored = parse_compressed_tensors_quant(quant_cfg)
         if base_algo:
             if "attention" not in ignored:
@@ -663,6 +664,44 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     return overrides
 
 
+# Architectures whose vLLM MoE dispatch is PROVEN w4a4 for W4A16_NVFP4-labeled
+# checkpoints: the collected kernel_source is
+# ``vllm_compressedtensorsw4a4nvfp4moe_*`` (activations quantized at run time,
+# FP4 tensor cores), so the storage label misdescribes the execution lane.
+# Scoped per-architecture deliberately: Qwen3.6-style checkpoints stay on the
+# weight-only ``w4a16_nvfp4`` profile, which vLLM reaches through HYBRID's
+# calibrated XPROFILE relation by design (see
+# test_validate_w4a16_nvfp4_moe_xprofile_reachable_in_hybrid).
+_VLLM_W4A4_MOE_ARCHITECTURES = frozenset({"NemotronHForCausalLM"})
+
+
+def resolve_vllm_moe_execution_mode(
+    moe_quant_mode: common.MoEQuantMode | None,
+    backend_name: str | None,
+    architecture: str | None,
+) -> common.MoEQuantMode | None:
+    """Map an HF/label-derived MoE mode to the lane vLLM actually executes.
+
+    For NemotronH checkpoints, vLLM's compressed-tensors dispatch quantizes
+    activations at run time and serves the FP4-tensor-core (w4a4) kernels
+    regardless of the ``W4A16_NVFP4`` ModelOpt storage label (the collected
+    kernel_source proves it), so the mode remaps to ``nvfp4`` — the lane the
+    silicon rows live in. trtllm/sglang keep the label mode (their
+    weight-only dequant-to-BF16 MoE path is real), and non-NemotronH
+    architectures keep it on vLLM too (Qwen3.6's profile is served via the
+    HYBRID XPROFILE relation by design). Callers apply this to HF-DERIVED
+    modes only — a truly explicit user mode must bypass it
+    (AIC-1748/AIC-1743).
+    """
+    if (
+        backend_name == "vllm"
+        and architecture in _VLLM_W4A4_MOE_ARCHITECTURES
+        and moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
+    ):
+        return common.MoEQuantMode.nvfp4
+    return moe_quant_mode
+
+
 def _apply_model_quant_defaults(
     model_config: config.ModelConfig,
     raw_config: dict,
@@ -673,6 +712,7 @@ def _apply_model_quant_defaults(
     # Clone original model_config to track if any modifications were made
     original_config = dataclasses.replace(model_config)
     fmha_was_unset = model_config.fmha_quant_mode is None
+    moe_was_unset = model_config.moe_quant_mode is None
 
     inferred = _infer_quant_modes_from_raw_config(raw_config, architecture)
     applied: list[str] = []
@@ -719,6 +759,14 @@ def _apply_model_quant_defaults(
         # VLLM perf tables only include bfloat16 FMHA; fall back to bfloat16 for estimation.
         if backend_name == "vllm" and model_config.fmha_quant_mode == common.FMHAQuantMode.fp8:
             model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
+
+    # Inferred-mode-only remap (see resolve_vllm_moe_execution_mode): an
+    # explicit user mode wins, and validate fails fast on it — the
+    # explicit-is-the-user's-contract doctrine.
+    if moe_was_unset:
+        model_config.moe_quant_mode = resolve_vllm_moe_execution_mode(
+            model_config.moe_quant_mode, backend_name, architecture
+        )
 
     # Only log if model_config was modified
     if original_config != model_config:
@@ -839,6 +887,8 @@ def resolve_nvfp4_for_system(
     model_config: config.ModelConfig,
     system_name: str | None,
     model_path: str | None = None,
+    *,
+    backend_name: str | None = None,
 ) -> None:
     """Remap native nvfp4 to weight-only nvfp4_wo on non-Blackwell systems.
 
@@ -848,8 +898,10 @@ def resolve_nvfp4_for_system(
     transfer ladder then models the Marlin-class memory savings via the
     (0.5625, 1) util-level entry — no direct bfloat16 table aliasing needed.
 
-    Deployability (whether a runtime can load the checkpoint at a given
-    version) is a separate question handled by the support matrix.
+    When the mode is inferred from a checkpoint label, resolve its backend
+    execution lane before applying the hardware fallback. Deployability
+    (whether a runtime can load the checkpoint at a given version) is a
+    separate question handled by the support matrix.
     """
     from aiconfigurator_core.sdk.perf_database import is_blackwell_system
 
@@ -860,14 +912,15 @@ def resolve_nvfp4_for_system(
     moe_q = model_config.moe_quant_mode
     if (gemm_q is None or moe_q is None) and model_path:
         info = _get_model_info(model_path)
+        architecture = info.get("architecture", "")
         inferred = _infer_quant_modes_from_raw_config(
             info.get("raw_config", {}),
-            info.get("architecture", ""),
+            architecture,
         )
         if gemm_q is None:
             gemm_q = inferred.get("gemm_quant_mode")
         if moe_q is None:
-            moe_q = inferred.get("moe_quant_mode")
+            moe_q = resolve_vllm_moe_execution_mode(inferred.get("moe_quant_mode"), backend_name, architecture)
 
     if gemm_q == common.GEMMQuantMode.nvfp4:
         model_config.gemm_quant_mode = common.GEMMQuantMode.nvfp4_wo
@@ -890,6 +943,8 @@ def resolve_context_fmha_by_data(
     in ``task_v2.Task._resolve_quant_modes``, driven by the perf DB's
     fmha-keyed context table instead of a hand-written architecture list:
 
+    * Whole-model FPM: preserve explicit FMHA or promote checkpoint inference;
+      its complete cell identity owns validation.
     * Generation-only roles: no-op (no generation table keys on fmha).
     * fp8 slice present, or no DB information for the op: no-op.
     * fmha explicitly set to fp8 with no fp8 slice: raise a concise
@@ -908,6 +963,16 @@ def resolve_context_fmha_by_data(
         is_context_role: True for context-attention roles (agg, prefill,
             static, static_ctx, AFD prefill); False for generation-only roles.
     """
+    if model_config.forward_model == "fpm":
+        if model_config.fmha_quant_mode is None:
+            info = _get_model_info(model_path)
+            inferred = _infer_quant_modes_from_raw_config(
+                info.get("raw_config", {}),
+                info.get("architecture"),
+            )
+            model_config.fmha_quant_mode = inferred.get("fmha_quant_mode")
+        return
+
     if not is_context_role:
         return
 

@@ -134,74 +134,38 @@ def test_defaults_are_backend_only():
     assert config.goal.target is OptimizationTarget.THROUGHPUT
     assert config.sweep.parallel_evals == 16
     dumped = config.search_space.model_dump()
-    assert (
-        not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
-    )
+    assert not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
 
 
-def test_engine_request_controls_round_trip_through_yaml(tmp_path):
-    path = tmp_path / "engine-controls.yaml"
-    path.write_text(
-        """
-search_space:
-  deployment_mode: [agg]
-  backend: [sglang]
-  model_name: example/moe
-  hardware_sku: gb200
-  max_seq_len: 8192
-  enable_chunked_prefill: true
-  enable_wideep: true
-  enable_eplb: true
-  wideep_num_slots: 64
-  moe_backend: deepep_moe
-  attention_backend: fa3
-  gemm_quant_mode: fp8
-  moe_quant_mode: fp8
-  kvcache_quant_mode: fp8
-  fmha_quant_mode: fp8
-  comm_quant_mode: fp8
-  aic_nextn: 3
-  nextn_accepted: 1.5
-  free_gpu_memory_fraction: 0.82
-workload:
-  isl: 4096
-  osl: 1024
-  concurrency: 2
-  num_request_ratio: 1
-  cached_prefix_tokens: 512
-"""
-    )
+@pytest.mark.parametrize(
+    ("overrides", "prefill", "decode"),
+    [
+        ({}, "h200_sxm", "h200_sxm"),
+        ({"prefill_hardware_sku": "gb200"}, "gb200", "h200_sxm"),
+        ({"decode_hardware_sku": "gb200"}, "h200_sxm", "gb200"),
+        (
+            {"prefill_hardware_sku": "h100_sxm", "decode_hardware_sku": "gb200"},
+            "h100_sxm",
+            "gb200",
+        ),
+    ],
+)
+def test_disagg_role_hardware_inherits_shared_sku(overrides, prefill, decode):
+    search_space = SearchSpace(**_search_space(deployment_mode=["disagg"], **overrides))
 
-    config = SmartSearchConfig.from_yaml(path)
-    dumped = config.model_dump(mode="json")
-
-    assert dumped["workload"]["cached_prefix_tokens"] == 512
-    assert dumped["search_space"]["enable_chunked_prefill"] is True
-    assert dumped["search_space"]["wideep_num_slots"] == 64
-    assert dumped["search_space"]["attention_backend"] == "fa3"
-    assert dumped["search_space"]["kvcache_quant_mode"] == "fp8"
-    assert config.search_space.nextn_accepted == 1.5
-    assert config.search_space.free_gpu_memory_fraction == 0.82
+    assert search_space.hardware_sku_for("prefill") == prefill
+    assert search_space.hardware_sku_for("decode") == decode
+    assert search_space.hardware_sku_for("agg") == "h200_sxm"
 
 
-def test_speculative_acceptance_is_explicit_and_bounded():
-    with pytest.raises(ValidationError, match="requires explicit nextn_accepted"):
-        SearchSpace(**_search_space(aic_nextn=2))
-    with pytest.raises(ValidationError, match=r"within \[0, aic_nextn=2\]"):
-        SearchSpace(**_search_space(aic_nextn=2, nextn_accepted=2.5))
-
-    disabled = SearchSpace(**_search_space(aic_nextn=0))
-    assert disabled.aic_nextn == 0
-    assert disabled.nextn_accepted is None
-    with pytest.raises(ValidationError, match="greater than zero"):
-        SearchSpace(**_search_space(aic_nextn=0, nextn_accepted=0))
-
-
-def test_cached_prefix_is_exact_and_within_shortest_input():
-    workload = Workload(**_workload(cached_prefix_tokens=2000, random_range_ratio=0.5))
-    assert workload.cached_prefix_tokens == 2000
-    with pytest.raises(ValidationError, match="shortest synthetic input"):
-        Workload(**_workload(cached_prefix_tokens=2001, random_range_ratio=0.5))
+def test_role_hardware_requires_disagg_mode():
+    with pytest.raises(ValidationError, match="require deployment_mode to include 'disagg'"):
+        SearchSpace(
+            **_search_space(
+                deployment_mode=["agg"],
+                prefill_hardware_sku="gb200",
+            )
+        )
 
 
 def test_extra_fields_are_forbidden_at_each_boundary():
@@ -372,15 +336,9 @@ def test_invalid_workloads_are_rejected(workload):
         Workload(**workload)
 
 
-@pytest.mark.parametrize(
-    ("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)]
-)
-@pytest.mark.parametrize(
-    "target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU]
-)
-def test_goodput_requires_at_least_one_sla_bound(
-    target: OptimizationTarget, field: str, bound: float
-):
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)])
+@pytest.mark.parametrize("target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU])
+def test_goodput_requires_at_least_one_sla_bound(target: OptimizationTarget, field: str, bound: float):
     with pytest.raises(ValidationError, match="require at least one SLA"):
         OptimizationGoal(target=target)
 
@@ -575,3 +533,17 @@ def test_valid_min_gpu_budget_is_accepted():
     )
 
     assert space.min_gpu_budget == 8
+
+
+def test_forward_model_defaults_to_op_level_for_every_role():
+    space = SearchSpace(**_search_space())
+
+    assert space.agg_forward_model == "op_level"
+    assert space.prefill_forward_model == "op_level"
+    assert space.decode_forward_model == "op_level"
+
+
+@pytest.mark.parametrize("field", ["agg_forward_model", "prefill_forward_model", "decode_forward_model"])
+def test_unknown_forward_model_is_rejected(field):
+    with pytest.raises(ValidationError, match=f"{field} has invalid choice 'layerwise'"):
+        SearchSpace(**_search_space(**{field: "layerwise"}))

@@ -6,8 +6,10 @@
 mod cache;
 mod common;
 mod config;
+pub(crate) mod g3_offload;
 pub mod generalized;
 mod handoff;
+mod host_offload;
 mod kv_manager;
 mod protocol;
 mod runtime;
@@ -15,21 +17,29 @@ mod scheduler;
 mod timing;
 mod trace;
 
+pub(crate) use host_offload::{
+    HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
+};
+
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy,
-    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    Backend, EngineConfig, G3OffloadConfig, G3Scope, NativeHostOffloadConfig, PreemptionMode,
+    SglangConfig, SglangSchedulePolicy, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
+pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
 pub use protocol::{
-    Admission, Command, CommandEffects, CommandResult, ForwardPassMetrics, KvBlock, KvEvent,
-    KvEventData, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
-    PressureEvent, PressureKind, PressureState, Request, StoredBlocks,
+    Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, ForwardPassMetrics,
+    KvBlock, KvEvent, KvEventData, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PressureEvent, PressureKind, PressureState, Request, StoredBlocks,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
-pub use timing::{TimingModel, TimingModelConfig};
+pub use timing::{
+    TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
+    TimingOperationEvidence, TimingPhaseEvidence,
+};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;

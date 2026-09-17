@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from ai-dynamo/AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate packaging.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+
+name: Validate platform wheels
+
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that Full CI expects this workflow to validate
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Preserve lifecycle/manual runs; only replace stale trusted PR validation.
+  group: >-
+    platform-wheels-${{ github.event_name == 'push'
+      && startsWith(github.ref, 'refs/heads/pull-request/') && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  linux-amd64:
+    name: Build wheels (manylinux_2_28_x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+          persist-credentials: false
+          lfs: true
+      - name: Verify exact target
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
+      - name: Build and verify wheel
+        uses: ./.github/actions/build-platform-wheel
+        with:
+          build_method: docker
+          python_architecture: x64
+          platform: linux/amd64
+          wheel_base: quay.io/pypa/manylinux_2_28_x86_64
+
+  linux-arm64:
+    name: Build wheels (manylinux_2_28_aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+          persist-credentials: false
+          lfs: true
+      - name: Verify exact target
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
+      - name: Build and verify wheel
+        uses: ./.github/actions/build-platform-wheel
+        with:
+          build_method: docker
+          python_architecture: arm64
+          platform: linux/arm64
+          wheel_base: quay.io/pypa/manylinux_2_28_aarch64
+
+  macos-arm64:
+    name: Build wheels (macosx_arm64)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Verify GitHub-hosted macOS runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          sw_vers
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+          persist-credentials: false
+          lfs: true
+      - name: Verify exact target
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
+      - name: Build and verify wheel
+        uses: ./.github/actions/build-platform-wheel
+        with:
+          build_method: native-macos
+          python_architecture: arm64

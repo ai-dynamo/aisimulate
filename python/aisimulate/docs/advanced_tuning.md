@@ -11,6 +11,19 @@
 > [`example_v1_deprecated.yaml`](../src/aiconfigurator/cli/example_v1_deprecated.yaml)
 > for the old shape.
 
+## Kernel backend values
+
+`attention_backend` and `moe_backend` use the public `AttentionBackend` and
+`MoEBackend` string enums. YAML uses their lowercase values:
+
+- `attention_backend`: `flashinfer` or `fa3`; `null` keeps the effective
+  `flashinfer` default.
+- `moe_backend`: `megamoe` or the deprecated compatibility value
+  `deepep_moe`; `null` leaves backend selection unspecified.
+
+These are performance-model selectors. They are separate from runtime-server
+backend names such as TRT-LLM `CUTLASS` or `WIDEEP`.
+
 In aiconfigurator, the inference framework and serving modeling is relatively complicated compared with the most simplified CLI entrypoint.  
 For example, behind the command,
 ```bash
@@ -118,7 +131,7 @@ disagg_full:
 We keep only the full agg and disagg versions here. Note:  
 1. The worker spec is **top-level for agg** (`gemm_quant_mode`, `agg_tp_candidates`, ...) and **per-role for disagg** (`prefill_*` / `decode_*`); the two roles look very similar.  
 2. Disagg additionally has the replica-shaping fields (`num_gpu_per_replica`, `max_*_workers`) and the correction fields (`*_latency_correction`, `*_max_batch_size`).  
-Let's discuss them. Please refer to [CLI user guide](cli_user_guide.md) for basic info and as a pre-reading.
+Let's discuss them. Please refer to [Legacy AIC CLI User Guide](../../../docs/cli/legacy-aic-user-guide.md) for basic info and as a pre-reading.
 
 Let's focus on search system config section. Let's take `disagg config` as an example,  
 ## replica config

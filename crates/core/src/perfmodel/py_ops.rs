@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/py_ops.rs
 
 //! The Rust op structs exported as Python classes (the deprecation-cleanup
 //! PR's pyo3 op unification, #1357 ladder item 4).
@@ -42,6 +44,7 @@ use pyo3::types::{PyDict, PyTuple};
 use crate::common::enums::{
     CommQuantMode, FmhaQuantMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode,
 };
+use crate::operators::attention::default_lane_order;
 use crate::operators::dsa::DsaProjectionQuants;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, ElementwiseOp, EmbeddingOp,
@@ -162,7 +165,9 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         // FpmForward has no family class: FPMForwardOp stays a Python class
         // (callable slot + pinned signature) whose spec adapter converts to a
         // BASE-wrapped engine op for list assembly.
-        Op::FpmForward(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
+        Op::FpmForward(_) | Op::TokenScale(_) => {
+            Ok(Py::new(py, PyOperation { inner: op })?.into_any())
+        }
         // Vision is never wrapped: compile decomposes it into child ops.
         other => Err(PyTypeError::new_err(format!(
             "no Python class wrapper for engine op variant {:?}",
@@ -315,6 +320,15 @@ impl PyOperation {
         self.inner.set_name(value);
     }
 
+    /// Repetition scaling for sequential draft forwards.
+    #[setter(_scale_factor)]
+    fn set_scale_factor(&mut self, value: f64) -> PyResult<()> {
+        // Match the getter contract; composites and FPM have no scalar field.
+        self.scale_factor()?;
+        self.inner.set_scale_factor(value);
+        Ok(())
+    }
+
     #[getter(_scale_factor)]
     fn scale_factor(&self) -> PyResult<f64> {
         let json =
@@ -435,6 +449,14 @@ impl PyGemm {
     #[getter(_scale_num_tokens)]
     fn scale_num_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().gemm()?.scale_num_tokens)
+    }
+
+    /// Width-channel mutator (speculation.materialize): the materializer
+    /// multiplies token-linear ops' divisor by the verify width in place.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().gemm_mut()?.scale_num_tokens = value;
+        Ok(())
     }
 
     #[getter(_low_precision_input)]
@@ -603,6 +625,13 @@ impl PyElementWise {
     #[getter(_scale_num_tokens)]
     fn scale_num_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().elementwise()?.scale_num_tokens)
+    }
+
+    /// Width-channel mutator (speculation.materialize) — see the GEMM twin.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().elementwise_mut()?.scale_num_tokens = value;
+        Ok(())
     }
 
     #[getter(_seq_split)]
@@ -987,7 +1016,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1000,6 +1029,8 @@ impl PyContextAttention {
         head_size: u32,
         use_qk_norm: bool,
         cp_size: u32,
+        lane_order: Option<Vec<String>>,
+        apply_rope: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
@@ -1012,6 +1043,8 @@ impl PyContextAttention {
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             use_qk_norm,
             cp_size,
+            lane_order: lane_order.unwrap_or_else(default_lane_order),
+            apply_rope,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1032,6 +1065,8 @@ impl PyContextAttention {
             o.head_size,
             o.use_qk_norm,
             o.cp_size,
+            o.lane_order.clone(),
+            o.apply_rope,
         )
             .into_pyobject(py)?;
         Ok((args, PyDict::new(py)))
@@ -1083,6 +1118,11 @@ impl PyContextAttention {
         Ok(slf.as_super().context_attention()?.use_qk_norm)
     }
 
+    #[getter(_apply_rope)]
+    fn apply_rope(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().context_attention()?.apply_rope)
+    }
+
     #[getter(_cp_size)]
     fn cp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().context_attention()?.cp_size)
@@ -1091,6 +1131,22 @@ impl PyContextAttention {
     #[setter(_cp_size)]
     fn set_cp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
         slf.as_super().context_attention_mut()?.cp_size = value;
+        Ok(())
+    }
+
+    #[getter(_lane_order)]
+    fn lane_order(slf: PyRef<'_, Self>) -> PyResult<Vec<String>> {
+        Ok(slf.as_super().context_attention()?.lane_order.clone())
+    }
+
+    /// Set post-construction, mirroring ``_cp_size``: the resolved kernel-lane
+    /// walk (AIC-1715/1716) is a database-dependent computation
+    /// (``sdk/operations/attention.py::resolve_lane_order`` +
+    /// ``lane_walk_order``) done by the model-building/spec-build layer once
+    /// the database handle is available, not at op construction time.
+    #[setter(_lane_order)]
+    fn set_lane_order(mut slf: PyRefMut<'_, Self>, value: Vec<String>) -> PyResult<()> {
+        slf.as_super().context_attention_mut()?.lane_order = value;
         Ok(())
     }
 }
@@ -1110,7 +1166,7 @@ impl PyGenerationAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1121,10 +1177,10 @@ impl PyGenerationAttention {
         window_size: u32,
         head_size: u32,
         use_qk_norm: bool,
+        lane_order: Option<Vec<String>>,
+        scale_num_tokens: u32,
+        verify_query_tokens: u32,
     ) -> PyResult<(Self, PyOperation)> {
-        // use_qk_norm is accepted for calling-shape compatibility; the decode
-        // table never keyed on it (the retired serializer dropped it too).
-        let _ = use_qk_norm;
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1133,6 +1189,10 @@ impl PyGenerationAttention {
             head_size,
             window_size,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
+            lane_order: lane_order.unwrap_or_else(default_lane_order),
+            use_qk_norm,
+            scale_num_tokens,
+            verify_query_tokens,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1150,9 +1210,16 @@ impl PyGenerationAttention {
             enum_token(&o.kv_cache_dtype),
             o.window_size,
             o.head_size,
+            o.use_qk_norm,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        // Keep lane_order in kwargs so the constructor's established
+        // positional fields stay independent of the resolved lane list.
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("lane_order", o.lane_order.clone())?;
+        kwargs.set_item("scale_num_tokens", o.scale_num_tokens)?;
+        kwargs.set_item("verify_query_tokens", o.verify_query_tokens)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_n)]
@@ -1182,6 +1249,49 @@ impl PyGenerationAttention {
             "KVCacheQuantMode",
             &enum_token(&slf.as_super().generation_attention()?.kv_cache_dtype),
         )
+    }
+
+    #[getter(_use_qk_norm)]
+    fn use_qk_norm(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().generation_attention()?.use_qk_norm)
+    }
+
+    #[getter(_lane_order)]
+    fn lane_order(slf: PyRef<'_, Self>) -> PyResult<Vec<String>> {
+        Ok(slf.as_super().generation_attention()?.lane_order.clone())
+    }
+
+    /// See ``PyContextAttention.set_lane_order``.
+    #[setter(_lane_order)]
+    fn set_lane_order(mut slf: PyRefMut<'_, Self>, value: Vec<String>) -> PyResult<()> {
+        slf.as_super().generation_attention_mut()?.lane_order = value;
+        Ok(())
+    }
+    /// Speculative width channel (speculation.materialize): batch divisor
+    /// for sequence-basis pricing. See `GenerationAttentionOp` field docs.
+    #[getter(_scale_num_tokens)]
+    fn scale_num_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.scale_num_tokens)
+    }
+
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().generation_attention_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
+    /// Real per-request query width behind the fold (roofline-guard input).
+    #[getter(_verify_query_tokens)]
+    fn verify_query_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.verify_query_tokens)
+    }
+
+    #[setter(_verify_query_tokens)]
+    fn set_verify_query_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super()
+            .generation_attention_mut()?
+            .verify_query_tokens = value;
+        Ok(())
     }
 }
 
@@ -2010,6 +2120,13 @@ impl PyMoEDispatch {
         Ok(slf.as_super().moe_dispatch()?.scale_num_tokens)
     }
 
+    /// Width-channel mutator (speculation.materialize) — see the GEMM twin.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().moe_dispatch_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
     #[getter(_attn_ar_modeled)]
     fn attn_ar_modeled(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().moe_dispatch()?.attn_ar_modeled)
@@ -2064,7 +2181,7 @@ impl PyMoEAllToAll {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1))]
+    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1, workload_distribution="power_law_1.2", enable_eplb=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2079,6 +2196,8 @@ impl PyMoEAllToAll {
         comm_dtype: &str,
         sms: u32,
         attention_tp_size: u32,
+        workload_distribution: &str,
+        enable_eplb: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::MoeAllToAll(crate::operators::MoeAllToAllOp {
             name,
@@ -2093,6 +2212,8 @@ impl PyMoEAllToAll {
             node_num,
             sms,
             attention_tp_size,
+            workload_distribution: workload_distribution.to_string(),
+            enable_eplb,
         });
         Ok((PyMoEAllToAll, PyOperation { inner }))
     }
@@ -2114,6 +2235,8 @@ impl PyMoEAllToAll {
         kwargs.set_item("comm_dtype", o.comm_dtype.clone())?;
         kwargs.set_item("sms", o.sms)?;
         kwargs.set_item("attention_tp_size", o.attention_tp_size)?;
+        kwargs.set_item("workload_distribution", o.workload_distribution.clone())?;
+        kwargs.set_item("enable_eplb", o.enable_eplb)?;
         Ok((args, kwargs))
     }
 
@@ -2165,6 +2288,16 @@ impl PyMoEAllToAll {
     #[getter(_attention_tp_size)]
     fn attention_tp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().moe_a2a()?.attention_tp_size)
+    }
+
+    #[getter(_workload_distribution)]
+    fn workload_distribution(slf: PyRef<'_, Self>) -> PyResult<String> {
+        Ok(slf.as_super().moe_a2a()?.workload_distribution.clone())
+    }
+
+    #[getter(_enable_eplb)]
+    fn enable_eplb(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().moe_a2a()?.enable_eplb)
     }
 }
 
@@ -2655,7 +2788,7 @@ impl PyGDNKernel {
     const _ENGINE_QUERY_SHAPE: &'static str = "module";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, kernel_source, phase, d_model, num_k_heads, head_k_dim, num_v_heads, head_v_dim, d_conv, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, kernel_source, phase, d_model, num_k_heads, head_k_dim, num_v_heads, head_v_dim, d_conv, seq_split=1, mamba_ssm_dtype=String::from("float32")))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2669,6 +2802,7 @@ impl PyGDNKernel {
         head_v_dim: u32,
         d_conv: u32,
         seq_split: u32,
+        mamba_ssm_dtype: String,
     ) -> PyResult<(Self, PyOperation)> {
         cp_audit_gate("GDNKernel", false, seq_split)?;
         let inner = Op::Gdn(crate::operators::GdnOp {
@@ -2682,6 +2816,7 @@ impl PyGDNKernel {
             head_k_dim,
             num_v_heads,
             head_v_dim,
+            mamba_ssm_dtype,
         });
         Ok((PyGDNKernel, PyOperation { inner }))
     }
@@ -2704,7 +2839,9 @@ impl PyGDNKernel {
             o.d_conv,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("mamba_ssm_dtype", o.mamba_ssm_dtype.clone())?;
+        Ok((args, kwargs))
     }
 
     #[getter(_kernel_source)]
@@ -2751,6 +2888,11 @@ impl PyGDNKernel {
     #[getter(_d_conv)]
     fn d_conv(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().gdn()?.d_conv)
+    }
+
+    #[getter(_mamba_ssm_dtype)]
+    fn mamba_ssm_dtype(slf: PyRef<'_, Self>) -> PyResult<String> {
+        Ok(slf.as_super().gdn()?.mamba_ssm_dtype.clone())
     }
 }
 
@@ -4151,6 +4293,7 @@ pub(crate) fn reject_retired_ops(ops: &[Op]) -> Result<(), String> {
                 reject_retired_ops(&o.fallback)?;
             }
             Op::FpmForward(o) => reject_retired_ops(&o.sol_ops)?,
+            Op::TokenScale(o) => reject_retired_ops(std::slice::from_ref(&o.op))?,
             _ => {}
         }
     }

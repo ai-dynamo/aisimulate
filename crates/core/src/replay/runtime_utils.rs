@@ -14,6 +14,14 @@ use crate::engine::HandoffId;
 #[cfg(test)]
 use crate::replay::protocol::DirectRequest;
 
+/// Result of advancing a replay runtime to its next settled semantic boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ReplayStepOutcome {
+    Settled { now_ms: f64 },
+    Complete,
+    TimeLimitReached { now_ms: f64 },
+}
+
 pub(super) fn next_timestamp(
     next_arrival_ms: Option<f64>,
     next_event_ms: Option<f64>,
@@ -24,6 +32,35 @@ pub(super) fn next_timestamp(
         (None, Some(event_ms)) => Some(event_ms),
         (None, None) => None,
     }
+}
+
+/// Return the earliest scheduled event that can advance replay semantics.
+///
+/// At most one telemetry heartbeat is armed at a time. Temporarily removing
+/// it lets capped/deadlock logic inspect the canonical next event in O(log n)
+/// without allowing observation alone to keep or advance the simulation.
+pub(super) fn next_non_telemetry_event_ms<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+) -> Option<f64> {
+    if !events
+        .peek()
+        .is_some_and(|event| matches!(event.kind, SimulationEventKind::TelemetryTick))
+    {
+        return events.peek().map(|event| event.at_ms);
+    }
+
+    let telemetry = events
+        .pop()
+        .expect("peeked telemetry event must remain in the queue");
+    debug_assert!(
+        !events
+            .peek()
+            .is_some_and(|event| matches!(event.kind, SimulationEventKind::TelemetryTick)),
+        "replay must arm at most one telemetry tick"
+    );
+    let next_ms = events.peek().map(|event| event.at_ms);
+    events.push(telemetry);
+    next_ms
 }
 
 #[cfg(test)]
@@ -87,7 +124,8 @@ pub(super) fn pop_ready_worker_completions<Events: EngineEventBatch>(
         SimulationEventKind::EnginePassCompletion(completion) => Some(completion),
         SimulationEventKind::TransferComplete { .. }
         | SimulationEventKind::WorkerReady { .. }
-        | SimulationEventKind::ScalingTick => {
+        | SimulationEventKind::ScalingTick
+        | SimulationEventKind::TelemetryTick => {
             unreachable!("peeked engine completion event must match popped event")
         }
     }
@@ -190,9 +228,41 @@ pub(super) fn pop_ready_scaling_tick<Events: EngineEventBatch>(
     true
 }
 
+pub(super) fn push_telemetry_tick<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+    next_event_seq: &mut u64,
+    at_ms: f64,
+) {
+    events.push(SimulationEvent {
+        at_ms,
+        seq_no: *next_event_seq,
+        kind: SimulationEventKind::TelemetryTick,
+    });
+    *next_event_seq += 1;
+}
+
+pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+    now_ms: f64,
+) -> bool {
+    let Some(event) = events.peek() else {
+        return false;
+    };
+    if event.at_ms != now_ms {
+        return false;
+    }
+    if !matches!(event.kind, SimulationEventKind::TelemetryTick) {
+        return false;
+    }
+    events.pop().expect("event must exist after peek");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::generalized::PassId;
+    use crate::replay::components::ScheduledEngineCompletion;
     use crate::replay::events::SimulationWorkerStage;
     use uuid::Uuid;
 
@@ -215,6 +285,33 @@ mod tests {
         assert_eq!(next_timestamp(Some(3.0), None), Some(3.0));
         assert_eq!(next_timestamp(None, Some(4.0)), Some(4.0));
         assert_eq!(next_timestamp(None, None), None);
+    }
+
+    #[test]
+    fn next_non_telemetry_event_ignores_the_armed_heartbeat_without_consuming_it() {
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        push_telemetry_tick(&mut events, &mut next_event_seq, 1.0);
+
+        assert_eq!(next_non_telemetry_event_ms(&mut events), None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.peek().unwrap().at_ms, 1.0);
+
+        push_worker_ready(
+            &mut events,
+            &mut next_event_seq,
+            5.0,
+            SimulationWorkerStage::Aggregated,
+            0,
+        );
+
+        assert_eq!(next_non_telemetry_event_ms(&mut events), Some(5.0));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events.peek().unwrap().at_ms, 1.0);
+        assert!(matches!(
+            events.peek().unwrap().kind,
+            SimulationEventKind::TelemetryTick
+        ));
     }
 
     #[test]
@@ -290,5 +387,55 @@ mod tests {
         assert_eq!(events.len(), 1);
         // pop_ready_worker_ready should succeed.
         assert!(pop_ready_worker_ready(&mut events, 10.0).is_some());
+    }
+
+    #[test]
+    fn same_timestamp_events_follow_semantic_phase_and_identity_order() {
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        push_transfer_complete(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            HandoffId::new(Uuid::from_u128(2)),
+        );
+        push_worker_ready(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            SimulationWorkerStage::Decode,
+            3,
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Decode, 4, PassId(9)),
+            },
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Prefill, 2, PassId(3)),
+            },
+        );
+
+        let first = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(first.stage, SimulationWorkerStage::Prefill);
+        assert_eq!(first.worker_id, 2);
+        let second = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(second.stage, SimulationWorkerStage::Decode);
+        assert_eq!(second.worker_id, 4);
+        assert_eq!(
+            pop_ready_worker_ready(&mut events, 10.0),
+            Some((SimulationWorkerStage::Decode, 3))
+        );
+        assert_eq!(
+            pop_ready_transfer_complete(&mut events, 10.0),
+            Some(HandoffId::new(Uuid::from_u128(2)))
+        );
     }
 }

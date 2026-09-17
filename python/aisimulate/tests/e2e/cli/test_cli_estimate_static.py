@@ -14,11 +14,13 @@ CLI estimate detail report rollout:
 """
 
 import argparse
+import subprocess as sp
 
 import pytest
 
 from aiconfigurator.cli.api import EstimateResult, cli_estimate
 from aiconfigurator.cli.main import configure_parser as configure_cli_parser
+from aiconfigurator.sdk import common
 
 pytestmark = pytest.mark.e2e
 
@@ -170,6 +172,54 @@ def test_cli_detail_flag_parses():
     assert ns.detail == "memory,time"
 
 
+@pytest.mark.parametrize("detail", ["time", "all"])
+def test_cross_node_ep_detail_survives_unavailable_sol_comparison(detail):
+    command = [
+        "aiconfigurator",
+        "cli",
+        "estimate",
+        "--model-path",
+        "deepseek-ai/DeepSeek-R1",
+        "--system",
+        "gb200",
+        "--backend",
+        "sglang",
+        "--perf-db-version",
+        "0.5.16",
+        "--estimate-mode",
+        "static",
+        "--isl",
+        "1024",
+        "--osl",
+        "2",
+        "--batch-size",
+        "1",
+        "--tp-size",
+        "1",
+        "--pp-size",
+        "1",
+        "--attention-dp-size",
+        "32",
+        "--moe-tp-size",
+        "1",
+        "--moe-ep-size",
+        "32",
+        "--detail",
+        detail,
+        "--no-color",
+        "--log-level",
+        "ERROR",
+    ]
+    completed = sp.run(command, capture_output=True, text=True)
+    output = f"{completed.stdout}\n{completed.stderr}"
+
+    assert completed.returncode == 0, output
+    assert "Performance Estimate (static)" in output
+    assert f"Detailed Breakdown ({detail})" in output
+    assert "SOL comparison unavailable: Cross-node EP requires DeepEP A2A data" in output
+    assert "context_moe_dispatch" in output
+
+
 def test_cli_static_modes_in_choices():
     """The estimate-mode choices must include the new static variants."""
     parser = argparse.ArgumentParser()
@@ -231,6 +281,36 @@ def test_static_estimate_source_tag_empirical_in_empirical_mode():
     )
 
 
+@pytest.mark.build
+@pytest.mark.parametrize("mode", ["static", "agg"])
+@pytest.mark.parametrize("fmha_quant_mode", [None, "fp8"])
+def test_glm52_fpm_estimate_uses_whole_model_fmha_identity(monkeypatch, mode, fmha_quant_mode):
+    """Public FPM estimates must not be gated by unrelated op-level FMHA data."""
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+    result = cli_estimate(
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system_name="b200_sxm",
+        backend_name="vllm",
+        backend_version="0.25.1",
+        forward_model="fpm",
+        tp_size=8,
+        pp_size=1,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        batch_size=1,
+        isl=1024,
+        osl=4,
+        mode=mode,
+        fmha_quant_mode=fmha_quant_mode,
+    )
+
+    assert result.ttft > 0
+    assert result.tpot > 0
+
+
 def test_agg_estimate_responds_to_common_prefix():
     """Regression: ``--prefix`` is now a common param. With prefix > 0 the
     effective TTFT should differ from prefix=0 because the context phase
@@ -264,6 +344,42 @@ def test_agg_estimate_responds_to_common_nextn():
     assert (
         base.ttft != with_mtp.ttft or base.tpot != with_mtp.tpot or base.raw.get("memory") != with_mtp.raw.get("memory")
     ), "nextn=1 produced an estimate identical to nextn=0; the kwarg was dropped"
+
+
+def test_agg_estimate_resolves_lightning_nvfp4_for_hopper_before_model_construction(monkeypatch):
+    """Hopper must use the weight-only MoE lane before its ops are built."""
+    import aiconfigurator.sdk.models as models
+
+    class ModelConstructionObservedError(Exception):
+        pass
+
+    real_get_model = models.get_model
+
+    def get_model_with_resolved_moe(model_path, model_config, backend_name):
+        assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4_wo
+        model = real_get_model(model_path, model_config, backend_name)
+        assert model.config.moe_quant_mode == common.MoEQuantMode.nvfp4_wo
+        raise ModelConstructionObservedError
+
+    monkeypatch.setattr(models, "get_model", get_model_with_resolved_moe)
+
+    with pytest.raises(ModelConstructionObservedError):
+        cli_estimate(
+            model_path="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+            system_name="h100_sxm",
+            backend_name="vllm",
+            backend_version="0.24.0",
+            database_mode="SILICON",
+            kvcache_quant_mode="fp8",
+            mode="agg",
+            isl=65536,
+            osl=400,
+            prefix=58982,
+            tp_size=1,
+            batch_size=16,
+            moe_tp_size=1,
+            moe_ep_size=1,
+        )
 
 
 def _disagg_kwargs() -> dict:

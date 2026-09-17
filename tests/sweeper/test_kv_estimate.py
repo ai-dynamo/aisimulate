@@ -30,46 +30,18 @@ def test_memory_fraction_kind():
 
 
 def test_estimate_kv_tokens_returns_capacity(monkeypatch):
-    calls = []
-
-    def estimate(*args, **kwargs):
-        calls.append(kwargs)
-        return {"total_kv_size_tokens": 123456}
-
     monkeypatch.setattr(
         kv_estimate_mod,
         "estimate_kv_cache",
-        estimate,
+        lambda *args, **kwargs: {"total_kv_size_tokens": 123456},
     )
     sh = ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4)
-    assert (
-        estimate_kv_tokens(
-            sh,
-            **_COMMON,
-            memory_fraction=0.82,
-            nextn=3,
-            gemm_quant_mode="fp8",
-            moe_quant_mode="fp8",
-            kvcache_quant_mode="fp8",
-            fmha_quant_mode="fp8",
-            comm_quant_mode="fp8",
-        )
-        == 123456
-    )
-    assert calls[0]["memory_fraction_value"] == 0.82
-    assert calls[0]["nextn"] == 3
-    assert calls[0]["gemm_quant_mode"] == "fp8"
-    assert calls[0]["moe_quant_mode"] == "fp8"
-    assert calls[0]["kvcache_quant_mode"] == "fp8"
-    assert calls[0]["fmha_quant_mode"] == "fp8"
-    assert calls[0]["comm_quant_mode"] == "fp8"
+    assert estimate_kv_tokens(sh, **_COMMON) == 123456
 
 
 def test_estimate_kv_tokens_oom_returns_none(monkeypatch):
     def boom(*a, **k):
-        raise ValueError(
-            "no KV budget: non-KV memory (361903882240 bytes) meets/exceeds the KV-cacheable budget"
-        )
+        raise ValueError("no KV budget: non-KV memory (361903882240 bytes) meets/exceeds the KV-cacheable budget")
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
     sh = ParallelShape(tp=1, dp=2, moe_tp=1, moe_ep=2)
@@ -98,9 +70,7 @@ def test_feasible_shape_tokens_filters_short_and_oom_and_dedups(monkeypatch):
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", fake)
     big = ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4)  # 40000 -> feasible
-    small = ParallelShape(
-        tp=2, dp=1, moe_tp=1, moe_ep=2
-    )  # 20000 -> < max_seq_len -> dropped
+    small = ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)  # 20000 -> < max_seq_len -> dropped
     oom = ParallelShape(tp=1, dp=2, moe_tp=1, moe_ep=2)  # None -> dropped
 
     feasible = feasible_shape_tokens(

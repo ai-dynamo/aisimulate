@@ -16,6 +16,25 @@ new_key_type! {
     pub(crate) struct BlockCopyId;
 }
 
+/// Opaque identity for a transfer that is still reading request-owned capacity.
+///
+/// The pool deliberately does not know transfer timing. It propagates this
+/// identity with the anonymous capacity backing the source until its caller
+/// reports that the transfer reached a terminal state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub(crate) struct SourceReuseDependency(u64);
+
+impl SourceReuseDependency {
+    pub(crate) const fn from_adapter_id(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub(crate) const fn adapter_id(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug)]
 enum CopyState {
     Private,
@@ -34,6 +53,25 @@ enum CopyState {
 #[derive(Debug)]
 struct BlockCopy {
     state: CopyState,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CopySourceReuse {
+    /// Pending reader of the anonymous capacity occupied by this copy.
+    dependency: SourceReuseDependency,
+    /// The caller ordered this copy's next write after `dependency`.
+    ///
+    /// Authorization does not satisfy the dependency. It only permits the
+    /// write-producing pass to proceed behind an already-installed fence.
+    write_after_source_reuse: bool,
+}
+
+/// Host-only copy metadata. Ordinary G1 pools never allocate this sidecar, so
+/// their per-copy representation remains exactly [`CopyState`].
+#[derive(Default)]
+struct SourceReuseTracker {
+    by_copy: FxHashMap<BlockCopyId, CopySourceReuse>,
+    pending: FxHashSet<SourceReuseDependency>,
 }
 
 struct HashCopies {
@@ -106,20 +144,132 @@ pub(crate) struct PrefixHit {
     pub(crate) is_active: bool,
 }
 
+/// Scalar anonymous capacity upgrades to dependency tracking only when needed.
+enum FreshCapacity {
+    Untracked(usize),
+    Tracked(Vec<Option<SourceReuseDependency>>),
+}
+
+impl FreshCapacity {
+    fn len(&self) -> usize {
+        match self {
+            Self::Untracked(count) => *count,
+            Self::Tracked(capacity) => capacity.len(),
+        }
+    }
+
+    fn pop(&mut self) -> Option<Option<SourceReuseDependency>> {
+        match self {
+            Self::Untracked(count) => {
+                if *count == 0 {
+                    None
+                } else {
+                    *count -= 1;
+                    Some(None)
+                }
+            }
+            Self::Tracked(capacity) => capacity.pop(),
+        }
+    }
+
+    fn push(&mut self, dependency: Option<SourceReuseDependency>) {
+        match (self, dependency) {
+            (Self::Untracked(count), None) => *count += 1,
+            (Self::Untracked(_), Some(_)) => {
+                panic!("dependency-bearing capacity requires tracking")
+            }
+            (Self::Tracked(capacity), dependency) => capacity.push(dependency),
+        }
+    }
+
+    fn take_tail(&mut self, count: usize) -> Self {
+        assert!(count <= self.len(), "prechecked free capacity disappeared");
+        match self {
+            Self::Untracked(available) => {
+                *available -= count;
+                Self::Untracked(count)
+            }
+            Self::Tracked(available) => {
+                let split_at = available.len() - count;
+                Self::Tracked(available.split_off(split_at))
+            }
+        }
+    }
+
+    fn extend(&mut self, returned: Self) {
+        match (self, returned) {
+            (Self::Untracked(current), Self::Untracked(returned)) => *current += returned,
+            (Self::Tracked(current), Self::Untracked(returned)) => {
+                current.resize(current.len() + returned, None);
+            }
+            (Self::Untracked(_), Self::Tracked(_)) => {
+                panic!("tracked reservation returned to an untracked pool")
+            }
+            (Self::Tracked(current), Self::Tracked(mut returned)) => {
+                current.append(&mut returned);
+            }
+        }
+    }
+
+    fn pending_dependencies(
+        &self,
+        fresh: usize,
+        pending: Option<&FxHashSet<SourceReuseDependency>>,
+    ) -> Vec<SourceReuseDependency> {
+        assert!(
+            fresh <= self.len(),
+            "fresh dependency query exceeds reservation"
+        );
+        match (self, pending) {
+            (Self::Untracked(_), _) => Vec::new(),
+            (Self::Tracked(capacity), Some(pending)) => unique_pending_dependencies(
+                capacity.iter().rev().take(fresh).copied().flatten(),
+                pending,
+            ),
+            (Self::Tracked(capacity), None) => {
+                assert!(
+                    capacity.iter().all(Option::is_none),
+                    "tracked capacity lost its source-reuse sidecar"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn enable_tracking(&mut self) {
+        let Self::Untracked(count) = self else {
+            return;
+        };
+        let count = *count;
+        *self = Self::Tracked(vec![None; count]);
+    }
+}
+
 /// Capacity and cached-prefix pins held before a manager commits ownership.
 pub(crate) struct BlockReservation {
     /// Cached prefix copies in request order, from root/head to suffix/leaf.
     prefix: Vec<(SequenceHash, BlockCopyId)>,
-    fresh: usize,
+    /// Anonymous fresh-capacity tokens. A token may retain a pending reader
+    /// from its prior use; reservation transfers ownership without permitting a
+    /// write until the caller installs the corresponding fence.
+    fresh: FreshCapacity,
 }
 
 impl BlockReservation {
     pub(crate) fn len(&self) -> usize {
-        self.prefix.len() + self.fresh
+        self.prefix.len() + self.fresh.len()
     }
 
     pub(crate) fn fresh_len(&self) -> usize {
-        self.fresh
+        self.fresh.len()
+    }
+
+    pub(crate) fn pending_dependencies(
+        &self,
+        fresh: usize,
+        pending: Option<&FxHashSet<SourceReuseDependency>>,
+    ) -> Vec<SourceReuseDependency> {
+        self.fresh.pending_dependencies(fresh, pending)
     }
 }
 
@@ -138,6 +288,10 @@ pub(crate) struct VllmBlockPool {
     inactive_tail: Option<BlockCopyId>,
     inactive_len: usize,
     reserved: usize,
+    /// Anonymous currently unoccupied capacity. Only a pending source reader
+    /// follows a token through release, eviction, reservation, and reuse.
+    free: FreshCapacity,
+    source_reuse: Option<Box<SourceReuseTracker>>,
 }
 
 impl VllmBlockPool {
@@ -151,6 +305,8 @@ impl VllmBlockPool {
             inactive_tail: None,
             inactive_len: 0,
             reserved: 0,
+            free: FreshCapacity::Untracked(capacity),
+            source_reuse: None,
         }
     }
 
@@ -271,12 +427,8 @@ impl VllmBlockPool {
         }
 
         let mut removed = Vec::with_capacity(needed_evictions);
-        for _ in 0..needed_evictions {
-            if let Some(hash) = self.evict_one() {
-                removed.push(hash);
-            }
-        }
-        self.reserved += fresh;
+        let fresh = self.take_fresh_capacity(fresh, needed_evictions, &mut removed);
+        self.reserved += fresh.len();
 
         Some(ReserveOutcome {
             reservation: BlockReservation {
@@ -295,12 +447,8 @@ impl VllmBlockPool {
         }
 
         let mut removed = Vec::with_capacity(needed_evictions);
-        for _ in 0..needed_evictions {
-            if let Some(hash) = self.evict_one() {
-                removed.push(hash);
-            }
-        }
-        self.reserved += fresh;
+        let fresh = self.take_fresh_capacity(fresh, needed_evictions, &mut removed);
+        self.reserved += fresh.len();
 
         Some(ReserveOutcome {
             reservation: BlockReservation {
@@ -324,14 +472,35 @@ impl VllmBlockPool {
     }
 
     pub(crate) fn allocate_private(&mut self, reservation: &mut BlockReservation) -> BlockCopyId {
-        assert!(reservation.fresh > 0, "reservation has no fresh capacity");
+        let Some(source_reuse) = reservation.fresh.pop() else {
+            panic!("reservation has no fresh capacity")
+        };
         assert!(self.reserved > 0, "pool reserved-capacity underflow");
-        reservation.fresh -= 1;
         self.reserved -= 1;
 
-        self.copies.insert(BlockCopy {
+        let id = self.copies.insert(BlockCopy {
             state: CopyState::Private,
-        })
+        });
+        if let Some(dependency) = source_reuse {
+            let tracker = self
+                .source_reuse
+                .as_deref_mut()
+                .expect("dependency-bearing capacity lost its source-reuse sidecar");
+            assert!(
+                tracker
+                    .by_copy
+                    .insert(
+                        id,
+                        CopySourceReuse {
+                            dependency,
+                            write_after_source_reuse: false,
+                        },
+                    )
+                    .is_none(),
+                "new copy already had source-reuse state"
+            );
+        }
+        id
     }
 
     /// Allocate a transferred/computed full block directly into the cache.
@@ -349,13 +518,24 @@ impl VllmBlockPool {
     /// Make a request-private computed full block available for prefix reuse.
     /// Returns whether this is the first resident physical copy of `hash`.
     pub(crate) fn cache_private(&mut self, id: BlockCopyId, hash: SequenceHash) -> bool {
-        let Some(copy) = self.copies.get_mut(id) else {
+        let Some(copy) = self.copies.get(id) else {
             panic!("attempted to cache an unknown block copy")
         };
+        let source_reuse = self.copy_source_reuse(id);
+        assert!(
+            source_reuse.is_none_or(|state| {
+                !self.is_source_reuse_dependency_pending(state.dependency)
+                    || state.write_after_source_reuse
+            }),
+            "cannot write dependency-bearing capacity before its source transfer is terminal"
+        );
         assert!(
             matches!(copy.state, CopyState::Private),
             "only a private copy can enter the prefix cache"
         );
+        let Some(copy) = self.copies.get_mut(id) else {
+            panic!("attempted to cache an unknown block copy")
+        };
         copy.state = CopyState::Cached {
             hash,
             refs: 1,
@@ -363,6 +543,13 @@ impl VllmBlockPool {
             inactive_prev: None,
             inactive_next: None,
         };
+        if let Some(state) = self
+            .source_reuse
+            .as_deref_mut()
+            .and_then(|tracker| tracker.by_copy.get_mut(&id))
+        {
+            state.write_after_source_reuse = false;
+        }
         match self.by_hash.entry(hash) {
             Entry::Occupied(mut entry) => {
                 entry.get_mut().push(id);
@@ -382,7 +569,11 @@ impl VllmBlockPool {
             panic!("attempted to release an unknown block copy")
         };
         if matches!(copy.state, CopyState::Private) {
-            self.copies.remove(id);
+            self.copies
+                .remove(id)
+                .expect("checked private copy disappeared before release");
+            let source_reuse = self.take_copy_source_reuse(id);
+            self.free.push(source_reuse);
             return;
         }
 
@@ -409,10 +600,11 @@ impl VllmBlockPool {
             self.unpin(id, hash);
         }
         assert!(
-            self.reserved >= reservation.fresh,
+            self.reserved >= reservation.fresh.len(),
             "pool reserved-capacity underflow"
         );
-        self.reserved -= reservation.fresh;
+        self.reserved -= reservation.fresh.len();
+        self.free.extend(reservation.fresh);
     }
 
     pub(crate) fn num_active(&self) -> usize {
@@ -428,9 +620,184 @@ impl VllmBlockPool {
     }
 
     fn free_capacity(&self) -> usize {
-        self.capacity
-            .checked_sub(self.copies.len() + self.reserved)
-            .unwrap_or_else(|| panic!("block-pool occupancy exceeds capacity"))
+        debug_assert_eq!(
+            self.capacity,
+            self.copies.len() + self.reserved + self.free.len(),
+            "block-pool capacity accounting drifted"
+        );
+        self.free.len()
+    }
+
+    fn copy_source_reuse(&self, id: BlockCopyId) -> Option<CopySourceReuse> {
+        self.source_reuse
+            .as_deref()
+            .and_then(|tracker| tracker.by_copy.get(&id))
+            .copied()
+    }
+
+    fn take_copy_source_reuse(&mut self, id: BlockCopyId) -> Option<SourceReuseDependency> {
+        self.source_reuse
+            .as_deref_mut()
+            .and_then(|tracker| tracker.by_copy.remove(&id))
+            .map(|state| state.dependency)
+    }
+
+    pub(crate) fn can_attach_source_reuse_dependency(&self, copies: &[BlockCopyId]) -> bool {
+        let mut unique = FxHashSet::default();
+        copies.iter().all(|id| {
+            unique.insert(*id)
+                && self.copies.contains_key(*id)
+                && self
+                    .copy_source_reuse(*id)
+                    .is_none_or(|state| !self.is_source_reuse_dependency_pending(state.dependency))
+        })
+    }
+
+    pub(crate) fn attach_source_reuse_dependency(
+        &mut self,
+        copies: &[BlockCopyId],
+        dependency: SourceReuseDependency,
+    ) {
+        assert!(
+            !self.is_source_reuse_dependency_pending(dependency),
+            "source dependency is already pending"
+        );
+        assert!(
+            self.can_attach_source_reuse_dependency(copies),
+            "source copies changed after synchronous validation"
+        );
+        self.free.enable_tracking();
+        let tracker = self
+            .source_reuse
+            .get_or_insert_with(|| Box::new(SourceReuseTracker::default()));
+        let inserted = tracker.pending.insert(dependency);
+        assert!(inserted, "source dependency was prechecked as absent");
+        for &id in copies {
+            assert!(
+                self.copies.contains_key(id),
+                "source copy disappeared during synchronous attachment"
+            );
+            let previous = tracker.by_copy.insert(
+                id,
+                CopySourceReuse {
+                    dependency,
+                    write_after_source_reuse: false,
+                },
+            );
+            assert!(
+                previous.is_none_or(|state| !tracker.pending.contains(&state.dependency)),
+                "source copy retained another pending dependency"
+            );
+        }
+    }
+
+    pub(crate) fn satisfy_source_reuse_dependency(
+        &mut self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.source_reuse
+            .as_deref_mut()
+            .is_some_and(|tracker| tracker.pending.remove(&dependency))
+    }
+
+    pub(crate) fn is_source_reuse_dependency_pending(
+        &self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.source_reuse
+            .as_deref()
+            .is_some_and(|tracker| tracker.pending.contains(&dependency))
+    }
+
+    pub(crate) fn reservation_pending_dependencies(
+        &self,
+        reservation: &BlockReservation,
+    ) -> Vec<SourceReuseDependency> {
+        self.reservation_next_pending_dependencies(reservation, reservation.fresh_len())
+    }
+
+    pub(crate) fn reservation_next_pending_dependencies(
+        &self,
+        reservation: &BlockReservation,
+        fresh: usize,
+    ) -> Vec<SourceReuseDependency> {
+        reservation.pending_dependencies(
+            fresh,
+            self.source_reuse.as_deref().map(|tracker| &tracker.pending),
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn copies_pending_dependencies(
+        &self,
+        copies: impl IntoIterator<Item = BlockCopyId>,
+    ) -> Vec<SourceReuseDependency> {
+        let Some(tracker) = self.source_reuse.as_deref() else {
+            return Vec::new();
+        };
+        unique_pending_dependencies(
+            copies
+                .into_iter()
+                .filter(|id| self.copies.contains_key(*id))
+                .filter_map(|id| tracker.by_copy.get(&id).map(|state| state.dependency)),
+            &tracker.pending,
+        )
+    }
+
+    /// Permit the next write to request-owned copies after the caller installs
+    /// a fence for every listed dependency.
+    ///
+    /// This does not satisfy the dependency. It continues to follow the
+    /// capacity until the source transfer itself reaches terminal.
+    pub(crate) fn authorize_source_reuse_writes(
+        &mut self,
+        copies: impl IntoIterator<Item = BlockCopyId>,
+        dependencies: &[SourceReuseDependency],
+    ) {
+        let allowed: FxHashSet<_> = dependencies.iter().copied().collect();
+        let (copies_state, source_reuse) = (&self.copies, &mut self.source_reuse);
+        for id in copies {
+            assert!(
+                copies_state.contains_key(id),
+                "attempted to authorize an unknown block copy"
+            );
+            let Some(tracker) = source_reuse.as_deref_mut() else {
+                continue;
+            };
+            let Some(state) = tracker.by_copy.get_mut(&id) else {
+                continue;
+            };
+            if tracker.pending.contains(&state.dependency) {
+                assert!(
+                    allowed.contains(&state.dependency),
+                    "source-reuse write authorization omitted a pending dependency"
+                );
+                assert!(
+                    !state.write_after_source_reuse,
+                    "source-reuse write was authorized twice"
+                );
+                state.write_after_source_reuse = true;
+            }
+        }
+    }
+
+    fn take_fresh_capacity(
+        &mut self,
+        fresh: usize,
+        needed_evictions: usize,
+        removed: &mut Vec<SequenceHash>,
+    ) -> FreshCapacity {
+        let from_free = fresh - needed_evictions;
+        let mut capacity = self.free.take_tail(from_free);
+        for _ in 0..needed_evictions {
+            let evicted = self.evict_one();
+            if let Some(hash) = evicted.removed_hash {
+                removed.push(hash);
+            }
+            capacity.push(evicted.source_reuse);
+        }
+        assert_eq!(capacity.len(), fresh);
+        capacity
     }
 
     fn first_copy(&self, hash: SequenceHash) -> Option<BlockCopyId> {
@@ -702,7 +1069,7 @@ impl VllmBlockPool {
     }
 
     /// Evict one physical copy. A hash is returned only on its final copy.
-    fn evict_one(&mut self) -> Option<SequenceHash> {
+    fn evict_one(&mut self) -> EvictedCapacity {
         let Some(id) = self.inactive_head else {
             panic!("prechecked inactive capacity disappeared")
         };
@@ -717,6 +1084,7 @@ impl VllmBlockPool {
         let Some(copy) = self.copies.remove(id) else {
             panic!("inactive LRU points to a missing copy")
         };
+        let source_reuse = self.take_copy_source_reuse(id);
         let CopyState::Cached {
             hash, refs, pins, ..
         } = copy.state
@@ -738,13 +1106,34 @@ impl VllmBlockPool {
                 }
             }
         };
-        if remove_hash {
+        let removed_hash = if remove_hash {
             self.by_hash.remove(&hash);
             Some(hash)
         } else {
             None
+        };
+        EvictedCapacity {
+            removed_hash,
+            source_reuse,
         }
     }
+}
+
+struct EvictedCapacity {
+    removed_hash: Option<SequenceHash>,
+    source_reuse: Option<SourceReuseDependency>,
+}
+
+fn unique_pending_dependencies(
+    dependencies: impl IntoIterator<Item = SourceReuseDependency>,
+    pending: &FxHashSet<SourceReuseDependency>,
+) -> Vec<SourceReuseDependency> {
+    let mut seen = FxHashSet::default();
+    dependencies
+        .into_iter()
+        .filter(|dependency| pending.contains(dependency))
+        .filter(|dependency| seen.insert(*dependency))
+        .collect()
 }
 
 #[cfg(test)]
@@ -773,6 +1162,37 @@ mod tests {
         assert_eq!(outcome.reservation.prefix.capacity(), 0);
         assert_eq!(outcome.reservation.fresh_len(), 3);
         pool.cancel(outcome.reservation);
+    }
+
+    #[test]
+    fn ordinary_capacity_stays_scalar_until_a_source_dependency_exists() {
+        assert_eq!(
+            std::mem::size_of::<BlockCopy>(),
+            std::mem::size_of::<CopyState>(),
+            "ordinary copies must not embed host-only dependency metadata"
+        );
+        let mut pool = VllmBlockPool::new(2);
+        assert!(pool.source_reuse.is_none());
+        let mut reservation = reserve(&mut pool, &[], 2).reservation;
+        assert!(matches!(&reservation.fresh, FreshCapacity::Untracked(2)));
+        let first = pool.allocate_private(&mut reservation);
+        let second = pool.allocate_private(&mut reservation);
+        assert!(pool.cache_private(first, 1));
+        assert!(pool.cache_private(second, 2));
+        pool.release(first);
+        pool.release(second);
+
+        let pressure = reserve(&mut pool, &[], 2);
+        assert!(matches!(
+            &pressure.reservation.fresh,
+            FreshCapacity::Untracked(2)
+        ));
+        pool.cancel(pressure.reservation);
+        assert!(matches!(&pool.free, FreshCapacity::Untracked(2)));
+        assert!(
+            pool.source_reuse.is_none(),
+            "ordinary allocation must not create the host-only sidecar"
+        );
     }
 
     #[test]
@@ -992,6 +1412,63 @@ mod tests {
         assert_eq!(pressure.removed, vec![7]);
         pool.cancel(pressure.reservation);
         pool.assert_lru_consistent();
+    }
+
+    #[test]
+    fn source_dependency_follows_eviction_reservation_and_cancel() {
+        let mut pool = VllmBlockPool::new(1);
+        let mut source = reserve(&mut pool, &[], 1).reservation;
+        let source_id = pool.allocate_private(&mut source);
+        assert!(pool.cache_private(source_id, 7));
+        let dependency = SourceReuseDependency::from_adapter_id(41);
+        assert!(pool.can_attach_source_reuse_dependency(&[source_id]));
+        pool.attach_source_reuse_dependency(&[source_id], dependency);
+        assert!(matches!(&pool.free, FreshCapacity::Tracked(_)));
+
+        // The source remains an ordinary eviction candidate: its dependency
+        // follows the capacity instead of pinning the copy.
+        pool.release(source_id);
+        assert_eq!(pool.num_inactive(), 1);
+
+        let first = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(
+            pool.reservation_pending_dependencies(&first),
+            vec![dependency]
+        );
+        pool.cancel(first);
+
+        let second = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(
+            pool.reservation_pending_dependencies(&second),
+            vec![dependency]
+        );
+        assert!(pool.satisfy_source_reuse_dependency(dependency));
+        assert!(pool.reservation_pending_dependencies(&second).is_empty());
+        pool.cancel(second);
+    }
+
+    #[test]
+    fn source_dependency_is_local_to_reused_anonymous_capacity() {
+        let mut pool = VllmBlockPool::new(2);
+        let mut source = reserve(&mut pool, &[], 1).reservation;
+        let source_id = pool.allocate_private(&mut source);
+        assert!(pool.cache_private(source_id, 7));
+        let dependency = SourceReuseDependency::from_adapter_id(9);
+        pool.attach_source_reuse_dependency(&[source_id], dependency);
+        pool.release(source_id);
+
+        // The untouched free token remains immediately writable.
+        let clean = reserve(&mut pool, &[], 1).reservation;
+        assert!(pool.reservation_pending_dependencies(&clean).is_empty());
+
+        // Holding the clean token forces the source capacity to be reused.
+        let dependent = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(
+            pool.reservation_pending_dependencies(&dependent),
+            vec![dependency]
+        );
+        pool.cancel(dependent);
+        pool.cancel(clean);
     }
 
     #[test]

@@ -1,0 +1,3135 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Local Weka/AgentX trace ingestion for typed agentic replay.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+
+use super::{
+    AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphBuilder, AgenticHashIdScope,
+    AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
+};
+
+const JOIN_EPSILON_SECONDS: f64 = 1e-6;
+const SEAM_MAX_GAP_SECONDS: f64 = 3600.0;
+const SEAM_MIN_OVERLAP_RATIO: f64 = 0.5;
+const NANOSECONDS_PER_SECOND: f64 = 1_000_000_000.0;
+const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
+/// Versioned domain separator for persisted Weka corpus provenance.
+///
+/// Changing these bytes intentionally changes every Weka source digest and,
+/// consequently, the persisted graph identity. Increment the algorithm
+/// version only when making an explicit provenance compatibility break.
+const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-corpus-v1\0";
+const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisimulate-weka-corpus-semantics-v2\0";
+
+#[derive(Default)]
+struct WekaGraphCache {
+    path_digests: HashMap<(PathBuf, WekaNestedTimestampBasis), String>,
+    graphs: HashMap<(String, WekaNestedTimestampBasis), CachedWekaGraph>,
+}
+
+#[derive(Clone)]
+struct CachedWekaGraph {
+    graph: AgenticTrace,
+    resolved_timestamp_basis: WekaResolvedTimestampBasis,
+}
+
+static WEKA_GRAPH_CACHE: OnceLock<Mutex<WekaGraphCache>> = OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WekaImportSummary {
+    pub header: AgenticMooncakeHeader,
+    pub files: usize,
+    pub plays: usize,
+    pub requests: usize,
+    pub raw_zero_outputs: usize,
+    pub nested_timestamp_basis: WekaResolvedTimestampBasis,
+}
+
+/// Interpretation requested for timestamps nested under a Weka subagent marker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WekaNestedTimestampBasis {
+    /// Heuristically select one basis after scanning every nested request.
+    #[default]
+    Auto,
+    /// Nested timestamps are already root-trace-relative.
+    Absolute,
+    /// Nested timestamps are relative to their enclosing subagent marker.
+    Relative,
+}
+
+impl WekaNestedTimestampBasis {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Absolute => "absolute",
+            Self::Relative => "relative",
+        }
+    }
+}
+
+/// Corpus-wide timestamp interpretation selected during preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WekaResolvedTimestampBasis {
+    Absolute,
+    Relative,
+    /// The corpus contains no replayable nested subagent requests.
+    NotApplicable,
+}
+
+impl WekaResolvedTimestampBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Absolute => "absolute",
+            Self::Relative => "relative",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+
+    fn effective_basis(self) -> WekaNestedTimestampBasis {
+        match self {
+            Self::Relative => WekaNestedTimestampBasis::Relative,
+            Self::Absolute | Self::NotApplicable => WekaNestedTimestampBasis::Absolute,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WekaImportOptions {
+    pub nested_timestamp_basis: WekaNestedTimestampBasis,
+}
+
+/// A preflighted local Weka corpus.
+///
+/// Opening performs deterministic traversal, rejects symlinks and mixed block
+/// sizes, computes the raw corpus digest, and writes the validated lowering to
+/// a private spool before any row can be emitted. Later source-file
+/// changes therefore cannot diverge emitted rows from the header provenance.
+pub struct WekaImporter {
+    root: PathBuf,
+    files: usize,
+    plays: usize,
+    requests: usize,
+    raw_zero_outputs: usize,
+    nested_timestamp_basis: WekaResolvedTimestampBasis,
+    raw_digest: String,
+    header: AgenticMooncakeHeader,
+    rows: tempfile::NamedTempFile,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubagentMode {
+    Blocking,
+    Background,
+}
+
+impl WekaImporter {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, WekaImportOptions::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: WekaImportOptions) -> Result<Self> {
+        let path = path.as_ref();
+        let (root, files) = collect_source_files(path)?;
+        if files.is_empty() {
+            bail!(
+                "Weka source {} contains no JSON or JSONL files",
+                path.display()
+            );
+        }
+
+        let mut corpus_hasher = new_corpus_hasher();
+        let mut snapshots = Vec::with_capacity(files.len());
+        for (file_path, relative_path) in files {
+            let snapshot = snapshot_source_file(&file_path, &relative_path, &mut corpus_hasher)?;
+            snapshots.push(SourceSnapshot {
+                jsonl: is_jsonl(&file_path),
+                display_path: file_path,
+                relative_path,
+                file: snapshot,
+            });
+        }
+        let raw_digest = corpus_hasher.finalize().to_hex().to_string();
+
+        let mut block_size = None;
+        let mut evidence = TimestampBasisEvidence::default();
+        let mut preflight_plays = 0;
+        for snapshot in &snapshots {
+            for_each_source_trace(
+                File::open(&snapshot.file).context("reopening Weka source snapshot")?,
+                snapshot.jsonl,
+                &snapshot.display_path,
+                &snapshot.relative_path,
+                |trace, source_name| {
+                    validate_trace_header(trace, source_name)?;
+                    validate_trace_models(trace, source_name)?;
+                    validate_trace_requests_and_collect_timestamp_evidence(
+                        trace,
+                        source_name,
+                        &mut evidence,
+                    )?;
+                    match block_size {
+                        Some(expected) if expected != trace.block_size => bail!(
+                            "Weka corpus mixes block sizes: {} has {}, expected {}",
+                            source_name,
+                            trace.block_size,
+                            expected
+                        ),
+                        None => block_size = Some(trace.block_size),
+                        _ => {}
+                    }
+                    preflight_plays += 1;
+                    Ok(())
+                },
+            )?;
+        }
+        let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis);
+        let digest = semantic_digest(&raw_digest, nested_timestamp_basis);
+
+        let mut plays = 0;
+        let mut requests = 0;
+        let mut raw_zero_outputs = 0;
+        let file_count = snapshots.len();
+        let mut canonical_rows =
+            tempfile::NamedTempFile::new().context("creating Weka row spool")?;
+        for snapshot in &snapshots {
+            for_each_source_trace(
+                File::open(&snapshot.file).context("reopening Weka source snapshot")?,
+                snapshot.jsonl,
+                &snapshot.display_path,
+                &snapshot.relative_path,
+                |trace, source_name| {
+                    // Preflight the complete lowering contract before callers are
+                    // allowed to observe a single emitted row. This catches
+                    // malformed timing, ownership, status, and graph topology in
+                    // every play while keeping memory bounded to one play.
+                    let lowered = lower_trace(
+                        trace,
+                        source_name,
+                        plays,
+                        nested_timestamp_basis.effective_basis(),
+                    )?;
+                    validate_preflight_graph(trace.block_size, &lowered.rows)?;
+                    raw_zero_outputs += lowered.raw_zero_outputs;
+                    requests += lowered.rows.len();
+                    for row in lowered.rows {
+                        serde_json::to_writer(canonical_rows.as_file_mut(), &row)
+                            .context("writing preflighted Weka row spool")?;
+                        canonical_rows
+                            .as_file_mut()
+                            .write_all(b"\n")
+                            .context("writing preflighted Weka row delimiter")?;
+                    }
+                    plays += 1;
+                    Ok(())
+                },
+            )?;
+        }
+        canonical_rows
+            .as_file_mut()
+            .flush()
+            .context("flushing preflighted Weka row spool")?;
+        canonical_rows
+            .as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .context("rewinding preflighted Weka row spool")?;
+        debug_assert_eq!(plays, preflight_plays);
+        tracing::info!(
+            requested_basis = options.nested_timestamp_basis.as_str(),
+            resolved_basis = nested_timestamp_basis.as_str(),
+            resolution = if options.nested_timestamp_basis == WekaNestedTimestampBasis::Auto {
+                "corpus_heuristic"
+            } else {
+                "configured"
+            },
+            files = file_count,
+            plays,
+            requests,
+            relative_witness = evidence.relative_witness.as_deref().unwrap_or("none"),
+            "resolved Weka nested timestamp basis for complete corpus"
+        );
+
+        Ok(Self {
+            root,
+            files: file_count,
+            plays,
+            requests,
+            raw_zero_outputs,
+            nested_timestamp_basis,
+            raw_digest,
+            header: AgenticMooncakeHeader {
+                schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+                version: AGENTIC_MOONCAKE_VERSION,
+                block_size: block_size.expect("non-empty corpus has a block size"),
+                hash_id_scope: AgenticHashIdScope::Local,
+                source: AgenticSourceProvenance {
+                    format: "weka".to_string(),
+                    digest,
+                },
+            },
+            rows: canonical_rows,
+        })
+    }
+
+    pub fn header(&self) -> &AgenticMooncakeHeader {
+        &self.header
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Stream the immutable rows produced during preflight into the caller's sink.
+    pub fn for_each_row<F>(&self, mut emit: F) -> Result<WekaImportSummary>
+    where
+        F: FnMut(AgenticMooncakeRow) -> Result<()>,
+    {
+        let rows = self
+            .rows
+            .reopen()
+            .context("reopening preflighted Weka row spool")?;
+        let stream = serde_json::Deserializer::from_reader(BufReader::new(rows))
+            .into_iter::<AgenticMooncakeRow>();
+        let mut emitted = 0;
+        for row in stream {
+            emit(row.context("reading preflighted Weka row spool")?)?;
+            emitted += 1;
+        }
+        if emitted != self.requests {
+            bail!(
+                "preflighted Weka row spool contained {} requests, expected {}",
+                emitted,
+                self.requests
+            );
+        }
+        Ok(WekaImportSummary {
+            header: self.header.clone(),
+            files: self.files,
+            plays: self.plays,
+            requests: self.requests,
+            raw_zero_outputs: self.raw_zero_outputs,
+            nested_timestamp_basis: self.nested_timestamp_basis,
+        })
+    }
+
+    pub fn collect_rows(&self) -> Result<(WekaImportSummary, Vec<AgenticMooncakeRow>)> {
+        let mut rows = Vec::new();
+        let summary = self.for_each_row(|row| {
+            rows.push(row);
+            Ok(())
+        })?;
+        Ok((summary, rows))
+    }
+}
+
+pub fn stream_weka_agentic_rows<F>(path: impl AsRef<Path>, emit: F) -> Result<WekaImportSummary>
+where
+    F: FnMut(AgenticMooncakeRow) -> Result<()>,
+{
+    WekaImporter::open(path)?.for_each_row(emit)
+}
+
+pub fn load_weka_agentic_rows(
+    path: impl AsRef<Path>,
+) -> Result<(WekaImportSummary, Vec<AgenticMooncakeRow>)> {
+    WekaImporter::open(path)?.collect_rows()
+}
+
+/// Load a Weka corpus directly into the canonical validated agentic graph.
+///
+/// `expected_block_size`, when supplied, is an assertion about the source hash
+/// unit. The engine block size remains an independent runtime configuration.
+pub fn load_weka_agentic_graph(
+    path: impl AsRef<Path>,
+    expected_block_size: Option<usize>,
+) -> Result<AgenticTrace> {
+    load_weka_agentic_graph_with_options(path, expected_block_size, WekaImportOptions::default())
+        .map(|(graph, _resolved)| graph)
+}
+
+pub fn load_weka_agentic_graph_with_options(
+    path: impl AsRef<Path>,
+    expected_block_size: Option<usize>,
+    options: WekaImportOptions,
+) -> Result<(AgenticTrace, WekaResolvedTimestampBasis)> {
+    load_weka_agentic_graph_with_cache_status(path.as_ref(), expected_block_size, options)
+        .map(|(graph, resolved, _cache_hit)| (graph, resolved))
+}
+
+fn load_weka_agentic_graph_with_cache_status(
+    path: &Path,
+    expected_block_size: Option<usize>,
+    options: WekaImportOptions,
+) -> Result<(AgenticTrace, WekaResolvedTimestampBasis, bool)> {
+    let canonical_path = canonical_source_path(path)?;
+    let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
+    let path_key = (canonical_path.clone(), options.nested_timestamp_basis);
+
+    let known_digest = cache
+        .lock()
+        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
+        .path_digests
+        .get(&path_key)
+        .cloned();
+    if let Some(known_digest) = known_digest {
+        // A path is only a lookup hint. Re-hash its current bytes before every
+        // reuse so replacing or editing a corpus can never return a stale
+        // compiled graph. This still avoids the expensive snapshot, parse,
+        // lowering, row-spool, and graph-build work for sweep candidates.
+        let current_digest = compute_corpus_digest(path)?;
+        let cache = cache
+            .lock()
+            .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
+        if current_digest == known_digest
+            && let Some(cached) = cache
+                .graphs
+                .get(&(current_digest, options.nested_timestamp_basis))
+        {
+            assert_expected_block_size(&cached.graph, expected_block_size)?;
+            tracing::info!(
+                requested_basis = options.nested_timestamp_basis.as_str(),
+                resolved_basis = cached.resolved_timestamp_basis.as_str(),
+                resolution = if options.nested_timestamp_basis == WekaNestedTimestampBasis::Auto {
+                    "corpus_heuristic"
+                } else {
+                    "configured"
+                },
+                cache_hit = true,
+                "resolved Weka nested timestamp basis for complete corpus"
+            );
+            return Ok((cached.graph.clone(), cached.resolved_timestamp_basis, true));
+        }
+    }
+
+    let importer = WekaImporter::open_with_options(path, options)?;
+    let header = importer.header().clone();
+    let raw_digest = importer.raw_digest.clone();
+    let resolved_timestamp_basis = importer.nested_timestamp_basis;
+    assert_source_block_size(header.block_size, expected_block_size)?;
+    let mut builder = AgenticGraphBuilder::new(header)?;
+    importer.for_each_row(|row| builder.push(row))?;
+    let graph = builder.finish()?;
+    let mut cache = cache
+        .lock()
+        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
+    cache.path_digests.insert(path_key, raw_digest.clone());
+    cache
+        .graphs
+        .entry((raw_digest, options.nested_timestamp_basis))
+        .or_insert_with(|| CachedWekaGraph {
+            graph: graph.clone(),
+            resolved_timestamp_basis,
+        });
+    Ok((graph, resolved_timestamp_basis, false))
+}
+
+fn assert_expected_block_size(
+    graph: &AgenticTrace,
+    expected_block_size: Option<usize>,
+) -> Result<()> {
+    assert_source_block_size(graph.block_size(), expected_block_size)
+}
+
+fn assert_source_block_size(block_size: usize, expected_block_size: Option<usize>) -> Result<()> {
+    if let Some(expected) = expected_block_size
+        && expected != block_size
+    {
+        bail!(
+            "Weka source block size {} does not match configured block size {}",
+            block_size,
+            expected
+        );
+    }
+    Ok(())
+}
+
+fn validate_preflight_graph(block_size: usize, rows: &[AgenticMooncakeRow]) -> Result<()> {
+    let header = AgenticMooncakeHeader {
+        schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+        version: AGENTIC_MOONCAKE_VERSION,
+        block_size,
+        hash_id_scope: AgenticHashIdScope::Local,
+        source: AgenticSourceProvenance {
+            format: "weka".to_string(),
+            // The final corpus digest is not available until every source
+            // file has been scanned. Graph validation only requires a stable,
+            // non-empty provenance value; the real header is used for output.
+            digest: "preflight".to_string(),
+        },
+    };
+    let mut builder = AgenticGraphBuilder::new(header)?;
+    for row in rows {
+        let mut row = row.clone();
+        // Validation is intentionally bounded to one play, so normalize its
+        // corpus-wide ordinal before applying the contiguous-order contract.
+        row.source_play_ordinal = Some(0);
+        builder.push(row)?;
+    }
+    builder.finish()?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct WekaTrace {
+    id: String,
+    #[serde(default)]
+    models: Vec<String>,
+    block_size: usize,
+    hash_id_scope: String,
+    #[serde(default)]
+    tool_tokens: usize,
+    #[serde(default)]
+    system_tokens: usize,
+    requests: Vec<WekaEntry>,
+    #[serde(default)]
+    totals: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum WekaEntry {
+    #[serde(rename = "n")]
+    Normal(WekaRequest),
+    #[serde(rename = "s")]
+    Streaming(WekaRequest),
+    #[serde(rename = "subagent")]
+    Subagent(WekaSubagent),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WekaRequest {
+    t: f64,
+    model: String,
+    #[serde(rename = "in")]
+    input_length: usize,
+    #[serde(rename = "out")]
+    output_length: usize,
+    #[serde(default)]
+    hash_ids: Vec<u64>,
+    #[serde(default)]
+    input_types: Vec<String>,
+    #[serde(default)]
+    output_types: Vec<String>,
+    #[serde(default)]
+    stop: String,
+    #[serde(default)]
+    api_time: Option<f64>,
+    #[serde(default)]
+    think_time: Option<f64>,
+    #[serde(default)]
+    ttft: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WekaSubagent {
+    t: f64,
+    agent_id: String,
+    subagent_type: String,
+    #[serde(default)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    total_tokens: Option<usize>,
+    #[serde(default)]
+    tool_use_count: Option<usize>,
+    status: String,
+    requests: Vec<WekaInnerEntry>,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    tool_tokens: usize,
+    #[serde(default)]
+    system_tokens: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum WekaInnerEntry {
+    #[serde(rename = "n")]
+    Normal(WekaRequest),
+    #[serde(rename = "s")]
+    Streaming(WekaRequest),
+}
+
+impl WekaEntry {
+    fn request(&self) -> Option<&WekaRequest> {
+        match self {
+            Self::Normal(request) | Self::Streaming(request) => Some(request),
+            Self::Subagent(_) => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct IndexedRequest {
+    source_id: String,
+    source_order: usize,
+    request: WekaRequest,
+}
+
+#[derive(Clone)]
+struct Fork {
+    parent_chain: Option<usize>,
+    fork_source_id: Option<String>,
+    depth: usize,
+    fork_time: f64,
+}
+
+#[derive(Default)]
+struct Chain {
+    requests: Vec<IndexedRequest>,
+    fork: Option<Fork>,
+    spliced_into: Option<usize>,
+    tail_source_id: Option<String>,
+    tail_hashes: Vec<u64>,
+    tail_end: f64,
+    tail_model: String,
+}
+
+struct ChainDetection {
+    chains: Vec<Chain>,
+    main_index: usize,
+    worker_indices: Vec<usize>,
+}
+
+struct Stream {
+    session_id: String,
+    requests: Vec<IndexedRequest>,
+    fork_source_id: Option<String>,
+    scope_id: String,
+}
+
+struct LoweredTrace {
+    rows: Vec<AgenticMooncakeRow>,
+    raw_zero_outputs: usize,
+}
+
+struct SourceSnapshot {
+    display_path: PathBuf,
+    relative_path: String,
+    jsonl: bool,
+    file: tempfile::TempPath,
+}
+
+#[derive(Default)]
+struct TimestampBasisEvidence {
+    relative_witness: Option<String>,
+    replayable_subagents: usize,
+}
+
+impl TimestampBasisEvidence {
+    fn observe(&mut self, trace: &WekaTrace, source_name: &str, subagent: &WekaSubagent) {
+        if subagent.requests.is_empty() {
+            return;
+        }
+        self.replayable_subagents += 1;
+        for (inner_index, entry) in subagent.requests.iter().enumerate() {
+            let request = match entry {
+                WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => request,
+            };
+            if nested_timestamp_precedes_marker(request.t, subagent.t) {
+                self.relative_witness.get_or_insert_with(|| {
+                    format!(
+                        "source {source_name}, trace {}, subagent {}, inner request {} (marker={}, inner={})",
+                        trace.id, subagent.agent_id, inner_index, subagent.t, request.t
+                    )
+                });
+            }
+        }
+    }
+
+    fn resolve(&self, requested: WekaNestedTimestampBasis) -> WekaResolvedTimestampBasis {
+        match requested {
+            WekaNestedTimestampBasis::Absolute => WekaResolvedTimestampBasis::Absolute,
+            WekaNestedTimestampBasis::Relative => WekaResolvedTimestampBasis::Relative,
+            WekaNestedTimestampBasis::Auto if self.replayable_subagents == 0 => {
+                WekaResolvedTimestampBasis::NotApplicable
+            }
+            WekaNestedTimestampBasis::Auto if self.relative_witness.is_some() => {
+                WekaResolvedTimestampBasis::Relative
+            }
+            WekaNestedTimestampBasis::Auto => WekaResolvedTimestampBasis::Absolute,
+        }
+    }
+}
+
+fn validate_trace_requests_and_collect_timestamp_evidence(
+    trace: &WekaTrace,
+    source_name: &str,
+    evidence: &mut TimestampBasisEvidence,
+) -> Result<()> {
+    for entry in &trace.requests {
+        match entry {
+            WekaEntry::Normal(request) | WekaEntry::Streaming(request) => {
+                validate_request(request, source_name)?;
+            }
+            WekaEntry::Subagent(subagent) => {
+                validate_subagent(subagent, source_name)?;
+                for entry in &subagent.requests {
+                    let request = match entry {
+                        WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
+                            request
+                        }
+                    };
+                    validate_request(request, source_name)?;
+                }
+                evidence.observe(trace, source_name, subagent);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_trace(
+    trace: &WekaTrace,
+    relative_path: &str,
+    source_play_ordinal: usize,
+    nested_timestamp_basis: WekaNestedTimestampBasis,
+) -> Result<LoweredTrace> {
+    validate_trace_header(trace, relative_path)?;
+    let namespace = namespace(relative_path);
+    let play_id = format!("{namespace}:play:{}", trace.id);
+    let mut top_level = Vec::new();
+    let mut explicit = Vec::new();
+    let mut raw_zero_outputs = 0;
+
+    for (outer_index, entry) in trace.requests.iter().enumerate() {
+        if let Some(request) = entry.request() {
+            validate_request(request, relative_path)?;
+            raw_zero_outputs += usize::from(request.output_length == 0);
+            top_level.push(IndexedRequest {
+                source_id: format!("outer:{outer_index}"),
+                source_order: outer_index,
+                request: request.clone(),
+            });
+        } else if let WekaEntry::Subagent(subagent) = entry {
+            explicit.push((outer_index, subagent));
+        }
+    }
+    if top_level.is_empty() {
+        bail!("Weka trace {} has no parent requests", relative_path);
+    }
+
+    let (preamble, detection_input) = split_preamble(top_level);
+    let detection = detect_chains(detection_input);
+    let mut streams = streams_from_detection(&namespace, &play_id, "root", &detection, preamble);
+    let root_stream_index = streams
+        .iter()
+        .position(|stream| stream.session_id.ends_with(":root"))
+        .expect("root stream is present");
+    let parent_stream_count = streams.len();
+    let mut join_markers = Vec::<(String, Vec<String>)>::new();
+
+    for (outer_index, subagent) in explicit {
+        let mode = validate_subagent(subagent, relative_path)?;
+        let mut owner_candidates = streams[..parent_stream_count]
+            .iter()
+            .enumerate()
+            .flat_map(|(stream_index, stream)| {
+                stream
+                    .requests
+                    .iter()
+                    .filter(move |request| request.source_order < outer_index)
+                    .map(move |request| (stream_index, request))
+            })
+            .collect::<Vec<_>>();
+        owner_candidates.sort_by_key(|(_, request)| request.source_order);
+        let Some((owner_stream_index, owner_request)) = owner_candidates.pop() else {
+            bail!(
+                "Weka trace {} has subagent {} at outer index {} without a preceding parent request",
+                relative_path,
+                subagent.agent_id,
+                outer_index
+            );
+        };
+        if owner_candidates
+            .last()
+            .is_some_and(|(_, candidate)| candidate.source_order == owner_request.source_order)
+        {
+            bail!(
+                "Weka trace {} has ambiguous parent-stream ownership for subagent {} at outer index {}",
+                relative_path,
+                subagent.agent_id,
+                outer_index
+            );
+        }
+        let spawn_source_id = owner_request.source_id.clone();
+
+        let mut inner = Vec::with_capacity(subagent.requests.len());
+        for (inner_index, entry) in subagent.requests.iter().enumerate() {
+            let mut request = match entry {
+                WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
+                    request.clone()
+                }
+            };
+            request.t = canonical_nested_timestamp(
+                request.t,
+                subagent.t,
+                nested_timestamp_basis,
+                relative_path,
+                &trace.id,
+                &subagent.agent_id,
+                inner_index,
+            )?;
+            validate_request(&request, relative_path)?;
+            raw_zero_outputs += usize::from(request.output_length == 0);
+            inner.push(IndexedRequest {
+                source_id: format!("outer:{outer_index}:inner:{inner_index}"),
+                source_order: inner_index,
+                request,
+            });
+        }
+        if inner.is_empty() {
+            continue;
+        }
+
+        let (preamble, detection_input) = split_preamble(inner);
+        let child_detection = detect_chains(detection_input);
+        let child_prefix = format!("subagent:{outer_index}:{}", subagent.agent_id);
+        let mut child_streams = streams_from_detection(
+            &namespace,
+            &play_id,
+            &child_prefix,
+            &child_detection,
+            preamble,
+        );
+        let child_root = child_streams
+            .iter_mut()
+            .find(|stream| stream.session_id.ends_with(&format!(":{child_prefix}")))
+            .expect("subagent root stream is present");
+        child_root.fork_source_id = Some(spawn_source_id);
+        child_root.scope_id = child_root.session_id.clone();
+        let scope_id = child_root.scope_id.clone();
+        for stream in &mut child_streams {
+            stream.scope_id = scope_id.clone();
+        }
+
+        let join_source_id = if mode == SubagentMode::Blocking {
+            let child_end = subagent_end(subagent, nested_timestamp_basis)?;
+            streams[owner_stream_index]
+                .requests
+                .iter()
+                .filter(|request| {
+                    request.source_order > outer_index
+                        && request.request.t + JOIN_EPSILON_SECONDS >= child_end
+                })
+                .min_by_key(|request| request.source_order)
+                .map(|request| request.source_id.clone())
+        } else {
+            None
+        };
+
+        let child_stream_indices = streams.len()..(streams.len() + child_streams.len());
+        streams.extend(child_streams);
+        if let Some(join_source_id) = join_source_id {
+            let terminal_sources = child_stream_indices
+                .filter_map(|index| streams[index].requests.last())
+                .map(|request| request.source_id.clone())
+                .collect::<Vec<_>>();
+            if !terminal_sources.is_empty() {
+                join_markers.push((join_source_id, terminal_sources));
+            }
+        }
+    }
+
+    let root_time = streams
+        .iter()
+        .flat_map(|stream| stream.requests.iter())
+        .map(|request| request.request.t)
+        .fold(f64::INFINITY, f64::min);
+    let mut row_by_source = HashMap::new();
+    let mut request_by_source = HashMap::new();
+    for stream in &streams {
+        for request in &stream.requests {
+            row_by_source.insert(
+                request.source_id.clone(),
+                format!("{namespace}:request:{}", request.source_id),
+            );
+            request_by_source.insert(request.source_id.clone(), request);
+        }
+    }
+
+    let root_source = streams[root_stream_index]
+        .requests
+        .first()
+        .expect("root stream is non-empty")
+        .source_id
+        .clone();
+    let mut dependencies: HashMap<String, Vec<AgenticDependency>> = HashMap::new();
+    for stream in &streams {
+        for window in stream.requests.windows(2) {
+            let predecessor = &window[0];
+            let request = &window[1];
+            push_dependency(
+                dependencies.entry(request.source_id.clone()).or_default(),
+                AgenticDependency {
+                    request_id: row_by_source[&predecessor.source_id].clone(),
+                    trigger: AgenticDependencyTrigger::Completion,
+                    delay_ms: seconds_to_milliseconds(
+                        request.request.t - request_end(&predecessor.request),
+                    ),
+                    relation: AgenticDependencyRelation::Sequence,
+                },
+            );
+        }
+    }
+
+    for stream in &streams {
+        let Some(first) = stream.requests.first() else {
+            continue;
+        };
+        let Some(spawn_source_id) = stream.fork_source_id.as_ref() else {
+            continue;
+        };
+        let parent = streams
+            .iter()
+            .flat_map(|stream| stream.requests.iter())
+            .find(|request| &request.source_id == spawn_source_id)
+            .ok_or_else(|| anyhow!("spawn source {spawn_source_id} is missing"))?;
+        let (trigger, delay_ms) = if first.request.t < request_end(&parent.request) {
+            (
+                AgenticDependencyTrigger::Dispatch,
+                seconds_to_milliseconds(first.request.t - parent.request.t),
+            )
+        } else {
+            (
+                AgenticDependencyTrigger::Completion,
+                seconds_to_milliseconds(first.request.t - request_end(&parent.request)),
+            )
+        };
+        push_dependency(
+            dependencies.entry(first.source_id.clone()).or_default(),
+            AgenticDependency {
+                request_id: row_by_source[spawn_source_id].clone(),
+                trigger,
+                delay_ms,
+                relation: AgenticDependencyRelation::Spawn,
+            },
+        );
+    }
+
+    install_cross_stream_frontiers(&streams, &row_by_source, &mut dependencies);
+
+    for (target_source, terminal_sources) in join_markers {
+        for terminal_source in terminal_sources {
+            let target = request_by_source[&target_source];
+            let terminal = request_by_source[&terminal_source];
+            push_dependency(
+                dependencies.entry(target_source.clone()).or_default(),
+                AgenticDependency {
+                    request_id: row_by_source[&terminal_source].clone(),
+                    trigger: AgenticDependencyTrigger::Completion,
+                    delay_ms: seconds_to_milliseconds(
+                        target.request.t - request_end(&terminal.request),
+                    ),
+                    relation: AgenticDependencyRelation::Join,
+                },
+            );
+        }
+    }
+
+    // A disjoint detected stream has no natural fork. Anchor it to the play
+    // root's dispatch so the validated graph has one causal root without
+    // inventing a completion barrier.
+    for stream in &streams {
+        let Some(first) = stream.requests.first() else {
+            continue;
+        };
+        if first.source_id == root_source
+            || dependencies
+                .get(&first.source_id)
+                .is_some_and(|edges| !edges.is_empty())
+        {
+            continue;
+        }
+        push_dependency(
+            dependencies.entry(first.source_id.clone()).or_default(),
+            AgenticDependency {
+                request_id: row_by_source[&root_source].clone(),
+                trigger: AgenticDependencyTrigger::Dispatch,
+                delay_ms: seconds_to_milliseconds(
+                    first.request.t - streams[root_stream_index].requests[0].request.t,
+                ),
+                relation: AgenticDependencyRelation::Spawn,
+            },
+        );
+    }
+
+    let mut rows = Vec::new();
+    let mut used_hashes = HashMap::new();
+    for stream in streams {
+        for request in stream.requests {
+            let request_id = row_by_source[&request.source_id].clone();
+            let hash_ids = normalized_hashes(
+                relative_path,
+                &request_id,
+                &request.request,
+                trace.block_size,
+                &mut used_hashes,
+            )?;
+            rows.push(AgenticMooncakeRow {
+                request_id,
+                play_id: play_id.clone(),
+                source_play_ordinal: Some(source_play_ordinal),
+                session_id: stream.session_id.clone(),
+                model: request.request.model.clone(),
+                input_length: Some(request.request.input_length),
+                // Preserve an authored zero: AISimulate's native replay treats
+                // it as a prefill-only/KV-cache-warmup request. HTTP adapters
+                // may need a non-zero wire value, but that endpoint limitation
+                // must not change the canonical graph.
+                output_length: Some(request.request.output_length),
+                output_token_ids: None,
+                hash_ids: Some(hash_ids),
+                not_before_ms: seconds_to_milliseconds(request.request.t - root_time),
+                recorded_api_time_ms: request.request.api_time.map(seconds_to_milliseconds),
+                priority: None,
+                strict_priority: None,
+                policy_class: None,
+                dependencies: dependencies.remove(&request.source_id).unwrap_or_default(),
+            });
+        }
+    }
+    rows.sort_by(|left, right| left.request_id.cmp(&right.request_id));
+    if rows.len()
+        != trace
+            .requests
+            .iter()
+            .map(|entry| match entry {
+                WekaEntry::Normal(_) | WekaEntry::Streaming(_) => 1,
+                WekaEntry::Subagent(subagent) => subagent.requests.len(),
+            })
+            .sum::<usize>()
+    {
+        bail!(
+            "Weka trace {} did not lower every source request (orphan subagents are unsupported)",
+            relative_path
+        );
+    }
+    Ok(LoweredTrace {
+        rows,
+        raw_zero_outputs,
+    })
+}
+
+fn streams_from_detection(
+    namespace: &str,
+    _play_id: &str,
+    prefix: &str,
+    detection: &ChainDetection,
+    mut preamble: Vec<IndexedRequest>,
+) -> Vec<Stream> {
+    let mut live = Vec::with_capacity(1 + detection.worker_indices.len());
+    let mut main_requests = detection.chains[detection.main_index].requests.clone();
+    main_requests.append(&mut preamble);
+    main_requests.sort_by(request_order);
+    live.push(Stream {
+        session_id: format!("{namespace}:session:{prefix}"),
+        requests: main_requests,
+        fork_source_id: detection.chains[detection.main_index]
+            .fork
+            .as_ref()
+            .and_then(|fork| fork.fork_source_id.clone()),
+        scope_id: format!("{namespace}:scope:{prefix}"),
+    });
+    for (worker_index, chain_index) in detection.worker_indices.iter().copied().enumerate() {
+        let chain = &detection.chains[chain_index];
+        live.push(Stream {
+            session_id: format!("{namespace}:session:{prefix}:worker:{worker_index}"),
+            requests: chain.requests.clone(),
+            fork_source_id: chain
+                .fork
+                .as_ref()
+                .and_then(|fork| fork.fork_source_id.clone()),
+            scope_id: format!("{namespace}:scope:{prefix}"),
+        });
+    }
+    live
+}
+
+fn install_cross_stream_frontiers(
+    streams: &[Stream],
+    row_by_source: &HashMap<String, String>,
+    dependencies: &mut HashMap<String, Vec<AgenticDependency>>,
+) {
+    let mut by_scope: BTreeMap<&str, Vec<&Stream>> = BTreeMap::new();
+    for stream in streams {
+        by_scope.entry(&stream.scope_id).or_default().push(stream);
+    }
+    for scoped_streams in by_scope.values() {
+        for target_stream in scoped_streams {
+            for target in &target_stream.requests {
+                let mut frontier = Vec::new();
+                for other_stream in scoped_streams {
+                    if std::ptr::eq(*other_stream, *target_stream) {
+                        continue;
+                    }
+                    let latest = other_stream
+                        .requests
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.request.t < target.request.t
+                                && request_end(&candidate.request)
+                                    <= target.request.t + JOIN_EPSILON_SECONDS
+                        })
+                        .max_by(|left, right| {
+                            request_end(&left.request)
+                                .total_cmp(&request_end(&right.request))
+                                .then(left.request.t.total_cmp(&right.request.t))
+                                .then(left.source_id.cmp(&right.source_id))
+                        });
+                    if let Some(latest) = latest {
+                        frontier.push(latest);
+                    }
+                }
+                let pruned = frontier
+                    .iter()
+                    .filter(|candidate| {
+                        !frontier.iter().any(|later| {
+                            candidate.request.t < later.request.t
+                                && request_end(&candidate.request)
+                                    <= later.request.t + JOIN_EPSILON_SECONDS
+                        })
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                for predecessor in pruned {
+                    push_dependency(
+                        dependencies.entry(target.source_id.clone()).or_default(),
+                        AgenticDependency {
+                            request_id: row_by_source[&predecessor.source_id].clone(),
+                            trigger: AgenticDependencyTrigger::Completion,
+                            delay_ms: 0.0,
+                            relation: AgenticDependencyRelation::ReplayBarrier,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn detect_chains(mut requests: Vec<IndexedRequest>) -> ChainDetection {
+    requests.sort_by(request_order);
+    let mut chains = Vec::<Chain>::new();
+    let mut chain_by_source = HashMap::<String, usize>::new();
+    let mut forks_by_source = HashMap::<String, Vec<usize>>::new();
+    let mut request_by_source = HashMap::<String, WekaRequest>::new();
+
+    for indexed in requests {
+        request_by_source.insert(indexed.source_id.clone(), indexed.request.clone());
+        if indexed.request.hash_ids.is_empty() {
+            if chains.is_empty() {
+                chains.push(Chain::default());
+            }
+            chain_by_source.insert(indexed.source_id.clone(), 0);
+            chains[0].requests.push(indexed);
+            continue;
+        }
+        if chains.is_empty() {
+            chains.push(Chain::default());
+            append_chain(0, &mut chains[0], &mut chain_by_source, indexed);
+            continue;
+        }
+        if let Some(target) = extension_target(&chains, &indexed.request) {
+            append_chain(target, &mut chains[target], &mut chain_by_source, indexed);
+            continue;
+        }
+        if chains.iter().all(|chain| chain.tail_hashes.is_empty()) {
+            append_chain(0, &mut chains[0], &mut chain_by_source, indexed);
+            continue;
+        }
+        let (parent_chain, depth) = max_lcp_chain(&chains, &indexed.request.hash_ids);
+        let fork_source_id = parent_chain.and_then(|parent| chains[parent].tail_source_id.clone());
+        let chain_index = chains.len();
+        chains.push(Chain {
+            fork: Some(Fork {
+                parent_chain,
+                fork_source_id: fork_source_id.clone(),
+                depth,
+                fork_time: indexed.request.t,
+            }),
+            ..Default::default()
+        });
+        append_chain(
+            chain_index,
+            &mut chains[chain_index],
+            &mut chain_by_source,
+            indexed,
+        );
+        if let Some(source_id) = fork_source_id.filter(|_| depth > 0) {
+            forks_by_source
+                .entry(source_id)
+                .or_default()
+                .push(chain_index);
+        }
+    }
+
+    resolve_seams(
+        &mut chains,
+        &mut forks_by_source,
+        &mut chain_by_source,
+        &request_by_source,
+    );
+    let mut aliases = HashMap::new();
+    for (index, chain) in chains.iter().enumerate() {
+        if let Some(owner) = chain.spliced_into {
+            aliases.insert(index, owner);
+        }
+    }
+    let resolve = |mut index: usize| {
+        while let Some(owner) = aliases.get(&index) {
+            index = *owner;
+        }
+        index
+    };
+    let main_index = chains
+        .iter()
+        .enumerate()
+        .filter(|(_, chain)| chain.spliced_into.is_none())
+        .min_by(|(_, left), (_, right)| request_order(&left.requests[0], &right.requests[0]))
+        .map(|(index, _)| resolve(index))
+        .unwrap_or(0);
+    let mut worker_indices = chains
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chain)| {
+            (chain.spliced_into.is_none() && index != main_index).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    worker_indices.sort_by(|left, right| {
+        request_order(&chains[*left].requests[0], &chains[*right].requests[0])
+    });
+    ChainDetection {
+        chains,
+        main_index,
+        worker_indices,
+    }
+}
+
+fn append_chain(
+    chain_index: usize,
+    chain: &mut Chain,
+    chain_by_source: &mut HashMap<String, usize>,
+    indexed: IndexedRequest,
+) {
+    chain_by_source.insert(indexed.source_id.clone(), chain_index);
+    if !indexed.request.hash_ids.is_empty() {
+        chain.tail_source_id = Some(indexed.source_id.clone());
+        chain.tail_hashes.clone_from(&indexed.request.hash_ids);
+        chain.tail_end = request_end(&indexed.request);
+        chain.tail_model.clone_from(&indexed.request.model);
+    }
+    chain.requests.push(indexed);
+}
+
+fn extension_target(chains: &[Chain], request: &WekaRequest) -> Option<usize> {
+    let mut best = None;
+    let mut best_len = 0;
+    for (index, chain) in chains.iter().enumerate() {
+        let tail_len = chain.tail_hashes.len();
+        if tail_len == 0
+            || tail_len > request.hash_ids.len()
+            || tail_len <= best_len
+            || chain.tail_model != request.model
+            || chain.tail_end > request.t + JOIN_EPSILON_SECONDS
+            || chain.tail_hashes != request.hash_ids[..tail_len]
+        {
+            continue;
+        }
+        best = Some(index);
+        best_len = tail_len;
+    }
+    best
+}
+
+fn max_lcp_chain(chains: &[Chain], hashes: &[u64]) -> (Option<usize>, usize) {
+    let mut best = None;
+    let mut best_key = (0, 0);
+    for (index, chain) in chains.iter().enumerate() {
+        let depth = lcp(&chain.tail_hashes, hashes);
+        let key = (depth, chain.tail_hashes.len());
+        if depth > 0 && key > best_key {
+            best = Some(index);
+            best_key = key;
+        }
+    }
+    (best, best_key.0)
+}
+
+fn resolve_seams(
+    chains: &mut [Chain],
+    forks_by_source: &mut HashMap<String, Vec<usize>>,
+    chain_by_source: &mut HashMap<String, usize>,
+    request_by_source: &HashMap<String, WekaRequest>,
+) {
+    let mut keys = forks_by_source.keys().cloned().collect::<BTreeSet<_>>();
+    let mut aliases = HashMap::<usize, usize>::new();
+    let mut processed = HashSet::new();
+    while let Some(source_id) = keys.pop_first() {
+        if !processed.insert(source_id.clone()) {
+            continue;
+        }
+        let mut owner = chain_by_source[&source_id];
+        while let Some(next) = aliases.get(&owner) {
+            owner = *next;
+        }
+        if chains[owner].tail_source_id.as_deref() != Some(source_id.as_str()) {
+            continue;
+        }
+        let tail = &request_by_source[&source_id];
+        let registered = forks_by_source[&source_id]
+            .iter()
+            .copied()
+            .filter(|index| chains[*index].spliced_into.is_none())
+            .collect::<Vec<_>>();
+        let elected = registered
+            .iter()
+            .copied()
+            .filter(|index| seam_eligible(&chains[*index], tail))
+            .max_by(|left, right| {
+                let left_fork = chains[*left].fork.as_ref().unwrap();
+                let right_fork = chains[*right].fork.as_ref().unwrap();
+                left_fork
+                    .depth
+                    .cmp(&right_fork.depth)
+                    .then_with(|| right_fork.fork_time.total_cmp(&left_fork.fork_time))
+                    .then_with(|| right.cmp(left))
+            });
+        let Some(elected) = elected else {
+            continue;
+        };
+        let moved = std::mem::take(&mut chains[elected].requests);
+        for request in &moved {
+            chain_by_source.insert(request.source_id.clone(), owner);
+        }
+        chains[owner].requests.extend(moved);
+        chains[owner].tail_source_id = chains[elected].tail_source_id.clone();
+        chains[owner].tail_hashes = chains[elected].tail_hashes.clone();
+        chains[owner].tail_end = chains[elected].tail_end;
+        chains[owner].tail_model = chains[elected].tail_model.clone();
+        chains[elected].spliced_into = Some(owner);
+        aliases.insert(elected, owner);
+
+        let Some(new_tail_source) = chains[owner].tail_source_id.clone() else {
+            continue;
+        };
+        let new_tail_hashes = chains[owner].tail_hashes.clone();
+        let new_tail = &request_by_source[&new_tail_source];
+        for candidate in registered {
+            if candidate == elected || chains[candidate].spliced_into.is_some() {
+                continue;
+            }
+            let candidate_first = &chains[candidate].requests[0].request;
+            if new_tail.t > candidate_first.t + JOIN_EPSILON_SECONDS {
+                continue;
+            }
+            let depth = lcp(&new_tail_hashes, &candidate_first.hash_ids);
+            if depth == 0 {
+                continue;
+            }
+            let fork = chains[candidate].fork.as_mut().unwrap();
+            fork.parent_chain = Some(owner);
+            fork.fork_source_id = Some(new_tail_source.clone());
+            fork.depth = depth;
+            forks_by_source
+                .entry(new_tail_source.clone())
+                .or_default()
+                .push(candidate);
+            processed.remove(&new_tail_source);
+            keys.insert(new_tail_source.clone());
+        }
+    }
+}
+
+fn seam_eligible(chain: &Chain, tail: &WekaRequest) -> bool {
+    let Some(fork) = chain.fork.as_ref() else {
+        return false;
+    };
+    if fork.depth == 0 || chain.requests.is_empty() {
+        return false;
+    }
+    let first = &chain.requests[0].request;
+    let gap = first.t - request_end(tail);
+    let overlap = fork.depth as f64 / tail.hash_ids.len().max(1) as f64;
+    request_end(tail) <= first.t + JOIN_EPSILON_SECONDS
+        && first.model == tail.model
+        && !(gap > SEAM_MAX_GAP_SECONDS && overlap < SEAM_MIN_OVERLAP_RATIO)
+}
+
+fn split_preamble(mut requests: Vec<IndexedRequest>) -> (Vec<IndexedRequest>, Vec<IndexedRequest>) {
+    requests.sort_by(request_order);
+    if requests.len() < 2 || requests[0].request.hash_ids.is_empty() {
+        return (Vec::new(), requests);
+    }
+    let first = &requests[0].request;
+    if requests[1..]
+        .iter()
+        .any(|other| lcp(&first.hash_ids, &other.request.hash_ids) > 0)
+    {
+        return (Vec::new(), requests);
+    }
+    if first.output_length > 64 {
+        let other_hashes = requests[1..]
+            .iter()
+            .flat_map(|request| request.request.hash_ids.iter().copied())
+            .collect::<HashSet<_>>();
+        if first
+            .hash_ids
+            .iter()
+            .any(|hash| other_hashes.contains(hash))
+        {
+            return (Vec::new(), requests);
+        }
+    }
+    let first = requests.remove(0);
+    (vec![first], requests)
+}
+
+fn normalized_hashes(
+    relative_path: &str,
+    request_id: &str,
+    request: &WekaRequest,
+    block_size: usize,
+    used: &mut HashMap<u64, String>,
+) -> Result<Vec<u64>> {
+    let full_blocks = request.input_length / block_size;
+    let has_partial = !request.input_length.is_multiple_of(block_size);
+    let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
+    for block_index in 0..full_blocks {
+        let identity = request.hash_ids.get(block_index).map_or_else(
+            || format!("private:missing:{request_id}:{block_index}"),
+            |hash| format!("source:{relative_path}:{hash}"),
+        );
+        result.push(unique_hash("weka-full-block", &identity, used)?);
+    }
+    if has_partial {
+        result.push(unique_hash(
+            "weka-partial-tail",
+            &format!("{request_id}:{full_blocks}:{}", request.input_length),
+            used,
+        )?);
+    }
+    Ok(result)
+}
+
+fn unique_hash(domain: &str, identity: &str, used: &mut HashMap<u64, String>) -> Result<u64> {
+    for nonce in 0_u32..=u32::MAX {
+        let digest = blake3::hash(format!("{domain}\0{identity}\0{nonce}").as_bytes());
+        let value = u64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap());
+        match used.get(&value) {
+            Some(existing) if existing != identity => continue,
+            Some(_) => return Ok(value),
+            None => {
+                used.insert(value, identity.to_string());
+                return Ok(value);
+            }
+        }
+    }
+    bail!("could not allocate a collision-free hash for {identity}")
+}
+
+fn push_dependency(values: &mut Vec<AgenticDependency>, dependency: AgenticDependency) {
+    if !values.iter().any(|existing| {
+        existing.request_id == dependency.request_id
+            && existing.trigger == dependency.trigger
+            && existing.relation == dependency.relation
+    }) {
+        values.push(dependency);
+    }
+}
+
+fn validate_trace_header(trace: &WekaTrace, relative_path: &str) -> Result<()> {
+    if trace.id.trim().is_empty() {
+        bail!("Weka trace {} has an empty id", relative_path);
+    }
+    if trace.block_size == 0 {
+        bail!("Weka trace {} has zero block_size", relative_path);
+    }
+    if trace.hash_id_scope != "local" {
+        bail!(
+            "Weka trace {} has unsupported hash_id_scope {:?}; expected local",
+            relative_path,
+            trace.hash_id_scope
+        );
+    }
+    let _ = (
+        &trace.models,
+        trace.tool_tokens,
+        trace.system_tokens,
+        &trace.totals,
+    );
+    Ok(())
+}
+
+fn validate_subagent(subagent: &WekaSubagent, relative_path: &str) -> Result<SubagentMode> {
+    if !subagent.t.is_finite() || subagent.t < 0.0 {
+        bail!(
+            "Weka trace {} has invalid subagent timestamp",
+            relative_path
+        );
+    }
+    if subagent.agent_id.trim().is_empty() {
+        bail!(
+            "Weka trace {} has an empty subagent agent_id",
+            relative_path
+        );
+    }
+    if subagent.duration_ms.is_some_and(|duration| duration < 0) {
+        bail!(
+            "Weka trace {} has negative duration_ms for subagent {}",
+            relative_path,
+            subagent.agent_id
+        );
+    }
+    let mode = match subagent.status.as_str() {
+        "completed" => SubagentMode::Blocking,
+        "async_launched" => SubagentMode::Background,
+        status => bail!(
+            "Weka trace {} has unsupported non-success subagent status {:?} for {}",
+            relative_path,
+            status,
+            subagent.agent_id
+        ),
+    };
+    if mode == SubagentMode::Blocking && subagent.requests.is_empty() {
+        bail!(
+            "Weka trace {} has blocking subagent {} with no replayable requests; external waits are not modeled",
+            relative_path,
+            subagent.agent_id
+        );
+    }
+    let _ = (
+        &subagent.subagent_type,
+        subagent.total_tokens,
+        subagent.tool_use_count,
+        &subagent.models,
+        subagent.tool_tokens,
+        subagent.system_tokens,
+    );
+    Ok(mode)
+}
+
+fn validate_trace_models(trace: &WekaTrace, relative_path: &str) -> Result<()> {
+    let declared_models = trace
+        .models
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if declared_models.iter().any(|model| model.trim().is_empty()) {
+        bail!("Weka trace {} declares an empty model", relative_path);
+    }
+    let mut actual_models = BTreeSet::new();
+    let mut request_count = 0;
+    for entry in &trace.requests {
+        match entry {
+            WekaEntry::Normal(request) | WekaEntry::Streaming(request) => {
+                if request.model.trim().is_empty() {
+                    bail!("Weka trace {} has an empty request model", relative_path);
+                }
+                actual_models.insert(request.model.as_str());
+                request_count += 1;
+            }
+            WekaEntry::Subagent(subagent) => {
+                for entry in &subagent.requests {
+                    let request = match entry {
+                        WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
+                            request
+                        }
+                    };
+                    if request.model.trim().is_empty() {
+                        bail!("Weka trace {} has an empty request model", relative_path);
+                    }
+                    actual_models.insert(request.model.as_str());
+                    request_count += 1;
+                }
+            }
+        }
+    }
+    if request_count == 0 {
+        bail!("Weka trace {} has no model requests", relative_path);
+    }
+    if !declared_models.is_empty() && !actual_models.is_subset(&declared_models) {
+        bail!(
+            "Weka trace {} contains request models absent from its declaration: declared {:?}, found {:?}",
+            relative_path,
+            declared_models,
+            actual_models
+        );
+    }
+    Ok(())
+}
+
+fn validate_request(request: &WekaRequest, relative_path: &str) -> Result<()> {
+    if !request.t.is_finite() || request.t < 0.0 {
+        bail!("Weka trace {} has invalid request timestamp", relative_path);
+    }
+    if request.model.trim().is_empty() {
+        bail!("Weka trace {} has an empty request model", relative_path);
+    }
+    if request.input_length == 0 {
+        bail!("Weka trace {} has a zero-length request", relative_path);
+    }
+    if request
+        .api_time
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        bail!(
+            "Weka trace {} has invalid api_time; expected a finite non-negative value",
+            relative_path
+        );
+    }
+    let _ = (
+        &request.input_types,
+        &request.output_types,
+        &request.stop,
+        request.think_time,
+        request.ttft,
+    );
+    Ok(())
+}
+
+fn canonical_nested_timestamp(
+    inner_t: f64,
+    marker_t: f64,
+    basis: WekaNestedTimestampBasis,
+    source_name: &str,
+    trace_id: &str,
+    agent_id: &str,
+    inner_index: usize,
+) -> Result<f64> {
+    match basis {
+        WekaNestedTimestampBasis::Absolute | WekaNestedTimestampBasis::Auto => {
+            if nested_timestamp_precedes_marker(inner_t, marker_t) {
+                bail!(
+                    "Weka source {source_name}, trace {trace_id}, subagent {agent_id} inner request {inner_index} at {inner_t} precedes its marker at {marker_t} under absolute nested_timestamp_basis"
+                );
+            }
+            // Tiny producer rounding differences must not leave a canonical
+            // child timestamp before its spawn marker.
+            Ok(inner_t.max(marker_t))
+        }
+        WekaNestedTimestampBasis::Relative => {
+            let canonical = marker_t + inner_t;
+            if !canonical.is_finite() {
+                bail!(
+                    "Weka source {source_name}, trace {trace_id}, subagent {agent_id} inner request {inner_index} overflows while converting a relative timestamp"
+                );
+            }
+            Ok(canonical)
+        }
+    }
+}
+
+fn nested_timestamp_precedes_marker(inner_t: f64, marker_t: f64) -> bool {
+    inner_t < marker_t - JOIN_EPSILON_SECONDS
+}
+
+fn subagent_end(
+    subagent: &WekaSubagent,
+    nested_timestamp_basis: WekaNestedTimestampBasis,
+) -> Result<f64> {
+    if let Some(duration_ms) = subagent.duration_ms {
+        return Ok(subagent.t + (duration_ms as f64 / 1000.0));
+    }
+    subagent
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(inner_index, entry)| {
+            let request = match entry {
+                WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => request,
+            };
+            canonical_nested_timestamp(
+                request.t,
+                subagent.t,
+                nested_timestamp_basis,
+                "<preflighted>",
+                "<preflighted>",
+                &subagent.agent_id,
+                inner_index,
+            )
+            .map(|t| t + request.api_time.unwrap_or(0.0).max(0.0))
+        })
+        .try_fold(subagent.t, |end, request_end| {
+            request_end.map(|request_end| end.max(request_end))
+        })
+}
+
+fn request_end(request: &WekaRequest) -> f64 {
+    // AIPerf's Weka contract treats an absent/null api_time as a zero-width
+    // recorded interval for dependency inference. Keep the authored value as
+    // `None` in `recorded_api_time_ms` so unknown duration remains distinct
+    // from an explicit zero in provenance and graph identity. Negative and
+    // non-finite values are rejected by `validate_request`.
+    request.t + request.api_time.unwrap_or(0.0).max(0.0)
+}
+
+fn seconds_to_milliseconds(seconds: f64) -> f64 {
+    (seconds.max(0.0) * NANOSECONDS_PER_SECOND).round() / NANOSECONDS_PER_MILLISECOND
+}
+
+fn request_order(left: &IndexedRequest, right: &IndexedRequest) -> std::cmp::Ordering {
+    left.request
+        .t
+        .total_cmp(&right.request.t)
+        .then(left.source_order.cmp(&right.source_order))
+        .then(left.source_id.cmp(&right.source_id))
+}
+
+fn lcp(left: &[u64], right: &[u64]) -> usize {
+    left.iter()
+        .zip(right)
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn namespace(relative_path: &str) -> String {
+    let digest = blake3::hash(relative_path.as_bytes()).to_hex().to_string();
+    format!("weka:{}", &digest[..16])
+}
+
+fn new_corpus_hasher() -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(WEKA_CORPUS_DIGEST_DOMAIN_V1);
+    hasher
+}
+
+fn semantic_digest(raw_digest: &str, basis: WekaResolvedTimestampBasis) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2);
+    hasher.update(&(raw_digest.len() as u64).to_le_bytes());
+    hasher.update(raw_digest.as_bytes());
+    hasher.update(&(basis.as_str().len() as u64).to_le_bytes());
+    hasher.update(basis.as_str().as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn canonical_source_path(path: &Path) -> Result<PathBuf> {
+    // Validate the source kind and symlink policy before canonicalizing it;
+    // canonicalization alone would otherwise hide a symlinked input.
+    collect_source_files(path)?;
+    std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalizing Weka source {}", path.display()))
+}
+
+fn compute_corpus_digest(path: &Path) -> Result<String> {
+    let (_root, files) = collect_source_files(path)?;
+    if files.is_empty() {
+        bail!(
+            "Weka source {} contains no JSON or JSONL files",
+            path.display()
+        );
+    }
+    let mut hasher = new_corpus_hasher();
+    for (file_path, relative_path) in files {
+        hash_source_file(&file_path, &relative_path, &mut hasher, |_| Ok(()))?;
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn snapshot_source_file(
+    path: &Path,
+    relative_path: &str,
+    corpus_hasher: &mut blake3::Hasher,
+) -> Result<tempfile::TempPath> {
+    let mut snapshot = tempfile::NamedTempFile::new()
+        .with_context(|| format!("creating snapshot for Weka source {}", path.display()))?;
+    hash_source_file(path, relative_path, corpus_hasher, |bytes| {
+        snapshot
+            .write_all(bytes)
+            .with_context(|| format!("snapshotting Weka source {}", path.display()))
+    })?;
+    Ok(snapshot.into_temp_path())
+}
+
+fn hash_source_file<F>(
+    path: &Path,
+    relative_path: &str,
+    corpus_hasher: &mut blake3::Hasher,
+    mut consume: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("reading metadata for Weka source {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("Weka source may not be a symlink: {}", path.display());
+    }
+    if !metadata.is_file() {
+        bail!("Weka source is no longer a file: {}", path.display());
+    }
+    let file =
+        File::open(path).with_context(|| format!("opening Weka source {}", path.display()))?;
+    let byte_len = metadata.len();
+    corpus_hasher.update(&(relative_path.len() as u64).to_le_bytes());
+    corpus_hasher.update(relative_path.as_bytes());
+    corpus_hasher.update(&byte_len.to_le_bytes());
+
+    let mut reader = BufReader::new(file);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut bytes_read = 0_u64;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .with_context(|| format!("reading Weka source {}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        bytes_read = bytes_read
+            .checked_add(count as u64)
+            .context("Weka source byte count overflowed u64")?;
+        corpus_hasher.update(&buffer[..count]);
+        consume(&buffer[..count])?;
+    }
+    if bytes_read != byte_len {
+        bail!(
+            "Weka source {} changed size while it was being read: expected {} bytes, read {}",
+            path.display(),
+            byte_len,
+            bytes_read
+        );
+    }
+    Ok(())
+}
+
+fn has_weka_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("json") || extension.eq_ignore_ascii_case("jsonl")
+        })
+}
+
+fn is_jsonl(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+}
+
+fn for_each_source_trace<R, F>(
+    reader: R,
+    jsonl: bool,
+    display_path: &Path,
+    relative_path: &str,
+    mut visit: F,
+) -> Result<usize>
+where
+    R: Read,
+    F: FnMut(&WekaTrace, &str) -> Result<()>,
+{
+    let stream =
+        serde_json::Deserializer::from_reader(BufReader::new(reader)).into_iter::<WekaTrace>();
+    let mut count = 0;
+    for (index, trace) in stream.enumerate() {
+        if !jsonl && index > 0 {
+            bail!(
+                "Weka JSON source {} contains more than one object; use a .jsonl extension",
+                display_path.display()
+            );
+        }
+        let trace = trace.with_context(|| {
+            format!(
+                "parsing Weka source {} object {}",
+                display_path.display(),
+                index + 1
+            )
+        })?;
+        let source_name = if jsonl {
+            format!("{relative_path}#{index:06}")
+        } else {
+            relative_path.to_string()
+        };
+        visit(&trace, &source_name)?;
+        count += 1;
+    }
+    if count == 0 {
+        bail!(
+            "Weka source {} contains no trace objects",
+            display_path.display()
+        );
+    }
+    Ok(count)
+}
+
+fn collect_source_files(path: &Path) -> Result<(PathBuf, Vec<(PathBuf, String)>)> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to stat Weka source {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("Weka source may not be a symlink: {}", path.display());
+    }
+    if metadata.is_file() {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("Weka path is not valid UTF-8: {}", path.display()))?;
+        if !has_weka_extension(path) {
+            bail!(
+                "Weka source file must use a .json or .jsonl extension: {}",
+                path.display()
+            );
+        }
+        return Ok((
+            parent.to_path_buf(),
+            vec![(path.to_path_buf(), name.to_string())],
+        ));
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "Weka source is neither a file nor directory: {}",
+            path.display()
+        );
+    }
+    let mut files = Vec::new();
+    visit_directory(path, path, &mut files)?;
+    files.sort_by(|left, right| left.1.cmp(&right.1));
+    Ok((path.to_path_buf(), files))
+}
+
+fn visit_directory(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<(PathBuf, String)>,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(directory)
+        .with_context(|| format!("failed to read Weka directory {}", directory.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            bail!("Weka corpus may not contain symlinks: {}", path.display());
+        }
+        if metadata.is_dir() {
+            visit_directory(root, &path, files)?;
+            continue;
+        }
+        if !metadata.is_file() || !has_weka_extension(&path) {
+            continue;
+        }
+        let relative = path.strip_prefix(root).expect("visited path is below root");
+        let relative = normalize_relative_path(relative)?;
+        files.push((path, relative));
+    }
+    Ok(())
+}
+
+fn normalize_relative_path(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => parts.push(
+                value
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Weka path is not valid UTF-8: {}", path.display()))?,
+            ),
+            _ => bail!("Weka relative path is not normalized: {}", path.display()),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn request(t: f64, input: usize, output: usize, hashes: &[u64]) -> serde_json::Value {
+        serde_json::json!({
+            "t": t,
+            "type": "s",
+            "model": "model",
+            "in": input,
+            "out": output,
+            "hash_ids": hashes,
+        })
+    }
+
+    fn write_trace(path: &Path, requests: serde_json::Value) {
+        let trace = serde_json::json!({
+            "id": "play",
+            "models": ["model"],
+            "block_size": 4,
+            "hash_id_scope": "local",
+            "requests": requests,
+        });
+        std::fs::write(path, serde_json::to_vec(&trace).unwrap()).unwrap();
+    }
+
+    fn trace_value(id: &str, requests: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "models": ["model"],
+            "block_size": 4,
+            "hash_id_scope": "local",
+            "requests": requests,
+        })
+    }
+
+    #[test]
+    fn explicit_overlap_join_and_background_lower_to_typed_edges() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":1.0},
+                {"t":0.3,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":400,"status":"completed","requests":[
+                    {"t":0.3,"type":"s","model":"model","in":6,"out":1,"hash_ids":[3,4],"api_time":0.2}
+                ],"models":["model"]},
+                {"t":1.0,"type":"s","model":"model","in":9,"out":1,"hash_ids":[1,2,5]},
+                {"t":1.2,"type":"subagent","agent_id":"bg","subagent_type":"Explore","status":"async_launched","requests":[
+                    {"t":1.2,"type":"s","model":"model","in":4,"out":0,"hash_ids":[9],"api_time":0.1}
+                ],"models":["model"]},
+                {"t":1.5,"type":"s","model":"model","in":13,"out":1,"hash_ids":[1,2,5,6]}
+            ]),
+        );
+
+        let (summary, rows) = load_weka_agentic_rows(&path).unwrap();
+        assert_eq!(summary.requests, 5);
+        assert_eq!(summary.raw_zero_outputs, 1);
+        let child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:0"))
+            .unwrap();
+        assert!(child.dependencies.iter().any(|edge| {
+            edge.trigger == AgenticDependencyTrigger::Dispatch
+                && edge.relation == AgenticDependencyRelation::Spawn
+        }));
+        let consumer = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2"))
+            .unwrap();
+        assert!(
+            consumer.dependencies.iter().any(|edge| {
+                edge.request_id == child.request_id
+                    && edge.relation == AgenticDependencyRelation::Join
+                    && (edge.delay_ms - 500.0).abs() < 1e-6
+            }),
+            "lowered rows: {rows:#?}"
+        );
+        let background = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:3:inner:0"))
+            .unwrap();
+        assert_eq!(background.output_length, Some(0));
+        assert!(!rows.iter().any(|row| {
+            row.dependencies.iter().any(|edge| {
+                edge.request_id == background.request_id
+                    && edge.relation == AgenticDependencyRelation::Join
+            })
+        }));
+
+        let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        let parent = driver.pop_ready(0.0, 1);
+        assert_eq!(parent.len(), 1);
+        assert!(driver.pop_ready(299.0, usize::MAX).is_empty());
+        let overlapping_child = driver.pop_ready(300.0, usize::MAX);
+        assert_eq!(overlapping_child.len(), 1);
+        assert!(
+            overlapping_child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
+        );
+    }
+
+    #[test]
+    fn post_completion_spawn_and_equality_join_preserve_recorded_timing() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.5},
+                {"t":0.9,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":300,"status":"completed","requests":[
+                    {"t":0.9,"type":"s","model":"model","in":8,"out":1,"hash_ids":[3,4],"api_time":0.2},
+                    {"t":1.15,"type":"s","model":"model","in":12,"out":1,"hash_ids":[3,4,5],"api_time":0.05}
+                ],"models":["model"]},
+                {"t":1.2,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,6]}
+            ]),
+        );
+
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let parent = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:0"))
+            .unwrap();
+        let first_child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:0"))
+            .unwrap();
+        let second_child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:1"))
+            .unwrap();
+        let consumer = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2"))
+            .unwrap();
+
+        assert!(first_child.dependencies.iter().any(|edge| {
+            edge.request_id == parent.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::Spawn
+                && (edge.delay_ms - 400.0).abs() < 1e-6
+        }));
+        assert!(second_child.dependencies.iter().any(|edge| {
+            edge.request_id == first_child.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::Sequence
+                && (edge.delay_ms - 50.0).abs() < 1e-6
+        }));
+        assert!(consumer.dependencies.iter().any(|edge| {
+            edge.request_id == second_child.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::Join
+        }));
+
+        let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        let parent = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(parent.len(), 1);
+        driver.on_complete(parent[0].request_uuid, 500.0).unwrap();
+
+        let first_child = driver.pop_ready(900.0, usize::MAX);
+        assert_eq!(first_child.len(), 1);
+        assert!(
+            first_child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
+        );
+        driver
+            .on_complete(first_child[0].request_uuid, 1_100.0)
+            .unwrap();
+
+        let second_child = driver.pop_ready(1_150.0, usize::MAX);
+        assert_eq!(second_child.len(), 1);
+        driver
+            .on_complete(second_child[0].request_uuid, 1_200.0)
+            .unwrap();
+
+        let resumed_parent = driver.pop_ready(1_200.0, usize::MAX);
+        assert_eq!(resumed_parent.len(), 1);
+        assert!(
+            resumed_parent[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:2")
+        );
+    }
+
+    #[test]
+    fn flattened_hash_fork_becomes_a_dispatch_spawned_child_stream() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":2.0},
+                {"t":0.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,3],"api_time":0.2},
+                {"t":0.8,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,3,4],"api_time":0.2},
+                {"t":2.0,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,5]}
+            ]),
+        );
+
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let parent = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:0"))
+            .unwrap();
+        let child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1"))
+            .unwrap();
+        let child_next = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2"))
+            .unwrap();
+        let main_next = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:3"))
+            .unwrap();
+
+        assert_ne!(parent.session_id, child.session_id);
+        assert_eq!(child.session_id, child_next.session_id);
+        assert!(child.dependencies.iter().any(|edge| {
+            edge.request_id == parent.request_id
+                && edge.trigger == AgenticDependencyTrigger::Dispatch
+                && edge.relation == AgenticDependencyRelation::Spawn
+                && (edge.delay_ms - 500.0).abs() < 1e-6
+        }));
+        assert!(child_next.dependencies.iter().any(|edge| {
+            edge.request_id == child.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::Sequence
+                && (edge.delay_ms - 100.0).abs() < 1e-6
+        }));
+        assert!(main_next.dependencies.iter().any(|edge| {
+            edge.request_id == child_next.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::ReplayBarrier
+        }));
+    }
+
+    #[test]
+    fn explicit_subagent_spawn_and_join_use_one_parent_stream() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":1.0},
+                {"t":0.2,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,3],"api_time":0.2},
+                {"t":0.3,"type":"subagent","agent_id":"owned","subagent_type":"Explore","duration_ms":500,"status":"completed","requests":[
+                    {"t":0.3,"type":"s","model":"model","in":4,"out":1,"hash_ids":[9],"api_time":0.1}
+                ],"models":["model"]},
+                {"t":1.0,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,4]},
+                {"t":1.2,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,3,5]}
+            ]),
+        );
+
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let owner = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1"))
+            .unwrap();
+        let child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2:inner:0"))
+            .unwrap();
+        let other_stream_continuation = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:3"))
+            .unwrap();
+        let owner_stream_continuation = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:4"))
+            .unwrap();
+
+        assert!(child.dependencies.iter().any(|edge| {
+            edge.request_id == owner.request_id
+                && edge.trigger == AgenticDependencyTrigger::Dispatch
+                && edge.relation == AgenticDependencyRelation::Spawn
+        }));
+        assert!(!other_stream_continuation.dependencies.iter().any(|edge| {
+            edge.request_id == child.request_id && edge.relation == AgenticDependencyRelation::Join
+        }));
+        assert!(owner_stream_continuation.dependencies.iter().any(|edge| {
+            edge.request_id == child.request_id
+                && edge.trigger == AgenticDependencyTrigger::Completion
+                && edge.relation == AgenticDependencyRelation::Join
+        }));
+    }
+
+    #[test]
+    fn local_hashes_are_namespaced_and_partial_tails_are_private() {
+        let directory = tempdir().unwrap();
+        write_trace(
+            &directory.path().join("a.json"),
+            serde_json::json!([request(0.0, 6, 1, &[7, 8])]),
+        );
+        write_trace(
+            &directory.path().join("b.json"),
+            serde_json::json!([request(0.0, 6, 1, &[7, 8])]),
+        );
+        let (_, rows) = load_weka_agentic_rows(directory.path()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].hash_ids, rows[1].hash_ids);
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn extra_hashes_are_truncated_and_missing_blocks_are_request_private() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([request(0.0, 8, 1, &[7, 8, 999]), request(1.0, 12, 1, &[7])]),
+        );
+
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let first = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:0"))
+            .unwrap()
+            .hash_ids
+            .as_ref()
+            .unwrap();
+        let second = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1"))
+            .unwrap()
+            .hash_ids
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 3);
+        assert_eq!(first[0], second[0]);
+        assert_ne!(first[1], second[1]);
+        assert_ne!(second[1], second[2]);
+    }
+
+    #[test]
+    fn corpus_preflight_is_deterministic_and_rejects_mixed_block_sizes() {
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        for directory in [&first, &second] {
+            std::fs::create_dir(directory.path().join("nested")).unwrap();
+        }
+        write_trace(
+            &first.path().join("nested/b.jsonl"),
+            serde_json::json!([request(0.0, 4, 1, &[2])]),
+        );
+        write_trace(
+            &first.path().join("a.json"),
+            serde_json::json!([request(0.0, 4, 1, &[1])]),
+        );
+        write_trace(
+            &second.path().join("a.json"),
+            serde_json::json!([request(0.0, 4, 1, &[1])]),
+        );
+        write_trace(
+            &second.path().join("nested/b.jsonl"),
+            serde_json::json!([request(0.0, 4, 1, &[2])]),
+        );
+        assert_eq!(
+            WekaImporter::open(first.path())
+                .unwrap()
+                .header()
+                .source
+                .digest,
+            WekaImporter::open(second.path())
+                .unwrap()
+                .header()
+                .source
+                .digest
+        );
+
+        let mixed_path = second.path().join("nested/b.jsonl");
+        let mut mixed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&mixed_path).unwrap()).unwrap();
+        mixed["block_size"] = 8.into();
+        std::fs::write(&mixed_path, serde_json::to_vec(&mixed).unwrap()).unwrap();
+        let error = WekaImporter::open(second.path())
+            .err()
+            .expect("mixed blocks");
+        assert!(error.to_string().contains("mixes block sizes"), "{error:#}");
+    }
+
+    #[test]
+    fn emission_is_bound_to_preflight_snapshot_during_callback_mutation() {
+        let directory = tempdir().unwrap();
+        let first = directory.path().join("a.json");
+        let last = directory.path().join("z.json");
+        write_trace(&first, serde_json::json!([request(0.0, 4, 1, &[1])]));
+        write_trace(&last, serde_json::json!([request(0.0, 4, 1, &[2])]));
+        let importer = WekaImporter::open(directory.path()).unwrap();
+        let (_, expected) = importer.collect_rows().unwrap();
+
+        let mut emitted = Vec::new();
+        importer
+            .for_each_row(|row| {
+                if emitted.is_empty() {
+                    write_trace(&last, serde_json::json!([request(0.0, 4, 1, &[3])]));
+                }
+                emitted.push(row);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(emitted).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn open_preflights_lowering_for_every_play() {
+        let directory = tempdir().unwrap();
+        write_trace(
+            &directory.path().join("a.json"),
+            serde_json::json!([request(0.0, 4, 1, &[1])]),
+        );
+        write_trace(
+            &directory.path().join("z.json"),
+            serde_json::json!([
+                {"t":-1.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+            ]),
+        );
+
+        let error = WekaImporter::open(directory.path())
+            .err()
+            .expect("invalid final play must fail open");
+        assert!(
+            error.to_string().contains("invalid request timestamp"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn jsonl_streams_multiple_mixed_model_traces() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("traces.jsonl");
+        let first = trace_value("first", serde_json::json!([request(0.0, 4, 1, &[1])]));
+        let mut second = trace_value(
+            "second",
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"other-model","in":4,"out":1,"hash_ids":[1]},
+                {"t":1.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2]}
+            ]),
+        );
+        second["models"] = serde_json::json!(["model", "other-model"]);
+        std::fs::write(&path, format!("{first}\n{second}\n")).unwrap();
+
+        let (summary, rows) = load_weka_agentic_rows(&path).unwrap();
+        assert_eq!(summary.files, 1);
+        assert_eq!(summary.plays, 2);
+        assert_eq!(summary.requests, 3);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .map(|row| &row.play_id)
+                .collect::<HashSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(
+            load_weka_agentic_graph(&path, None)
+                .unwrap()
+                .identity()
+                .source_models,
+            ["model".to_string(), "other-model".to_string()]
+        );
+
+        let invalid = trace_value(
+            "invalid",
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"","in":4,"out":1,"hash_ids":[1]}
+            ]),
+        );
+        std::fs::write(&path, format!("{invalid}\n")).unwrap();
+        let error = WekaImporter::open(&path)
+            .err()
+            .expect("empty models must fail preflight");
+        assert!(
+            error.to_string().contains("empty request model"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn jsonl_source_order_controls_single_lane_play_order() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("traces.jsonl");
+        let authored_ids = (0..8)
+            .map(|index| format!("play-{index}"))
+            .collect::<Vec<_>>();
+        let jsonl = authored_ids
+            .iter()
+            .enumerate()
+            .map(|(index, play_id)| {
+                trace_value(
+                    play_id,
+                    serde_json::json!([request(0.0, 4, 1, &[index as u64 + 1])]),
+                )
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{jsonl}\n")).unwrap();
+
+        let importer = WekaImporter::open(&path).unwrap();
+        let header = importer.header().clone();
+        let (_, rows) = importer.collect_rows().unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.source_play_ordinal.unwrap())
+                .collect::<Vec<_>>(),
+            (0..authored_ids.len()).collect::<Vec<_>>()
+        );
+
+        let graph = AgenticTrace::from_agentic_mooncake_rows(header, rows).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1)
+                .unwrap();
+        let mut dispatched = Vec::new();
+        for index in 0..authored_ids.len() {
+            let mut ready = driver.pop_ready(index as f64, usize::MAX);
+            assert_eq!(ready.len(), 1);
+            let turn = ready.pop().unwrap();
+            dispatched.push(
+                turn.play_id
+                    .as_deref()
+                    .unwrap()
+                    .rsplit_once(":play:")
+                    .unwrap()
+                    .1
+                    .to_string(),
+            );
+            driver.on_complete(turn.request_uuid, index as f64).unwrap();
+        }
+        assert_eq!(dispatched, authored_ids);
+    }
+
+    #[test]
+    fn subagent_status_controls_background_and_blocking_validation() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let cases = [
+            (
+                "failed",
+                serde_json::json!([request(0.0, 4, 1, &[1]), {
+                    "t":0.1,"type":"subagent","agent_id":"failed","subagent_type":"Explore","status":"failed","requests":[
+                        {"t":0.2,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                    ],"models":["model"]
+                }]),
+                "unsupported non-success subagent status",
+            ),
+            (
+                "blocking empty",
+                serde_json::json!([request(0.0, 4, 1, &[1]), {
+                    "t":0.1,"type":"subagent","agent_id":"empty","subagent_type":"Explore","status":"completed","requests":[],"models":["model"]
+                }]),
+                "external waits are not modeled",
+            ),
+            (
+                "negative duration",
+                serde_json::json!([request(0.0, 4, 1, &[1]), {
+                    "t":0.1,"type":"subagent","agent_id":"negative","subagent_type":"Explore","duration_ms":-1,"status":"completed","requests":[
+                        {"t":0.2,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                    ],"models":["model"]
+                }]),
+                "negative duration_ms",
+            ),
+        ];
+        for (name, requests, expected) in cases {
+            write_trace(&path, requests);
+            let error = load_weka_agentic_rows(&path).expect_err(name);
+            assert!(error.to_string().contains(expected), "{name}: {error:#}");
+        }
+
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":0.1,"type":"subagent","agent_id":"background","subagent_type":"Explore","status":"async_launched","requests":[],"models":[]},
+                request(1.0, 8, 1, &[1,2])
+            ]),
+        );
+        let (summary, rows) = load_weka_agentic_rows(&path).unwrap();
+        assert_eq!(summary.requests, 2);
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn subagent_without_a_preceding_parent_is_rejected() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"subagent","agent_id":"orphan","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[9]}
+                ],"models":["model"]},
+                request(1.0, 4, 1, &[1])
+            ]),
+        );
+
+        let error = load_weka_agentic_rows(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("subagent orphan at outer index 0 without a preceding parent request"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn subagent_request_before_marker_is_rejected_as_non_absolute() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1]},
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.25,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let error = WekaImporter::open_with_options(
+            &path,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+            },
+        )
+        .err()
+        .expect("absolute timestamps before the marker must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("under absolute nested_timestamp_basis"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn auto_infers_relative_basis_for_raw_kv_cache_tester_shape() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("relative.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1]},
+                {"t":10.0,"type":"subagent","agent_id":"raw-worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2],"api_time":0.1},
+                    {"t":0.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[2,3]}
+                ],"models":["model"]},
+                {"t":12.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,4]}
+            ]),
+        );
+
+        let importer = WekaImporter::open(&path).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Relative
+        );
+        let first_child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:0"))
+            .unwrap();
+        let second_child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:1"))
+            .unwrap();
+        assert_eq!(first_child.not_before_ms, 10_000.0);
+        assert_eq!(second_child.not_before_ms, 10_500.0);
+
+        let (direct, resolved) =
+            load_weka_agentic_graph_with_options(&path, Some(4), WekaImportOptions::default())
+                .unwrap();
+        assert_eq!(resolved, WekaResolvedTimestampBasis::Relative);
+        let materialized = directory.path().join("relative-v2.jsonl");
+        let mut jsonl = serde_json::to_string(&summary.header).unwrap();
+        jsonl.push('\n');
+        for row in rows {
+            jsonl.push_str(&serde_json::to_string(&row).unwrap());
+            jsonl.push('\n');
+        }
+        std::fs::write(&materialized, jsonl).unwrap();
+        let reloaded = crate::replay::loadgen::load_agentic_mooncake(&materialized, 4).unwrap();
+        assert_eq!(direct.identity(), reloaded.identity());
+        assert_eq!(direct.nodes(), reloaded.nodes());
+    }
+
+    #[test]
+    fn auto_uses_later_relative_evidence_for_the_complete_jsonl_corpus() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("mixed.jsonl");
+        let absolute = trace_value(
+            "absolute-play",
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":10.0,"type":"subagent","agent_id":"absolute-worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":10.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let relative = trace_value(
+            "relative-play",
+            serde_json::json!([
+                request(0.0, 4, 1, &[3]),
+                {"t":20.0,"type":"subagent","agent_id":"relative-worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[4]}
+                ],"models":["model"]}
+            ]),
+        );
+        std::fs::write(&path, format!("{absolute}\n{relative}\n")).unwrap();
+
+        let importer = WekaImporter::open(&path).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Relative
+        );
+        let child_starts = rows
+            .iter()
+            .filter(|row| row.request_id.contains(":inner:"))
+            .map(|row| row.not_before_ms)
+            .collect::<Vec<_>>();
+        // The first subagent happens to look absolute, but a later corpus row
+        // selects relative and that one basis is applied uniformly to both.
+        assert_eq!(child_starts, vec![20_000.0, 20_000.0]);
+    }
+
+    #[test]
+    fn auto_scans_beyond_the_first_child_for_relative_evidence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("later-child.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":1.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]},
+                    {"t":0.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[2,3]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let importer = WekaImporter::open(&path).unwrap();
+        assert_eq!(
+            importer.collect_rows().unwrap().0.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Relative
+        );
+    }
+
+    #[test]
+    fn auto_defaults_delayed_children_to_absolute_and_explicit_override_is_authoritative() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("delayed-absolute.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":2.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let automatic = WekaImporter::open(&path).unwrap();
+        let absolute = WekaImporter::open_with_options(
+            &path,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+            },
+        )
+        .unwrap();
+        let relative = WekaImporter::open_with_options(
+            &path,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            automatic.collect_rows().unwrap().0.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(
+            automatic.header().source.digest,
+            absolute.header().source.digest
+        );
+        assert_ne!(
+            absolute.header().source.digest,
+            relative.header().source.digest
+        );
+        assert_eq!(absolute.collect_rows().unwrap().1[1].not_before_ms, 2_000.0);
+        assert_eq!(relative.collect_rows().unwrap().1[1].not_before_ms, 3_000.0);
+    }
+
+    #[test]
+    fn absolute_basis_clamps_only_within_marker_epsilon() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("rounding.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.9999995,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let importer = WekaImporter::open_with_options(
+            &path,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+            },
+        )
+        .unwrap();
+        let (_, rows) = importer.collect_rows().unwrap();
+        assert_eq!(rows[1].not_before_ms, 1_000.0);
+
+        let boundary_path = directory.path().join("epsilon-boundary.json");
+        let boundary = 1.0 - JOIN_EPSILON_SECONDS;
+        write_trace(
+            &boundary_path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":boundary,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let boundary_importer = WekaImporter::open(&boundary_path).unwrap();
+        let (summary, rows) = boundary_importer.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(rows[1].not_before_ms, 1_000.0);
+    }
+
+    #[test]
+    fn auto_treats_zero_marker_as_absolute_with_equivalent_canonical_rows() {
+        let directory = tempdir().unwrap();
+        let no_subagent = directory.path().join("plain.json");
+        write_trace(&no_subagent, serde_json::json!([request(0.0, 4, 1, &[1])]));
+        assert_eq!(
+            WekaImporter::open(&no_subagent)
+                .unwrap()
+                .collect_rows()
+                .unwrap()
+                .0
+                .nested_timestamp_basis,
+            WekaResolvedTimestampBasis::NotApplicable
+        );
+
+        let equivalent = directory.path().join("equivalent.json");
+        write_trace(
+            &equivalent,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":0.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":5.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let automatic = WekaImporter::open(&equivalent).unwrap();
+        let relative = WekaImporter::open_with_options(
+            &equivalent,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+            },
+        )
+        .unwrap();
+        let (automatic_summary, automatic_rows) = automatic.collect_rows().unwrap();
+        let (_, relative_rows) = relative.collect_rows().unwrap();
+        assert_eq!(
+            automatic_summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(
+            serde_json::to_value(automatic_rows).unwrap(),
+            serde_json::to_value(relative_rows).unwrap()
+        );
+
+        let nearly_zero = directory.path().join("nearly-zero.json");
+        write_trace(
+            &nearly_zero,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":0.0000005,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let nearly_zero = WekaImporter::open(&nearly_zero).unwrap();
+        let (summary, rows) = nearly_zero.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(rows[1].not_before_ms, 0.0005);
+    }
+
+    #[test]
+    fn auto_still_validates_later_rows_after_finding_relative_evidence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("invalid-later.jsonl");
+        let relative = trace_value(
+            "relative-play",
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":10.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let invalid = trace_value(
+            "invalid-play",
+            serde_json::json!([request(-1.0, 4, 1, &[3])]),
+        );
+        std::fs::write(&path, format!("{relative}\n{invalid}\n")).unwrap();
+
+        let error = WekaImporter::open(&path)
+            .err()
+            .expect("later malformed rows must still fail preflight");
+        assert!(
+            error.to_string().contains("invalid-later.jsonl#000001"),
+            "{error:#}"
+        );
+        assert!(
+            error.to_string().contains("invalid request timestamp"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn missing_null_and_zero_api_time_follow_aiperf_interval_contract() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let cases = [
+            ("absent", None, None),
+            ("null", Some(serde_json::Value::Null), None),
+            ("zero", Some(serde_json::json!(0.0)), Some(0.0)),
+        ];
+
+        for (name, api_time, expected_recorded) in cases {
+            let mut first = request(0.0, 4, 1, &[1]);
+            if let Some(api_time) = api_time {
+                first["api_time"] = api_time;
+            }
+            write_trace(
+                &path,
+                serde_json::json!([first, request(1.0, 8, 1, &[1, 2])]),
+            );
+
+            let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+            let first = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:0"))
+                .unwrap();
+            let second = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:1"))
+                .unwrap();
+            assert_eq!(
+                first.recorded_api_time_ms, expected_recorded,
+                "{name} must preserve its distinct provenance"
+            );
+            assert!(
+                second.dependencies.iter().any(|edge| {
+                    edge.request_id == first.request_id
+                        && edge.relation == AgenticDependencyRelation::Sequence
+                        && edge.trigger == AgenticDependencyTrigger::Completion
+                        && (edge.delay_ms - 1_000.0).abs() < 1e-6
+                }),
+                "{name} must use a zero-width interval for graph shaping: {rows:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_end_to_start_delay_covers_positive_zero_and_clamped_negative_gaps() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        for (name, next_start, expected_delay_ms) in [("positive", 1.5, 500.0), ("zero", 1.0, 0.0)]
+        {
+            write_trace(
+                &path,
+                serde_json::json!([
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1],"api_time":1.0},
+                    {"t":next_start,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.1}
+                ]),
+            );
+
+            let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+            let first = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:0"))
+                .unwrap();
+            let second = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:1"))
+                .unwrap();
+            let sequence = second
+                .dependencies
+                .iter()
+                .find(|edge| {
+                    edge.request_id == first.request_id
+                        && edge.relation == AgenticDependencyRelation::Sequence
+                })
+                .unwrap_or_else(|| panic!("{name}: missing sequence edge in {rows:#?}"));
+            assert_eq!(sequence.trigger, AgenticDependencyTrigger::Completion);
+            assert!(
+                (sequence.delay_ms - expected_delay_ms).abs() < 1e-6,
+                "{name}: {sequence:#?}"
+            );
+        }
+
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1],"api_time":0.1},
+                {"t":0.2,"type":"subagent","agent_id":"blocking","subagent_type":"Explore","duration_ms":600,"status":"completed","requests":[
+                    {"t":0.3,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2],"api_time":1.0}
+                ],"models":["model"]},
+                {"t":0.8,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,3],"api_time":0.1}
+            ]),
+        );
+        let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+        let child = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:1:inner:0"))
+            .unwrap();
+        let resumed_parent = rows
+            .iter()
+            .find(|row| row.request_id.ends_with("outer:2"))
+            .unwrap();
+        let join = resumed_parent
+            .dependencies
+            .iter()
+            .find(|edge| {
+                edge.request_id == child.request_id
+                    && edge.relation == AgenticDependencyRelation::Join
+            })
+            .unwrap_or_else(|| panic!("clamped-negative: missing join edge in {rows:#?}"));
+        assert_eq!(join.trigger, AgenticDependencyTrigger::Completion);
+        assert_eq!(join.delay_ms, 0.0);
+    }
+
+    #[test]
+    fn compiled_graph_cache_reuses_unchanged_content_and_invalidates_edits() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(&path, serde_json::json!([request(0.0, 4, 1, &[1])]));
+
+        let (first, _, first_hit) =
+            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
+                .unwrap();
+        let (second, _, second_hit) =
+            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
+                .unwrap();
+        assert!(!first_hit);
+        assert!(second_hit);
+        assert_eq!(first.identity(), second.identity());
+
+        write_trace(&path, serde_json::json!([request(0.0, 8, 0, &[1, 2])]));
+        let (changed, _, changed_hit) =
+            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
+                .unwrap();
+        assert!(!changed_hit);
+        assert_ne!(first.source().digest, changed.source().digest);
+        assert_eq!(changed.nodes()[0].max_output_tokens(), 0);
+
+        let error =
+            load_weka_agentic_graph_with_cache_status(&path, Some(8), WekaImportOptions::default())
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match configured block size")
+        );
+    }
+
+    #[test]
+    fn direct_weka_and_materialized_v2_have_identical_graph_identity() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("trace.json");
+        write_trace(
+            &source,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.25},
+                {"t":0.2,"type":"subagent","agent_id":"worker","subagent_type":"Explore","duration_ms":400,"status":"completed","requests":[
+                    {"t":0.2,"type":"s","model":"model","in":4,"out":1,"hash_ids":[3],"api_time":0.1}
+                ],"models":["model"]},
+                {"t":0.6,"type":"s","model":"model","in":12,"out":0,"hash_ids":[1,2,4]}
+            ]),
+        );
+
+        let direct = load_weka_agentic_graph(&source, Some(4)).unwrap();
+        assert_eq!(
+            direct.source().digest,
+            "ff95743508341ed9da894e7ed248d6ac0e3d7d939665ca45d308ad77f14cb1aa"
+        );
+        assert_eq!(
+            direct.graph_digest(),
+            "7e8753e35fcf0269a70f07884e4786987afa4c07cc0d65740a90493ceb6c3e3d"
+        );
+        let importer = WekaImporter::open(&source).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(summary.requests, 3);
+        assert_eq!(summary.plays, 1);
+        assert_eq!(summary.raw_zero_outputs, 1);
+        assert!(
+            rows.iter()
+                .any(|row| row.recorded_api_time_ms == Some(250.0))
+        );
+        assert!(rows.iter().any(|row| row.output_length == Some(0)));
+
+        let materialized = directory.path().join("trace-v2.jsonl");
+        let mut jsonl = serde_json::to_string(&summary.header).unwrap();
+        jsonl.push('\n');
+        for row in rows {
+            jsonl.push_str(&serde_json::to_string(&row).unwrap());
+            jsonl.push('\n');
+        }
+        std::fs::write(&materialized, jsonl).unwrap();
+        let reparsed = crate::replay::loadgen::load_agentic_mooncake(&materialized, 4).unwrap();
+
+        assert_eq!(direct.identity(), reparsed.identity());
+        assert_eq!(direct.nodes(), reparsed.nodes());
+
+        let scaled = direct.speed_up_timing(2.0).unwrap();
+        assert!(
+            scaled
+                .nodes()
+                .iter()
+                .any(|node| node.recorded_api_time_ms() == Some(250.0))
+        );
+    }
+
+    #[test]
+    fn configured_source_block_size_is_only_an_assertion() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("trace.json");
+        write_trace(&source, serde_json::json!([request(0.0, 4, 1, &[1])]));
+
+        load_weka_agentic_graph(&source, None).unwrap();
+        load_weka_agentic_graph(&source, Some(4)).unwrap();
+        let error = load_weka_agentic_graph(&source, Some(8)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match configured block size")
+        );
+
+        write_trace(
+            &source,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1],"api_time":-0.1}
+            ]),
+        );
+        let error = load_weka_agentic_rows(&source).unwrap_err();
+        assert!(error.to_string().contains("invalid api_time"));
+
+        let unsupported = directory.path().join("trace.txt");
+        write_trace(&unsupported, serde_json::json!([request(0.0, 4, 1, &[1])]));
+        let error = WekaImporter::open(&unsupported)
+            .err()
+            .expect("unsupported source extension must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must use a .json or .jsonl extension")
+        );
+    }
+}
