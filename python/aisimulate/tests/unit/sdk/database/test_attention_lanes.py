@@ -31,7 +31,6 @@ real wiring, not just ``lane_walk_order``'s ranking math in isolation.
 
 import copy
 import pickle
-from pathlib import Path
 
 import pytest
 
@@ -553,34 +552,10 @@ def test_framework_default_path_warns_and_falls_back_on_unexpected_density_failu
     assert "density accessor unavailable" in caplog.text
 
 
-@pytest.fixture
-def b200_declared_attention_reuse(tmp_path):
-    """Test declared forward reuse without restoring withdrawn production donors."""
-    systems = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems"
-    (tmp_path / "b200_sxm.yaml").write_text((systems / "b200_sxm.yaml").read_text())
-    family = Path("data/b200_sxm/attention/vllm")
-    for version in ("0.22.0", "0.25.0"):
-        destination = tmp_path / family / version
-        destination.mkdir(parents=True)
-        for source in (systems / family / version).iterdir():
-            destination.joinpath(source.name).symlink_to(source)
-    # Explicit fixture-only approval: the production 0.24.0 declaration is gone.
-    (tmp_path / family / "0.22.0/reuse.yaml").write_text(
-        "schema_version: 1\nreuse:\n"
-        + "".join(
-            f"- table: {table}\n  from_version: 0.25.0\n  reason: lane precedence test fixture\n  approved_by: test\n"
-            for table in ("context_attention_perf", "generation_attention_perf")
-        )
-    )
-    return str(tmp_path)
-
-
 @pytest.mark.parametrize("table_attr", ["_context_attention_data", "_generation_attention_data"])
-def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_triton_pins_the_stored_lane(
-    table_attr, b200_declared_attention_reuse
-):
+def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_triton_pins_the_stored_lane(table_attr):
     """Regression on the REAL shipped b200_sxm/vllm/0.22.0 tables (PR #1519
-    review, jasonqinzhou P1, both findings), with fixture-only 0.25.0 donors:
+    review, jasonqinzhou P1, both findings):
 
     - 0.22.0 has no ``attention_lane_defaults.yaml`` entry, so an UNSET
       override must resolve ``["default"]`` — never a density-ranked donor
@@ -602,9 +577,7 @@ def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_trito
     )
     from aiconfigurator_core.sdk.perf_database import get_database
 
-    db = get_database(
-        "b200_sxm", "vllm", "0.22.0", systems_paths=b200_declared_attention_reuse, allow_unlisted_version=True
-    )
+    db = get_database("b200_sxm", "vllm", "0.22.0", allow_unlisted_version=True)
 
     # Guard: the real table really does carry prefixed donor lanes a density
     # ranking WOULD have crowned (vllm_flashinfer is the 0.19/0.22 label).
@@ -625,7 +598,7 @@ def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_trito
     assert order.index("vllm_flashinfer") < min(order.index(lane) for lane in donor_lanes), order
 
     # MHA/bfloat16/head-size 64/window 0 is absent from Triton but overlaps
-    # the requested 0.22 FlashInfer lane and fixture-declared 0.25 lanes. Only the
+    # the requested 0.22 FlashInfer lane and inherited 0.24 lanes. Only the
     # 0.22 rows carry power, so positive energy proves the primary lane served
     # the query instead of a donor that happened to be denser.
     if table_attr == "_context_attention_data":
@@ -652,10 +625,10 @@ def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_trito
         resolved_lane_order_for_op(db, table_attr, "fa3")
 
 
-def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first(b200_declared_attention_reuse):
+def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first():
     """A pin is explicit intent even when only an inherited version carries it.
 
-    vLLM's ``flashinfer`` override expands to the 0.25 split labels before the
+    vLLM's ``flashinfer`` override expands to the 0.24 split labels before the
     0.22 monolithic label. On the requested 0.22 context table the first split
     label exists only in the shared layer, but provenance tiering must not
     move it behind requested-version lanes.
@@ -665,9 +638,7 @@ def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first(b200_de
     from aiconfigurator_core.sdk.perf_database import get_database
 
     table_attr = "_context_attention_data"
-    db = get_database(
-        "b200_sxm", "vllm", "0.22.0", systems_paths=b200_declared_attention_reuse, allow_unlisted_version=True
-    )
+    db = get_database("b200_sxm", "vllm", "0.22.0", allow_unlisted_version=True)
     primary_lanes = set(fetch_attention_lane_density(db, table_attr, shared_layer=False))
     shared_lanes = set(fetch_attention_lane_density(db, table_attr))
     donor_only_lanes = shared_lanes - primary_lanes
@@ -977,7 +948,7 @@ def test_generation_qk_norm_contributes_latency_through_python_query():
     from aiconfigurator_core.sdk.operations.attention import GenerationAttention
     from aiconfigurator_core.sdk.perf_database import get_database
 
-    database = get_database("b200_sxm", "vllm", "0.25.0", allow_unlisted_version=True)
+    database = get_database("b200_sxm", "vllm", "0.24.0")
     plain = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, False)
     normalized = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, True)
 

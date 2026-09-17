@@ -9,13 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.perf_database import (
-    _database_version_dir_is_declared,
-    _declared_versions,
-    _load_collection_meta_yaml,
-    get_supported_databases,
-    get_version_slots,
-)
+from aiconfigurator.sdk.perf_database import _database_version_dir_is_declared, _load_collection_meta_yaml
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[3]
@@ -59,19 +53,3 @@ def test_public_schema_remains_fail_closed_for_relocated_fields(tmp_path, field)
     path.write_text(yaml.safe_dump(meta))
     with pytest.raises(ValueError, match="unsupported key"):
         _load_collection_meta_yaml(str(path))
-
-
-@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
-def test_withdrawn_024_has_no_data_or_declared_donors(system):
-    systems = DATA.parent.parent
-    data = systems / "data" / system
-    slots = get_version_slots(system, "vllm", systems_paths=str(systems))
-    assert slots == {"current": "0.25.0"}
-    assert get_supported_databases(str(systems))[system]["vllm"] == ["0.25.0"]
-    versions = _declared_versions(str(data), "vllm")
-    assert "0.24.0" not in versions
-    assert "0.25.0" in versions
-    assert not list(data.glob("*/vllm/0.24.0/*"))
-    for path in data.glob("*/vllm/*/reuse.yaml"):
-        for entry in yaml.safe_load(path.read_text())["reuse"]:
-            assert entry["from_version"] != "0.24.0", path

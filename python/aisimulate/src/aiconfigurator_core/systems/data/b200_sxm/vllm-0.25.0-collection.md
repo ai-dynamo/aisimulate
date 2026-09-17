@@ -74,11 +74,3 @@ Do not describe these results as newly verified hard-locked measurements.
 Do not promote this partial release to a fully recollected default or describe a
 prediction that still uses older fallback tables as exclusively new 0.25.0 data.
 All publication and follow-up changes remain in PR #219.
-
-## Withdrawal of the previous release
-
-- B200 and B300 vLLM 0.24.0 data and declarations that reuse those donors
-  have been removed. The old FP8-block GEMM collector published eager timings
-  as graph-timed performance data, including host launch gaps in model costs.
-- See the [withdrawal rationale and remaining coverage](../b300_sxm/vllm-0.25.0-collection.md#withdrawal-of-b200b300-vllm-0240-data).
-  The 0.25.0 publication is still partial; it does not replace every removed op.

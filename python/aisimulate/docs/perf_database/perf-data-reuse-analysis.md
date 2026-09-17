@@ -9,10 +9,10 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 ## Headline numbers
 
-- Total rows scanned: **13,685,285**
-- Within-framework cross-version dedup-able rows: **1,737** (~0.0%)
+- Total rows scanned: **12,512,965**
+- Within-framework cross-version dedup-able rows: **175** (~0.0%)
 - Tier distribution (groups / rows):
-  - `shared`: 1026 groups · 13,381,644 rows
+  - `shared`: 1030 groups · 12,209,324 rows
   - `shared_fallback`: 52 groups · 303,641 rows
 
 
@@ -20,8 +20,10 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
+| b200_sxm | `dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant` | shared | vllm | vllm:1620 | 0 / 1620 | 0 | — | — | — |
 | b200_sxm | `sglang` | shared | sglang | sglang:1 | 0 / 1 | 0 | — | — | — |
 | b200_sxm | `torch_ops` | shared | trtllm | trtllm:1628 | 0 / 1628 | 0 | — | — | — |
+| b300_sxm | `dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant` | shared | vllm | vllm:1628 | 0 / 1628 | 0 | — | — | — |
 | b300_sxm | `sglang` | shared | sglang | sglang:1 | 0 / 1 | 0 | — | — | — |
 | b300_sxm | `torch_ops` | shared | trtllm | trtllm:1628 | 0 / 1628 | 0 | — | — | — |
 | gb200 | `dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant` | shared | vllm | vllm:1625 | 0 / 1625 | 0 | — | — | — |
@@ -51,48 +53,48 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | a100_sxm | `torch_flow` | shared | trtllm | trtllm:4864 | 0 / 4864 | 0 | — | — | — |
 | a100_sxm | `vllm_flash_attn` | shared | vllm | vllm:5457 | 0 / 5049 | 0 | — | — | — |
 | b200_sxm | `flashinfer` | shared | sglang | sglang:2584 | 0 / 2584 | 0 | — | — | — |
-| b200_sxm | `torch_flow` | shared | trtllm | trtllm:68535 | 0 / 68535 | 0 | — | — | — |
+| b200_sxm | `torch_flow` | shared | trtllm | trtllm:67107 | 0 / 67107 | 0 | — | — | — |
 | b200_sxm | `torch_flow_flashinfer` | shared | trtllm | trtllm:2312 | 0 / 2312 | 0 | — | — | — |
 | b200_sxm | `triton` | shared | sglang | sglang:9486 | 0 / 9486 | 0 | — | — | — |
-| b200_sxm | `trtllm_mha` | shared | sglang | sglang:32093 | 0 / 32093 | 0 | — | — | — |
+| b200_sxm | `trtllm_mha` | shared | sglang | sglang:31141 | 0 / 31141 | 0 | — | — | — |
 | b200_sxm | `vllm_flashinfer` | shared | vllm | vllm:35360 | 0 / 35360 | 0 | — | — | — |
-| b200_sxm | `vllm_flashinfer_flashinfertrtllmapidecode` | shared | vllm | vllm:3900 | 0 / 3900 | 0 | — | — | — |
-| b200_sxm | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:47304 | 0 / 47304 | 0 | — | — | — |
+| b200_sxm | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3684 | 0 / 3684 | 0 | — | — | — |
+| b200_sxm | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:44664 | 0 / 44664 | 0 | — | — | — |
 | b200_sxm | `vllm_triton_attn` | shared | vllm | vllm:3264 | 0 / 3264 | 0 | — | — | — |
 | b300_sxm | `flashinfer` | shared | sglang | sglang:2584 | 0 / 2584 | 0 | — | — | — |
 | b300_sxm | `torch_flow` | shared | trtllm | trtllm:67106 | 0 / 67106 | 0 | — | — | — |
 | b300_sxm | `torch_flow_flashinfer` | shared | trtllm | trtllm:2312 | 0 / 2312 | 0 | — | — | — |
 | b300_sxm | `triton` | shared | sglang | sglang:9486 | 0 / 9486 | 0 | — | — | — |
 | b300_sxm | `trtllm_mha` | shared | sglang | sglang:32097 | 0 / 32097 | 0 | — | — | — |
-| b300_sxm | `vllm_flashinfer_flashinfertrtllmapidecode` | shared | vllm | vllm:3900 | 0 / 3900 | 0 | — | — | — |
-| b300_sxm | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:47304 | 0 / 47304 | 0 | — | — | — |
+| b300_sxm | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3668 | 0 / 3668 | 0 | — | — | — |
+| b300_sxm | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:44476 | 0 / 44476 | 0 | — | — | — |
 | b300_sxm | `vllm_triton_attn` | shared | vllm | vllm:1632 | 0 / 1632 | 0 | — | — | — |
 | b60 | `vllm_flash_attn` | shared | vllm | vllm:34118 | 0 / 17930 | 1 | — | — | — |
 | gb200 | `flashinfer` | shared | sglang | sglang:2584 | 0 / 2584 | 0 | — | — | — |
-| gb200 | `torch_flow` | shared | trtllm | trtllm:68535 | 0 / 68535 | 0 | — | — | — |
+| gb200 | `torch_flow` | shared | trtllm | trtllm:67107 | 0 / 67107 | 0 | — | — | — |
 | gb200 | `torch_flow_flashinfer` | shared | trtllm | trtllm:2312 | 0 / 2312 | 0 | — | — | — |
 | gb200 | `triton` | shared | sglang | sglang:9486 | 0 / 9486 | 0 | — | — | — |
-| gb200 | `trtllm_mha` | shared | sglang | sglang:31138 | 0 / 31138 | 0 | — | — | — |
-| gb200 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3740 | 0 / 3740 | 0 | — | — | — |
-| gb200 | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:45356 | 0 / 45356 | 0 | — | — | — |
+| gb200 | `trtllm_mha` | shared | sglang | sglang:30186 | 0 / 30186 | 0 | — | — | — |
+| gb200 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3668 | 0 / 3668 | 0 | — | — | — |
+| gb200 | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:44476 | 0 / 44476 | 0 | — | — | — |
 | gb200 | `vllm_triton_attn` | shared | vllm | vllm:1632 | 0 / 1632 | 0 | — | — | — |
 | gb300 | `flashinfer` | shared | sglang | sglang:2584 | 0 / 2584 | 0 | — | — | — |
-| gb300 | `torch_flow` | shared | trtllm | trtllm:68533 | 0 / 68533 | 0 | — | — | — |
+| gb300 | `torch_flow` | shared | trtllm | trtllm:67105 | 0 / 67105 | 0 | — | — | — |
 | gb300 | `torch_flow_flashinfer` | shared | trtllm | trtllm:2312 | 0 / 2312 | 0 | — | — | — |
 | gb300 | `triton` | shared | sglang | sglang:9486 | 0 / 9486 | 0 | — | — | — |
-| gb300 | `trtllm_mha` | shared | sglang | sglang:31144 | 0 / 31144 | 0 | — | — | — |
-| gb300 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3740 | 0 / 3740 | 0 | — | — | — |
-| gb300 | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:45356 | 0 / 45356 | 0 | — | — | — |
+| gb300 | `trtllm_mha` | shared | sglang | sglang:30192 | 0 / 30192 | 0 | — | — | — |
+| gb300 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:3668 | 0 / 3668 | 0 | — | — | — |
+| gb300 | `vllm_flashinfer_trtllmprefill` | shared | vllm | vllm:44476 | 0 / 44476 | 0 | — | — | — |
 | gb300 | `vllm_triton_attn` | shared | vllm | vllm:1632 | 0 / 1632 | 0 | — | — | — |
 | h100_sxm | `fa3` | shared | sglang | sglang:31622 | 0 / 31622 | 0 | — | — | — |
 | h100_sxm | `torch_flow` | shared | trtllm | trtllm:75840 | 0 / 75840 | 0 | — | — | — |
 | h100_sxm | `triton` | shared | sglang | sglang:3468 | 0 / 3468 | 0 | — | — | — |
 | h100_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:50252 | 0 / 50252 | 0 | — | — | — |
 | h100_sxm | `vllm_flash_attn_fa4` | shared | vllm | vllm:578 | 0 / 578 | 0 | — | — | — |
-| h200_sxm | `fa3` | shared | sglang | sglang:32574 | 0 / 32574 | 0 | — | — | — |
-| h200_sxm | `torch_flow` | shared | trtllm | trtllm:77265 | 0 / 77265 | 0 | — | — | — |
+| h200_sxm | `fa3` | shared | sglang | sglang:31622 | 0 / 31622 | 0 | — | — | — |
+| h200_sxm | `torch_flow` | shared | trtllm | trtllm:75837 | 0 / 75837 | 0 | — | — | — |
 | h200_sxm | `triton` | shared | sglang | sglang:3468 | 0 / 3468 | 0 | — | — | — |
-| h200_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:51204 | 0 / 51204 | 0 | — | — | — |
+| h200_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:50252 | 0 / 50252 | 0 | — | — | — |
 | h200_sxm | `vllm_flash_attn_fa4` | shared | vllm | vllm:578 | 0 / 578 | 0 | — | — | — |
 | l40s | `flashinfer` | shared | sglang | sglang:26236 | 0 / 26236 | 0 | — | — | — |
 | l40s | `torch_flow` | shared | trtllm | trtllm:75768 | 0 / 75768 | 0 | — | — | — |
@@ -143,16 +145,16 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `SGLang_CustomAllReduce_eager` | shared | sglang | sglang:207 | 0 / 69 | 0 | — | — | — |
 | b200_sxm | `SGLang_CustomAllReduce_graph` | shared | sglang | sglang:207 | 0 / 69 | 0 | — | — | — |
 | b200_sxm | `TRTLLM` | shared | trtllm | trtllm:207 | 0 / 69 | 0 | — | — | — |
-| b200_sxm | `vLLM_custom_eager` | shared | vllm | vllm:69 | 0 / 69 | 0 | — | — | — |
-| b200_sxm | `vLLM_custom_graph` | shared | vllm | vllm:69 | 0 / 69 | 0 | — | — | — |
+| b200_sxm | `vLLM_custom_eager` | shared | vllm | vllm:138 | 0 / 69 | 0 | — | — | — |
+| b200_sxm | `vLLM_custom_graph` | shared | vllm | vllm:138 | 0 / 69 | 0 | — | — | — |
 | b300_sxm | `SGLang_CustomAllReduce_eager` | shared | sglang | sglang:207 | 0 / 69 | 0 | — | — | — |
 | b300_sxm | `SGLang_CustomAllReduce_graph` | shared | sglang | sglang:207 | 0 / 69 | 0 | — | — | — |
 | b300_sxm | `TRTLLM` | shared | trtllm | trtllm:138 | 0 / 69 | 1 | — | — | — |
-| b300_sxm | `vLLM_custom_eager` | shared | vllm | vllm:69 | 0 / 69 | 0 | — | — | — |
-| b300_sxm | `vLLM_custom_graph` | shared | vllm | vllm:69 | 0 / 69 | 0 | — | — | — |
+| b300_sxm | `vLLM_custom_eager` | shared | vllm | vllm:138 | 0 / 69 | 0 | — | — | — |
+| b300_sxm | `vLLM_custom_graph` | shared | vllm | vllm:138 | 0 / 69 | 0 | — | — | — |
 | b60 | `vLLM_custom_eager` | shared | vllm | vllm:207 | 0 / 69 | 23 | — | — | — |
-| gb200 | `SGLang_CustomAllReduce_eager` | shared | sglang | sglang:230 | 0 / 92 | 0 | — | — | — |
-| gb200 | `SGLang_CustomAllReduce_graph` | shared | sglang | sglang:230 | 0 / 92 | 0 | — | — | — |
+| gb200 | `SGLang_CustomAllReduce_eager` | shared | sglang | sglang:184 | 0 / 46 | 0 | — | — | — |
+| gb200 | `SGLang_CustomAllReduce_graph` | shared | sglang | sglang:184 | 0 / 46 | 0 | — | — | — |
 | gb200 | `TRTLLM` | shared | trtllm | trtllm:92 | 0 / 46 | 0 | — | — | — |
 | gb200 | `vLLM_custom_eager` | shared | vllm | vllm:138 | 0 / 46 | 0 | — | — | — |
 | gb200 | `vLLM_custom_graph` | shared | vllm | vllm:138 | 0 / 46 | 0 | — | — | — |
@@ -188,12 +190,16 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
+| b200_sxm | `FLASHINFER_MLA_SPARSE` | shared | vllm | vllm:10248 | 0 / 10248 | 0 | — | — | — |
+| b200_sxm | `FLASHMLA_SPARSE` | shared | vllm | vllm:4392 | 0 / 4392 | 0 | — | — | — |
 | b200_sxm | `default` | shared_fallback | trtllm | trtllm:14640 | 0 / 14640 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_dense_mha_trtllm_ragged` | shared | sglang | sglang:35080 | 0 / 35080 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_indexer_flashmla_sparse` | shared | sglang | sglang:17096 | 0 / 17096 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_indexer_trtllm` | shared | sglang | sglang:17104 | 0 / 17104 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_skip_indexer_flashmla_sparse` | shared | sglang | sglang:12963 | 0 / 12963 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_skip_indexer_trtllm` | shared | sglang | sglang:12960 | 0 / 12960 | 0 | — | — | — |
+| b300_sxm | `FLASHINFER_MLA_SPARSE` | shared | vllm | vllm:10248 | 0 / 10248 | 0 | — | — | — |
+| b300_sxm | `FLASHMLA_SPARSE` | shared | vllm | vllm:4392 | 0 / 4392 | 0 | — | — | — |
 | b300_sxm | `default` | shared_fallback | trtllm | trtllm:14640 | 0 / 14640 | 0 | — | — | — |
 | b300_sxm | `sglang_dsa_dense_mha_trtllm_ragged` | shared | sglang | sglang:27896 | 0 / 20940 | 0 | — | — | — |
 | b300_sxm | `sglang_dsa_indexer_flashmla_sparse` | shared | sglang | sglang:16918 | 0 / 16918 | 0 | — | — | — |
@@ -235,9 +241,13 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
+| b200_sxm | `FLASHINFER_MLA_SPARSE` | shared | vllm | vllm:7705 | 0 / 7705 | 0 | — | — | — |
+| b200_sxm | `FLASHMLA_SPARSE` | shared | vllm | vllm:3294 | 0 / 3294 | 0 | — | — | — |
 | b200_sxm | `default` | shared_fallback | trtllm | trtllm:11040 | 0 / 11040 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_indexer_trtllm` | shared | sglang | sglang:3600 | 0 / 3600 | 0 | — | — | — |
 | b200_sxm | `sglang_dsa_skip_indexer_trtllm` | shared | sglang | sglang:2448 | 0 / 2448 | 0 | — | — | — |
+| b300_sxm | `FLASHINFER_MLA_SPARSE` | shared | vllm | vllm:7576 | 0 / 7576 | 0 | — | — | — |
+| b300_sxm | `FLASHMLA_SPARSE` | shared | vllm | vllm:3277 | 0 / 3277 | 0 | — | — | — |
 | b300_sxm | `default` | shared_fallback | trtllm | trtllm:11037 | 0 / 11037 | 0 | — | — | — |
 | b300_sxm | `sglang_dsa_indexer_trtllm` | shared | sglang | sglang:3600 | 0 / 3600 | 0 | — | — | — |
 | b300_sxm | `sglang_dsa_skip_indexer_trtllm` | shared | sglang | sglang:1224 | 0 / 1224 | 0 | — | — | — |
@@ -272,7 +282,7 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:5840 | 0 / 5840 | 0 | — | — | — |
 | b200_sxm | `compressed_flashmla` | shared | sglang | sglang:43804 | 0 / 43804 | 0 | — | — | — |
 | b300_sxm | `DeepseekV4TrtllmAttention` | shared | trtllm | trtllm:5600 | 0 / 5600 | 0 | — | — | — |
-| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:5840 | 0 / 5840 | 0 | — | — | — |
+| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:5704 | 0 / 5704 | 0 | — | — | — |
 | b300_sxm | `compressed_flashmla` | shared | sglang | sglang:89689 | 0 / 45449 | 0 | — | — | — |
 | gb200 | `DeepseekV4TrtllmAttention` | shared | trtllm | trtllm:5584 | 0 / 5584 | 0 | — | — | — |
 | gb200 | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:5840 | 0 / 5840 | 0 | — | — | — |
@@ -293,7 +303,7 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1544 | 0 / 1544 | 0 | — | — | — |
 | b200_sxm | `compressed_flashmla` | shared | sglang | sglang:3200 | 0 / 3200 | 0 | — | — | — |
 | b300_sxm | `DeepseekV4TrtllmAttention` | shared | trtllm | trtllm:1544 | 0 / 1544 | 0 | — | — | — |
-| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1544 | 0 / 1544 | 0 | — | — | — |
+| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1048 | 0 / 1048 | 0 | — | — | — |
 | b300_sxm | `compressed_flashmla` | shared | sglang | sglang:3200 | 0 / 3200 | 0 | — | — | — |
 | gb200 | `DeepseekV4TrtllmAttention` | shared | trtllm | trtllm:1544 | 0 / 1544 | 0 | — | — | — |
 | gb200 | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1544 | 0 / 1544 | 0 | — | — | — |
@@ -328,8 +338,8 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
-| b200_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:3918 | 0 / 3918 | 0 | — | — | — |
-| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:3918 | 0 / 3918 | 0 | — | — | — |
+| b200_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
+| b300_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | gb200 | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | gb300 | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | h100_sxm | `FLASHMLA_SPARSE_DSV4` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
@@ -392,9 +402,9 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
 | b200_sxm | `deep_gemm.fp8_paged_mqa_logits` | shared | sglang | sglang:2181 | 0 / 2181 | 0 | — | — | — |
-| b200_sxm | `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | shared | vllm | vllm:3918 | 0 / 3918 | 0 | — | — | — |
+| b200_sxm | `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | b300_sxm | `deep_gemm.fp8_paged_mqa_logits` | shared | sglang | sglang:4362 | 0 / 2181 | 0 | — | — | — |
-| b300_sxm | `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | shared | vllm | vllm:3918 | 0 / 3918 | 0 | — | — | — |
+| b300_sxm | `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | gb200 | `deep_gemm.fp8_paged_mqa_logits` | shared | sglang | sglang:4261 | 0 / 2181 | 0 | — | — | — |
 | gb200 | `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | shared | vllm | vllm:1959 | 0 / 1959 | 0 | — | — | — |
 | gb300 | `deep_gemm.fp8_paged_mqa_logits` | shared | sglang | sglang:4362 | 0 / 2181 | 0 | — | — | — |
@@ -440,34 +450,30 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | a100_sxm | `causal_conv1d_fn` | shared | sglang | sglang:824 | 0 / 824 | 0 | — | — | — |
 | a100_sxm | `causal_conv1d_update` | shared | sglang | sglang:88 | 0 / 88 | 0 | — | — | — |
 | a100_sxm | `fused_recurrent_gated_delta_rule` | shared | sglang | sglang:86 | 0 / 86 | 0 | — | — | — |
-| b200_sxm | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4529, trtllm:854, vllm:5264 | 4559 / 4704 | 1 | 7.1 | 137.3 | 277.4 |
-| b200_sxm | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:462, trtllm:88, vllm:515 | 461 / 462 | 0 | 11.5 | 74.9 | 130.8 |
-| b200_sxm | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4529, trtllm:854 | 824 / 4559 | 0 | 18.7 | 41.1 | 45.6 |
-| b200_sxm | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:5264 | 0 / 4704 | 0 | — | — | — |
-| b200_sxm | `flashinfer_gated_delta_rule_decode` | shared | sglang | sglang:52 | 0 / 52 | 0 | — | — | — |
+| b200_sxm | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4004, trtllm:854, vllm:4144 | 4034 / 4144 | 0 | 6.4 | 145.2 | 277.4 |
+| b200_sxm | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:407, trtllm:88, vllm:407 | 407 / 407 | 0 | 10.8 | 77.7 | 130.9 |
+| b200_sxm | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4004, trtllm:854 | 824 / 4034 | 0 | 18.7 | 41.1 | 45.6 |
+| b200_sxm | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4144 | 0 / 4144 | 0 | — | — | — |
 | b200_sxm | `fused_recurrent_gated_delta_rule` | shared | trtllm | trtllm:86 | 0 / 86 | 0 | — | — | — |
-| b200_sxm | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:457, vllm:509 | 457 / 457 | 0 | 0.5 | 4.5 | 9.3 |
-| b300_sxm | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4529, trtllm:837, vllm:5264 | 4567 / 4704 | 0 | 8.1 | 138.5 | 277.1 |
-| b300_sxm | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:462, trtllm:88, vllm:515 | 461 / 462 | 0 | 10.2 | 70.9 | 129.4 |
-| b300_sxm | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4529, trtllm:836 | 799 / 4566 | 0 | 31.2 | 46.0 | 50.6 |
-| b300_sxm | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:5264 | 0 / 4704 | 1 | — | — | — |
-| b300_sxm | `flashinfer_gated_delta_rule_decode` | shared | sglang | sglang:52 | 0 / 52 | 0 | — | — | — |
+| b200_sxm | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:405, vllm:405 | 405 / 405 | 0 | 0.3 | 4.0 | 5.5 |
+| b300_sxm | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4004, trtllm:837, vllm:4144 | 4042 / 4144 | 0 | 5.9 | 143.0 | 277.9 |
+| b300_sxm | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:407, trtllm:88, vllm:407 | 407 / 407 | 0 | 11.6 | 75.9 | 129.9 |
+| b300_sxm | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4004, trtllm:836 | 799 / 4041 | 0 | 31.2 | 46.0 | 50.6 |
+| b300_sxm | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4144 | 0 / 4144 | 0 | — | — | — |
 | b300_sxm | `fused_recurrent_gated_delta_rule` | shared | trtllm | trtllm:86 | 0 / 86 | 0 | — | — | — |
-| b300_sxm | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:457, vllm:509 | 457 / 457 | 0 | 1.2 | 6.3 | 9.3 |
-| gb200 | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4529, trtllm:854, vllm:4704 | 4559 / 4704 | 0 | 3.6 | 137.3 | 276.0 |
-| gb200 | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:462, trtllm:88, vllm:461 | 461 / 462 | 0 | 10.6 | 112.0 | 137.5 |
-| gb200 | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4529, trtllm:854 | 824 / 4559 | 0 | 22.8 | 54.0 | 68.0 |
-| gb200 | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4704 | 0 / 4704 | 0 | — | — | — |
-| gb200 | `flashinfer_gated_delta_rule_decode` | shared | sglang | sglang:52 | 0 / 52 | 0 | — | — | — |
+| b300_sxm | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:405, vllm:405 | 405 / 405 | 0 | 0.3 | 3.6 | 6.5 |
+| gb200 | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4004, trtllm:854, vllm:4144 | 4034 / 4144 | 0 | 3.5 | 146.6 | 276.0 |
+| gb200 | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:407, trtllm:88, vllm:407 | 407 / 407 | 0 | 9.4 | 112.6 | 137.5 |
+| gb200 | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4004, trtllm:854 | 824 / 4034 | 0 | 22.8 | 54.0 | 68.0 |
+| gb200 | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4144 | 0 / 4144 | 0 | — | — | — |
 | gb200 | `fused_recurrent_gated_delta_rule` | shared | trtllm | trtllm:86 | 0 / 86 | 0 | — | — | — |
-| gb200 | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:457, vllm:457 | 457 / 457 | 0 | 1.0 | 4.5 | 6.6 |
-| gb300 | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4529, trtllm:837, vllm:4704 | 4567 / 4704 | 0 | 5.9 | 140.4 | 275.9 |
-| gb300 | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:462, trtllm:88, vllm:461 | 461 / 462 | 0 | 10.5 | 141.3 | 182.3 |
-| gb300 | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4529, trtllm:836 | 799 / 4566 | 0 | 20.3 | 59.3 | 67.4 |
-| gb300 | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4704 | 0 / 4704 | 0 | — | — | — |
-| gb300 | `flashinfer_gated_delta_rule_decode` | shared | sglang | sglang:52 | 0 / 52 | 0 | — | — | — |
+| gb200 | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:405, vllm:405 | 405 / 405 | 0 | 1.1 | 4.5 | 6.6 |
+| gb300 | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4004, trtllm:837, vllm:4144 | 4042 / 4144 | 0 | 6.0 | 145.4 | 275.9 |
+| gb300 | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:407, trtllm:88, vllm:407 | 407 / 407 | 0 | 9.7 | 147.1 | 182.3 |
+| gb300 | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4004, trtllm:836 | 799 / 4041 | 0 | 20.3 | 59.3 | 67.4 |
+| gb300 | `chunk_gated_delta_rule_flashinfer` | shared | vllm | vllm:4144 | 0 / 4144 | 0 | — | — | — |
 | gb300 | `fused_recurrent_gated_delta_rule` | shared | trtllm | trtllm:86 | 0 / 86 | 0 | — | — | — |
-| gb300 | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:457, vllm:457 | 457 / 457 | 0 | 1.4 | 8.0 | 21.2 |
+| gb300 | `fused_recurrent_gated_delta_rule_packed_decode` | shared | sglang, vllm | sglang:405, vllm:405 | 405 / 405 | 0 | 1.6 | 8.5 | 21.2 |
 | h100_sxm | `causal_conv1d_fn` | shared | sglang, trtllm, vllm | sglang:4004, trtllm:816, vllm:4141 | 4004 / 4141 | 0 | 4.2 | 135.9 | 279.2 |
 | h100_sxm | `causal_conv1d_update` | shared | sglang, trtllm, vllm | sglang:407, trtllm:88, vllm:407 | 407 / 407 | 0 | 14.6 | 101.5 | 136.6 |
 | h100_sxm | `chunk_gated_delta_rule` | shared | sglang, trtllm | sglang:4004, trtllm:806 | 806 / 4004 | 0 | 42.2 | 59.4 | 69.5 |
@@ -502,50 +508,50 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | a100_sxm | `trt_flow_/smooth_quant_gemm_L96/PLUGIN_V2_SmoothQuantGemm_0` | shared | trtllm | trtllm:6048 | 0 / 6048 | 0 | — | — | — |
 | a100_sxm | `trt_flow_/weight_only_quant_matmul_L257/PLUGIN_V2_WeightOnlyQuantMatmul_0` | shared | trtllm | trtllm:12096 | 0 / 12096 | 0 | — | — | — |
 | a100_sxm | `vllm_default` | shared | vllm | vllm:9240 | 0 / 9240 | 0 | — | — | — |
-| b200_sxm | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:73408 | 0 / 37518 | 22 | — | — | — |
-| b200_sxm | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:10138 | 0 / 5328 | 0 | — | — | — |
-| b200_sxm | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:62086 | 0 / 31080 | 0 | — | — | — |
-| b200_sxm | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:73408 | 0 / 37518 | 145 | — | — | — |
+| b200_sxm | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
+| b200_sxm | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:4736 | 0 / 4736 | 0 | — | — | — |
+| b200_sxm | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:31006 | 0 / 31006 | 0 | — | — | — |
+| b200_sxm | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | b200_sxm | `deepgemm` | shared | trtllm | trtllm:29268 | 0 / 29268 | 0 | — | — | — |
-| b200_sxm | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:59052 | 0 / 29526 | 15 | — | — | — |
-| b200_sxm | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:59052 | 0 / 29526 | 26 | — | — | — |
-| b200_sxm | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:71558 | 0 / 35816 | 85 | — | — | — |
-| b200_sxm | `sglang_torch_linear` | shared | sglang | sglang:71632 | 0 / 35890 | 86 | — | — | — |
-| b200_sxm | `torch.nn.functional.linear` | shared | vllm | vllm:73408 | 0 / 37518 | 41 | — | — | — |
+| b200_sxm | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| b200_sxm | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| b200_sxm | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| b200_sxm | `sglang_torch_linear` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| b200_sxm | `torch.nn.functional.linear` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | b200_sxm | `torch_flow` | shared | trtllm | trtllm:100888 | 0 / 100888 | 0 | — | — | — |
-| b300_sxm | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:73408 | 0 / 37518 | 13 | — | — | — |
-| b300_sxm | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:10138 | 0 / 5328 | 0 | — | — | — |
-| b300_sxm | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:62086 | 0 / 31080 | 0 | — | — | — |
-| b300_sxm | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:73408 | 0 / 37518 | 134 | — | — | — |
+| b300_sxm | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
+| b300_sxm | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:4736 | 0 / 4736 | 0 | — | — | — |
+| b300_sxm | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:31006 | 0 / 31006 | 0 | — | — | — |
+| b300_sxm | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | b300_sxm | `deepgemm` | shared | trtllm | trtllm:29268 | 0 / 29268 | 0 | — | — | — |
-| b300_sxm | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:59052 | 0 / 29526 | 10 | — | — | — |
-| b300_sxm | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:59052 | 0 / 29526 | 30 | — | — | — |
-| b300_sxm | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:71706 | 0 / 35964 | 49 | — | — | — |
-| b300_sxm | `sglang_torch_linear` | shared | sglang | sglang:71854 | 0 / 36112 | 104 | — | — | — |
-| b300_sxm | `torch.nn.functional.linear` | shared | vllm | vllm:73408 | 0 / 37518 | 120 | — | — | — |
+| b300_sxm | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| b300_sxm | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| b300_sxm | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:35890 | 0 / 35890 | 0 | — | — | — |
+| b300_sxm | `sglang_torch_linear` | shared | sglang | sglang:35964 | 0 / 35964 | 0 | — | — | — |
+| b300_sxm | `torch.nn.functional.linear` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | b300_sxm | `torch_flow` | shared | trtllm | trtllm:100888 | 0 / 100888 | 0 | — | — | — |
 | b60 | `vllm_default` | shared | vllm | vllm:40530 | 0 / 22176 | 1 | — | — | — |
-| gb200 | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:71632 | 0 / 35890 | 12 | — | — | — |
-| gb200 | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:9546 | 0 / 4810 | 0 | — | — | — |
-| gb200 | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:62012 | 0 / 31006 | 3 | — | — | — |
-| gb200 | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:71632 | 0 / 35890 | 67 | — | — | — |
+| gb200 | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
+| gb200 | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:4736 | 0 / 4736 | 0 | — | — | — |
+| gb200 | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:31006 | 0 / 31006 | 0 | — | — | — |
+| gb200 | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | gb200 | `deepgemm` | shared | trtllm | trtllm:29268 | 0 / 29268 | 0 | — | — | — |
-| gb200 | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:59052 | 0 / 29526 | 14 | — | — | — |
-| gb200 | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:59052 | 0 / 29526 | 21 | — | — | — |
-| gb200 | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:71558 | 0 / 35816 | 43 | — | — | — |
-| gb200 | `sglang_torch_linear` | shared | sglang | sglang:71632 | 0 / 35890 | 61 | — | — | — |
-| gb200 | `torch.nn.functional.linear` | shared | vllm | vllm:71632 | 0 / 35890 | 100 | — | — | — |
+| gb200 | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| gb200 | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| gb200 | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| gb200 | `sglang_torch_linear` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| gb200 | `torch.nn.functional.linear` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | gb200 | `torch_flow` | shared | trtllm | trtllm:100888 | 0 / 100888 | 0 | — | — | — |
-| gb300 | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:71632 | 0 / 35890 | 18 | — | — | — |
-| gb300 | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:9546 | 0 / 4810 | 0 | — | — | — |
-| gb300 | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:62012 | 0 / 31006 | 2 | — | — | — |
-| gb300 | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:71632 | 0 / 35890 | 64 | — | — | — |
+| gb300 | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
+| gb300 | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:4736 | 0 / 4736 | 0 | — | — | — |
+| gb300 | `DeepGemmFp8BlockScaledMMKernel` | shared | vllm | vllm:31006 | 0 / 31006 | 0 | — | — | — |
+| gb300 | `FlashInferCuteDslNvFp4LinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | gb300 | `deepgemm` | shared | trtllm | trtllm:29268 | 0 / 29268 | 0 | — | — | — |
-| gb300 | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:59052 | 0 / 29526 | 4 | — | — | — |
-| gb300 | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:59052 | 0 / 29526 | 46 | — | — | — |
-| gb300 | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:71558 | 0 / 35816 | 69 | — | — | — |
-| gb300 | `sglang_torch_linear` | shared | sglang | sglang:71632 | 0 / 35890 | 85 | — | — | — |
-| gb300 | `torch.nn.functional.linear` | shared | vllm | vllm:71632 | 0 / 35890 | 70 | — | — | — |
+| gb300 | `sglang_deepgemm_gemm_nt_f8f8bf16` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| gb300 | `sglang_flashinfer_cutedsl_nvfp4` | shared | sglang | sglang:29526 | 0 / 29526 | 0 | — | — | — |
+| gb300 | `sglang_sgl_kernel_fp8_scaled_mm` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| gb300 | `sglang_torch_linear` | shared | sglang | sglang:35742 | 0 / 35742 | 0 | — | — | — |
+| gb300 | `torch.nn.functional.linear` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | gb300 | `torch_flow` | shared | trtllm | trtllm:100888 | 0 / 100888 | 0 | — | — | — |
 | h100_sxm | `CutlassFP8ScaledMMLinearKernel` | shared | vllm | vllm:35742 | 0 / 35742 | 0 | — | — | — |
 | h100_sxm | `CutlassFp8BlockScaledMMKernel` | shared | vllm | vllm:4736 | 0 / 4736 | 0 | — | — | — |
@@ -589,44 +595,44 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | a100_sxm | `torch_flow` | shared | trtllm | trtllm:5026 | 0 / 5026 | 0 | — | — | — |
 | a100_sxm | `vllm_flash_attn` | shared | vllm | vllm:5431 | 0 / 5431 | 0 | — | — | — |
 | b200_sxm | `flashinfer` | shared | sglang | sglang:3570 | 0 / 3570 | 0 | — | — | — |
-| b200_sxm | `torch_flow` | shared | trtllm | trtllm:48314 | 0 / 48314 | 0 | — | — | — |
+| b200_sxm | `torch_flow` | shared | trtllm | trtllm:46980 | 0 / 46980 | 0 | — | — | — |
 | b200_sxm | `torch_flow_flashinfer` | shared | trtllm | trtllm:3540 | 0 / 3540 | 0 | — | — | — |
 | b200_sxm | `triton` | shared | sglang | sglang:8620 | 0 / 8620 | 0 | — | — | — |
-| b200_sxm | `trtllm_mha` | shared | sglang | sglang:37643 | 0 / 37643 | 0 | — | — | — |
+| b200_sxm | `trtllm_mha` | shared | sglang | sglang:36311 | 0 / 36311 | 0 | — | — | — |
 | b200_sxm | `vllm_flashinfer` | shared | vllm | vllm:36240 | 0 / 36240 | 0 | — | — | — |
-| b200_sxm | `vllm_flashinfer_flashinfertrtllmapidecode` | shared | vllm | vllm:63180 | 0 / 63180 | 0 | — | — | — |
+| b200_sxm | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:59582 | 0 / 59582 | 0 | — | — | — |
 | b200_sxm | `vllm_triton_attn` | shared | vllm | vllm:4456 | 0 / 4456 | 0 | — | — | — |
 | b300_sxm | `flashinfer` | shared | sglang | sglang:3570 | 0 / 3570 | 0 | — | — | — |
 | b300_sxm | `torch_flow` | shared | trtllm | trtllm:46980 | 0 / 46980 | 0 | — | — | — |
 | b300_sxm | `torch_flow_flashinfer` | shared | trtllm | trtllm:3540 | 0 / 3540 | 0 | — | — | — |
 | b300_sxm | `triton` | shared | sglang | sglang:8620 | 0 / 8620 | 0 | — | — | — |
 | b300_sxm | `trtllm_mha` | shared | sglang | sglang:37490 | 0 / 37490 | 0 | — | — | — |
-| b300_sxm | `vllm_flashinfer_flashinfertrtllmapidecode` | shared | vllm | vllm:63180 | 0 / 63180 | 0 | — | — | — |
+| b300_sxm | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:58510 | 0 / 58510 | 0 | — | — | — |
 | b300_sxm | `vllm_triton_attn` | shared | vllm | vllm:2228 | 0 / 2228 | 0 | — | — | — |
 | b60 | `vllm_flash_attn` | shared | vllm | vllm:57209 | 0 / 30948 | 3 | — | — | — |
 | gb200 | `flashinfer` | shared | sglang | sglang:3570 | 0 / 3570 | 0 | — | — | — |
-| gb200 | `torch_flow` | shared | trtllm | trtllm:48316 | 0 / 48316 | 0 | — | — | — |
+| gb200 | `torch_flow` | shared | trtllm | trtllm:46982 | 0 / 46982 | 0 | — | — | — |
 | gb200 | `torch_flow_flashinfer` | shared | trtllm | trtllm:3540 | 0 / 3540 | 0 | — | — | — |
 | gb200 | `triton` | shared | sglang | sglang:8620 | 0 / 8620 | 0 | — | — | — |
-| gb200 | `trtllm_mha` | shared | sglang | sglang:36082 | 0 / 36082 | 0 | — | — | — |
-| gb200 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:59844 | 0 / 59844 | 0 | — | — | — |
+| gb200 | `trtllm_mha` | shared | sglang | sglang:34748 | 0 / 34748 | 0 | — | — | — |
+| gb200 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:58510 | 0 / 58510 | 0 | — | — | — |
 | gb200 | `vllm_triton_attn` | shared | vllm | vllm:2228 | 0 / 2228 | 0 | — | — | — |
 | gb300 | `flashinfer` | shared | sglang | sglang:3570 | 0 / 3570 | 0 | — | — | — |
-| gb300 | `torch_flow` | shared | trtllm | trtllm:48316 | 0 / 48316 | 0 | — | — | — |
+| gb300 | `torch_flow` | shared | trtllm | trtllm:46982 | 0 / 46982 | 0 | — | — | — |
 | gb300 | `torch_flow_flashinfer` | shared | trtllm | trtllm:3540 | 0 / 3540 | 0 | — | — | — |
 | gb300 | `triton` | shared | sglang | sglang:8620 | 0 / 8620 | 0 | — | — | — |
-| gb300 | `trtllm_mha` | shared | sglang | sglang:36078 | 0 / 36078 | 0 | — | — | — |
-| gb300 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:59844 | 0 / 59844 | 0 | — | — | — |
+| gb300 | `trtllm_mha` | shared | sglang | sglang:34745 | 0 / 34745 | 0 | — | — | — |
+| gb300 | `vllm_flashinfer_trtllmdecode` | shared | vllm | vllm:58510 | 0 / 58510 | 0 | — | — | — |
 | gb300 | `vllm_triton_attn` | shared | vllm | vllm:2228 | 0 / 2228 | 0 | — | — | — |
 | h100_sxm | `fa3` | shared | sglang | sglang:37176 | 0 / 37176 | 0 | — | — | — |
 | h100_sxm | `torch_flow` | shared | trtllm | trtllm:52033 | 0 / 52033 | 0 | — | — | — |
 | h100_sxm | `triton` | shared | sglang | sglang:3292 | 0 / 3292 | 0 | — | — | — |
 | h100_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:61366 | 0 / 61366 | 0 | — | — | — |
 | h100_sxm | `vllm_flash_attn_fa4` | shared | vllm | vllm:800 | 0 / 800 | 0 | — | — | — |
-| h200_sxm | `fa3` | shared | sglang | sglang:38510 | 0 / 38510 | 0 | — | — | — |
-| h200_sxm | `torch_flow` | shared | trtllm | trtllm:53367 | 0 / 53367 | 0 | — | — | — |
+| h200_sxm | `fa3` | shared | sglang | sglang:37176 | 0 / 37176 | 0 | — | — | — |
+| h200_sxm | `torch_flow` | shared | trtllm | trtllm:52033 | 0 / 52033 | 0 | — | — | — |
 | h200_sxm | `triton` | shared | sglang | sglang:3292 | 0 / 3292 | 0 | — | — | — |
-| h200_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:62700 | 0 / 62700 | 0 | — | — | — |
+| h200_sxm | `vllm_flash_attn_fa3` | shared | vllm | vllm:61366 | 0 / 61366 | 0 | — | — | — |
 | h200_sxm | `vllm_flash_attn_fa4` | shared | vllm | vllm:800 | 0 / 800 | 0 | — | — | — |
 | l40s | `flashinfer` | shared | sglang | sglang:29158 | 0 / 29158 | 0 | — | — | — |
 | l40s | `torch_flow` | shared | trtllm | trtllm:52714 | 0 / 52714 | 0 | — | — | — |
@@ -803,7 +809,7 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `trtllm_mhc_pre_dg_splitk` | shared | trtllm | trtllm:26 | 0 / 26 | 0 | — | — | — |
 | b200_sxm | `trtllm_mhc_pre_fma` | shared | trtllm | trtllm:16 | 0 / 16 | 0 | — | — | — |
 | b200_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang` | shared | vllm | vllm:70 | 0 / 70 | 0 | — | — | — |
-| b200_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | shared | vllm | vllm:70 | 0 / 70 | 0 | — | — | — |
+| b200_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | shared | vllm | vllm:64 | 0 / 64 | 0 | — | — | — |
 | b300_sxm | `sglang_tilelang_mhc_post` | shared | sglang | sglang:70 | 0 / 70 | 0 | — | — | — |
 | b300_sxm | `sglang_tilelang_mhc_pre` | shared | sglang | sglang:70 | 0 / 70 | 0 | — | — | — |
 | b300_sxm | `trtllm_mhc_post_mapping` | shared | trtllm | trtllm:70 | 0 / 70 | 0 | — | — | — |
@@ -811,7 +817,7 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b300_sxm | `trtllm_mhc_pre_dg_splitk` | shared | trtllm | trtllm:26 | 0 / 26 | 0 | — | — | — |
 | b300_sxm | `trtllm_mhc_pre_fma` | shared | trtllm | trtllm:16 | 0 / 16 | 0 | — | — | — |
 | b300_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang` | shared | vllm | vllm:70 | 0 / 70 | 0 | — | — | — |
-| b300_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | shared | vllm | vllm:70 | 0 / 70 | 0 | — | — | — |
+| b300_sxm | `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | shared | vllm | vllm:63 | 0 / 63 | 0 | — | — | — |
 | gb200 | `sglang_tilelang_mhc_post` | shared | sglang | sglang:70 | 0 / 70 | 0 | — | — | — |
 | gb200 | `sglang_tilelang_mhc_pre` | shared | sglang | sglang:70 | 0 / 70 | 0 | — | — | — |
 | gb200 | `trtllm_mhc_post_mapping` | shared | trtllm | trtllm:70 | 0 / 70 | 0 | — | — | — |
@@ -902,13 +908,13 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
-| b200_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:855 | 0 / 855 | 0 | — | — | — |
-| b200_sxm | `FLASH_ATTN` | shared | vllm | vllm:8136 | 0 / 8136 | 0 | — | — | — |
-| b200_sxm | `TRTLLM_RAGGED` | shared | vllm | vllm:4068 | 0 / 4068 | 0 | — | — | — |
+| b200_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:648 | 0 / 648 | 0 | — | — | — |
+| b200_sxm | `FLASH_ATTN` | shared | vllm | vllm:5424 | 0 / 5424 | 0 | — | — | — |
+| b200_sxm | `TRTLLM_RAGGED` | shared | vllm | vllm:2712 | 0 / 2712 | 0 | — | — | — |
 | b200_sxm | `default` | shared_fallback | trtllm | trtllm:5856 | 0 / 5856 | 0 | — | — | — |
-| b300_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:855 | 0 / 855 | 0 | — | — | — |
-| b300_sxm | `FLASH_ATTN` | shared | vllm | vllm:8136 | 0 / 8136 | 0 | — | — | — |
-| b300_sxm | `TRTLLM_RAGGED` | shared | vllm | vllm:4068 | 0 / 4068 | 0 | — | — | — |
+| b300_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:648 | 0 / 648 | 0 | — | — | — |
+| b300_sxm | `FLASH_ATTN` | shared | vllm | vllm:5424 | 0 / 5424 | 0 | — | — | — |
+| b300_sxm | `TRTLLM_RAGGED` | shared | vllm | vllm:2712 | 0 / 2712 | 0 | — | — | — |
 | b300_sxm | `default` | shared_fallback | trtllm | trtllm:5856 | 0 / 5856 | 0 | — | — | — |
 | gb200 | `FLASHINFER_MLA` | shared | vllm | vllm:648 | 0 / 648 | 0 | — | — | — |
 | gb200 | `FLASH_ATTN` | shared | vllm | vllm:5424 | 0 / 5424 | 0 | — | — | — |
@@ -936,9 +942,9 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
-| b200_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:11400 | 0 / 11400 | 0 | — | — | — |
+| b200_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:8832 | 0 / 8832 | 0 | — | — | — |
 | b200_sxm | `default` | shared_fallback | trtllm | trtllm:8831 | 0 / 8831 | 0 | — | — | — |
-| b300_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:11400 | 0 / 11400 | 0 | — | — | — |
+| b300_sxm | `FLASHINFER_MLA` | shared | vllm | vllm:8832 | 0 / 8832 | 0 | — | — | — |
 | b300_sxm | `default` | shared_fallback | trtllm | trtllm:8832 | 0 / 8832 | 0 | — | — | — |
 | gb200 | `FLASHINFER_MLA` | shared | vllm | vllm:8832 | 0 / 8832 | 0 | — | — | — |
 | gb200 | `default` | shared_fallback | trtllm | trtllm:8832 | 0 / 8832 | 0 | — | — | — |
@@ -958,8 +964,8 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
-| b200_sxm | `deepep` | shared | trtllm | trtllm:704 | 0 / 704 | 0 | — | — | — |
-| b300_sxm | `deepep` | shared | trtllm | trtllm:704 | 0 / 704 | 0 | — | — | — |
+| b200_sxm | `deepep` | shared | trtllm, vllm | trtllm:704, vllm:324 | 0 / 1028 | 0 | — | — | — |
+| b300_sxm | `deepep` | shared | trtllm, vllm | trtllm:704, vllm:324 | 0 / 1028 | 0 | — | — | — |
 | gb200 | `deepep` | shared | trtllm, vllm | trtllm:704, vllm:324 | 0 / 1028 | 0 | — | — | — |
 | gb300 | `deepep` | shared | trtllm, vllm | trtllm:704, vllm:324 | 0 / 1028 | 0 | — | — | — |
 | h100_sxm | `deepep` | shared | trtllm, vllm | trtllm:564, vllm:648 | 0 / 1212 | 0 | — | — | — |
@@ -978,50 +984,46 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `moe_torch_flow_cutlass` | shared | trtllm | trtllm:114048 | 0 / 114048 | 0 | — | — | — |
 | b200_sxm | `moe_torch_flow_min_latency` | shared | trtllm | trtllm:36045 | 0 / 36045 | 0 | — | — | — |
 | b200_sxm | `moe_torch_flow_nongated` | shared | trtllm | trtllm:22923 | 0 / 22923 | 0 | — | — | — |
-| b200_sxm | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:121662 | 0 / 121662 | 0 | — | — | — |
-| b200_sxm | `sglang_fused_moe_triton` | shared | sglang | sglang:36936 | 0 / 36936 | 0 | — | — | — |
+| b200_sxm | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:118503 | 0 / 118503 | 0 | — | — | — |
+| b200_sxm | `sglang_fused_moe_triton` | shared | sglang | sglang:30942 | 0 / 30942 | 0 | — | — | — |
 | b200_sxm | `sglang_mxfp4_flashinfer_trtllm_moe` | shared | sglang | sglang:5184 | 0 / 5184 | 0 | — | — | — |
-| b200_sxm | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
+| b200_sxm | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | b200_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
-| b200_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | shared | vllm | vllm:3402 | 0 / 3402 | 0 | — | — | — |
-| b200_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:14737 | 0 / 14737 | 0 | — | — | — |
+| b200_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | shared | vllm | vllm:2754 | 0 / 2754 | 0 | — | — | — |
+| b200_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:15049 | 0 / 15049 | 0 | — | — | — |
 | b200_sxm | `vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
 | b200_sxm | `vllm_flashinfer_trtllm_moe_fp4` | shared | vllm | vllm:10287 | 0 / 9234 | 0 | — | — | — |
-| b200_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:4374 | 0 / 4374 | 0 | — | — | — |
-| b200_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:13527 | 0 / 12474 | 0 | — | — | — |
+| b200_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:3807 | 0 / 3807 | 0 | — | — | — |
+| b200_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11421 | 0 / 11421 | 0 | — | — | — |
 | b200_sxm | `vllm_fused_moe` | shared | vllm | vllm:83407 | 0 / 80329 | 0 | — | — | — |
 | b200_sxm | `vllm_gptossmxfp4moe_flashinfer_trtllm_mxfp4_bf16_trtllmmxfp4expertsmonolithic` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
 | b200_sxm | `vllm_marlin_int4_moe` | shared | vllm | vllm:10209 | 0 / 9237 | 0 | — | — | — |
-| b200_sxm | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1863 | 0 / 1863 | 0 | — | — | — |
-| b200_sxm | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:12269 | 0 / 12269 | 0 | — | — | — |
+| b200_sxm | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
+| b200_sxm | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:12304 | 0 / 12304 | 0 | — | — | — |
 | b200_sxm | `vllm_mxfp4_moe` | shared | vllm | vllm:1138 | 0 / 1138 | 0 | — | — | — |
 | b200_sxm | `vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular` | shared | vllm | vllm:2187 | 0 / 2187 | 0 | — | — | — |
-| b200_sxm | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1782 | 0 / 1782 | 0 | — | — | — |
-| b200_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:13296 | 0 / 13296 | 0 | — | — | — |
-| b200_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
-| b200_sxm | `vllm_unquantizedfusedmoe_triton_tritonexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
+| b200_sxm | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
+| b200_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:12424 | 0 / 12424 | 0 | — | — | — |
 | b300_sxm | `deepgemm` | shared | trtllm | trtllm:38799 | 0 / 38799 | 0 | — | — | — |
 | b300_sxm | `moe_torch_flow` | shared | trtllm | trtllm:12472 | 0 / 7371 | 9 | — | — | — |
 | b300_sxm | `moe_torch_flow_cutlass` | shared | trtllm | trtllm:114048 | 0 / 114048 | 0 | — | — | — |
 | b300_sxm | `moe_torch_flow_nongated` | shared | trtllm | trtllm:22923 | 0 / 22923 | 0 | — | — | — |
-| b300_sxm | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:198607 | 0 / 118584 | 0 | — | — | — |
-| b300_sxm | `sglang_fused_moe_triton` | shared | sglang | sglang:61582 | 0 / 36936 | 0 | — | — | — |
+| b300_sxm | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:195448 | 0 / 115425 | 0 | — | — | — |
+| b300_sxm | `sglang_fused_moe_triton` | shared | sglang | sglang:55588 | 0 / 30942 | 0 | — | — | — |
 | b300_sxm | `sglang_mxfp4_flashinfer_trtllm_moe` | shared | sglang | sglang:9720 | 0 / 5184 | 0 | — | — | — |
-| b300_sxm | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
+| b300_sxm | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | b300_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
-| b300_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | shared | vllm | vllm:3402 | 0 / 3402 | 0 | — | — | — |
-| b300_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:14789 | 0 / 14789 | 0 | — | — | — |
+| b300_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | shared | vllm | vllm:648 | 0 / 648 | 0 | — | — | — |
+| b300_sxm | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:13996 | 0 / 13996 | 0 | — | — | — |
 | b300_sxm | `vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
-| b300_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:4374 | 0 / 4374 | 0 | — | — | — |
-| b300_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:13527 | 0 / 12474 | 1 | — | — | — |
+| b300_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:3807 | 0 / 3807 | 0 | — | — | — |
+| b300_sxm | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11421 | 0 / 11421 | 0 | — | — | — |
 | b300_sxm | `vllm_gptossmxfp4moe_flashinfer_trtllm_mxfp4_bf16_trtllmmxfp4expertsmonolithic` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
-| b300_sxm | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1863 | 0 / 1863 | 0 | — | — | — |
-| b300_sxm | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:12555 | 0 / 12555 | 0 | — | — | — |
+| b300_sxm | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
+| b300_sxm | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11266 | 0 / 11266 | 0 | — | — | — |
 | b300_sxm | `vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular` | shared | vllm | vllm:2187 | 0 / 2187 | 0 | — | — | — |
-| b300_sxm | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1782 | 0 / 1782 | 0 | — | — | — |
-| b300_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:13504 | 0 / 13504 | 0 | — | — | — |
-| b300_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
-| b300_sxm | `vllm_unquantizedfusedmoe_triton_tritonexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
+| b300_sxm | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
+| b300_sxm | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:12224 | 0 / 12224 | 0 | — | — | — |
 | b60 | `vllm_xpu_moe` | shared | vllm | vllm:1836 | 0 / 1404 | 0 | — | — | — |
 | b60 | `vllm_xpu_moe_mxfp4` | shared | vllm | vllm:2592 | 0 / 1296 | 0 | — | — | — |
 | gb200 | `deepgemm` | shared | trtllm | trtllm:38799 | 0 / 38799 | 0 | — | — | — |
@@ -1029,8 +1031,8 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | gb200 | `moe_torch_flow_cutlass` | shared | trtllm | trtllm:114048 | 0 / 114048 | 0 | — | — | — |
 | gb200 | `moe_torch_flow_min_latency` | shared | trtllm | trtllm:36045 | 0 / 36045 | 0 | — | — | — |
 | gb200 | `moe_torch_flow_nongated` | shared | trtllm | trtllm:22923 | 0 / 22923 | 0 | — | — | — |
-| gb200 | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:156213 | 0 / 121659 | 0 | — | — | — |
-| gb200 | `sglang_fused_moe_triton` | shared | sglang | sglang:50625 | 0 / 36936 | 0 | — | — | — |
+| gb200 | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:153054 | 0 / 118500 | 0 | — | — | — |
+| gb200 | `sglang_fused_moe_triton` | shared | sglang | sglang:44631 | 0 / 30942 | 0 | — | — | — |
 | gb200 | `sglang_mxfp4_flashinfer_trtllm_moe` | shared | sglang | sglang:7533 | 0 / 5184 | 0 | — | — | — |
 | gb200 | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | gb200 | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
@@ -1038,20 +1040,19 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | gb200 | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:15075 | 0 / 15075 | 0 | — | — | — |
 | gb200 | `vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
 | gb200 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:3807 | 0 / 3807 | 0 | — | — | — |
-| gb200 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:12474 | 0 / 12474 | 0 | — | — | — |
+| gb200 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11421 | 0 / 11421 | 0 | — | — | — |
 | gb200 | `vllm_gptossmxfp4moe_flashinfer_trtllm_mxfp4_bf16_trtllmmxfp4expertsmonolithic` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
 | gb200 | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | gb200 | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11138 | 0 / 11138 | 0 | — | — | — |
 | gb200 | `vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular` | shared | vllm | vllm:2187 | 0 / 2187 | 0 | — | — | — |
 | gb200 | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
 | gb200 | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:12320 | 0 / 12320 | 0 | — | — | — |
-| gb200 | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic` | shared | vllm | vllm:1026 | 0 / 1026 | 0 | — | — | — |
 | gb300 | `deepgemm` | shared | trtllm | trtllm:38799 | 0 / 38799 | 0 | — | — | — |
 | gb300 | `moe_torch_flow` | shared | trtllm | trtllm:12474 | 0 / 7371 | 6 | — | — | — |
 | gb300 | `moe_torch_flow_cutlass` | shared | trtllm | trtllm:114048 | 0 / 114048 | 0 | — | — | — |
 | gb300 | `moe_torch_flow_nongated` | shared | trtllm | trtllm:22923 | 0 / 22923 | 0 | — | — | — |
-| gb300 | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:159345 | 0 / 121659 | 0 | — | — | — |
-| gb300 | `sglang_fused_moe_triton` | shared | sglang | sglang:50627 | 0 / 36936 | 0 | — | — | — |
+| gb300 | `sglang_flashinfer_trtllm_moe` | shared | sglang | sglang:156186 | 0 / 118500 | 0 | — | — | — |
+| gb300 | `sglang_fused_moe_triton` | shared | sglang | sglang:44633 | 0 / 30942 | 0 | — | — | — |
 | gb300 | `sglang_mxfp4_flashinfer_trtllm_moe` | shared | sglang | sglang:7533 | 0 / 5184 | 0 | — | — | — |
 | gb300 | `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | gb300 | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
@@ -1059,14 +1060,13 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | gb300 | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | shared | vllm | vllm:13996 | 0 / 13996 | 0 | — | — | — |
 | gb300 | `vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts` | shared | vllm | vllm:1053 | 0 / 1053 | 0 | — | — | — |
 | gb300 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | shared | vllm | vllm:3807 | 0 / 3807 | 0 | — | — | — |
-| gb300 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:12474 | 0 / 12474 | 0 | — | — | — |
+| gb300 | `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11421 | 0 / 11421 | 0 | — | — | — |
 | gb300 | `vllm_gptossmxfp4moe_flashinfer_trtllm_mxfp4_bf16_trtllmmxfp4expertsmonolithic` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
 | gb300 | `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:972 | 0 / 972 | 0 | — | — | — |
 | gb300 | `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | shared | vllm | vllm:11295 | 0 / 11295 | 0 | — | — | — |
 | gb300 | `vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular` | shared | vllm | vllm:2187 | 0 / 2187 | 0 | — | — | — |
 | gb300 | `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | shared | vllm | vllm:1944 | 0 / 1944 | 0 | — | — | — |
 | gb300 | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | shared | vllm | vllm:12267 | 0 / 12267 | 0 | — | — | — |
-| gb300 | `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic` | shared | vllm | vllm:1026 | 0 / 1026 | 0 | — | — | — |
 | h100_sxm | `moe_torch_flow` | shared | trtllm | trtllm:1539 | 0 / 1053 | 1 | — | — | — |
 | h100_sxm | `moe_torch_flow_cutlass` | shared | trtllm | trtllm:185328 | 0 / 129357 | 16 | — | — | — |
 | h100_sxm | `moe_torch_flow_nongated` | shared | trtllm | trtllm:32643 | 0 / 24462 | 9 | — | — | — |
@@ -1126,10 +1126,10 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
-| b200_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:14110 | 0 / 14110 | 0 | — | — | — |
+| b200_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:11712 | 0 / 11712 | 0 | — | — | — |
 | b200_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:5070 | 0 / 5070 | 0 | — | — | — |
 | b200_sxm | `sglang_minimax_prefill_triton_sparse` | shared | sglang | sglang:26933 | 0 / 26933 | 0 | — | — | — |
-| b300_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:14137 | 0 / 14137 | 0 | — | — | — |
+| b300_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:11712 | 0 / 11712 | 0 | — | — | — |
 | b300_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:5070 | 0 / 5070 | 0 | — | — | — |
 | b300_sxm | `sglang_minimax_prefill_triton_sparse` | shared | sglang | sglang:26850 | 0 / 26850 | 0 | — | — | — |
 | gb200 | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:11712 | 0 / 11712 | 0 | — | — | — |
@@ -1152,9 +1152,11 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
+| b200_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:8832 | 0 / 8832 | 0 | — | — | — |
 | b200_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:3864 | 0 / 3864 | 0 | — | — | — |
 | b200_sxm | `sglang_minimax_decode_triton_sparse_topk_radix` | shared | sglang | sglang:119 | 0 / 119 | 0 | — | — | — |
 | b200_sxm | `sglang_minimax_decode_triton_sparse_topk_split` | shared | sglang | sglang:1358 | 0 / 1358 | 0 | — | — | — |
+| b300_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:8832 | 0 / 8832 | 0 | — | — | — |
 | b300_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:3864 | 0 / 3864 | 0 | — | — | — |
 | b300_sxm | `sglang_minimax_decode_triton_sparse_topk_radix` | shared | sglang | sglang:120 | 0 / 120 | 0 | — | — | — |
 | b300_sxm | `sglang_minimax_decode_triton_sparse_topk_split` | shared | sglang | sglang:1360 | 0 / 1360 | 0 | — | — | — |
@@ -1189,8 +1191,10 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | system | kernel_source | tier | frameworks | rows_per_fw | overlap_keys | dedup rows | median % | p95 % | max % |
 |---|---|---|---|---|---|---|---|---|---|
 | b200_sxm | `sglang` | shared | sglang | sglang:1628 | 0 / 1628 | 0 | — | — | — |
+| b200_sxm | `static_scaled_fp8_quant` | shared | vllm | vllm:1628 | 0 / 1628 | 0 | — | — | — |
 | b200_sxm | `torch_ops` | shared | trtllm | trtllm:1628 | 0 / 1628 | 0 | — | — | — |
 | b300_sxm | `sglang` | shared | sglang | sglang:1628 | 0 / 1628 | 0 | — | — | — |
+| b300_sxm | `static_scaled_fp8_quant` | shared | vllm | vllm:1628 | 0 / 1628 | 0 | — | — | — |
 | b300_sxm | `torch_ops` | shared | trtllm | trtllm:1628 | 0 / 1628 | 0 | — | — | — |
 | gb200 | `sglang` | shared | sglang | sglang:1628 | 0 / 1628 | 0 | — | — | — |
 | gb200 | `static_scaled_fp8_quant` | shared | vllm | vllm:1628 | 0 / 1628 | 0 | — | — | — |
@@ -1319,59 +1323,58 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 Each row is one distinct `kernel_source` value seen in the corpus, with the union of frameworks, op files, and systems it appears in. Tier is determined by the kernel_source name alone, so a single kernel_source has one tier across the whole corpus.
 
 
-### `shared` (165 kernel sources)
+### `shared` (163 kernel sources)
 
 | kernel_source | frameworks | op files | systems | rows |
 |---|---|---|---|---|
-| `causal_conv1d_fn` | sglang, trtllm, vllm | gdn_perf.parquet, mamba2_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 82,468 |
+| `causal_conv1d_fn` | sglang, trtllm, vllm | gdn_perf.parquet, mamba2_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 77,008 |
 | `causal_conv1d_fn_qkv3` | sglang, vllm | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 7,012 |
-| `causal_conv1d_update` | sglang, trtllm, vllm | gdn_perf.parquet, kda_perf.parquet, mamba2_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 10,440 |
-| `chunk_gated_delta_rule` | sglang, trtllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 40,725 |
-| `chunk_gated_delta_rule_flashinfer` | vllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 28,221 |
+| `causal_conv1d_update` | sglang, trtllm, vllm | gdn_perf.parquet, kda_perf.parquet, mamba2_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 9,896 |
+| `chunk_gated_delta_rule` | sglang, trtllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 38,625 |
+| `chunk_gated_delta_rule_flashinfer` | vllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 24,861 |
 | `chunk_gated_delta_rule_triton` | vllm | gdn_perf.parquet | l40s, rtx_pro_6000_server | 7,870 |
 | `chunk_kda` | sglang | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 3,168 |
 | `chunk_kda_with_fused_gate` | vllm | kda_perf.parquet | l40s | 414 |
 | `compressed_flashmla` | sglang | dsv4_csa_context_module_perf.parquet, dsv4_csa_generation_module_perf.parquet, dsv4_hca_context_module_perf.parquet, dsv4_hca_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 748,644 |
-| `CutlassFp8BlockScaledMMKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 49,358 |
-| `CutlassFP8ScaledMMLinearKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 433,024 |
+| `CutlassFp8BlockScaledMMKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 28,934 |
+| `CutlassFP8ScaledMMLinearKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 285,912 |
 | `deep_gemm.fp8_mqa_logits` | sglang | glm5_mqa_logits_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 19,378 |
 | `deep_gemm.fp8_paged_mqa_logits` | sglang | dsv4_paged_mqa_logits_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 19,276 |
-| `deepep` | sglang, trtllm, vllm | moe_a2a_perf.parquet, wideep_deepep_ll_perf.parquet, wideep_deepep_normal_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 22,864 |
+| `deepep` | sglang, trtllm, vllm | moe_a2a_perf.parquet, wideep_deepep_ll_perf.parquet, wideep_deepep_normal_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 23,512 |
 | `deepepmoe` | sglang | wideep_context_moe_perf.parquet, wideep_generation_moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 6,333 |
 | `deepgemm` | trtllm | gemm_perf.parquet, moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 272,268 |
 | `deepgemm_megamoe` | sglang | dsv4_megamoe_module_perf.parquet | b200_sxm, gb200, gb300 | 776 |
-| `DeepGemmFp8BlockScaledMMKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 295,928 |
+| `DeepGemmFp8BlockScaledMMKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 171,756 |
 | `deepseek_v3` | sglang | wideep_context_mlp_perf.parquet, wideep_generation_mlp_perf.parquet | h100_sxm, h200_sxm | 72 |
 | `DeepseekV4TrtllmAttention` | trtllm | dsv4_csa_context_module_perf.parquet, dsv4_csa_generation_module_perf.parquet, dsv4_hca_context_module_perf.parquet, dsv4_hca_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 57,096 |
-| `dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant` | vllm | computescale_perf.parquet | gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 9,693 |
-| `fa3` | sglang | context_attention_perf.parquet, generation_attention_perf.parquet, wideep_context_mla_perf.parquet, wideep_generation_mla_perf.parquet | h100_sxm, h200_sxm | 145,130 |
+| `dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant` | vllm | computescale_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 12,941 |
+| `fa3` | sglang | context_attention_perf.parquet, generation_attention_perf.parquet, wideep_context_mla_perf.parquet, wideep_generation_mla_perf.parquet | h100_sxm, h200_sxm | 142,844 |
 | `fast_topk_transform_fused` | sglang | glm5_topk_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 24,092 |
 | `flash_attention` | sglang | context_attention_perf.parquet, context_mla_perf.parquet, generation_attention_perf.parquet, generation_mla_perf.parquet | a100_sxm, h100_sxm, h200_sxm | 24,688 |
 | `flash_attention_v3` | sglang | encoder_attention_perf.parquet | h100_sxm, h200_sxm | 15,358 |
 | `flash_attention_v4` | sglang | encoder_attention_perf.parquet | b200_sxm, gb200 | 15,358 |
-| `FLASH_ATTN` | vllm | mla_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 50,379 |
+| `FLASH_ATTN` | vllm | mla_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 44,955 |
 | `FLASH_ATTN_MLA` | vllm | mla_context_module_perf.parquet, mla_generation_module_perf.parquet | h100_sxm, h200_sxm | 7,856 |
 | `flash_mla_sparse_fwd` | sglang | glm5_dsa_attn_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 19,841 |
 | `flashinfer` | sglang | context_attention_perf.parquet, generation_attention_perf.parquet, wideep_context_mla_perf.parquet, wideep_generation_mla_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 133,439 |
-| `flashinfer_gated_delta_rule_decode` | sglang | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 208 |
-| `FLASHINFER_MLA` | vllm | mla_context_module_perf.parquet, mla_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 67,066 |
-| `FLASHINFER_MLA_SPARSE` | vllm | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | gb200, gb300 | 35,951 |
-| `FlashInferCuteDslNvFp4LinearKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 290,080 |
+| `FLASHINFER_MLA` | vllm | mla_context_module_perf.parquet, mla_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 61,516 |
+| `FLASHINFER_MLA_SPARSE` | vllm | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 71,728 |
+| `FlashInferCuteDslNvFp4LinearKernel` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 142,968 |
 | `FlashInferCutlassNvFp4LinearKernel` | vllm | gemm_perf.parquet | rtx_pro_6000_server | 35,742 |
 | `FlashInferFp8BlockScaledMMKernel` | vllm | gemm_perf.parquet | h100_sxm, h200_sxm | 14,241 |
 | `flashkda_fwd` | vllm | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 3,415 |
 | `FLASHMLA` | vllm | mla_context_module_perf.parquet, mla_generation_module_perf.parquet | h100_sxm, h200_sxm | 7,292 |
-| `FLASHMLA_SPARSE` | vllm | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | gb200, gb300, h100_sxm, h200_sxm | 68,345 |
-| `FLASHMLA_SPARSE_DSV4` | vllm | dsv4_csa_context_module_perf.parquet, dsv4_csa_generation_module_perf.parquet, dsv4_hca_attn_module_perf.parquet, dsv4_hca_context_module_perf.parquet, dsv4_hca_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 103,537 |
+| `FLASHMLA_SPARSE` | vllm | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 83,700 |
+| `FLASHMLA_SPARSE_DSV4` | vllm | dsv4_csa_context_module_perf.parquet, dsv4_csa_generation_module_perf.parquet, dsv4_hca_attn_module_perf.parquet, dsv4_hca_context_module_perf.parquet, dsv4_hca_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 98,987 |
 | `fused_kda_decode` | vllm | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 308 |
 | `fused_kda_decode_mtp_dspark` | sglang | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 428 |
 | `fused_recurrent_gated_delta_rule` | sglang, trtllm | gdn_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 774 |
-| `fused_recurrent_gated_delta_rule_packed_decode` | sglang, vllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 7,000 |
+| `fused_recurrent_gated_delta_rule_packed_decode` | sglang, vllm | gdn_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 6,480 |
 | `fused_recurrent_kda` | vllm | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 972 |
 | `fused_recurrent_kda_packed_decode` | sglang, vllm | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 651 |
 | `fused_sigmoid_gating_delta_rule_update` | sglang | kda_perf.parquet | h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 432 |
 | `kda_fused_decode` | sglang | kda_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 77 |
-| `MiniMaxM3SparseMSAImpl` | vllm | msa_context_module_perf.parquet, msa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 69,335 |
+| `MiniMaxM3SparseMSAImpl` | vllm | msa_context_module_perf.parquet, msa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 82,176 |
 | `MiniMaxM3SparseTritonImpl` | vllm | msa_context_module_perf.parquet, msa_generation_module_perf.parquet | h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 54,716 |
 | `moe_torch_flow` | trtllm | moe_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s | 62,657 |
 | `moe_torch_flow_cutlass` | trtllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,014,571 |
@@ -1383,9 +1386,9 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `NVLinkOneSided` | trtllm | trtllm_alltoall_perf.parquet | gb200 | 296 |
 | `NVLinkTwoSided` | trtllm | trtllm_alltoall_perf.parquet | gb200 | 1,800 |
 | `sglang` | sglang | computescale_perf.parquet, gemm_perf.parquet, scale_matrix_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 84,087 |
-| `SGLang_CustomAllReduce_eager` | sglang | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,725 |
-| `SGLang_CustomAllReduce_graph` | sglang | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,725 |
-| `sglang_deepgemm_gemm_nt_f8f8bf16` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 295,260 |
+| `SGLang_CustomAllReduce_eager` | sglang | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,679 |
+| `SGLang_CustomAllReduce_graph` | sglang | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,679 |
+| `sglang_deepgemm_gemm_nt_f8f8bf16` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 177,156 |
 | `sglang_dsa_dense_mha_fa3` | sglang | dsa_context_module_perf.parquet | h100_sxm, h200_sxm | 82,901 |
 | `sglang_dsa_dense_mha_trtllm_ragged` | sglang | dsa_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 137,411 |
 | `sglang_dsa_indexer_fa3` | sglang | dsa_generation_module_perf.parquet | h100_sxm, h200_sxm | 5,352 |
@@ -1396,11 +1399,11 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `sglang_dsa_skip_indexer_flashmla_kv` | sglang | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | h100_sxm, h200_sxm | 24,610 |
 | `sglang_dsa_skip_indexer_flashmla_sparse` | sglang | dsa_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 54,618 |
 | `sglang_dsa_skip_indexer_trtllm` | sglang | dsa_context_module_perf.parquet, dsa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 39,806 |
-| `sglang_flashinfer_cutedsl_nvfp4` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 236,208 |
+| `sglang_flashinfer_cutedsl_nvfp4` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 118,104 |
 | `sglang_flashinfer_cutlass_moe` | sglang | moe_perf.parquet | h100_sxm, h200_sxm, rtx_pro_6000_server | 52,731 |
 | `sglang_flashinfer_cutlass_nvfp4` | sglang | gemm_perf.parquet | rtx_pro_6000_server | 29,526 |
-| `sglang_flashinfer_trtllm_moe` | sglang | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 635,827 |
-| `sglang_fused_moe_triton` | sglang | moe_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 682,986 |
+| `sglang_flashinfer_trtllm_moe` | sglang | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 623,191 |
+| `sglang_fused_moe_triton` | sglang | moe_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 659,010 |
 | `sglang_fused_moe_triton_situ_as_silu` | sglang | moe_perf.parquet | l40s | 2,997 |
 | `sglang_marlin_moe` | sglang | moe_perf.parquet | a100_sxm, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 70,795 |
 | `sglang_marlin_moe_situ_as_silu` | sglang | moe_perf.parquet | h100_sxm, h200_sxm, rtx_pro_6000_server | 1,580 |
@@ -1409,17 +1412,17 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `sglang_minimax_prefill_triton_sparse` | sglang | msa_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 160,826 |
 | `sglang_mxfp4_flashinfer_trtllm_moe` | sglang | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 29,970 |
 | `sglang_sgl_kernel_bmm_fp8` | sglang | mla_bmm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 5,724 |
-| `sglang_sgl_kernel_fp8_scaled_mm` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 429,348 |
+| `sglang_sgl_kernel_fp8_scaled_mm` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 286,084 |
 | `sglang_tilelang_mhc_post` | sglang | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 485 |
 | `sglang_tilelang_mhc_pre` | sglang | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 420 |
 | `sglang_torch_bmm` | sglang | mla_bmm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 5,724 |
-| `sglang_torch_linear` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 429,718 |
+| `sglang_torch_linear` | sglang | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 286,158 |
 | `sglang_torch_mhc_pre` | sglang | mhc_module_perf.parquet | rtx_pro_6000_server | 67 |
-| `static_scaled_fp8_quant` | vllm | scale_matrix_perf.parquet | gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 9,768 |
+| `static_scaled_fp8_quant` | vllm | scale_matrix_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 13,024 |
 | `topk_transform_v1` | sglang | dsv4_csa_topk_calib_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 25,764 |
 | `topk_transform_v2` | sglang | dsv4_csa_topk_calib_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 1,464 |
-| `torch.nn.functional.linear` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 432,978 |
-| `torch_flow` | trtllm | context_attention_perf.parquet, encoder_attention_perf.parquet, gemm_perf.parquet, generation_attention_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,891,515 |
+| `torch.nn.functional.linear` | vllm | gemm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 285,866 |
+| `torch_flow` | trtllm | context_attention_perf.parquet, encoder_attention_perf.parquet, gemm_perf.parquet, generation_attention_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,880,467 |
 | `torch_flow_flashinfer` | trtllm | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 23,408 |
 | `torch_ops` | trtllm | computescale_perf.parquet, scale_matrix_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 26,012 |
 | `triton` | sglang | context_attention_perf.parquet, context_mla_perf.parquet, encoder_attention_perf.parquet, generation_attention_perf.parquet, generation_mla_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 173,342 |
@@ -1431,7 +1434,7 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `trtllm_bmm_out` | trtllm | mla_bmm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 3,392 |
 | `trtllm_bmm_out_dequant_bf16` | trtllm | mla_bmm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 1,696 |
 | `trtllm_fp8_block_scaling_bmm_out` | trtllm | mla_bmm_perf.parquet | h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,696 |
-| `trtllm_mha` | sglang | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 273,765 |
+| `trtllm_mha` | sglang | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 266,910 |
 | `trtllm_mhc_post_mapping` | trtllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 555 |
 | `trtllm_mhc_pre_dg_nosplit` | trtllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 159 |
 | `trtllm_mhc_pre_dg_splitk` | trtllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 156 |
@@ -1439,49 +1442,48 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `trtllm_mla` | sglang | context_mla_perf.parquet, generation_mla_perf.parquet, wideep_context_mla_perf.parquet, wideep_generation_mla_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 38,503 |
 | `TRTLLM_MNNVL_oneshot` | trtllm | custom_allreduce_perf.parquet | gb300 | 19 |
 | `TRTLLM_MNNVL_twoshot` | trtllm | custom_allreduce_perf.parquet | gb300 | 27 |
-| `TRTLLM_RAGGED` | vllm | mla_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 20,303 |
+| `TRTLLM_RAGGED` | vllm | mla_context_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 17,591 |
 | `vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang` | vllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s | 486 |
-| `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | vllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s | 489 |
-| `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | vllm | dsv4_paged_mqa_logits_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 15,672 |
-| `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 5,832 |
+| `vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang` | vllm | mhc_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s | 476 |
+| `vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits` | vllm | dsv4_paged_mqa_logits_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 11,754 |
+| `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm | 1,944 |
+| `vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu` | vllm | moe_perf.parquet | gb200, gb300, h100_sxm, h200_sxm | 3,888 |
 | `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server | 19,710 |
-| `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 10,206 |
-| `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 58,597 |
+| `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 6,804 |
+| `vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 58,116 |
 | `vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 8,397 |
-| `vLLM_custom_eager` | vllm | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, b60, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,495 |
-| `vLLM_custom_graph` | vllm | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,288 |
+| `vLLM_custom_eager` | vllm | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, b60, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,633 |
+| `vLLM_custom_graph` | vllm | custom_allreduce_perf.parquet | a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 1,426 |
 | `vllm_default` | vllm | gemm_perf.parquet | a100_sxm, b60 | 49,770 |
 | `vllm_flash_attn` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | a100_sxm, b60 | 102,215 |
 | `vllm_flash_attn_fa2` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | l40s, rtx_pro_6000_server | 111,574 |
-| `vllm_flash_attn_fa3` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | h100_sxm, h200_sxm | 225,522 |
+| `vllm_flash_attn_fa3` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | h100_sxm, h200_sxm | 223,236 |
 | `vllm_flash_attn_fa4` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | h100_sxm, h200_sxm | 2,756 |
 | `vllm_flashinfer` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm | 71,600 |
 | `vllm_flashinfer_fidecode` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | l40s, rtx_pro_6000_server | 58,484 |
 | `vllm_flashinfer_fiprefill` | vllm | context_attention_perf.parquet | l40s, rtx_pro_6000_server | 43,367 |
-| `vllm_flashinfer_flashinfertrtllmapidecode` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm | 134,160 |
 | `vllm_flashinfer_trtllm_moe_fp4` | vllm | moe_perf.parquet | b200_sxm | 10,287 |
-| `vllm_flashinfer_trtllmdecode` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | gb200, gb300 | 127,168 |
-| `vllm_flashinfer_trtllmprefill` | vllm | context_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 185,320 |
+| `vllm_flashinfer_trtllmdecode` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 249,800 |
+| `vllm_flashinfer_trtllmprefill` | vllm | context_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 178,092 |
 | `vllm_fp8moe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | h100_sxm, h200_sxm | 18,468 |
-| `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 16,362 |
-| `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 52,002 |
+| `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 15,228 |
+| `vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 45,684 |
 | `vllm_fp8moe_triton_tritonexperts` | vllm | moe_perf.parquet | h100_sxm, h200_sxm, l40s | 27,100 |
 | `vllm_fused_moe` | vllm | moe_perf.parquet | a100_sxm, b200_sxm, h200_sxm | 126,055 |
 | `vllm_gptossmxfp4moe_flashinfer_trtllm_mxfp4_bf16_trtllmmxfp4expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 7,776 |
 | `vllm_gptossmxfp4moe_marlin_marlinexperts` | vllm | moe_perf.parquet | l40s, rtx_pro_6000_server | 3,888 |
 | `vllm_gptossmxfp4moe_triton_oaitritonmxfp4expertsmonolithic` | vllm | moe_perf.parquet | h100_sxm, h200_sxm | 3,888 |
 | `vllm_marlin_int4_moe` | vllm | moe_perf.parquet | b200_sxm, h200_sxm | 20,415 |
-| `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 47,790 |
-| `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 47,257 |
+| `vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server | 46,008 |
+| `vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 46,003 |
 | `vllm_modeloptfp8moe_triton_tritonexperts` | vllm | moe_perf.parquet | l40s | 14,174 |
 | `vllm_mxfp4_moe` | vllm | moe_perf.parquet | b200_sxm, h200_sxm | 2,839 |
 | `vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 8,748 |
 | `vllm_torch_bmm` | vllm | mla_bmm_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm | 4,252 |
 | `vllm_triton_attn` | vllm | context_attention_perf.parquet, generation_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, l40s, rtx_pro_6000_server | 27,020 |
-| `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server | 23,355 |
-| `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 51,387 |
-| `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 4,158 |
-| `vllm_unquantizedfusedmoe_triton_tritonexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, h100_sxm, h200_sxm, l40s | 50,695 |
+| `vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server | 23,679 |
+| `vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16experts` | vllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 49,235 |
+| `vllm_unquantizedfusedmoe_triton_tritonexperts` | vllm | moe_perf.parquet | h100_sxm, h200_sxm, l40s | 48,589 |
 | `vllm_vit_flash_attn_fa2` | vllm | encoder_attention_perf.parquet | l40s, rtx_pro_6000_server | 15,358 |
 | `vllm_vit_flash_attn_fa3` | vllm | encoder_attention_perf.parquet | h100_sxm, h200_sxm | 15,358 |
 | `vllm_vit_flash_attn_fa4` | vllm | encoder_attention_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 30,716 |

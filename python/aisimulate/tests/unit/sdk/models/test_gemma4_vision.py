@@ -258,7 +258,7 @@ class TestGemma4VisionRuntime:
         from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
 
         model = get_model(MODEL, _model_config(), "vllm")
-        database = get_database("b200_sxm", "vllm", "0.25.0", database_mode="SOL")
+        database = get_database("b200_sxm", "vllm", "0.24.0", database_mode="SOL")
         runtime = config.RuntimeConfig(
             batch_size=2,
             isl=512,
