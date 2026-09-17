@@ -79,8 +79,9 @@ A sudden jump past the supervisor limit stops the entire execution tree.
 
 `resource-runtime.json` records observed peak RSS, effective budgets and the
 termination outcome. Fields that could not be observed because resource discovery
-failed are null. Invalid configuration input preserves existing output artifacts,
-including when `--overwrite` is supplied. `execution-events.jsonl` checkpoints
+failed are null. Errors loading configuration, applying overrides, or validating
+the core schema preserve existing artifacts, including with `--overwrite`.
+`execution-events.jsonl` checkpoints
 completed candidates and batch decisions so evidence survives a supervisor interruption. A completed
 sweep writes `recommendation.json` and selected prediction files as usual, and
 exits with status 3 if any candidates were resource-limited. If the entire tree
@@ -139,3 +140,24 @@ can outpace polling, estimates can be conservative, and other programs can chang
 available RAM between samples. macOS offers no portable hard RSS cap; preallocation
 checks remain necessary. A successful plan or watchdog test does not prove that
 the original OS panic is resolved.
+
+### Allocation-model provenance
+
+The byte terms in [resources.py](../python/aisimulate/src/aisimulate/resources.py)
+are versioned admission policies. They do not change simulated operation latency,
+energy, or GPU capacity. Their provenance and qualification are:
+
+| Term | Basis | Qualification |
+|---|---|---|
+| Four bytes per token ID | The native [request protocol](../crates/core/src/engine/protocol.rs) and [sequence storage](../crates/core/src/engine/common/sequence.rs) use `Vec<u32>`. The Dynamo compatibility model explicitly assumes eager u32 prompts. | The width is concrete; applying it to an external adapter requires the stated eager-allocation assumption. |
+| Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
+| Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
+| Trace expansion | Streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard also bounds parser scalar risk before metadata inspection. |
+| Process allowances | 512 MiB per worker and coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
+| Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
+
+The resource tests exercise arithmetic boundaries, combined-wave accounting,
+allocation sentinels, real process cleanup, and retained candidate outcomes.
+These establish control-flow and accounting behavior; they do not qualify the
+heuristic multipliers against every workload's measured peak RSS. Hardware
+prediction regression and the original workload's qualification remain separate.

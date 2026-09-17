@@ -144,6 +144,9 @@ aisimulate predict \
 ```
 
 To rerun a command, choose a new `--output-dir` or add `--overwrite` to replace its known output files.
+Local RAM and CPU capacity are detected automatically; no manual limits are required.
+Optional `execution.resources` settings override the defaults described in
+[local execution resources](../local-resources.md).
 
 Example output (illustrative values):
 
@@ -335,6 +338,9 @@ For this example result, the command writes:
 ```text
 recommendation-output/
 ├── recommendation.json
+├── recommendation.csv
+├── resource-runtime.json
+├── execution-events.jsonl
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
@@ -491,6 +497,7 @@ engine: {}
 router: {}
 planner: {}
 evaluation: {}
+execution: {}
 ```
 
 `recommend` extends that model with:
@@ -509,6 +516,7 @@ The command determines the document type. There is no top-level `kind` or stack 
 | `router` | Optional adapter | Optional adapter | Dynamo routing policy; round robin when omitted. Requires the integration when configured. |
 | `planner` | Optional adapter | Optional adapter | Dynamo runtime scaling; disabled when omitted. Requires the integration when configured. |
 | `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
+| `execution` | Optional | Optional | Host RAM/CPU budgets and supervisor deadlines; automatic defaults apply when omitted. See [local resources](../local-resources.md). |
 | `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
 | `optimizer` | Rejected | Optional | Public search controls. |
 
@@ -1719,6 +1727,9 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```text
 <output-dir>/
 ├── prediction.json
+├── resource-plan.json             # on preflight refusal
+├── resource-runtime.json
+├── execution-events.jsonl         # when execution produced checkpoints
 ├── requests.jsonl                 # only with --capture-per-request
 ├── afd-replay-spec.json           # only for AFD
 └── afd-qualification.json         # only for AFD
@@ -1726,6 +1737,10 @@ unavailable; their summary fields are explicit nulls where unsupported.
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
 - `requests.jsonl` contains one record per request when explicitly enabled.
+- `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
+  or workload estimates. `resource-runtime.json` records the effective budget and supervision
+  outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
+  [local execution resources](../local-resources.md) for their interpretation.
 - `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
   including topology, measurement provenance, workload, goal, and any P/D companion.
 - `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
@@ -1739,16 +1754,24 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```text
 <output-dir>/
 ├── recommendation.json
+├── recommendation.csv
+├── resource-plan.json             # on refusal before the sweep starts
+├── resource-runtime.json
+├── execution-events.jsonl
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
     └── ...
 ```
 
-- `recommendation.json` is the canonical lossless result. Its candidate ledger retains feasible,
-  infeasible, unsupported, timed-out, and failed rows according to the declared retention policy;
+- `recommendation.json` is the canonical lossless result (schema 1.1, with explicit upgrade of 1.0
+  input). Its candidate ledger retains feasible, infeasible, unsupported, timed-out, failed, and
+  `resource_limited` rows according to the declared retention policy;
   its counts describe the complete run. `views.top_n` or `views.pareto_front` lists the candidate IDs
   corresponding to numbered YAML files in order.
+- Resource-limited rows have no simulated score or metrics. `counts.resource_limited` is separate
+  from `counts.evaluated`; selected configurations cover completed evaluations. The CSV is a
+  tabular view of the result. Resource diagnostic files have the meanings described above.
 - Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
   `preset`, contains no domains or `auto` values, and can be passed directly to
   `aisimulate predict`.
@@ -1757,10 +1780,13 @@ For scalar optimization, file numbering follows best-to-worst rank. For Pareto o
 follows the deterministic display order of the complete nondominated front; that order does not
 imply a scalar ranking.
 
-If no feasible candidate exists, the CLI still writes `recommendation.json` with empty views, zero
-selected YAML files, complete counts and retained failure records, then exits with status `1`. If
-some trials fail but at least one selected config remains, those failures stay in the ledger and the
-recommendation succeeds with status `0`.
+If a completed search has no feasible candidate, the CLI still writes `recommendation.json` with empty views, zero
+selected YAML files, complete counts and retained failure records. It exits with status `1` when
+there are no resource-limited candidates. Any resource-limited candidate makes the exit status `3`,
+even when fitting candidates and selected YAML files remain available. Other failed trials remain
+in the ledger and permit status `0` when at least one selected configuration remains.
+If the supervisor stops the entire execution, the event log may contain completed candidates
+without a finalized `recommendation.json`; it is partial evidence, not a completed sweep.
 
 <a id="existing-output-directories"></a>
 
@@ -1769,9 +1795,11 @@ recommendation succeeds with status `0`.
 Without `--overwrite`, the CLI rejects an existing nonempty output directory. With `--overwrite`, it
 replaces only the known output files listed below and preserves unrelated files.
 
-Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`,
+Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `recommendation.csv`,
+`requests.jsonl`, `resource-plan.json`, `resource-runtime.json`, `execution-events.jsonl`,
 `afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
-Other files, including non-numbered files inside `recommendations/`, are preserved.
+Other files, including non-numbered files inside `recommendations/`, are preserved. Invalid
+configuration loading, overrides, or core-schema validation leave existing artifacts intact.
 
 <a id="standard-output"></a>
 
@@ -1983,8 +2011,10 @@ shows them explicitly.
 | Exit Code | Meaning |
 |---:|---|
 | `0` | Successful prediction or recommendation. |
-| `1` | Execution failure or a completed recommendation with no feasible candidate. |
+| `1` | Execution failure or a completed recommendation with no feasible or resource-limited candidate. |
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
+| `3` | Resource refusal, including a partial recommendation containing resource-limited candidates. |
+| `124` | Supervisor initialization or shutdown timeout. |
 | `130` | Interrupted by the user. |
 
 Configuration errors identify the input file and validation details. These shortened examples
@@ -2018,11 +2048,12 @@ Unsupported stack, backend, or policy combinations are reported as errors.
 | `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
 | `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
 | No feasible candidate, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
+| Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](../local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../../python/aisimulate/docs/fpm/README.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful
-summary output; validation and execution errors are reported on standard error. A recommendation
+summary output; validation and execution errors are reported on standard error. A completed recommendation
 with no feasible result still saves its result ledger and does not provide a YAML to predict.
 
 <a id="related-documentation"></a>

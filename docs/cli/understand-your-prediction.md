@@ -137,8 +137,11 @@ jq '{counts, views, rejected: [.candidates[] | select(.status != "feasible") | {
 ```
 
 Check the [exit code](user-guide.md#errors-and-exit-codes) as well as the file:
-a recommendation with no feasible candidate still writes its ledger and exits
-`1`. Follow the [Dynamo deployment walkthrough](../../python/aisimulate/docs/dynamo_deployment_guide.md)
+a completed recommendation with no feasible or resource-limited candidate writes its ledger and
+exits `1`. Resource-limited candidates produce exit `3`, even when completed recommendations
+remain available. A supervisor interruption can leave only checkpoint evidence; inspect the
+[resource diagnostics](../local-resources.md) before treating the search as complete.
+Follow the [Dynamo deployment walkthrough](../../python/aisimulate/docs/dynamo_deployment_guide.md)
 for artifact generation and benchmarking. The [accuracy overview](../../README.md#support-and-accuracy)
 describes where measured validation exists; executing a prediction does not
 establish its accuracy.
