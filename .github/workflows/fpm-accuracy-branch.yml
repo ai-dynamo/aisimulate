@@ -174,8 +174,8 @@ jobs:
         with:
           name: fpm-accuracy-web-${{ inputs.artifact_key }}
           overwrite: true
-          path: |
-            ${{ runner.temp }}/accuracy-public/summary.json
-            ${{ runner.temp }}/accuracy-public/qualification.json
+          # A single directory lets the container hook remap the entire path.
+          # Multiline absolute paths remap only the first entry on this runner.
+          path: ${{ runner.temp }}/accuracy-public/
           if-no-files-found: error
           retention-days: 90
