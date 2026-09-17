@@ -367,6 +367,7 @@ configured GPU/host KV capacity. Whether offload is exercised depends on cache p
 
 **What changed:** AIC's `--prefix 512` assumes 512 tokens are already cached. AISimulate models prefix
 reuse from the workload and cache state; the command above does not recreate that fixed hit count.
+The fixed-count option is [intentionally not migrated](#fixed-cached-prefix-counts).
 Host offload is an additional serving feature with no matching AIC CLI flag. This vLLM example uses
 prefix caching and attention DP=1, as required by the
 [host-offload contract](user-guide.md#native-vllm-host-offload-prediction). Host capacity and bandwidth
@@ -374,6 +375,36 @@ stay fixed during recommendation. Recommendation requires concrete aggregated vL
 parallelism preset (`preset: false`), and fixed `attention_data: 1`; other supported fields, such as
 `tensor` and `replicas`, may still be searched. Other `kv_cache` controls include block size, fixed
 GPU capacity, and CUDA-graph memory reservation.
+
+<a id="fixed-cached-prefix-counts"></a>
+
+#### 4.4.1 Fixed cached-prefix counts: intentionally not migrated
+
+AIC's `--prefix N` assumes the first `N` input tokens are already cached for every request.
+AISimulate intentionally does not expose an equivalent fixed-count option in `predict` or
+`recommend`. For serving prediction and configuration search, prefer prefix reuse derived from
+the workload and the simulated cache state.
+
+Replay drives request arrivals and worker placement. Each simulated worker's engine (Mocker)
+maintains its KV cache dynamically: it makes computed blocks available for reuse, matches later
+requests against available prefixes, and evicts eligible blocks when capacity is needed. A request
+that encounters a cold cache must compute its prefix; a later request sharing that prefix can
+reuse it if the matching blocks are still available on the worker that serves it. Cache hits
+therefore depend on request history, worker placement, cache capacity, and backend block rules.
+Assuming a fixed hit count for every request would bypass these effects and could overstate
+prefill savings.
+
+To model reuse, enable `engine.workers.<role>.kv_cache.prefix_caching` on a supported backend and
+supply shared prefixes through a [trace](user-guide.md#trace-source) or
+[synthetic sessions](user-guide.md#synthetic-session-source). Enabling caching alone does not
+create shared input. Session `shared_prefix_ratio` and `prefix_groups` describe workload sharing;
+they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
+prompt-lookup speculative decoding.
+
+Keep the bundled AIC compatibility CLI for controlled cached-prefix what-if estimates or
+comparisons that require the same fixed-token assumption. The [AIC example in section 5.6](#exact-cached-prefix-estimates)
+shows that workflow. Its fixed-count option is a deliberate compatibility boundary, not pending
+unified-CLI migration work.
 
 <a id="include-dynamo-routing-and-planning"></a>
 
@@ -942,7 +973,8 @@ in the package without a unified-CLI replacement.
 
 Migration prioritizes features that materially support serving prediction and deployment decisions.
 It does not aim to reproduce every AIC option. Some differences are deliberate product boundaries,
-including the [static estimate modes](#531-static-estimates), rather than planned migration work.
+including the [static estimate modes](#531-static-estimates) and
+[fixed cached-prefix counts](#fixed-cached-prefix-counts), rather than planned migration work.
 
 <a id="recommendation-runtime"></a>
 
@@ -1185,8 +1217,12 @@ aiconfigurator cli estimate \
 settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
 selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
-**Specify an exact cached-prefix count.** `--prefix N` has no direct unified-CLI mapping. This
-assumes 256 of the 1,024 input tokens are already cached for each request:
+<a id="exact-cached-prefix-estimates"></a>
+
+**Specify an exact cached-prefix count with AIC.** `--prefix N` is
+[intentionally not migrated](#fixed-cached-prefix-counts): AISimulate prefers dynamic prefix reuse
+for serving simulation. Use the compatibility CLI when you need a fixed cached-token assumption.
+This example assumes 256 of the 1,024 input tokens are already cached for each request:
 
 ```bash
 aiconfigurator cli estimate \
