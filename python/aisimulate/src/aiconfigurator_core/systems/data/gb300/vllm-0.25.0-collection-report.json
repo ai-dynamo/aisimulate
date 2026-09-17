@@ -1,0 +1,597 @@
+{
+  "schema_version": 1,
+  "status": "validated_checkpoint",
+  "system": "gb300",
+  "framework": "vllm",
+  "runtime_version": "0.25.0",
+  "scope": "In-progress checkpoint. Only the listed full sweeps are published; remaining operators and FP8-block shards are still being collected.",
+  "attempts": [
+    {
+      "job_id": 771306,
+      "cluster": "oci-aga-slurm-1",
+      "id": "gemm-bfloat16",
+      "op": "gemm",
+      "case_plan_sha256": "9e7e25416609297e4f7d7de2e4ac6eca34903f4fdf09fb26ae507b821fb4a704",
+      "task_ids_sha256": "37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771306
+      ]
+    },
+    {
+      "job_id": 771336,
+      "cluster": "oci-aga-slurm-1",
+      "id": "gemm-fp8",
+      "op": "gemm",
+      "case_plan_sha256": "be5400b4e8e34e8ba766db574844f8f7b85d0d6c74988997ce8a5ea525ce7dd2",
+      "task_ids_sha256": "a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771336
+      ]
+    },
+    {
+      "job_id": 771337,
+      "cluster": "oci-aga-slurm-1",
+      "id": "gemm-nvfp4",
+      "op": "gemm",
+      "case_plan_sha256": "28b73dd26f11c603b29128fbb0648e1911623413abdec01c6d574378087018fe",
+      "task_ids_sha256": "ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771337
+      ]
+    },
+    {
+      "job_id": 771366,
+      "cluster": "oci-aga-slurm-1",
+      "id": "attention_context",
+      "op": "attention_context",
+      "case_plan_sha256": "f1e59204ebb14e91afbe4bd4b0f553027e46440fc201241b41b91a705cbe43a2",
+      "task_ids_sha256": "04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+      "expected": 54468,
+      "done": 52836,
+      "failed": 1632,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771366
+      ]
+    },
+    {
+      "job_id": 771370,
+      "cluster": "oci-aga-slurm-1",
+      "id": "encoder_attention",
+      "op": "encoder_attention",
+      "case_plan_sha256": "bad4525c9372c15322ee75ed8d4734336e15496dd575f1d429650539e0bc63fe",
+      "task_ids_sha256": "8a4f0e45a56a4b73354b445a9b3bccde722835cb6c6c133991182ba092eb1296",
+      "expected": 7679,
+      "done": 7679,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771370
+      ]
+    },
+    {
+      "job_id": 771371,
+      "cluster": "oci-aga-slurm-1",
+      "id": "mla_bmm_gen_pre",
+      "op": "mla_bmm_gen_pre",
+      "case_plan_sha256": "7684b30a5b4e5c9a083461fd4c016b66781c3f3c813ddb12b99ede8538911c8f",
+      "task_ids_sha256": "3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5",
+      "expected": 300,
+      "done": 300,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771371
+      ]
+    },
+    {
+      "job_id": 771372,
+      "cluster": "oci-aga-slurm-1",
+      "id": "mla_bmm_gen_post",
+      "op": "mla_bmm_gen_post",
+      "case_plan_sha256": "5acbadfdbca78bfaa5123d8c99df1f1a894c26412d7c60311ad3364a1c9576da",
+      "task_ids_sha256": "faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53",
+      "expected": 336,
+      "done": 336,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA GB300",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        771372
+      ]
+    }
+  ],
+  "clock_policy": {
+    "slurm_gpu_frequency_request": "high",
+    "hard_lock_verified": false
+  },
+  "tables": {
+    "context_attention_perf.parquet": {
+      "path": "gb300/attention/vllm/0.25.0/context_attention_perf.parquet",
+      "rows": 52836,
+      "sha256": "1e6e062bff48e40ea5db33fc95b095c3b23c967a6e94a32a197a7d53adae74c9",
+      "sources": [
+        {
+          "job_id": 771366,
+          "measurement_job_ids": [
+            771366
+          ],
+          "id": "attention_context",
+          "source_sha256": "635018bb674a0b30b6c1417d28f6bcae54ef9caab3ed52ca191049ac7ba486f6",
+          "source_rows": 52836,
+          "failed_cases": 1632,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+            "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+            "collected_at": "2026-09-17",
+            "rows": 52836,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 52836
+    },
+    "encoder_attention_perf.parquet": {
+      "path": "gb300/encoder_attention/vllm/0.25.0/encoder_attention_perf.parquet",
+      "rows": 7679,
+      "sha256": "7b90118f5ecc35f18087c127eecd4808360c8c5e2bde26a2ff391304b304c303",
+      "sources": [
+        {
+          "job_id": 771370,
+          "measurement_job_ids": [
+            771370
+          ],
+          "id": "encoder_attention",
+          "source_sha256": "7de58d62611172f3ab666ddede54095b402694d48abce7f7d68541f167ca2aa4",
+          "source_rows": 7679,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:b65cba616f0be2a3d04cc4192ee7e46b096784accdf6e1bb5e193987894a8830",
+            "case_plan_hash": "sha256:8a4f0e45a56a4b73354b445a9b3bccde722835cb6c6c133991182ba092eb1296",
+            "collected_at": "2026-09-17",
+            "rows": 7679,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 7679
+    },
+    "gemm_perf.parquet": {
+      "path": "gb300/gemm/vllm/0.25.0/gemm_perf.parquet",
+      "rows": 112554,
+      "sha256": "65ef74584b725cb2e9bb12f5e42474099ef116fbc8e86ebe6e1e0b45ea227191",
+      "sources": [
+        {
+          "job_id": 771306,
+          "measurement_job_ids": [
+            771306
+          ],
+          "id": "gemm-bfloat16",
+          "source_sha256": "a30b35233ed5bcedb1d60bc4728e4f40e295c45d0496d0e17440d1c0946a1186",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+            "collected_at": "2026-09-17",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 771336,
+          "measurement_job_ids": [
+            771336
+          ],
+          "id": "gemm-fp8",
+          "source_sha256": "f823529bd76a76452b61c5874ec74585058ac1c6ce449ba76e01f338dfab2f1a",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+            "collected_at": "2026-09-17",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 771337,
+          "measurement_job_ids": [
+            771337
+          ],
+          "id": "gemm-nvfp4",
+          "source_sha256": "e9e01e9545a46f6a352922ebf1d72c2ab00f92f5647e365031457aae55a1bf5a",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+            "collected_at": "2026-09-17",
+            "rows": 37518,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 148962
+    },
+    "mla_bmm_perf.parquet": {
+      "path": "gb300/mla_bmm/vllm/0.25.0/mla_bmm_perf.parquet",
+      "rows": 636,
+      "sha256": "b98fcc689849e70362ed8cae68feda94d2afa0707fea8d3176ac1a6ef88a273d",
+      "sources": [
+        {
+          "job_id": 771371,
+          "measurement_job_ids": [
+            771371
+          ],
+          "id": "mla_bmm_gen_pre",
+          "source_sha256": "98e325bfde6cd8a1376d157227b61a7e75655d5b54e403ff8b240a4449662275",
+          "source_rows": 300,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87",
+            "case_plan_hash": "sha256:3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5",
+            "collected_at": "2026-09-17",
+            "rows": 300,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 771372,
+          "measurement_job_ids": [
+            771372
+          ],
+          "id": "mla_bmm_gen_post",
+          "source_sha256": "56e704b5052841c245243755030fe43191e1407350c38f4b70a18df13e99e2ab",
+          "source_rows": 336,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87",
+            "case_plan_hash": "sha256:faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53",
+            "collected_at": "2026-09-17",
+            "rows": 336,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 636
+    }
+  },
+  "total_tables": 4,
+  "total_rows": 173705,
+  "runtime_source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40"
+}

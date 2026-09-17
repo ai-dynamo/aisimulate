@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "status": "validated_checkpoint",
+  "system": "h100_sxm",
+  "framework": "vllm",
+  "runtime_version": "0.25.0",
+  "scope": "In-progress checkpoint. Only the listed full sweeps are published; remaining operators and FP8-block shards are still being collected.",
+  "attempts": [
+    {
+      "job_id": 2189,
+      "cluster": "aws-iad-slurm-2",
+      "id": "gemm-bfloat16",
+      "op": "gemm",
+      "case_plan_sha256": "49dc63d1163f3c7bbc5a56a024ed33b8b793ad51b9e765687265f79507fc3ac7",
+      "task_ids_sha256": "37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        2189
+      ]
+    },
+    {
+      "job_id": 2190,
+      "cluster": "aws-iad-slurm-2",
+      "id": "gemm-fp8",
+      "op": "gemm",
+      "case_plan_sha256": "3a76cd71e9bde123314c33bd7a68a3313a23f108b5e7bea2bbd959c9e4749303",
+      "task_ids_sha256": "a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          },
+          {
+            "name": "NVIDIA H100 80GB HBM3",
+            "sm": [
+              9,
+              0
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        2190
+      ]
+    }
+  ],
+  "clock_policy": {
+    "slurm_gpu_frequency_request": "high",
+    "hard_lock_verified": false
+  },
+  "tables": {
+    "gemm_perf.parquet": {
+      "path": "h100_sxm/gemm/vllm/0.25.0/gemm_perf.parquet",
+      "rows": 75036,
+      "sha256": "ae1c79a82c9018d50855377a9fd137370304c7c11406e36dfba1fa8e55f369bc",
+      "sources": [
+        {
+          "job_id": 2189,
+          "measurement_job_ids": [
+            2189
+          ],
+          "id": "gemm-bfloat16",
+          "source_sha256": "e542a2d9ea693bbc40d1f1c35c7508792b41382de82e230f19547fb76cd78bb4",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+            "collected_at": "2026-09-17",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 2190,
+          "measurement_job_ids": [
+            2190
+          ],
+          "id": "gemm-fp8",
+          "source_sha256": "48205658c2ea3cc906bc27b310cfaa92cd01fa8325423939167e844af09f18a2",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+            "collected_at": "2026-09-17",
+            "rows": 37518,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 148962
+    }
+  },
+  "total_tables": 1,
+  "total_rows": 75036,
+  "runtime_source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40"
+}

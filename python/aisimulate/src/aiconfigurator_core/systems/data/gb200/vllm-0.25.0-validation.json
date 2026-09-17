@@ -1,0 +1,62 @@
+{
+  "status": "passed",
+  "tables": {
+    "gemm_perf.parquet": {
+      "target_rows": 112554,
+      "b200_rows": 148962,
+      "shared_keys": 112554,
+      "target_only_keys": 0,
+      "b200_only_keys": 36408,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "gemm_dtype",
+        "m",
+        "n",
+        "k"
+      ]
+    }
+  },
+  "native_engine_sources": {
+    "gemm_perf.parquet": [
+      {
+        "version": "0.25.0",
+        "path": "/home/simonec/repo/vllm025-pr244-multigpu-artifacts/assembled/gb200-checkpoint2/gb200/gemm/vllm/0.25.0/gemm_perf.parquet",
+        "channel": "primary",
+        "exists": true
+      }
+    ]
+  },
+  "gemm_queries": [
+    {
+      "dtype": "bfloat16",
+      "m": 32768,
+      "n": 65536,
+      "k": 10240,
+      "measured_ms": 23.72403293185764,
+      "engine_ms": 23.72403293185764
+    },
+    {
+      "dtype": "fp8",
+      "m": 32768,
+      "n": 65536,
+      "k": 10240,
+      "measured_ms": 16.972505357530384,
+      "engine_ms": 16.972505357530384
+    },
+    {
+      "dtype": "nvfp4",
+      "m": 32768,
+      "n": 65536,
+      "k": 16384,
+      "measured_ms": 19.35358428955078,
+      "engine_ms": 19.35358428955078
+    }
+  ],
+  "msa_queries": [],
+  "shared_layer": false,
+  "strict_provenance": true,
+  "allow_unlisted_version": false
+}
