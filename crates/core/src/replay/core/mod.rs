@@ -104,6 +104,13 @@ pub trait PlacementPolicy<Request> {
         session_id: Option<String>,
         now_ms: f64,
     ) -> Result<PlacementEffects>;
+    /// Validate a request for an all-or-nothing external admission batch
+    /// without mutating placement state. The default has no provider-specific
+    /// constraints; stateful providers override it for every recoverable
+    /// validation error their `place` path can surface before admission.
+    fn preflight_batch_request(&self, _request: &Request) -> Result<()> {
+        Ok(())
+    }
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
@@ -134,6 +141,9 @@ impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for
         now_ms: f64,
     ) -> Result<PlacementEffects> {
         (**self).place(request, metadata, session_id, now_ms)
+    }
+    fn preflight_batch_request(&self, request: &Request) -> Result<()> {
+        (**self).preflight_batch_request(request)
     }
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>> {
         (**self).observe(observation, now_ms)

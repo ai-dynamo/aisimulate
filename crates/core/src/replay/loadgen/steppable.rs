@@ -218,6 +218,17 @@ pub trait SteppableReplay {
     /// epoch. A successful [`Self::take_report`] permits reuse in the next epoch.
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid>;
 
+    /// Atomically admit a materialized direct-request batch at the current
+    /// simulated time.
+    ///
+    /// This deliberately has no compact-request counterpart: compact input may
+    /// borrow provider-owned storage, while this transaction owns only the
+    /// already-materialized requests supplied by its caller. Implementations
+    /// must either accept every request or leave the replay unchanged.
+    fn submit_batch(&mut self, _requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
+        anyhow::bail!("this steppable replay does not support atomic direct batch submission")
+    }
+
     /// Admit a compact full-prompt trace at the current simulated time.
     fn submit_compact(&mut self, _request: CompactDirectRequest) -> anyhow::Result<Uuid> {
         anyhow::bail!("this steppable replay does not support compact trace submission")
@@ -538,6 +549,41 @@ where
         Ok(uuid)
     }
 
+    fn submit_batch(&mut self, requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
+        // This seam admits requests only between externally-driven steps. No
+        // worker pass can run while this method is evaluating, so all
+        // externally-rejectable direct-request conflicts are decided before
+        // the first admission. The provider always materializes UUIDs before
+        // crossing this boundary; nevertheless reject a missing UUID here so
+        // the all-or-nothing contract does not depend on that ABI detail.
+        let mut batch_ids = HashSet::with_capacity(requests.len());
+        for request in requests {
+            let uuid = request
+                .uuid
+                .ok_or_else(|| anyhow::anyhow!("atomic direct batch request is missing a UUID"))?;
+            if !batch_ids.insert(uuid)
+                || self.live.contains(uuid)
+                || self.runtime.collector().contains_request(uuid)
+            {
+                anyhow::bail!("steppable replay request {uuid} is already retained");
+            }
+        }
+
+        self.runtime.preflight_dynamic_batch(requests)?;
+
+        // `submit_dynamic` is the single admission path. The precondition
+        // above excludes its externally-recoverable duplicate-ID rejection;
+        // a remaining error is an internal replay invariant failure, which is
+        // not safe to conceal behind a partial ABI result.
+        let mut accepted = Vec::with_capacity(requests.len());
+        for request in requests {
+            let uuid = self.runtime.submit_dynamic(request.clone())?;
+            self.live.insert(uuid, None);
+            accepted.push(uuid);
+        }
+        Ok(accepted)
+    }
+
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
         if let Some(uuid) = request.request.uuid
             && self.live.contains(uuid)
@@ -656,6 +702,10 @@ impl SteppableReplay for SteppableEngine {
 
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
         self.inner.submit(request)
+    }
+
+    fn submit_batch(&mut self, requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
+        self.inner.submit_batch(requests)
     }
 
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
@@ -1718,6 +1768,24 @@ mod tests {
         assert_eq!(second.request_counts.num_requests, 1);
         assert_eq!(second.request_counts.completed_requests, 1);
         assert_eq!(second.request_counts.total_output_tokens, 3);
+    }
+
+    #[test]
+    fn materialized_direct_batch_rejects_duplicate_ids_without_admission() {
+        let factory = ReplayEngineFactory::new();
+        let mut engine = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
+
+        let error = engine
+            .submit_batch(&[request(20, 128, 16), request(20, 128, 16)])
+            .unwrap_err();
+
+        assert!(error.to_string().contains("already retained"), "{error}");
+        assert_eq!(engine.in_flight(), 0);
+        assert!(engine.is_idle());
+        assert_eq!(
+            engine.submit(request(20, 128, 16)).unwrap(),
+            Uuid::from_u128(20)
+        );
     }
 
     #[test]

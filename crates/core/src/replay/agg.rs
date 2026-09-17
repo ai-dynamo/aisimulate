@@ -1801,6 +1801,20 @@ where
         Ok(uuid)
     }
 
+    /// Preflight the provider-owned, recoverable placement validation for an
+    /// externally atomic batch. This is intentionally read-only: the ABI
+    /// caller needs every request rejected before the first placement, engine,
+    /// collector, or traffic mutation. Dynamic submits are only driven at
+    /// steppable boundaries, so after this validation the remaining admission
+    /// path has no externally supplied fallible inputs.
+    pub(crate) fn preflight_dynamic_batch(&self, requests: &[DirectRequest]) -> anyhow::Result<()> {
+        for request in requests {
+            self.placement
+                .preflight_batch_request(&ReplayRequestPayload::materialized(request.clone()))?;
+        }
+        Ok(())
+    }
+
     /// Admit a trace-compiled request without retaining a materialized prompt.
     /// The placement policy still receives its canonical engine-block hashes at
     /// arrival, matching the legacy workload-driver route.
