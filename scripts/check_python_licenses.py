@@ -14,8 +14,6 @@ from pathlib import Path
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "python/aisimulate/pyproject.toml"
 PIP_LICENSES = "pip-licenses==5.5.5"
-# setuptools 77-79 publish only a PEP 639 License-Expression, which
-# pip-licenses 5.5.5 reads as UNKNOWN; 84+ is visible as MIT again.
 SETUPTOOLS = "setuptools>=84"
 ALLOWED_LICENSES = (
     "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;"
