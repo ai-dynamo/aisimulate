@@ -40,6 +40,8 @@ reused for scheduled main when available; otherwise the exact source is built.
 
 Each completed branch uploads `summary.json` and `qualification.json` as
 `fpm-accuracy-web-<branch-key>`, retained for 90 days. Results are not committed.
+Upload the output directory as one path so container runners preserve both
+files at the archive root; the publisher rejects missing or extra files.
 The main-branch Pages publisher verifies checksums, schema, source ancestry,
 producer repository/workflow, evaluator SHA, run attempt, and successful branch
 job. It selects the newest eligible source commit, then latest completion time.

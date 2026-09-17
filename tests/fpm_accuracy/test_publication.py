@@ -201,7 +201,8 @@ def test_workflow_and_pages_contract():
     assert campaign["needs"] == "wheel"
     upload = next(s for s in campaign["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert upload["with"]["retention-days"] == "90" and "if" not in upload
-    assert len(upload["with"]["path"].splitlines()) == 2
+    # Container hooks must remap one directory, not multiline host paths.
+    assert upload["with"]["path"] == "${{ runner.temp }}/accuracy-public/"
     assert "gitlab" not in json.dumps(workflow) + json.dumps(branch)
     pages = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
     assert "FPM Accuracy Matrix" in pages["on"]["workflow_run"]["workflows"]
