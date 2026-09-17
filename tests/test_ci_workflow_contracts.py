@@ -1815,7 +1815,7 @@ def test_nightly_validation_survives_skipped_approval_but_requires_successful_in
             assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
 
 
-@pytest.mark.parametrize("job", ["build-artifacts", "trigger-gitlab-security"])
+@pytest.mark.parametrize("job", ["python-compliance", "build-artifacts", "trigger-gitlab-security"])
 def test_nightly_retries_require_approval_from_the_current_attempt(job):
     assert _nightly_condition(job)
     for attempt in ("2", "3"):
@@ -1845,7 +1845,7 @@ def test_nightly_retries_require_approval_from_the_current_attempt(job):
             "needs.manual-approval.result": "success",
             "needs.manual-approval.outputs.approved-attempt": "1",
         },
-    ) == (job == "build-artifacts")
+    ) == (job in {"python-compliance", "build-artifacts"})
 
 
 @pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
@@ -1863,6 +1863,7 @@ def test_nightly_failed_compliance_cannot_stage(result):
 def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
     context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
     assert _nightly_condition("manual-approval", **context)
+    assert not _nightly_condition("python-compliance", **context)
     assert not _nightly_condition("build-artifacts", **context)
     context.update(
         {
@@ -1871,11 +1872,21 @@ def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
         }
     )
     assert _nightly_condition("build-artifacts", **context)
+    assert _nightly_condition("python-compliance", **context)
     assert _nightly_condition("license-evidence", **context)
     assert not _nightly_condition("fpe-support-matrix", **context)
     assert not _nightly_condition("trigger-gitlab-security", **context)
     context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
     assert not _nightly_condition("build-artifacts", **context)
+    assert not _nightly_condition("python-compliance", **context)
+
+
+def test_nightly_compliance_requires_approval_dependency_and_respects_cancellation():
+    compliance = _workflow("nightly-ci.yml")["jobs"]["python-compliance"]
+    assert set(compliance["needs"]) == {"changes-guard", "manual-approval"}
+    assert "!cancelled()" in compliance["if"]
+    assert not _nightly_condition("python-compliance", cancelled=True)
+    assert not _nightly_condition("python-compliance", **{"needs.changes-guard.outputs.should-build": "false"})
 
 
 def test_manual_nightly_checks_selected_source_with_current_license_tooling():

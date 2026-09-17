@@ -196,8 +196,16 @@ jobs:
     name: Python Dependency Licenses (${{ matrix.arch }}, ${{ matrix.python-version }})
     # No release environment or build artifacts are available to dependency
     # build hooks. Both architectures must pass before staging can start.
-    needs: changes-guard
-    if: needs.changes-guard.outputs.should-build == 'true'
+    needs: [changes-guard, manual-approval]
+    # Dependency installation uses production runners, so manual runs and
+    # retries need approval before even this isolated compliance work starts.
+    # !cancelled() allows the skipped approval ancestor on scheduled first runs.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
     strategy:
       fail-fast: false
       matrix:
