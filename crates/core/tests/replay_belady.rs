@@ -84,13 +84,12 @@ fn stable_summary(report: &ReplayReport) -> Value {
 }
 
 #[test]
-fn omitted_eviction_policy_preserves_explicit_lru_results() {
+fn default_lru_matches_explicit_lru_and_belady_without_eviction() {
     for backend in BACKENDS {
-        let mut input = spec(
-            backend,
-            1,
-            vec![request(0, vec![1; 16], 2), request(1, vec![1; 16], 2)],
-        );
+        let requests = (0..6)
+            .map(|index| request(index, vec![7; 4 * (index + 1)], 1))
+            .collect();
+        let mut input = spec(backend, 1, requests);
         input
             .engine
             .as_object_mut()
@@ -98,7 +97,7 @@ fn omitted_eviction_policy_preserves_explicit_lru_results() {
             .remove("kv_eviction_policy");
         let implicit = run(input.clone()).unwrap();
         input.engine["kv_eviction_policy"] = json!("lru");
-        let explicit = run(input).unwrap();
+        let explicit = run(input.clone()).unwrap();
         assert_eq!(implicit.kv_eviction_policy, KvEvictionPolicy::Lru);
         assert_eq!(implicit.kv_eviction_assumption, None);
         assert_eq!(stable_summary(&implicit), stable_summary(&explicit));
@@ -106,33 +105,48 @@ fn omitted_eviction_policy_preserves_explicit_lru_results() {
             serde_json::to_value(&implicit.per_request).unwrap(),
             serde_json::to_value(&explicit.per_request).unwrap(),
         );
+        let forecast = run(belady(input)).unwrap();
+        assert_eq!(forecast.request_counts.completed_requests, 6);
+        assert_eq!(
+            forecast.committed_prefill_tokens,
+            explicit.committed_prefill_tokens
+        );
+        assert_eq!(
+            forecast.first_admission_prefix_cache_reused_ratio,
+            explicit.first_admission_prefix_cache_reused_ratio,
+        );
     }
 }
 
 #[test]
-fn future_input_demand_does_not_create_kv_or_release_requests_early() {
+fn global_forecast_preserves_arrivals_and_worker_local_cache_ownership() {
     for backend in BACKENDS {
-        let report = run(belady(spec(
-            backend,
-            1,
-            vec![request(0, vec![7; 16], 1), request(1, vec![7; 16], 1)],
-        )))
-        .unwrap();
-        assert_eq!(report.request_counts.completed_requests, 2, "{backend:?}");
-        let first = &report.per_request[0];
-        let second = &report.per_request[1];
-        assert_eq!(first.admission_history[0].reused_input_tokens, 0);
-        assert_eq!(second.arrival_time_ms, 100.0);
-        assert_eq!(second.first_admit_ms, Some(100.0));
-        assert!(second.admission_history[0].reused_input_tokens > 0);
-        assert_eq!(report.kv_eviction_policy, KvEvictionPolicy::Belady);
-        let summary = stable_summary(&report);
-        assert_eq!(summary["kv_eviction_policy"], "belady");
-        assert!(summary["kv_eviction_assumption"].is_string());
-        assert_eq!(
-            summary["committed_prefill_tokens"],
-            report.committed_prefill_tokens
-        );
+        for workers in [1, 2, 4] {
+            let requests = (0..workers * 2)
+                .map(|index| request(index, vec![7; 16], 1))
+                .collect();
+            let report = run(belady(spec(backend, workers, requests))).unwrap();
+            assert_eq!(report.request_counts.completed_requests, workers * 2);
+            let mut first_per_worker = std::collections::BTreeSet::new();
+            for (index, record) in report.per_request.iter().enumerate() {
+                assert_eq!(record.arrival_time_ms, index as f64 * 100.0);
+                assert_eq!(record.first_admit_ms, Some(record.arrival_time_ms));
+                let worker = record.decode_worker_idx.unwrap();
+                if first_per_worker.insert(worker) {
+                    // Future demand cannot populate KV locally or on another worker.
+                    assert_eq!(record.admission_history[0].reused_input_tokens, 0);
+                } else {
+                    assert!(record.admission_history[0].reused_input_tokens > 0);
+                }
+            }
+            assert_eq!(first_per_worker.len(), workers);
+            let summary = stable_summary(&report);
+            assert_eq!(summary["kv_eviction_policy"], "belady");
+            assert_eq!(
+                summary["kv_eviction_assumption"],
+                "global_input_trace_order_v1"
+            );
+        }
     }
 }
 
@@ -151,7 +165,8 @@ fn committed_prefill_counts_chunks_once_and_excludes_decode_work() {
             assert_eq!(report.request_counts.completed_requests, 2);
             assert_eq!(report.request_counts.total_output_tokens, 8);
             assert_eq!(
-                report.committed_prefill_tokens, 34,
+                serde_json::to_value(&report).unwrap()["committed_prefill_tokens"],
+                34,
                 "{backend:?}, {use_belady}"
             );
         }
@@ -168,31 +183,6 @@ fn committed_prefill_excludes_an_unfinished_pass_at_the_cutoff() {
         assert_eq!(report.request_counts.completed_requests, 0);
         assert_eq!(report.committed_prefill_tokens, 0, "{backend:?}");
         assert!(report.throughput.duration_ms <= 0.5);
-    }
-}
-
-#[test]
-fn fixed_multiple_workers_share_forecast_but_keep_caches_local() {
-    for backend in BACKENDS {
-        for workers in [2, 4] {
-            let requests = (0..workers * 2)
-                .map(|index| request(index, vec![7; 16], 1))
-                .collect();
-            let report = run(belady(spec(backend, workers, requests))).unwrap();
-            assert_eq!(report.request_counts.completed_requests, workers * 2);
-            let mut first_per_worker = std::collections::BTreeSet::new();
-            for record in &report.per_request {
-                let worker = record.decode_worker_idx.unwrap();
-                if first_per_worker.insert(worker) {
-                    // Global demand does not create remotely resident KV or
-                    // predict a future route. Each worker starts genuinely cold.
-                    assert_eq!(record.admission_history[0].reused_input_tokens, 0);
-                } else {
-                    assert!(record.admission_history[0].reused_input_tokens > 0);
-                }
-            }
-            assert_eq!(first_per_worker.len(), workers);
-        }
     }
 }
 
@@ -221,27 +211,6 @@ fn best_effort_belady_preserves_paused_prefix_through_cold_churn() {
         assert!(
             forecast.first_admission_prefix_cache_reused_ratio
                 > lru.first_admission_prefix_cache_reused_ratio
-        );
-    }
-}
-
-#[test]
-fn local_growing_prefixes_remain_competitive_under_lru() {
-    for backend in BACKENDS {
-        let requests = (0..6)
-            .map(|index| request(index, vec![7; 4 * (index + 1)], 1))
-            .collect();
-        let input = spec(backend, 1, requests);
-        let lru = run(input.clone()).unwrap();
-        let forecast = run(belady(input)).unwrap();
-        assert_eq!(forecast.request_counts.completed_requests, 6);
-        assert_eq!(
-            forecast.committed_prefill_tokens,
-            lru.committed_prefill_tokens
-        );
-        assert_eq!(
-            forecast.first_admission_prefix_cache_reused_ratio,
-            lru.first_admission_prefix_cache_reused_ratio,
         );
     }
 }
@@ -277,18 +246,34 @@ fn unsupported_forecast_inputs_fail_before_execution() {
         length_only.requests[0].input_token_ids = None;
         let mut no_cache = base.clone();
         no_cache.engine["rank"]["enable_prefix_caching"] = json!(false);
+        let mut attention_dp = base.clone();
+        attention_dp.engine["dp_size"] = json!(2);
+        let mut host_offload = base.clone();
+        host_offload.engine["rank"]["native_host_offload"] =
+            serde_json::to_value(aisimulate_core::engine::NativeHostOffloadConfig::new(8)).unwrap();
+        let mut g3_offload = base.clone();
+        g3_offload.engine["rank"]["g3_offload"] =
+            json!({"scope": "worker_local", "num_g3_blocks": 8});
         let mut disaggregated = base;
         disaggregated.topology = ReplayTopology::Disaggregated {
             prefill: WorkerPoolSpec::default(),
             decode: WorkerPoolSpec::default(),
             handoff_latency_ms: 0.0,
         };
-        for input in [closed_loop, length_only, no_cache, disaggregated] {
+        for (case, input) in [
+            ("closed_loop", closed_loop),
+            ("length_only", length_only),
+            ("no_cache", no_cache),
+            ("attention_dp", attention_dp),
+            ("host_offload", host_offload),
+            ("g3_offload", g3_offload),
+            ("disaggregated", disaggregated),
+        ] {
             let error = run(input).unwrap_err();
             assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
             assert!(
                 error.to_string().to_lowercase().contains("belady"),
-                "{error}"
+                "{backend:?}, {case}: {error}"
             );
         }
     }

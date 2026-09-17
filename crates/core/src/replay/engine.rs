@@ -501,49 +501,4 @@ mod belady_tests {
                 .is_ok()
         );
     }
-
-    #[test]
-    fn belady_accepts_fixed_multiple_workers_but_rejects_unsupported_cache_topologies() {
-        let mut config = ReplayEngineConfig {
-            kv_eviction_policy: KvEvictionPolicy::Belady,
-            ..Default::default()
-        };
-        assert!(
-            config
-                .validate_topology(&ReplayTopology::aggregated(4))
-                .is_ok()
-        );
-        config.dp_size = 2;
-        assert!(
-            config
-                .validate_topology(&ReplayTopology::aggregated(4))
-                .is_err()
-        );
-        config.dp_size = 1;
-        config.rank.enable_prefix_caching = false;
-        assert!(
-            config
-                .validate_topology(&ReplayTopology::aggregated(1))
-                .is_err()
-        );
-        config.rank.enable_prefix_caching = true;
-        config.rank.native_host_offload = Some(crate::engine::NativeHostOffloadConfig::new(8));
-        assert!(
-            config
-                .validate_topology(&ReplayTopology::aggregated(1))
-                .is_err()
-        );
-        config.rank.native_host_offload = None;
-        config.rank.g3_offload = Some(
-            serde_json::from_value(serde_json::json!({
-                "scope": "worker_local", "num_g3_blocks": 8
-            }))
-            .unwrap(),
-        );
-        assert!(
-            config
-                .validate_topology(&ReplayTopology::aggregated(1))
-                .is_err()
-        );
-    }
 }
