@@ -1,7 +1,7 @@
 # GB200 vLLM 0.25.0 collection
 
-- Published: **17 tables / 420,086 measured rows** for the PR #219 table scope.
-- All **350,380 retained cases** were attempted: **339,566 passed / 10,814 failed / 0 unattempted**. A case can produce multiple rows; failed aggregate tasks can retain successful partial rows.
+- Published: **17 tables / 420,134 measured rows** for the PR #219 table scope.
+- All **350,380 retained cases** were attempted: **339,614 passed / 10,766 failed / 0 unattempted**. A case can produce multiple rows; failed aggregate tasks can retain successful partial rows.
 - Failures remain explicit. This is not complete operator support or a whole-model accuracy qualification. Smoke measurements are excluded.
 - Full case plans, checkpoint IDs, error logs, and prior retry evidence are retained in `vllm-0.25.0-failures.json.gz`; the adjacent JSON report records source hashes and measurement jobs.
 
@@ -34,7 +34,7 @@
 | `mla_context_module_perf.parquet` | 13,059 |
 | `mla_generation_module_perf.parquet` | 11,400 |
 | `moe_perf.parquet` | 72,976 |
-| `msa_context_module_perf.parquet` | 14,060 |
+| `msa_context_module_perf.parquet` | 14,108 |
 
 ## Failed cases
 
@@ -46,18 +46,19 @@
 | `gemm-fp8_block-03` | 270 | `7211920` |
 | `attention_context` | 1,632 | `7212224` |
 | `mla_context_module` | 117 | `7212225` |
-| `msa_context_module` | 3,508 | `7212226` |
+| `msa_context_module` | 3,460 | `7213456` |
 | `moe` | 367 | `7212796` |
 | `attention_generation` | 2,228 | `7212228` |
 | `mla_generation_module` | 1,848 | `7212229` |
 | `gdn` | 4 | `7212230` |
 
+- Hardware: NVIDIA GB200, PCI device 0x294110DE, 189,471 MiB, 1,200 W maximum board power.
 - All production measurements use the HSG cluster. BF16, ordinary FP8, and NVFP4 GEMM each completed all 37,518 cases; FP8-block retains 1,110 runtime assertion failures.
 - Context and generation attention retain 1,632 and 2,228 assertions rejecting symmetric head dimension 192 in the selected FA4 runtime. MLA context retains 117 runtime failures because the selected FMHA kernel rejects the Q/KV head ratio.
 - MoE fresh-worker retry recovered 19 tasks and retained 367 failures. Successful original measurements were preserved; partial rows of retried failed tasks were remeasured, with all prior physical keys retained. Observed runtime failures are recorded by case, not treated as universal hardware limits.
 - GDN retains four CUDA grid-y limit failures.
 - MLA generation retains 1,848 failures from the selected FMHA kernel's Q/KV head-ratio restriction. All six DSV4 tables, MHC, encoder attention, and MLA BMM completed without failed cases.
-- MSA first pass: 14,060 passed / 3,508 failed. Fresh-worker retry 7213456 is still running; this checkpoint publishes the finalized first-pass table and does not claim the retry is complete. Its recovered cases will be added after validation.
+- MSA fresh-worker retry recovered 48 cases: 14,108 passed / 3,460 failed, with all original successful rows unchanged. Persistent errors include CSR head-ratio restrictions, Triton compilation failures, and CUDA/worker failures. This retry completed normally without manual worker intervention.
 
 ## Validation and limits
 

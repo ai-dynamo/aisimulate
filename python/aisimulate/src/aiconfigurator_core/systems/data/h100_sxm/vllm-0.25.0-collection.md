@@ -7,6 +7,7 @@
 
 ## Runtime and measurement
 
+- Hardware: NVIDIA H100 80GB HBM3, PCI device 0x233010DE, 81,559 MiB, 700 W maximum board power, NV18 links between all eight GPUs.
 - Unchanged collector: `cbaf51b64fa460e5ec6146bde407a4c64958212d`.
 - vLLM 0.25.0 source: `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`; Torch 2.11.0+cu130; CUDA 13.0; FlashInfer 0.6.13.
 - Image: `vllm/vllm-openai@sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97`.
