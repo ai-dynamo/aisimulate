@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from scripts import build_manylinux_wheel as manylinux_builder
+from scripts import check_python_licenses as python_licenses
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
@@ -1844,8 +1845,8 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     compliance = jobs["python-compliance"]
     assert "environment" not in compliance
     assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(compliance))
-    assert "pip-licenses" in _run_commands(compliance)
-    assert "--with-system" in _run_commands(compliance)
+    assert "scripts/check_python_licenses.py" in _run_commands(compliance)
+    assert "--inventory" in _run_commands(compliance)
     assert not any("download-artifact@" in s.get("uses", "") for s in compliance["steps"])
     assert all(
         s["with"]["path"].endswith("/*.csv") for s in compliance["steps"] if "upload-artifact@" in s.get("uses", "")
@@ -1873,7 +1874,7 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None):
+def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -1900,6 +1901,8 @@ def _nightly_license_report(tmp_path, crates, prior=None):
 
     def urlopen(request, timeout):
         assert timeout == 30
+        if lookup_error is not None:
+            raise lookup_error
         if "/runs?" in request.full_url:
             payload = (
                 {"workflow_runs": [{"id": 1, "artifacts_url": "https://fixture/artifacts"}]}
@@ -1949,6 +1952,14 @@ def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(
     )
 
 
+@pytest.mark.parametrize("lookup_error", [None, OSError("baseline API unavailable")])
+def test_nightly_license_baseline_warns_only_on_lookup_failure(tmp_path, capsys, lookup_error):
+    inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=lookup_error)
+    assert len(inventory) == len(difference) == 2
+    assert all(row["change"] == "added" for row in difference)
+    assert ("::warning::prior-artifact lookup failed" in capsys.readouterr().out) == (lookup_error is not None)
+
+
 @pytest.mark.parametrize(
     "conclusion,expected", [("failure", True), ("timed_out", True), ("success", False), ("skipped", False)]
 )
@@ -1984,6 +1995,7 @@ def test_nightly_alert_collector_includes_timeouts(tmp_path, conclusion, expecte
 def test_full_ci_license_failure_blocks_readiness_and_staging():
     jobs = _workflow("ci.yml")["jobs"]
     assert "python-compliance" in jobs["readiness"]["needs"]
+    assert "python-compliance" in jobs["application-wheel"]["needs"]
     assert "readiness" in jobs["stage-application-wheel"]["needs"]
     plan = dict.fromkeys(COMPONENTS, "true")
     results = dict.fromkeys(jobs["readiness"]["needs"], "success")
@@ -1993,3 +2005,61 @@ def test_full_ci_license_failure_blocks_readiness_and_staging():
     failed = _run_full_ci_aggregate(results, plan)
     assert failed.returncode != 0
     assert "python-compliance=failure, expected success" in failed.stdout
+
+
+def test_python_compliance_workflows_use_the_same_policy():
+    for workflow in ("ci.yml", "nightly-ci.yml"):
+        commands = _run_commands(_workflow(workflow)["jobs"]["python-compliance"])
+        assert "python scripts/check_python_licenses.py" in commands
+        assert "--allow-only" not in commands
+
+
+@pytest.mark.parametrize("license_result", [0, 1])
+def test_python_license_gate_checks_target_environment_before_export(tmp_path, monkeypatch, capsys, license_result):
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisimulate-core==1.0"]\n')
+    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    python = "/fixture/venv/bin/python"
+    inventory = tmp_path / "inventory" / "licenses.csv"
+    csv_output = "Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[0] == python
+        if command[1:4] == ["-m", "pip", "install"]:
+            requirements = Path(command[command.index("-r") + 1]).read_text().splitlines()
+            assert requirements == ["prettytable>=3", "wcwidth"]
+            assert command[-1] == "pip-licenses==5.5.5"
+            assert kwargs["check"]
+            return SimpleNamespace(returncode=0)
+        assert command[1:4] == ["-m", "piplicenses", "--with-system"]
+        if "--allow-only" in command:
+            assert kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL
+            return SimpleNamespace(returncode=license_result)
+        assert "--format=csv" in command and kwargs["check"]
+        kwargs["stdout"].write(csv_output)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(python_licenses.subprocess, "run", run)
+    assert python_licenses.check_licenses(python, inventory) == license_result
+    if license_result:
+        assert len(calls) == 2
+        assert not inventory.exists()
+        assert "::error::" in capsys.readouterr().out
+    else:
+        assert inventory.read_text() == csv_output
+
+
+def test_python_license_install_failure_blocks_check_and_export(tmp_path, monkeypatch):
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\ndependencies = ["prettytable>=3"]\n')
+    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    inventory = tmp_path / "inventory.csv"
+    with (
+        patch.object(python_licenses.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "pip")) as run,
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        python_licenses.check_licenses("python", inventory)
+    assert run.call_count == 1
+    assert not inventory.exists()

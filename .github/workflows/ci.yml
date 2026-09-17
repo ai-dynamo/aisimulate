@@ -759,28 +759,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      # License gate for the wheel's runtime dependency closure — the Python
-      # counterpart of cargo-deny's license check. Installs only the
-      # dependencies (not the package, which would need a Rust build) and
-      # fails on any license outside the allow list. Findings are not
-      # printed (run logs may become public); reproduce locally by running
-      # pip-licenses without the redirect.
       - name: Check Python dependency licenses
-        run: |
-          python -c "
-          import tomllib
-          deps = tomllib.load(open('python/aisimulate/pyproject.toml', 'rb'))
-          deps = deps['project']['dependencies']
-          deps = [d for d in deps if not d.lower().startswith('aisimulate-core')]
-          open('runtime-deps.txt', 'w').write('\n'.join(deps))
-          "
-          python -m pip install --quiet -r runtime-deps.txt pip-licenses==5.5.5
-          # --with-system: pip-licenses excludes its own dependencies by
-          # default, but prettytable and wcwidth are also runtime deps.
-          if ! pip-licenses --with-system --allow-only "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;Apache Software License;Apache-2.0 OR BSD-2-Clause;Apache Software License; BSD License;BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;MPL-2.0 AND MIT;PSF-2.0;Python Software Foundation License" >/dev/null 2>&1; then
-            echo "::error::a Python dependency license is outside the allow list — run pip-licenses locally for details"
-            exit 1
-          fi
+        run: python scripts/check_python_licenses.py
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
