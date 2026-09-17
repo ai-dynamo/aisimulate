@@ -48,6 +48,8 @@ Arrival-limited throughput stayed unchanged. A SGLang smoke case lost 0.165%
 despite better reuse because attention batch/context costs increased; maximum
 TTFT also worsened in one full run. Better reuse does not guarantee faster serving
 or better tails. Local simulator wall time rose about 3.4%/7.2% for vLLM/SGLang.
+The [validation record in PR #256](https://github.com/ai-dynamo/aisimulate/pull/256)
+contains the revisions, trace checksums, configuration, commands, and paired results.
 
 ## Where It Sits
 
