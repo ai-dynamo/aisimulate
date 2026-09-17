@@ -12,6 +12,102 @@ const workflow = readFileSync(new URL("../.github/workflows/e2e-accuracy.yml", i
 const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
+const nightlyWorkflow = readFileSync(new URL("../.github/workflows/nightly-ci.yml", import.meta.url), "utf8");
+const nightlyScripts = [...nightlyWorkflow.matchAll(/          script: \|\n((?:(?:            .*)?\n)+)/g)].map(match => match[1]);
+
+async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/main", requested = sha,
+  branches = ["main", "release/0.12.0", "feature/test"], statuses = { main: "ahead" }, apiError } = {}) {
+  const outputs = {};
+  const failures = [];
+  const compared = [];
+  let lookups = 0;
+  const sandbox = vm.createContext({
+    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+    process: { env: { REQUESTED_SHA: requested } },
+    core: { notice() {}, setOutput: (name, value) => { outputs[name] = value; }, setFailed: value => failures.push(value) },
+    github: {
+      paginate: async () => { lookups++; return branches.map(name => ({ name })); },
+      rest: { repos: {
+        listBranches: "branches",
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          const [commit, branch] = basehead.split("...");
+          assert.equal(commit, requested.trim() || sha);
+          compared.push(branch);
+          if (apiError) throw Object.assign(new Error("API unavailable"), { status: apiError });
+          return { data: { status: statuses[branch] || "diverged" } };
+        },
+        getCommit: async () => ({ data: { commit: { committer: { date: "2026-09-17" }, message: "target commit" } } }),
+      } },
+    },
+  });
+  await vm.runInContext(`(async () => { ${nightlyScripts[0]} })()`, sandbox);
+  return { outputs, failures, compared, lookups };
+}
+
+test("nightly dispatch pins main or release ancestors while cron uses its own SHA", async () => {
+  const scheduled = await nightlyTarget({ event: "schedule", requested: "invalid" });
+  assert.deepEqual(scheduled.outputs, { sha, ref: "refs/heads/main" });
+  assert.equal(scheduled.lookups, 0);
+  for (const requested of [sha, "", ` ${sha} `]) {
+    assert.deepEqual((await nightlyTarget({ requested })).outputs, { sha, ref: "refs/heads/main" });
+  }
+  for (const status of ["ahead", "identical"]) {
+    const release = await nightlyTarget({ statuses: { "release/0.12.0": status } });
+    assert.deepEqual(release.outputs, { sha, ref: "refs/heads/release/0.12.0" });
+    assert.deepEqual(release.compared, ["main", "release/0.12.0"]);
+  }
+});
+
+test("nightly dispatch rejects wrong workflow refs, malformed SHAs, and unrelated commits", async () => {
+  for (const ref of ["refs/heads/release/0.12.0", "refs/heads/feature/test", "refs/tags/v0.12.0"]) {
+    const result = await nightlyTarget({ ref });
+    assert.equal(result.lookups, 0);
+    assert.match(result.failures[0], /Dispatch from main/);
+    assert.deepEqual(result.outputs, {});
+  }
+  for (const requested of ["abc123", "main", "g".repeat(40)]) {
+    const result = await nightlyTarget({ requested });
+    assert.equal(result.lookups, 0);
+    assert.match(result.failures[0], /40-hex/);
+  }
+  for (const statuses of [{}, { main: "behind", "feature/test": "identical" }]) {
+    const result = await nightlyTarget({ statuses });
+    assert.deepEqual(result.outputs, {});
+    assert.match(result.failures[0], /not on main/);
+    assert.ok(!result.compared.includes("feature/test"));
+  }
+});
+
+test("nightly target lookup fails closed on API failures", async () => {
+  for (const apiError of [403, 429, 500]) await assert.rejects(nightlyTarget({ apiError }), /API unavailable/);
+  const unknown = await nightlyTarget({ apiError: 404 });
+  assert.deepEqual(unknown.outputs, {});
+  assert.match(unknown.failures[0], /not on main/);
+});
+
+test("only successful scheduled nightlies can suppress another scheduled build", async () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    for (const previous of [sha, "b".repeat(40)]) {
+      const outputs = {};
+      let queries = 0;
+      const sandbox = vm.createContext({
+        context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+        core: { notice() {}, warning() {}, setOutput: (name, value) => { outputs[name] = value; } },
+        github: { rest: { actions: { listWorkflowRuns: async args => {
+          queries++;
+          assert.equal(args.event, "schedule");
+          assert.equal(args.status, "success");
+          assert.equal(args.branch, "main");
+          return { data: { workflow_runs: [{ head_sha: previous, html_url: "https://example.invalid/run" }] } };
+        } } } },
+      });
+      await vm.runInContext(`(async () => { ${nightlyScripts[1]} })()`, sandbox);
+      assert.equal(queries, event === "schedule" ? 1 : 0);
+      assert.equal(outputs["should-build"], event === "schedule" && previous === sha ? "false" : "true");
+    }
+  }
+});
+
 const key = branch => createHash("sha256").update(branch).digest("hex").slice(0, 16);
 const entry = (branch, revision, nightly = "") => ({ branch, sha: revision, nightly_run: nightly, artifact_key: key(branch) });
 const run = {

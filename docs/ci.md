@@ -120,7 +120,7 @@ Manual dispatches and site-change triggers are listed below.
 | --- | --- | --- |
 | [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
+| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Scheduled runs build, qualify, and stage nightly artifacts, skipping unchanged `main`; manual runs build and stage an approved source SHA |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
@@ -319,7 +319,7 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
-`main` with the last successful nightly. The build stamps a date-based dev
+`main` with the last successful scheduled nightly. The build stamps a date-based dev
 version, uses pinned build tooling, and records checksums and provenance.
 
 Python dependency licenses are checked in isolated jobs on both architectures
@@ -341,7 +341,7 @@ Two kinds of validation then run:
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
   and console commands are checked using the downloaded wheel.
-- **FPE Support Matrix:** the amd64 nightly wheel is reused and checked against
+- **FPE Support Matrix (scheduled runs):** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
@@ -401,6 +401,27 @@ Complete qualified results remain GitHub Actions artifacts for 90 days and
 trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
+
+To build and stage a specific commit, dispatch from `main` and supply a full
+40-character SHA reachable from `main` or a `release/*` branch:
+
+```bash
+gh workflow run nightly-ci.yml --ref main -f commit_sha=<full-source-sha>
+```
+
+An empty `commit_sha` selects `main` at dispatch time. Manual builds require
+approval for the current run attempt, always build even when the source is
+unchanged, and use current license-check tooling against the selected source's
+package manifest. They run both architectures' wheel smoke tests and retain
+checksums, source provenance, and license evidence. Staging paths include the
+unique run ID, and manual runs neither block the scheduled concurrency group nor
+count toward its unchanged-source guard.
+
+Manual dispatches do not run FPE qualification or trigger the GitLab public
+publisher. Their date-based package versions can match another build, so use
+the exact run's `nightly-dist-<arch>` artifacts and checksums; these builds are
+staging evidence, not a public or FPE-qualified nightly. Scheduled runs retain
+the full FPE and public-publication gates above.
 
 ### E2E accuracy campaigns
 
