@@ -1016,7 +1016,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1031,7 +1031,13 @@ impl PyContextAttention {
         cp_size: u32,
         lane_order: Option<Vec<String>>,
         apply_rope: bool,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
             scale_factor,
@@ -1045,6 +1051,7 @@ impl PyContextAttention {
             cp_size,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
             apply_rope,
+            dcp_size,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1069,12 +1076,32 @@ impl PyContextAttention {
             o.apply_rope,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().context_attention()?.n)
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextAttentionOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1431,7 +1458,8 @@ impl PyContextMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1, dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -1439,7 +1467,13 @@ impl PyContextMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         cp_size: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextMla(ContextMlaOp {
             name,
             scale_factor,
@@ -1447,8 +1481,27 @@ impl PyContextMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             cp_size,
+            dcp_size,
         });
         Ok((PyContextMLA, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextMlaOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(
@@ -1465,7 +1518,9 @@ impl PyContextMLA {
             o.cp_size,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
@@ -3673,6 +3728,24 @@ impl PyContextDSAModule {
             dcp_size: 1,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `DsaModuleOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(

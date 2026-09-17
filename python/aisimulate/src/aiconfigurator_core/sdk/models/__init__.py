@@ -68,6 +68,15 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     public model type are unchanged."""
     from aiconfigurator_core.sdk.operations.fpm_forward import FPMForwardOp
 
+    if int(getattr(model.config, "dcp_size", 1) or 1) > 1:
+        # The whole-forward tables are keyed WITHOUT dcp (their `cp` column is
+        # prefill CP and every shipped cell is cp=1), so a dcp>1 request would
+        # silently reuse dcp=1 measurements. Fail loud until the collector
+        # records dcp cells and the cell identity carries the column.
+        raise NotImplementedError(
+            f"forward_model='fpm' has no decode-context-parallel cells (dcp_size={model.config.dcp_size}); "
+            "the whole-forward table identity does not carry dcp. Use forward_model='op_level'."
+        )
     if model.encoder_ops:
         raise NotImplementedError(
             f"forward_model='fpm' does not support encoder/multimodal models "

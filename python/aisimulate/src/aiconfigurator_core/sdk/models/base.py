@@ -378,6 +378,34 @@ class BaseModel:
                 "GQA decode CP only de-duplicates kv heads that TP replicates (dcp <= tp / kv_heads)."
             )
 
+    def _stripe_context_for_dcp(self, op, dcp: int):
+        """Mark the prefill-side attention ops of a DCP-striped engine.
+
+        With the persistent KV striped, a prefill that reuses cached context
+        (``prefix > 0``) first all-gathers the other ranks' stripes; the Rust
+        context ops price that from ``dcp_size``. New-token attention is
+        unchanged. FallbackOp interiors are clones, so the block is rebuilt.
+        """
+        import aiconfigurator_core._aiconfigurator_core as _core
+        import aiconfigurator_core.sdk.operations as ops
+
+        if isinstance(op, _core.FallbackOp):
+            primary, hit = self._stripe_context_for_dcp(op._primary, dcp)
+            fallback = []
+            for inner in op._fallback:
+                inner, inner_hit = self._stripe_context_for_dcp(inner, dcp)
+                fallback.append(inner)
+                hit = hit or inner_hit
+            if not hit:
+                return op, False
+            return ops.FallbackOp(op._name, primary=primary, fallback=fallback), True
+        striped = isinstance(op, (_core.ContextAttention, _core.ContextMLA, _core.ContextDSAModule)) or (
+            isinstance(op, _core.MLAModule) and op._is_context
+        )
+        if striped:
+            op._dcp_size = dcp
+        return op, striped
+
     def _apply_decode_context_parallel(self) -> None:
         """Rewrite ``generation_ops`` for ``config.dcp_size > 1``.
 
@@ -411,6 +439,12 @@ class BaseModel:
                 "to shard; decode context parallelism cannot be priced for this graph."
             )
         self.generation_ops = rewritten
+        # Prefill side of the same engine: cached-context gather (aggregated
+        # serving). A decode-only worker never queries context_ops, so this is
+        # inert there.
+        self.context_ops = [
+            op if op._name.startswith("draft_") else self._stripe_context_for_dcp(op, dcp)[0] for op in self.context_ops
+        ]
 
     def _cp_kv_memory_divisor(self) -> int:
         """Per-rank persistent-KV divisor: 1 under prefill CP, ``dcp_size`` under DCP.

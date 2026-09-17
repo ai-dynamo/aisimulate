@@ -119,6 +119,22 @@ def _decode_attention_ops(model):
     return [pair for top in model.generation_ops if not top._name.startswith("draft_") for pair in walk(top._name, top)]
 
 
+def _context_attention_ops(model):
+    import aiconfigurator_core._aiconfigurator_core as core
+
+    kinds = (core.ContextAttention, core.ContextMLA, core.ContextDSAModule)
+
+    def walk(op):
+        if isinstance(op, core.FallbackOp):
+            yield from walk(op._primary)
+            for inner in op._fallback:
+                yield from walk(inner)
+        elif isinstance(op, kinds) or (isinstance(op, core.MLAModule) and op._is_context):
+            yield op
+
+    return [op for top in model.context_ops if not top._name.startswith("draft_") for op in walk(top)]
+
+
 @pytest.mark.parametrize(
     ("backend", "merge_suffix"),
     [("sglang", "_dcp_out_all_to_all"), ("vllm", "_dcp_out_reduce_scatter")],
@@ -140,8 +156,13 @@ def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backe
         # The merge collectives ride directly behind the block they serve.
         assert names[index + 1] == f"{container}_dcp_q_all_gather"
         assert names[index + 2] == f"{container}{merge_suffix}"
-    # The prefill graph is untouched: DCP is a decode-side knob.
+    # The prefill graph gains no collectives of its own ...
     assert not any("_dcp_" in op._name for op in model.context_ops)
+    # ... but its attention ops are marked so cached-context prefill pays the
+    # stripe gather (aggregated serving on the same engine).
+    context_attention = _context_attention_ops(model)
+    assert context_attention
+    assert all(op._dcp_size == 8 for op in context_attention)
 
 
 def test_dcp_comm_override_selects_the_merge_collective():
@@ -187,6 +208,14 @@ def test_gqa_dcp_is_bounded_by_kv_head_replication():
             config.ModelConfig(tp_size=16, moe_tp_size=16, moe_ep_size=1, dcp_size=3),
             "vllm",
         )
+
+
+def test_fpm_forward_model_refuses_dcp_until_tables_carry_it():
+    from aiconfigurator_core.sdk.models import get_model
+
+    model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=8, forward_model="fpm")
+    with pytest.raises(NotImplementedError, match="forward_model='fpm' has no decode-context-parallel cells"):
+        get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
 
 
 def test_dcp_one_leaves_the_decode_graph_untouched():

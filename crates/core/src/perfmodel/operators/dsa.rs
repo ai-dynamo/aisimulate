@@ -258,6 +258,21 @@ impl DsaModuleOp {
             }
             blended
         };
+        // Decode CP on the same engine: gather the cached latent-KV stripes
+        // (the indexer K cache rides along in the same pass and is ignored).
+        let mut result = result;
+        let kv_elems =
+            crate::operators::mla::MLA_LATENT_KV_ELEMS * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) = crate::operators::attention::dcp_context_gather(
+            db,
+            &self.name,
+            kv_elems,
+            self.dcp_size,
+            batch_size,
+            prefix,
+        )? {
+            result = result.plus(gather);
+        }
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
 

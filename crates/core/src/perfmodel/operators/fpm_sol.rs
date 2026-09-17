@@ -273,7 +273,16 @@ fn context_attention_sol(
     }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
-    (fmha + extra * 1.1) * op.scale_factor
+    // Decode CP on the same engine: all-gather the cached-context KV stripes
+    // (per-rank K+V of `p` tokens, comm half-elements) over the DCP group.
+    let gather = if op.dcp_size > 1 && p > 0.0 {
+        let kv_elems =
+            2.0 * (op.n_kv * op.head_size) as f64 * op.kv_cache_dtype.mapping().memory / 2.0;
+        nccl_sol(spec, op.dcp_size, "all_gather", b * p * kv_elems, 2.0)
+    } else {
+        0.0
+    };
+    (fmha + extra * 1.1 + gather) * op.scale_factor
 }
 
 /// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
@@ -388,7 +397,22 @@ fn dsa_context_module_sol(
     } else {
         w * sol(false) + (1.0 - w) * sol(true)
     };
-    Ok(ms.max(0.0) * op.scale_factor)
+    // Decode CP on the same engine: all-gather the cached latent-KV stripes
+    // (mirrors `DsaModuleOp::query_context`'s `dcp_context_gather`).
+    let gather = if op.dcp_size > 1 && p > 0 {
+        let kv_elems =
+            crate::operators::mla::MLA_LATENT_KV_ELEMS * op.kv_cache_dtype.mapping().memory / 2.0;
+        nccl_sol(
+            spec,
+            op.dcp_size,
+            "all_gather",
+            b as f64 * p as f64 * kv_elems,
+            2.0,
+        )
+    } else {
+        0.0
+    };
+    Ok((ms.max(0.0) + gather) * op.scale_factor)
 }
 
 /// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
@@ -758,6 +782,7 @@ mod tests {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);

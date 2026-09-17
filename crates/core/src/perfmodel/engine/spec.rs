@@ -231,6 +231,7 @@ mod tests {
             // survives, not just a single-element degenerate case.
             lane_order: vec!["trtllm_mha".into(), "flashinfer".into(), "default".into()],
             apply_rope: false,
+            dcp_size: 3,
         }
     }
 
@@ -270,6 +271,7 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Bfloat16,
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
             cp_size: 1,
+            dcp_size: 4,
         }
     }
 

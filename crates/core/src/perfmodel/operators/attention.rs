@@ -193,6 +193,40 @@ pub struct ContextAttentionOp {
     /// Appended at the struct tail because bincode payloads are positional.
     #[serde(default = "default_apply_rope")]
     pub apply_rope: bool,
+    /// Decode context parallelism on the SAME engine (aggregated serving):
+    /// the persistent KV is striped across `dcp_size` ranks, so a prefill
+    /// with cached context (`prefix > 0`) must first all-gather the other
+    /// ranks' stripes of that context (vLLM `_context_parallel_compute_prefill_context`
+    /// / `dcp_manager.kv_gather`, SGLang `all_gather_kv_cache_for_*_extend`).
+    /// The new-token attention itself is unchanged: every rank computes it for
+    /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
+    /// (schema v19).
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub dcp_size: u32,
+}
+
+/// Prefill-side cost of a DCP-striped KV: all-gather `batch * prefix` cached
+/// tokens (`kv_elems_per_token`, in comm half-elements) over `dcp` ranks.
+/// Zero when there is no DCP or no cached context.
+pub(crate) fn dcp_context_gather(
+    db: &PerfDatabase,
+    name: &str,
+    kv_elems_per_token: f64,
+    dcp: u32,
+    batch_size: u32,
+    prefix: u32,
+) -> Result<Option<PerformanceResult>, AicError> {
+    if dcp <= 1 || prefix == 0 || batch_size == 0 {
+        return Ok(None);
+    }
+    let gather = crate::operators::NcclOp::new(
+        format!("{name}_dcp_context_gather"),
+        1.0,
+        kv_elems_per_token,
+        dcp,
+        "all_gather",
+    );
+    Ok(Some(gather.query(db, batch_size.saturating_mul(prefix))?))
 }
 
 /// Lane precedence for ops built without an explicit order (Rust-side
@@ -230,6 +264,7 @@ impl ContextAttentionOp {
             cp_size: 1,
             lane_order: default_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         }
     }
 
@@ -360,6 +395,16 @@ impl ContextAttentionOp {
         // (`result += extra_latency * 1.1`): latency and energy both sum
         // (the mem-op extras carry zero energy) and the sources merge.
         result = result.plus(extra.scaled(1.1));
+
+        // Decode CP on the same engine: gather the cached context stripes
+        // (per-rank K+V of `prefix` tokens, in comm half-elements).
+        let kv_elems =
+            2.0 * (self.n_kv * self.head_size) as f64 * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) =
+            dcp_context_gather(db, &self.name, kv_elems, self.dcp_size, batch_size, prefix)?
+        {
+            result = result.plus(gather);
+        }
 
         if seq_imbalance_correction_scale != 1.0 {
             // Python `result * scale` scales latency AND energy.
@@ -2570,5 +2615,34 @@ mod tests {
         assert!(a.latency_ms < c.latency_ms);
         assert_eq!(dcp_geometry(16, 8193, 4), (64, 2049));
         assert_eq!(dcp_geometry(16, 8192, 1), (16, 8192));
+    }
+
+    /// Prefill on a DCP-striped engine pays a cached-context gather that
+    /// scales with the prefix and vanishes without one.
+    #[test]
+    fn context_attention_dcp_gathers_cached_context_only_when_prefix_present() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let plain = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "ctx",
+            16,
+            1,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        let mut striped = plain.clone();
+        striped.dcp_size = 4;
+        let no_prefix = (
+            plain.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+        );
+        assert!((no_prefix.0 - no_prefix.1).abs() < 1e-12);
+        let with_prefix = (
+            plain.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+        );
+        assert!(with_prefix.1 > with_prefix.0);
+        let longer = striped.query(&db, 8, 512, 16384, 1.0).unwrap().latency_ms;
+        assert!(longer - with_prefix.1 > 0.0);
     }
 }
