@@ -7,23 +7,117 @@ use std::collections::BinaryHeap;
 use anyhow::{Context, Result, anyhow, bail};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::trace::validate_synthesizable_prompt;
+use super::trace::{synthesize_validated_trace_tokens, validate_synthesizable_prompt};
 use super::types::{
-    AgenticDependencyTrigger, AgenticGraphIdentity, AgenticTrace, AgenticTrajectorySnapshot,
-    CompactReadyTurn, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, Trace,
+    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
+    AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
+    ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use crate::engine::belady::{SequenceHash, input_sequence_hashes};
 use crate::replay::ReplayTerminalStatus;
-use crate::replay::protocol::DirectRequest;
+use crate::replay::protocol::{
+    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
+
+pub const AGENTIC_LIFECYCLE_SCHEMA_V1: &str = "aisimulate.agentic.lifecycle.v1";
+const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-agentic-lifecycle-v1\0";
+
+/// Output progress for one request inside a same-timestamp feedback batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgenticOutputFeedback {
+    pub request_uuid: Uuid,
+    pub token_ids: Vec<u32>,
+}
+
+/// Causal terminal state for one request inside a same-timestamp batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgenticTerminalFeedback {
+    pub request_uuid: Uuid,
+    pub status: ReplayTerminalStatus,
+}
+
+/// Agentic workload feedback produced by the runtime at one logical timestamp.
+///
+/// The runtime owns `at_ms`. The driver canonicalizes request order by graph
+/// ordinal and applies output progress, causal terminals, then quiescence.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgenticRuntimeFeedback {
+    pub at_ms: f64,
+    pub output_tokens: Vec<AgenticOutputFeedback>,
+    pub causal_terminals: Vec<AgenticTerminalFeedback>,
+    pub quiescent_requests: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgenticLifecycleEventKind {
+    Dispatch,
+    CausalTerminal,
+    Quiescent,
+    Skipped,
+    PlayQuiescent,
+}
+
+/// Canonical workload-level lifecycle record produced by the agentic driver.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticLifecycleEvent {
+    pub schema: &'static str,
+    pub ordinal: u64,
+    pub at_ms: f64,
+    pub play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    pub event: AgenticLifecycleEventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReplayTerminalStatus>,
+}
+
+/// Byte-stable lifecycle evidence for one preloaded graph execution.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgenticLifecycleTranscript {
+    pub events: Vec<AgenticLifecycleEvent>,
+}
+
+impl AgenticLifecycleTranscript {
+    pub fn to_jsonl(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        for event in &self.events {
+            serde_json::to_writer(&mut bytes, event)
+                .context("serializing agentic lifecycle event")?;
+            bytes.push(b'\n');
+        }
+        Ok(bytes)
+    }
+
+    pub fn digest(&self) -> Result<String> {
+        let bytes = self.to_jsonl()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1);
+        hasher.update(&bytes);
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AgenticLifecycleRecord {
+    ordinal: u64,
+    at_ms: f64,
+    play_index: usize,
+    node_index: Option<usize>,
+    event: AgenticLifecycleEventKind,
+    status: Option<ReplayTerminalStatus>,
+}
 
 #[derive(Debug)]
 enum SchedulingPolicy {
     Trace,
     Concurrency(ConcurrencyState),
-    Agentic(AgenticState),
+    Agentic(Box<AgenticState>),
 }
 
 #[derive(Debug)]
@@ -35,6 +129,7 @@ struct ConcurrencyState {
 
 #[derive(Debug)]
 struct AgenticState {
+    identities: Vec<AgenticRuntimeIdentity>,
     node_states: Vec<AgenticNodeState>,
     remaining_dependencies: Vec<usize>,
     authored_not_before_ms: Vec<f64>,
@@ -44,6 +139,9 @@ struct AgenticState {
     node_to_play: Vec<usize>,
     plays: Vec<AgenticPlayState>,
     lanes: Vec<AgenticLaneState>,
+    lifecycle: Vec<AgenticLifecycleRecord>,
+    next_lifecycle_ordinal: u64,
+    last_runtime_feedback_at_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,15 +162,27 @@ struct AgenticDependentEdge {
 
 #[derive(Debug)]
 struct AgenticPlayState {
+    play_id: String,
     nodes: Vec<usize>,
     root_nodes: Vec<usize>,
     lane_index: Option<usize>,
+    pending_terminals: usize,
     emitted_in_flight: usize,
     completed_nodes: usize,
     failed: bool,
+    client_finished: bool,
     quiescent: bool,
     root_dispatch_ms: Option<f64>,
     max_terminal_ms: Option<f64>,
+    quiescent_at_ms: Option<f64>,
+    primary_failure: Option<AgenticFailureRecord>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AgenticFailureRecord {
+    node_index: usize,
+    at_ms: f64,
+    status: ReplayTerminalStatus,
 }
 
 #[derive(Debug)]
@@ -174,6 +284,8 @@ struct TurnRuntime {
     priority: i32,
     strict_priority: u32,
     policy_class: Option<String>,
+    // Canonical capture assigns ordinals; Belady may instead reserve an opaque
+    // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
 }
 
@@ -290,6 +402,29 @@ impl ConcurrencyState {
 }
 
 impl AgenticState {
+    fn record_lifecycle(
+        &mut self,
+        at_ms: f64,
+        play_index: usize,
+        node_index: Option<usize>,
+        event: AgenticLifecycleEventKind,
+        status: Option<ReplayTerminalStatus>,
+    ) {
+        let ordinal = self.next_lifecycle_ordinal;
+        self.next_lifecycle_ordinal = self
+            .next_lifecycle_ordinal
+            .checked_add(1)
+            .expect("agentic lifecycle ordinal overflow");
+        self.lifecycle.push(AgenticLifecycleRecord {
+            ordinal,
+            at_ms,
+            play_index,
+            node_index,
+            event,
+            status,
+        });
+    }
+
     fn activate_play(
         &mut self,
         play_index: usize,
@@ -414,6 +549,7 @@ impl AgenticState {
         debug_assert_eq!(self.node_states[node_index], AgenticNodeState::Ready);
         self.node_states[node_index] = AgenticNodeState::Emitted;
         let play = &mut self.plays[self.node_to_play[node_index]];
+        play.pending_terminals += 1;
         play.emitted_in_flight += 1;
         if play.root_nodes.contains(&node_index) {
             play.root_dispatch_ms = Some(
@@ -421,6 +557,13 @@ impl AgenticState {
                     .map_or(now_ms, |seen| seen.min(now_ms)),
             );
         }
+        self.record_lifecycle(
+            now_ms,
+            self.node_to_play[node_index],
+            Some(node_index),
+            AgenticLifecycleEventKind::Dispatch,
+            None,
+        );
     }
 
     fn on_node_terminal(
@@ -432,9 +575,26 @@ impl AgenticState {
         outcome: TurnOutcome,
     ) {
         let play_index = self.node_to_play[node_index];
+        let status = match outcome {
+            TurnOutcome::Completed => ReplayTerminalStatus::Completed,
+            TurnOutcome::Rejected => ReplayTerminalStatus::Rejected,
+            TurnOutcome::Cancelled => ReplayTerminalStatus::Canceled,
+            TurnOutcome::Failed => ReplayTerminalStatus::Failed,
+        };
+        self.record_lifecycle(
+            now_ms,
+            play_index,
+            Some(node_index),
+            AgenticLifecycleEventKind::CausalTerminal,
+            Some(status),
+        );
         let was_failed = self.plays[play_index].failed;
         {
             let play = &mut self.plays[play_index];
+            play.pending_terminals = play
+                .pending_terminals
+                .checked_sub(1)
+                .expect("a dispatched agentic node becomes terminal exactly once");
             play.max_terminal_ms =
                 Some(play.max_terminal_ms.map_or(now_ms, |seen| seen.max(now_ms)));
         }
@@ -451,9 +611,25 @@ impl AgenticState {
             }
             TurnOutcome::Rejected | TurnOutcome::Cancelled | TurnOutcome::Failed => {
                 self.node_states[node_index] = AgenticNodeState::Failed;
-                self.plays[play_index].failed = true;
+                let play = &mut self.plays[play_index];
+                play.failed = true;
+                let candidate = AgenticFailureRecord {
+                    node_index,
+                    at_ms: now_ms,
+                    status,
+                };
+                if play.primary_failure.is_none_or(|current| {
+                    candidate
+                        .at_ms
+                        .total_cmp(&current.at_ms)
+                        .then_with(|| candidate.node_index.cmp(&current.node_index))
+                        == Ordering::Less
+                }) {
+                    play.primary_failure = Some(candidate);
+                }
                 if !was_failed {
-                    for &pending_node in &self.plays[play_index].nodes {
+                    let play_nodes = self.plays[play_index].nodes.clone();
+                    for pending_node in play_nodes {
                         if matches!(
                             self.node_states[pending_node],
                             AgenticNodeState::Blocked | AgenticNodeState::Ready
@@ -462,31 +638,53 @@ impl AgenticState {
                             let session = &mut sessions[pending_node];
                             session.next_ready_at_ms = None;
                             session.next_turn_index = session.turns.len();
+                            self.record_lifecycle(
+                                now_ms,
+                                play_index,
+                                Some(pending_node),
+                                AgenticLifecycleEventKind::Skipped,
+                                None,
+                            );
                         }
                     }
                 }
             }
         }
+
+        let play = &self.plays[play_index];
+        let all_completed = !play.failed && play.completed_nodes == play.nodes.len();
+        // A failed play skips undispatched work, but every dispatched request,
+        // including background children, still owns client work until terminal.
+        // Successful plays must also finish delayed and blocked authored nodes.
+        if (all_completed || play.failed) && play.pending_terminals == 0 {
+            self.release_lane(play_index, now_ms, sessions, ready_sessions);
+        }
     }
 
-    fn on_node_quiescent(
-        &mut self,
-        sessions: &mut [SessionRuntime],
-        ready_sessions: &mut BinaryHeap<ReadySession>,
-        node_index: usize,
-        now_ms: f64,
-    ) -> Result<()> {
+    fn on_node_quiescent(&mut self, node_index: usize, now_ms: f64) -> Result<()> {
         let play_index = self.node_to_play[node_index];
+        self.record_lifecycle(
+            now_ms,
+            play_index,
+            Some(node_index),
+            AgenticLifecycleEventKind::Quiescent,
+            None,
+        );
         let play = &mut self.plays[play_index];
         play.emitted_in_flight = play
             .emitted_in_flight
             .checked_sub(1)
             .context("agentic play settlement count underflow")?;
-        let play = &self.plays[play_index];
-        let all_completed = !play.failed && play.completed_nodes == play.nodes.len();
-        let failed_and_settled = play.failed && play.emitted_in_flight == 0;
-        if (all_completed || failed_and_settled) && play.emitted_in_flight == 0 {
-            self.release_lane(play_index, now_ms, sessions, ready_sessions);
+        if !play.quiescent && play.client_finished && play.emitted_in_flight == 0 {
+            play.quiescent = true;
+            play.quiescent_at_ms = Some(now_ms);
+            self.record_lifecycle(
+                now_ms,
+                play_index,
+                None,
+                AgenticLifecycleEventKind::PlayQuiescent,
+                None,
+            );
         }
         Ok(())
     }
@@ -498,10 +696,10 @@ impl AgenticState {
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
     ) {
-        if self.plays[play_index].quiescent {
+        if self.plays[play_index].client_finished {
             return;
         }
-        self.plays[play_index].quiescent = true;
+        self.plays[play_index].client_finished = true;
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
@@ -532,6 +730,37 @@ impl AgenticState {
             e2e_latencies_ms,
         }
     }
+
+    fn play_outcomes(&self, sessions: &[SessionRuntime]) -> Vec<AgenticPlayOutcome> {
+        self.plays
+            .iter()
+            .map(|play| {
+                let status = if !play.quiescent {
+                    AgenticPlayStatus::Incomplete
+                } else if play.failed {
+                    AgenticPlayStatus::Failed
+                } else {
+                    AgenticPlayStatus::Completed
+                };
+                AgenticPlayOutcome {
+                    play_id: play.play_id.clone(),
+                    status,
+                    causal_terminal_ms: play
+                        .primary_failure
+                        .map(|failure| failure.at_ms)
+                        .or(play.max_terminal_ms),
+                    settled_at_ms: play.quiescent_at_ms,
+                    failure_request_id: play.primary_failure.map(|failure| {
+                        sessions[failure.node_index].turns[0]
+                            .request_id
+                            .clone()
+                            .expect("agentic node must retain its authored request ID")
+                    }),
+                    failure_status: play.primary_failure.map(|failure| failure.status),
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -550,6 +779,10 @@ pub struct WorkloadDriver {
 }
 
 impl WorkloadDriver {
+    pub fn is_agentic(&self) -> bool {
+        matches!(self.policy, SchedulingPolicy::Agentic(_))
+    }
+
     pub fn new_trace(trace: Trace, engine_block_size: usize) -> Result<Self> {
         Self::new(
             trace,
@@ -687,6 +920,36 @@ impl WorkloadDriver {
         for (node_index, node) in trace.nodes.iter().enumerate() {
             index_by_id.insert(node.request_id.clone(), node_index);
         }
+        let root_id_by_play = trace
+            .plays
+            .iter()
+            .map(|play| {
+                let root_id = (play.root_nodes.len() == 1)
+                    .then(|| trace.nodes[play.root_nodes[0]].request_id.clone());
+                (play.play_id.clone(), root_id)
+            })
+            .collect::<FxHashMap<_, _>>();
+        let mut identities = trace
+            .nodes
+            .iter()
+            .map(|node| {
+                let parent_id = node
+                    .dependencies
+                    .iter()
+                    .filter(|dependency| dependency.relation == AgenticDependencyRelation::Spawn)
+                    .min_by_key(|dependency| index_by_id[&dependency.request_id])
+                    .map(|dependency| dependency.request_id.clone());
+                AgenticRuntimeIdentity {
+                    request_id: node.request_id.clone(),
+                    play_id: node.play_id.clone(),
+                    conversation_id: node.session_id.clone(),
+                    lane_id: None,
+                    root_id: root_id_by_play.get(&node.play_id).cloned().flatten(),
+                    parent_id,
+                    cache_id: None,
+                }
+            })
+            .collect::<Vec<_>>();
         let mut dispatch_dependents = vec![Vec::new(); trace.nodes.len()];
         let mut completion_dependents = vec![Vec::new(); trace.nodes.len()];
         let mut remaining_dependencies = Vec::with_capacity(trace.nodes.len());
@@ -779,15 +1042,20 @@ impl WorkloadDriver {
                     node_to_play[node_index] = play_index;
                 }
                 AgenticPlayState {
+                    play_id: play.play_id,
                     nodes: play.nodes,
                     root_nodes: play.root_nodes,
                     lane_index: None,
+                    pending_terminals: 0,
                     emitted_in_flight: 0,
                     completed_nodes: 0,
                     failed: false,
+                    client_finished: false,
                     quiescent: false,
                     root_dispatch_ms: None,
                     max_terminal_ms: None,
+                    quiescent_at_ms: None,
+                    primary_failure: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -806,9 +1074,16 @@ impl WorkloadDriver {
                 plays[play_index].lane_index = Some(lane_index);
                 lanes[lane_index].plays.push(play_index);
             }
+            for (node_index, identity) in identities.iter_mut().enumerate() {
+                identity.lane_id = Some(format!(
+                    "lane:{}",
+                    plays[node_to_play[node_index]].lane_index.unwrap()
+                ));
+            }
         }
 
         let mut state = AgenticState {
+            identities,
             node_states: vec![AgenticNodeState::Blocked; sessions.len()],
             remaining_dependencies,
             ready_after_ms: authored_not_before_ms.clone(),
@@ -818,6 +1093,9 @@ impl WorkloadDriver {
             node_to_play,
             plays,
             lanes,
+            lifecycle: Vec::new(),
+            next_lifecycle_ordinal: 0,
+            last_runtime_feedback_at_ms: None,
         };
         let mut ready_sessions = BinaryHeap::new();
         if state.lanes.is_empty() {
@@ -844,7 +1122,7 @@ impl WorkloadDriver {
         }
 
         Ok(Self {
-            policy: SchedulingPolicy::Agentic(state),
+            policy: SchedulingPolicy::Agentic(Box::new(state)),
             prompt_mode: PromptMode::Full,
             emit_session_metadata: true,
             trace_block_size,
@@ -991,6 +1269,78 @@ impl WorkloadDriver {
         }
     }
 
+    /// Snapshot fixed input demand without executing any workload lifecycle.
+    /// Reserving opaque IDs is the only mutation: arrivals, outputs, cursors,
+    /// and readiness remain owned by the causal driver. Output plans are
+    /// intentionally excluded; this forecast is not actual future cache reuse.
+    pub(crate) fn prepare_belady_requests(
+        &mut self,
+        engine_block_size: usize,
+    ) -> Result<Vec<(Uuid, Vec<SequenceHash>)>> {
+        if !matches!(self.policy, SchedulingPolicy::Trace) || self.prompt_mode != PromptMode::Full {
+            bail!(
+                "belady requires a full-prompt, fixed-arrival trace driver; concurrency, agentic, and delta workloads are unsupported"
+            );
+        }
+        if usize::try_from(self.engine_block_size)? != engine_block_size {
+            bail!("belady workload engine block size must match the replay engine");
+        }
+        if !self.in_flight.is_empty()
+            || self.ready_sessions.len() != self.sessions.len()
+            || self.sessions.iter().any(|session| {
+                session.turns.len() != 1
+                    || session.next_turn_index != 0
+                    || session.in_flight.is_some()
+                    || session.next_ready_at_ms.is_none()
+                    || !session.cumulative_tokens.is_empty()
+            })
+        {
+            bail!("belady requires a pristine trace driver with one turn per session");
+        }
+        if self.sessions.iter().any(|session| {
+            let arrival = session.next_ready_at_ms.expect("validated ready session");
+            !arrival.is_finite() || arrival < 0.0
+        }) {
+            bail!("belady requires finite, nonnegative trace arrival times");
+        }
+
+        // Match ReadySession's arrival/source order, not UUID order. A future
+        // occurrence is global demand even if routing later selects a different
+        // worker; predicting that placement is deliberately outside this oracle.
+        let mut order = (0..self.sessions.len()).collect::<Vec<_>>();
+        order.sort_by(|&left, &right| {
+            self.sessions[left]
+                .next_ready_at_ms
+                .unwrap()
+                .total_cmp(&self.sessions[right].next_ready_at_ms.unwrap())
+                .then_with(|| left.cmp(&right))
+        });
+        let mut forecast = Vec::with_capacity(order.len());
+        for session_index in order {
+            let turn = &mut self.sessions[session_index].turns[0];
+            let request_id = *turn
+                .deterministic_request_id
+                .get_or_insert_with(Uuid::new_v4);
+            let PromptTokens::Deferred {
+                input_length,
+                hash_ids,
+            } = &turn.prompt_tokens
+            else {
+                unreachable!("full-prompt turns retain deferred input tokens");
+            };
+            // Use the same normalization as eventual admission, including when
+            // source trace blocks and native engine blocks have different sizes.
+            // Only this one expanded prompt is live; retain hashes in the oracle.
+            let tokens =
+                synthesize_validated_trace_tokens(*input_length, hash_ids, self.trace_block_size);
+            forecast.push((
+                request_id,
+                input_sequence_hashes(&tokens, engine_block_size),
+            ));
+        }
+        Ok(forecast)
+    }
+
     fn request_uuid(&self, _session_index: usize, _turn_index: usize) -> Uuid {
         if let Some(request_id) =
             self.sessions[_session_index].turns[_turn_index].deterministic_request_id
@@ -1066,8 +1416,22 @@ impl WorkloadDriver {
                 continue;
             };
             let request_uuid = self.request_uuid(session_index, turn_index);
+            let agentic_identity = match &self.policy {
+                SchedulingPolicy::Agentic(state) => Some(state.identities[session_index].clone()),
+                SchedulingPolicy::Trace | SchedulingPolicy::Concurrency(_) => None,
+            };
             let session = &mut self.sessions[session_index];
             let turn = &mut session.turns[turn_index];
+            let replay_context = turn.request_id.as_ref().zip(turn.play_id.as_ref()).map(
+                |(request_id, _play_id)| ReplayRequestContext {
+                    authored_id: request_id.clone(),
+                    session_id: Some(session.session_id.clone()),
+                    turn_index: None,
+                    metadata: serde_json::Value::Null,
+                    prompt_token_source: ReplayPromptTokenSource::Materialized,
+                    agentic: agentic_identity,
+                },
+            );
             let arrival_timestamp_ms = self.policy.arrival_timestamp_ms(scheduled_ready_at_ms);
             let (request, replay_hashes) = match self.prompt_mode {
                 PromptMode::Full => {
@@ -1084,7 +1448,7 @@ impl WorkloadDriver {
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
-                        replay_context: None,
+                        replay_context: replay_context.clone(),
                     };
                     let request = ReplayRequestPayload::deferred(
                         request_metadata,
@@ -1127,7 +1491,7 @@ impl WorkloadDriver {
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
-                        replay_context: None,
+                        replay_context,
                     });
                     (request, replay_hashes)
                 }
@@ -1210,6 +1574,145 @@ impl WorkloadDriver {
         Ok(())
     }
 
+    fn agentic_node_ordinal(&self, request_uuid: Uuid) -> Result<usize> {
+        self.in_flight
+            .get(&request_uuid)
+            .map(|turn| turn.session_index)
+            .or_else(|| self.agentic_settling.get(&request_uuid).copied())
+            .ok_or_else(|| anyhow!("unknown agentic workload request {request_uuid}"))
+    }
+
+    /// Apply every workload-visible effect at one runtime-owned timestamp.
+    ///
+    /// Callers may collect effects in engine-specific order. This boundary
+    /// makes that order unobservable by sorting requests by immutable graph
+    /// ordinal, then applying output progress, causal terminals, and finally
+    /// resource quiescence. Batch timestamps must be nondecreasing; a rejected
+    /// batch leaves request state, dependencies, lifecycle, and clock unchanged.
+    pub fn apply_agentic_runtime_feedback(
+        &mut self,
+        mut feedback: AgenticRuntimeFeedback,
+    ) -> Result<()> {
+        if !feedback.at_ms.is_finite() || feedback.at_ms < 0.0 {
+            bail!(
+                "agentic runtime feedback timestamp must be finite and non-negative; got {}",
+                feedback.at_ms
+            );
+        }
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            bail!("agentic runtime feedback requires an agentic workload driver");
+        };
+        if let Some(last_at_ms) = state.last_runtime_feedback_at_ms
+            && feedback.at_ms < last_at_ms
+        {
+            bail!(
+                "agentic runtime feedback timestamp regressed from {last_at_ms} ms to {} ms",
+                feedback.at_ms
+            );
+        }
+
+        let ordinal_by_uuid = feedback
+            .output_tokens
+            .iter()
+            .map(|output| output.request_uuid)
+            .chain(
+                feedback
+                    .causal_terminals
+                    .iter()
+                    .map(|terminal| terminal.request_uuid),
+            )
+            .chain(feedback.quiescent_requests.iter().copied())
+            .map(|uuid| Ok((uuid, self.agentic_node_ordinal(uuid)?)))
+            .collect::<Result<FxHashMap<_, _>>>()?;
+        feedback
+            .output_tokens
+            .sort_by_key(|output| ordinal_by_uuid[&output.request_uuid]);
+        feedback
+            .causal_terminals
+            .sort_by_key(|terminal| ordinal_by_uuid[&terminal.request_uuid]);
+        feedback
+            .quiescent_requests
+            .sort_by_key(|uuid| ordinal_by_uuid[uuid]);
+
+        for pair in feedback.output_tokens.windows(2) {
+            if pair[0].request_uuid == pair[1].request_uuid {
+                bail!(
+                    "agentic request {} has duplicate output groups at {} ms",
+                    pair[0].request_uuid,
+                    feedback.at_ms
+                );
+            }
+        }
+        for pair in feedback.causal_terminals.windows(2) {
+            if pair[0].request_uuid == pair[1].request_uuid {
+                bail!(
+                    "agentic request {} has duplicate causal terminals at {} ms",
+                    pair[0].request_uuid,
+                    feedback.at_ms
+                );
+            }
+        }
+        for pair in feedback.quiescent_requests.windows(2) {
+            if pair[0] == pair[1] {
+                bail!(
+                    "agentic request {} has duplicate quiescence at {} ms",
+                    pair[0],
+                    feedback.at_ms
+                );
+            }
+        }
+
+        // Agentic graphs use full prompts, for which output feedback is a
+        // no-op. Validate every fallible lifecycle transition before applying
+        // any terminal: a later invalid transition must not commit earlier
+        // completions, release dependencies, or consume pending cleanup.
+        debug_assert_eq!(self.prompt_mode, PromptMode::Full);
+        let mut becoming_terminal = FxHashSet::default();
+        for terminal in &feedback.causal_terminals {
+            let outcome = match terminal.status {
+                ReplayTerminalStatus::Completed => TurnOutcome::Completed,
+                ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
+                ReplayTerminalStatus::Canceled => TurnOutcome::Cancelled,
+                ReplayTerminalStatus::Failed => TurnOutcome::Failed,
+            };
+            if self.agentic_settling.contains_key(&terminal.request_uuid)
+                || self
+                    .validate_turn_resolution(terminal.request_uuid, outcome)?
+                    .is_none()
+            {
+                bail!(
+                    "agentic request {} received duplicate causal terminal",
+                    terminal.request_uuid
+                );
+            }
+            becoming_terminal.insert(terminal.request_uuid);
+        }
+        for request_uuid in &feedback.quiescent_requests {
+            if !self.agentic_settling.contains_key(request_uuid)
+                && !becoming_terminal.contains(request_uuid)
+            {
+                bail!("agentic request {request_uuid} became quiescent before its causal terminal");
+            }
+        }
+
+        for output in feedback.output_tokens {
+            for token_id in output.token_ids {
+                self.on_output_token(output.request_uuid, token_id)?;
+            }
+        }
+        for terminal in feedback.causal_terminals {
+            self.on_causal_terminal(terminal.request_uuid, feedback.at_ms, terminal.status)?;
+        }
+        for request_uuid in feedback.quiescent_requests {
+            self.on_quiescent(request_uuid, feedback.at_ms)?;
+        }
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            unreachable!("feedback application retains the agentic scheduling policy");
+        };
+        state.last_runtime_feedback_at_ms = Some(feedback.at_ms);
+        Ok(())
+    }
+
     pub fn on_complete(&mut self, request_uuid: Uuid, now_ms: f64) -> Result<()> {
         self.on_terminal(request_uuid, now_ms, ReplayTerminalStatus::Completed)
     }
@@ -1224,11 +1727,12 @@ impl WorkloadDriver {
         self.on_quiescent(request_uuid, now_ms)
     }
 
-    /// Resolve the logical request outcome and update causal successors.
+    /// Resolve the logical request outcome and update client scheduling.
     ///
     /// Disaggregated replay calls this as soon as final decode succeeds or a
-    /// failure is observed, then calls [`Self::on_quiescent`] only after all
-    /// P/D resources and coordinator actions settle. Aggregated replay uses
+    /// failure is observed. A play releases its client lane once all required
+    /// requests are terminal, independently of the later [`Self::on_quiescent`]
+    /// callbacks for P/D resources and coordinator actions. Aggregated replay uses
     /// [`Self::on_terminal`], where both events coincide.
     #[allow(clippy::collapsible_if)] // Keep agentic-only duplicate detection explicit.
     pub fn on_causal_terminal(
@@ -1271,20 +1775,14 @@ impl WorkloadDriver {
         let Some(node_index) = self.agentic_settling.remove(&request_uuid) else {
             bail!("agentic request {request_uuid} became quiescent before its causal terminal");
         };
-        state.on_node_quiescent(
-            &mut self.sessions,
-            &mut self.ready_sessions,
-            node_index,
-            now_ms,
-        )
+        state.on_node_quiescent(node_index, now_ms)
     }
 
-    fn resolve_turn(
-        &mut self,
+    fn validate_turn_resolution(
+        &self,
         request_uuid: Uuid,
-        now_ms: f64,
         outcome: TurnOutcome,
-    ) -> Result<Option<TurnResolution>> {
+    ) -> Result<Option<InFlightTurn>> {
         let Some(in_flight) = self.in_flight.get(&request_uuid).copied() else {
             return match outcome {
                 TurnOutcome::Completed | TurnOutcome::Rejected | TurnOutcome::Failed => Err(
@@ -1297,7 +1795,7 @@ impl WorkloadDriver {
             .sessions
             .get(in_flight.session_index)
             .ok_or_else(|| anyhow!("unknown workload session {}", in_flight.session_index))?;
-        let turn = session.turns.get(in_flight.turn_index).ok_or_else(|| {
+        session.turns.get(in_flight.turn_index).ok_or_else(|| {
             anyhow!(
                 "unknown workload turn {} for session {}",
                 in_flight.turn_index,
@@ -1327,6 +1825,26 @@ impl WorkloadDriver {
                 in_flight.emitted_output_tokens
             );
         }
+        if matches!(outcome, TurnOutcome::Completed | TurnOutcome::Rejected) {
+            in_flight
+                .turn_index
+                .checked_add(1)
+                .context("workload turn index overflow")?;
+        }
+        Ok(Some(in_flight))
+    }
+
+    fn resolve_turn(
+        &mut self,
+        request_uuid: Uuid,
+        now_ms: f64,
+        outcome: TurnOutcome,
+    ) -> Result<Option<TurnResolution>> {
+        let Some(in_flight) = self.validate_turn_resolution(request_uuid, outcome)? else {
+            return Ok(None);
+        };
+        let session = &self.sessions[in_flight.session_index];
+        let turn = &session.turns[in_flight.turn_index];
         let completed_output_tokens = (outcome == TurnOutcome::Completed
             && self.prompt_mode == PromptMode::DeltaCumulative)
             .then(|| {
@@ -1441,6 +1959,39 @@ impl WorkloadDriver {
 
     pub fn agentic_graph_identity(&self) -> Option<AgenticGraphIdentity> {
         self.agentic_graph_identity.clone()
+    }
+
+    pub fn agentic_play_outcomes(&self) -> Option<Vec<AgenticPlayOutcome>> {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            return None;
+        };
+        Some(state.play_outcomes(&self.sessions))
+    }
+
+    pub fn agentic_lifecycle_transcript(&self) -> Option<AgenticLifecycleTranscript> {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            return None;
+        };
+        Some(AgenticLifecycleTranscript {
+            events: state
+                .lifecycle
+                .iter()
+                .map(|record| AgenticLifecycleEvent {
+                    schema: AGENTIC_LIFECYCLE_SCHEMA_V1,
+                    ordinal: record.ordinal,
+                    at_ms: record.at_ms,
+                    play_id: state.plays[record.play_index].play_id.clone(),
+                    request_id: record.node_index.map(|node_index| {
+                        self.sessions[node_index].turns[0]
+                            .request_id
+                            .clone()
+                            .expect("agentic node must retain its authored request ID")
+                    }),
+                    event: record.event,
+                    status: record.status,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -1607,6 +2158,128 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn belady_flat_trace() -> Trace {
+        Trace {
+            block_size: 5,
+            sessions: [10.0, 1.0, 1.0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, arrival)| SessionTrace {
+                    session_id: format!("s{index}"),
+                    first_arrival_timestamp_ms: Some(arrival),
+                    turns: vec![TurnTrace {
+                        input_length: 7 + index,
+                        max_output_tokens: 3,
+                        hash_ids: vec![11, 20 + index as u32],
+                        ..Default::default()
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn belady_forecast_preserves_causal_driver_and_actual_block_identities() {
+        let trace = belady_flat_trace();
+        let mut baseline = WorkloadDriver::new_trace(trace.clone(), 3)
+            .unwrap()
+            .with_deterministic_request_ids(1);
+        let mut prepared = WorkloadDriver::new_trace(trace, 3)
+            .unwrap()
+            .with_deterministic_request_ids(1);
+        let ready_before = prepared.ready_sessions.clone().into_sorted_vec();
+        let forecast = prepared.prepare_belady_requests(3).unwrap();
+        assert_eq!(
+            forecast.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [2, 3, 1].map(Uuid::from_u128)
+        );
+        assert_eq!(forecast, prepared.prepare_belady_requests(3).unwrap());
+        assert_eq!(
+            ready_before,
+            prepared.ready_sessions.clone().into_sorted_vec()
+        );
+        assert!(prepared.in_flight.is_empty());
+        assert!(prepared.sessions.iter().all(|session| {
+            session.next_turn_index == 0
+                && session.in_flight.is_none()
+                && matches!(
+                    session.turns[0].prompt_tokens,
+                    PromptTokens::Deferred { .. }
+                )
+        }));
+        assert!(prepared.pop_ready(0.0, usize::MAX).is_empty());
+        let mut observed = Vec::new();
+        for at_ms in [1.0, 10.0] {
+            let expected = baseline.pop_ready(at_ms, usize::MAX);
+            let actual = prepared.pop_ready(at_ms, usize::MAX);
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert_eq!(
+                    serde_json::to_value(&actual.request).unwrap(),
+                    serde_json::to_value(&expected.request).unwrap()
+                );
+                assert_eq!(actual.replay_hashes, expected.replay_hashes);
+                observed.push((
+                    actual.request_uuid,
+                    actual.replay_hashes.unwrap().sequence_hashes,
+                ));
+                prepared.on_complete(actual.request_uuid, at_ms).unwrap();
+                baseline.on_complete(expected.request_uuid, at_ms).unwrap();
+            }
+        }
+        assert_eq!(forecast, observed);
+        assert!(prepared.is_drained());
+    }
+
+    #[test]
+    fn belady_forecast_reserves_opaque_ids_without_changing_output_plans() {
+        let mut driver =
+            WorkloadDriver::new_trace_without_replay_hashes(belady_flat_trace(), 3, false).unwrap();
+        let output_plans = driver
+            .sessions
+            .iter()
+            .map(|session| session.turns[0].output_token_ids.clone())
+            .collect::<Vec<_>>();
+        let forecast = driver.prepare_belady_requests(3).unwrap();
+        assert_eq!(forecast, driver.prepare_belady_requests(3).unwrap());
+        assert_eq!(
+            output_plans,
+            driver
+                .sessions
+                .iter()
+                .map(|session| session.turns[0].output_token_ids.clone())
+                .collect::<Vec<_>>()
+        );
+        let first = driver.pop_ready(1.0, 1).pop().unwrap();
+        assert_eq!(first.request_uuid, forecast[0].0);
+        assert_eq!(
+            input_sequence_hashes(&first.request.tokens, 3),
+            forecast[0].1
+        );
+        assert!(first.replay_hashes.is_none());
+    }
+
+    #[test]
+    fn belady_forecast_rejects_nonstatic_or_already_started_drivers() {
+        let mut multi = WorkloadDriver::new_trace(two_session_trace(), 1).unwrap();
+        assert!(multi.prepare_belady_requests(1).is_err());
+        let trace = belady_flat_trace();
+        let mut delta = WorkloadDriver::new_trace_accumulating_deltas(trace.clone(), 3).unwrap();
+        assert!(delta.prepare_belady_requests(3).is_err());
+        let mut closed = WorkloadDriver::new_concurrency(trace.clone(), 3, 1).unwrap();
+        assert!(closed.prepare_belady_requests(3).is_err());
+        let mut driver = WorkloadDriver::new_trace(trace, 3).unwrap();
+        assert!(driver.prepare_belady_requests(4).is_err());
+        assert_eq!(driver.pop_ready(1.0, 1).len(), 1);
+        assert!(driver.prepare_belady_requests(3).is_err());
+        let mut agentic = WorkloadDriver::new_agentic_trace(
+            agentic_trace(vec![agentic_node("a", "p", 0.0, Vec::new())]),
+            1,
+        )
+        .unwrap();
+        assert!(agentic.prepare_belady_requests(1).is_err());
     }
 
     /// A: 2 turns (turn-1 has a 5ms think-time). B, C: 1 turn each. Used for the cap>1
@@ -2291,6 +2964,369 @@ mod tests {
     }
 
     #[test]
+    fn agentic_dispatch_carries_the_stable_identity_envelope() {
+        let trace = agentic_trace(vec![agentic_node("root", "play-a", 0.0, Vec::new())]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+
+        let ready = driver.pop_ready(0.0, 1).pop().unwrap();
+        let context = ready.request.replay_context.as_ref().unwrap();
+        let identity = context.agentic.as_ref().unwrap();
+
+        assert_eq!(context.authored_id, "root");
+        assert_eq!(identity.request_id, "root");
+        assert_eq!(identity.play_id, "play-a");
+        assert_eq!(identity.conversation_id, "play-a");
+        assert_eq!(identity.lane_id.as_deref(), Some("lane:0"));
+        assert_eq!(identity.root_id.as_deref(), Some("root"));
+        assert_eq!(identity.parent_id, None);
+    }
+
+    #[test]
+    fn same_timestamp_feedback_is_canonicalized_by_graph_ordinal() {
+        let trace = agentic_trace(vec![
+            agentic_node("a", "play", 0.0, Vec::new()),
+            agentic_node("b", "play", 0.0, Vec::new()),
+        ]);
+
+        let run = |reverse: bool| {
+            let mut driver = WorkloadDriver::new_agentic_trace(trace.clone(), 1).unwrap();
+            let ready = driver.pop_ready(0.0, usize::MAX);
+            let mut terminals = vec![
+                AgenticTerminalFeedback {
+                    request_uuid: ready[0].request_uuid,
+                    status: ReplayTerminalStatus::Completed,
+                },
+                AgenticTerminalFeedback {
+                    request_uuid: ready[1].request_uuid,
+                    status: ReplayTerminalStatus::Failed,
+                },
+            ];
+            let mut quiescent = ready
+                .iter()
+                .map(|turn| turn.request_uuid)
+                .collect::<Vec<_>>();
+            if reverse {
+                terminals.reverse();
+                quiescent.reverse();
+            }
+            driver
+                .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                    at_ms: 10.0,
+                    output_tokens: Vec::new(),
+                    causal_terminals: terminals,
+                    quiescent_requests: quiescent,
+                })
+                .unwrap();
+            driver.agentic_lifecycle_transcript().unwrap()
+        };
+
+        let authored = run(false);
+        let reversed = run(true);
+        assert_eq!(authored.to_jsonl().unwrap(), reversed.to_jsonl().unwrap());
+        assert_eq!(authored.digest().unwrap(), reversed.digest().unwrap());
+        assert_eq!(
+            authored
+                .events
+                .iter()
+                .filter(|event| event.event == AgenticLifecycleEventKind::CausalTerminal)
+                .map(|event| event.request_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn agentic_feedback_rejects_time_regression_without_advancing_dependencies_or_clock() {
+        let trace = agentic_trace(vec![
+            agentic_node("clock", "play", 0.0, Vec::new()),
+            agentic_node("parent", "play", 0.0, Vec::new()),
+            agentic_node(
+                "child",
+                "play",
+                0.0,
+                vec![dependency(
+                    "parent",
+                    AgenticDependencyTrigger::Completion,
+                    2.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 1).unwrap();
+        let ready = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(ready.len(), 2);
+        let clock = ready[0].request_uuid;
+        let parent = ready[1].request_uuid;
+        let completed = |request_uuid| AgenticTerminalFeedback {
+            request_uuid,
+            status: ReplayTerminalStatus::Completed,
+        };
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(clock)],
+                quiescent_requests: vec![clock],
+                ..Default::default()
+            })
+            .unwrap();
+        let transcript_before = driver.agentic_lifecycle_transcript().unwrap();
+
+        let error = driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 5.0,
+                causal_terminals: vec![completed(parent)],
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("regressed from 10 ms to 5 ms"));
+        assert_eq!(
+            driver.agentic_lifecycle_transcript().unwrap(),
+            transcript_before
+        );
+        assert_eq!(driver.next_ready_time_ms(), None);
+        assert!(driver.in_flight.contains_key(&parent));
+        assert!(!driver.agentic_settling.contains_key(&parent));
+
+        // A known request with invalid lifecycle feedback reaches application
+        // validation, but must not make the next valid t=10 batch look stale.
+        let error = driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 20.0,
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("became quiescent before its causal terminal")
+        );
+        assert_eq!(
+            driver.agentic_lifecycle_transcript().unwrap(),
+            transcript_before
+        );
+        assert_eq!(driver.next_ready_time_ms(), None);
+
+        // A second successful batch at the same timestamp remains legal.
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(parent)],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(driver.next_ready_time_ms(), Some(12.0));
+        assert!(driver.pop_ready(11.0, usize::MAX).is_empty());
+        let child = driver.pop_ready(12.0, usize::MAX);
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].authored_request_id.as_deref(), Some("child"));
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 12.0,
+                causal_terminals: vec![completed(child[0].request_uuid)],
+                quiescent_requests: vec![child[0].request_uuid],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!driver.is_drained(), "parent cleanup is still pending");
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 15.0,
+                quiescent_requests: vec![parent],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.is_drained());
+        assert!(
+            driver
+                .agentic_lifecycle_transcript()
+                .unwrap()
+                .events
+                .windows(2)
+                .all(|events| events[0].at_ms <= events[1].at_ms)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::premature_quiescence(false)]
+    #[case::duplicate_terminal(true)]
+    fn agentic_rejected_mixed_feedback_preserves_state(#[case] duplicate_terminal: bool) {
+        let trace = agentic_trace(vec![
+            agentic_node("a-parent", "play", 0.0, Vec::new()),
+            agentic_node("b-stale", "play", 0.0, Vec::new()),
+            agentic_node("c-peer", "play", 0.0, Vec::new()),
+            agentic_node(
+                "d-child",
+                "play",
+                0.0,
+                vec![dependency(
+                    "a-parent",
+                    AgenticDependencyTrigger::Completion,
+                    2.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+        let ready = driver.pop_ready(0.0, usize::MAX);
+        let parent = ready[0].request_uuid;
+        let stale = ready[1].request_uuid;
+        let peer = ready[2].request_uuid;
+        let completed = |request_uuid| AgenticTerminalFeedback {
+            request_uuid,
+            status: ReplayTerminalStatus::Completed,
+        };
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(stale)],
+                ..Default::default()
+            })
+            .unwrap();
+        let state_before = format!("{driver:?}");
+        let mut invalid = AgenticRuntimeFeedback {
+            at_ms: 20.0,
+            causal_terminals: vec![completed(parent)],
+            quiescent_requests: vec![parent, stale],
+            ..Default::default()
+        };
+        if duplicate_terminal {
+            invalid.causal_terminals.push(completed(stale));
+        } else {
+            invalid.quiescent_requests.push(peer);
+        }
+
+        assert!(driver.apply_agentic_runtime_feedback(invalid).is_err());
+        // Include request/session state, dependency counters, lanes, cleanup,
+        // output progress, lifecycle records, and the successful batch clock.
+        assert_eq!(format!("{driver:?}"), state_before);
+        assert_eq!(driver.next_ready_time_ms(), None);
+
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                causal_terminals: vec![completed(parent), completed(peer)],
+                quiescent_requests: vec![parent, stale, peer],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(driver.next_ready_time_ms(), Some(12.0));
+        let child = driver.pop_ready(12.0, 1).pop().unwrap();
+        assert_eq!(child.authored_request_id.as_deref(), Some("d-child"));
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 12.0,
+                causal_terminals: vec![completed(child.request_uuid)],
+                quiescent_requests: vec![child.request_uuid],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.is_drained());
+        assert!(
+            driver
+                .agentic_lifecycle_transcript()
+                .unwrap()
+                .events
+                .windows(2)
+                .all(|events| events[0].at_ms <= events[1].at_ms)
+        );
+    }
+
+    #[test]
+    fn same_timestamp_primary_failure_uses_graph_ordinal_not_status_severity() {
+        let trace = agentic_trace(vec![
+            agentic_node("first", "play", 0.0, Vec::new()),
+            agentic_node("second", "play", 0.0, Vec::new()),
+            agentic_node(
+                "blocked-child",
+                "play",
+                0.0,
+                vec![dependency(
+                    "first",
+                    AgenticDependencyTrigger::Completion,
+                    0.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 1).unwrap();
+        let ready = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(ready.len(), 2);
+
+        driver
+            .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
+                at_ms: 10.0,
+                output_tokens: Vec::new(),
+                causal_terminals: vec![
+                    AgenticTerminalFeedback {
+                        request_uuid: ready[1].request_uuid,
+                        status: ReplayTerminalStatus::Rejected,
+                    },
+                    AgenticTerminalFeedback {
+                        request_uuid: ready[0].request_uuid,
+                        status: ReplayTerminalStatus::Failed,
+                    },
+                ],
+                quiescent_requests: vec![ready[1].request_uuid, ready[0].request_uuid],
+            })
+            .unwrap();
+
+        let outcome = driver.agentic_play_outcomes().unwrap().pop().unwrap();
+        assert_eq!(outcome.status, AgenticPlayStatus::Failed);
+        assert_eq!(outcome.failure_request_id.as_deref(), Some("first"));
+        assert_eq!(outcome.failure_status, Some(ReplayTerminalStatus::Failed));
+        assert_eq!(outcome.causal_terminal_ms, Some(10.0));
+        assert_eq!(outcome.settled_at_ms, Some(10.0));
+        assert!(
+            driver
+                .agentic_lifecycle_transcript()
+                .unwrap()
+                .events
+                .iter()
+                .any(|event| event.event == AgenticLifecycleEventKind::Skipped
+                    && event.request_id.as_deref() == Some("blocked-child"))
+        );
+    }
+
+    #[test]
+    fn every_non_success_terminal_fails_and_settles_the_play() {
+        for status in [
+            ReplayTerminalStatus::Rejected,
+            ReplayTerminalStatus::Canceled,
+            ReplayTerminalStatus::Failed,
+        ] {
+            let trace = agentic_trace(vec![
+                agentic_node("root", "play", 0.0, Vec::new()),
+                agentic_node(
+                    "child",
+                    "play",
+                    0.0,
+                    vec![dependency(
+                        "root",
+                        AgenticDependencyTrigger::Completion,
+                        0.0,
+                        AgenticDependencyRelation::Sequence,
+                    )],
+                ),
+            ]);
+            let mut driver = WorkloadDriver::new_agentic_trace(trace, 1).unwrap();
+            assert_eq!(
+                driver.agentic_play_outcomes().unwrap()[0].status,
+                AgenticPlayStatus::Incomplete
+            );
+            let root = driver.pop_ready(0.0, 1).pop().unwrap();
+            driver.on_terminal(root.request_uuid, 5.0, status).unwrap();
+
+            let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+            assert_eq!(outcome.status, AgenticPlayStatus::Failed);
+            assert_eq!(outcome.failure_request_id.as_deref(), Some("root"));
+            assert_eq!(outcome.failure_status, Some(status));
+            assert!(driver.is_drained());
+        }
+    }
+
+    #[test]
     fn agentic_failed_parent_skips_unemitted_descendants() {
         let trace = agentic_trace(vec![
             agentic_node("parent", "play", 0.0, Vec::new()),
@@ -2320,26 +3356,214 @@ mod tests {
     }
 
     #[test]
-    fn agentic_lane_waits_for_quiescence_after_causal_completion() {
+    fn agentic_lane_recycles_at_client_terminal_but_drain_waits_for_cleanup() {
+        for status in [
+            ReplayTerminalStatus::Completed,
+            ReplayTerminalStatus::Rejected,
+            ReplayTerminalStatus::Canceled,
+            ReplayTerminalStatus::Failed,
+        ] {
+            for cleanup_at_ms in [20.0, 40.0] {
+                let trace = agentic_trace(vec![
+                    agentic_node("a", "play-a", 0.0, Vec::new()),
+                    agentic_node("b", "play-b", 0.0, Vec::new()),
+                ]);
+                let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+                let first = driver.pop_ready(0.0, 1).pop().unwrap();
+                driver
+                    .on_causal_terminal(first.request_uuid, 10.0, status)
+                    .unwrap();
+
+                let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+                assert_eq!(outcome.status, AgenticPlayStatus::Incomplete);
+                assert_eq!(outcome.causal_terminal_ms, Some(10.0));
+                assert_eq!(outcome.settled_at_ms, None);
+                assert_eq!(driver.next_ready_time_ms(), Some(10.0));
+                let second = driver.pop_ready(10.0, 1).pop().unwrap();
+                assert_eq!(second.authored_request_id.as_deref(), Some("b"));
+                assert_eq!(second.dispatched_at_ms, 10.0);
+                driver.on_complete(second.request_uuid, 12.0).unwrap();
+                assert!(!driver.is_drained(), "play-a still owns server cleanup");
+                let failed = status != ReplayTerminalStatus::Completed;
+                let mut expected_outcomes = vec![
+                    AgenticPlayOutcome {
+                        play_id: "play-a".into(),
+                        status: AgenticPlayStatus::Incomplete,
+                        causal_terminal_ms: Some(10.0),
+                        settled_at_ms: None,
+                        failure_request_id: failed.then(|| "a".into()),
+                        failure_status: failed.then_some(status),
+                    },
+                    AgenticPlayOutcome {
+                        play_id: "play-b".into(),
+                        status: AgenticPlayStatus::Completed,
+                        causal_terminal_ms: Some(12.0),
+                        settled_at_ms: Some(12.0),
+                        failure_request_id: None,
+                        failure_status: None,
+                    },
+                ];
+                assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
+
+                driver
+                    .on_quiescent(first.request_uuid, cleanup_at_ms)
+                    .unwrap();
+                assert!(driver.is_drained());
+                expected_outcomes[0].status = if failed {
+                    AgenticPlayStatus::Failed
+                } else {
+                    AgenticPlayStatus::Completed
+                };
+                expected_outcomes[0].settled_at_ms = Some(cleanup_at_ms);
+                assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
+                let transcript = driver.agentic_lifecycle_transcript().unwrap();
+                let settlements = transcript
+                    .events
+                    .iter()
+                    .filter(|event| event.event == AgenticLifecycleEventKind::PlayQuiescent)
+                    .map(|event| (event.play_id.as_str(), event.at_ms))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    settlements,
+                    vec![("play-b", 12.0), ("play-a", cleanup_at_ms)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn late_quiescence_cannot_release_a_lane_owned_by_the_next_play() {
         let trace = agentic_trace(vec![
             agentic_node("a", "play-a", 0.0, Vec::new()),
             agentic_node("b", "play-b", 0.0, Vec::new()),
+            agentic_node("c", "play-c", 0.0, Vec::new()),
         ]);
         let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
-
-        let first = driver.pop_ready(0.0, usize::MAX);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].authored_request_id.as_deref(), Some("a"));
+        let first = driver.pop_ready(0.0, 1).pop().unwrap();
         driver
-            .on_causal_terminal(first[0].request_uuid, 10.0, ReplayTerminalStatus::Completed)
+            .on_causal_terminal(first.request_uuid, 10.0, ReplayTerminalStatus::Completed)
             .unwrap();
-        assert!(driver.pop_ready(20.0, usize::MAX).is_empty());
+        let second = driver.pop_ready(10.0, 1).pop().unwrap();
 
-        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
-        let second = driver.pop_ready(20.0, usize::MAX);
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].authored_request_id.as_deref(), Some("b"));
-        assert_eq!(second[0].dispatched_at_ms, 20.0);
+        driver.on_quiescent(first.request_uuid, 20.0).unwrap();
+        assert!(driver.pop_ready(20.0, usize::MAX).is_empty());
+        driver
+            .on_causal_terminal(second.request_uuid, 30.0, ReplayTerminalStatus::Completed)
+            .unwrap();
+        let third = driver.pop_ready(30.0, 1).pop().unwrap();
+        assert_eq!(third.authored_request_id.as_deref(), Some("c"));
+        driver.on_complete(third.request_uuid, 31.0).unwrap();
+        assert!(!driver.is_drained());
+        driver.on_quiescent(second.request_uuid, 35.0).unwrap();
+        assert!(driver.is_drained());
+    }
+
+    #[test]
+    fn agentic_lane_waits_for_background_terminals_even_after_root_failure() {
+        for status in [
+            ReplayTerminalStatus::Completed,
+            ReplayTerminalStatus::Rejected,
+            ReplayTerminalStatus::Canceled,
+            ReplayTerminalStatus::Failed,
+        ] {
+            let trace = agentic_trace(vec![
+                agentic_node("root", "play-a", 0.0, Vec::new()),
+                agentic_node(
+                    "background",
+                    "play-a",
+                    0.0,
+                    vec![dependency(
+                        "root",
+                        AgenticDependencyTrigger::Dispatch,
+                        0.0,
+                        AgenticDependencyRelation::Spawn,
+                    )],
+                ),
+                agentic_node("next", "play-b", 0.0, Vec::new()),
+            ]);
+            let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+            let ready = driver.pop_ready(0.0, usize::MAX);
+            assert_eq!(ready.len(), 2);
+            driver
+                .on_terminal(ready[0].request_uuid, 10.0, status)
+                .unwrap();
+            assert!(driver.pop_ready(10.0, usize::MAX).is_empty());
+            let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+            assert_eq!(outcome.status, AgenticPlayStatus::Incomplete);
+            assert_eq!(outcome.causal_terminal_ms, Some(10.0));
+            assert_eq!(outcome.settled_at_ms, None);
+
+            driver
+                .on_causal_terminal(ready[1].request_uuid, 15.0, ReplayTerminalStatus::Completed)
+                .unwrap();
+            let next = driver.pop_ready(15.0, 1).pop().unwrap();
+            assert_eq!(next.authored_request_id.as_deref(), Some("next"));
+            assert_eq!(next.dispatched_at_ms, 15.0);
+            driver.on_complete(next.request_uuid, 16.0).unwrap();
+            assert!(!driver.is_drained());
+            let failed = status != ReplayTerminalStatus::Completed;
+            // A failed play retains its primary failure at 10 ms, even though
+            // its background request holds the client lane until 15 ms.
+            let mut expected_outcomes = vec![
+                AgenticPlayOutcome {
+                    play_id: "play-a".into(),
+                    status: AgenticPlayStatus::Incomplete,
+                    causal_terminal_ms: Some(if failed { 10.0 } else { 15.0 }),
+                    settled_at_ms: None,
+                    failure_request_id: failed.then(|| "root".into()),
+                    failure_status: failed.then_some(status),
+                },
+                AgenticPlayOutcome {
+                    play_id: "play-b".into(),
+                    status: AgenticPlayStatus::Completed,
+                    causal_terminal_ms: Some(16.0),
+                    settled_at_ms: Some(16.0),
+                    failure_request_id: None,
+                    failure_status: None,
+                },
+            ];
+            assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
+            driver.on_quiescent(ready[1].request_uuid, 20.0).unwrap();
+            assert!(driver.is_drained());
+            expected_outcomes[0].status = if failed {
+                AgenticPlayStatus::Failed
+            } else {
+                AgenticPlayStatus::Completed
+            };
+            expected_outcomes[0].settled_at_ms = Some(20.0);
+            assert_eq!(driver.agentic_play_outcomes().unwrap(), expected_outcomes);
+        }
+    }
+
+    #[test]
+    fn agentic_lane_waits_for_delayed_authored_requests() {
+        let trace = agentic_trace(vec![
+            agentic_node("root", "play-a", 0.0, Vec::new()),
+            agentic_node(
+                "delayed",
+                "play-a",
+                0.0,
+                vec![dependency(
+                    "root",
+                    AgenticDependencyTrigger::Completion,
+                    5.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+            agentic_node("next", "play-b", 0.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+        let root = driver.pop_ready(0.0, 1).pop().unwrap();
+        driver.on_complete(root.request_uuid, 10.0).unwrap();
+        assert!(driver.pop_ready(14.0, usize::MAX).is_empty());
+        let delayed = driver.pop_ready(15.0, usize::MAX);
+        assert_eq!(delayed.len(), 1);
+        assert_eq!(delayed[0].authored_request_id.as_deref(), Some("delayed"));
+        driver.on_complete(delayed[0].request_uuid, 20.0).unwrap();
+        let next = driver.pop_ready(20.0, 1).pop().unwrap();
+        assert_eq!(next.authored_request_id.as_deref(), Some("next"));
+        driver.on_complete(next.request_uuid, 21.0).unwrap();
+        assert!(driver.is_drained());
     }
 
     #[test]
@@ -2365,21 +3589,21 @@ mod tests {
         driver
             .on_causal_terminal(first[0].request_uuid, 10.0, ReplayTerminalStatus::Completed)
             .unwrap();
-        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
-
-        let second_root = driver.pop_ready(20.0, usize::MAX);
+        let second_root = driver.pop_ready(10.0, usize::MAX);
         assert_eq!(second_root.len(), 1);
         assert_eq!(
             second_root[0].authored_request_id.as_deref(),
             Some("second-root")
         );
-        assert!(driver.pop_ready(24.9, usize::MAX).is_empty());
-        let second_child = driver.pop_ready(25.0, usize::MAX);
+        assert_eq!(second_root[0].scheduled_ready_at_ms, 10.0);
+        assert!(driver.pop_ready(14.9, usize::MAX).is_empty());
+        let second_child = driver.pop_ready(15.0, usize::MAX);
         assert_eq!(second_child.len(), 1);
         assert_eq!(
             second_child[0].authored_request_id.as_deref(),
             Some("second-child")
         );
+        driver.on_quiescent(first[0].request_uuid, 20.0).unwrap();
     }
 
     #[test]

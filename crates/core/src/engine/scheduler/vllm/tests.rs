@@ -5,6 +5,8 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, MockEngineArgs, OutputSignal, PreemptionMode,
 };
@@ -44,6 +46,134 @@ fn prefix_cache_args() -> MockEngineArgs {
         .speedup_ratio(0.0)
         .build()
         .unwrap()
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_committed_chunk_but_keeps_queued_demand(#[case] engine_type: EngineType) {
+    let args = MockEngineArgs::builder()
+        .engine_type(engine_type)
+        .block_size(4)
+        .num_gpu_blocks(16)
+        .max_num_batched_tokens(Some(4))
+        .max_num_seqs(Some(1))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(true)
+        .speedup_ratio(0.0)
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let first = Uuid::from_u128(81_001);
+    let queued = Uuid::from_u128(81_002);
+    let first_tokens: Vec<_> = (0..8).collect();
+    let queued_tokens: Vec<_> = (100..108).collect();
+    let first_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&first_tokens, 4));
+    let queued_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&queued_tokens, 4));
+    let oracle = BeladyOracle::new(vec![
+        (first, first_hashes.clone()),
+        (queued, queued_hashes.clone()),
+    ])
+    .unwrap();
+    core.set_belady_oracle(oracle.clone());
+    for (uuid, tokens) in [(first, first_tokens), (queued, queued_tokens)] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 1_000.0);
+    assert_eq!(core.state.requests[&first].num_computed_tokens, 4);
+    for &hash in &first_hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
+    assert_eq!(oracle.next_use(queued_hashes[0]), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: queued })
+        .unwrap();
+    assert_eq!(oracle.next_use(queued_hashes[0]), usize::MAX);
+
+    if engine_type == EngineType::Vllm {
+        assert!(core.policy_preempt(1_000.0).is_some());
+        assert_eq!(core.state.requests[&first].num_preemptions, 1);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+        core.execute_pass(&mut collector, 1_000.0);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_full_hit_zero_output_requests(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    let mut core = VllmCore::new(args);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(81_003);
+    let second = Uuid::from_u128(81_004);
+    let oracle =
+        BeladyOracle::new(vec![(first, hashes.clone()), (second, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    for (uuid, expected_next) in [(first, 1), (second, usize::MAX)] {
+        core.receive(DirectRequest {
+            tokens: tokens.clone(),
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert!(
+            pass.output_signals
+                .iter()
+                .any(|signal| signal.uuid == uuid && signal.completed)
+        );
+        if uuid == second {
+            assert_eq!(pass.admissions[0].reused_input_tokens, tokens.len());
+        }
+        for &hash in &hashes {
+            assert_eq!(oracle.next_use(hash), expected_next);
+        }
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_terminal_rejection_without_computing_prompt(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.num_gpu_blocks = 1;
+    let mut core = VllmCore::new(args);
+    let uuid = Uuid::from_u128(81_005);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    core.receive(DirectRequest {
+        tokens,
+        max_output_tokens: 0,
+        uuid: Some(uuid),
+        ..Default::default()
+    });
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == uuid && signal.rejected)
+    );
+    assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
 }
 
 #[rstest]

@@ -14,9 +14,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp, pop_ready_scaling_tick,
-    pop_ready_telemetry_tick, pop_ready_worker_completions, pop_ready_worker_ready,
-    push_scaling_tick, push_telemetry_tick, push_worker_completions, push_worker_ready,
+    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
+    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
+    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
+    push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -99,6 +100,8 @@ where
     /// Set between the halves of that delta cycle: the next step commits the
     /// admissions and worker drives the previous step deferred.
     drive_pending: bool,
+    drive_started: bool,
+    drive_finalized: bool,
 }
 
 impl<PlacementPolicyImpl, Observation, Metadata>
@@ -161,6 +164,8 @@ where
             step_freed_slot: false,
             defer_drive: false,
             drive_pending: false,
+            drive_started: false,
+            drive_finalized: false,
         })
     }
 
@@ -479,7 +484,7 @@ where
     /// Consume one output signal, updating router state, collector state, and completion counts.
     fn process_output_signal(&mut self, signal: OutputSignal) -> anyhow::Result<()> {
         if let Some(token_id) = signal.token_id {
-            CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
+            self.admission.defer_output_token(signal.uuid, token_id)?;
             self.collector.on_token(signal.uuid, self.now_ms);
             if self.defer_drive {
                 self.step_tokens.push((signal.uuid, token_id));
@@ -521,12 +526,8 @@ where
                     latencies,
                 );
             }
-            CoreAdmissionSource::on_terminal(
-                &mut self.admission,
-                signal.uuid,
-                self.now_ms,
-                status,
-            )?;
+            self.admission
+                .defer_terminal(signal.uuid, self.now_ms, status)?;
             self.progress.inc_completed();
             self.dispatch_placements(placements)?;
             return Ok(());
@@ -599,6 +600,10 @@ where
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> anyhow::Result<()> {
         debug_assert_eq!(payload.stage, SimulationWorkerStage::Aggregated);
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         if let Some(sink) = &self.artifact_sink {
             sink.record_pass_completion_kv_events(
                 payload.pass_started_at_ms,
@@ -840,6 +845,7 @@ where
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
             changed |= self.apply_worker_ready_events()?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.release_ready_arrivals()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
@@ -1290,11 +1296,10 @@ where
         );
     }
 
-    /// Run the aggregated offline replay until all arrivals and worker work are exhausted.
-    /// If `max_sim_time_ms` is set, exits gracefully when the next scheduled
-    /// timestamp would exceed that cap; in-flight requests at that point are
-    /// reported as incomplete.
-    pub(crate) fn run(mut self) -> anyhow::Result<(TraceCollector, AggRuntimeStats)> {
+    fn ensure_drive_started(&mut self) -> anyhow::Result<bool> {
+        if self.drive_started {
+            return Ok(false);
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1302,11 +1307,35 @@ where
         }
         self.drain_current_timestamp()?;
         self.seed_first_telemetry_tick()?;
-        // With a planner attached, seed the recurring heartbeat; ticks then fire as
-        // events inside drain_current_timestamp.
         self.seed_first_scaling_tick()?;
+        // Keep the baseline before the first scaling decision, but settle any
+        // tick seeded at this instant before exposing a settled step boundary.
+        if !self.is_done()
+            && self
+                .events
+                .peek()
+                .is_some_and(|event| event.at_ms <= self.now_ms)
+        {
+            self.drain_current_timestamp()?;
+        }
+        self.drive_started = true;
+        Ok(true)
+    }
 
-        while !self.is_done() {
+    /// Advance to the next fully settled semantic timestamp without rebuilding
+    /// engine, router, placement, or KV state.
+    pub(crate) fn step(&mut self) -> anyhow::Result<ReplayStepOutcome> {
+        let just_started = self.ensure_drive_started()?;
+        if self.is_done() {
+            return Ok(ReplayStepOutcome::Complete);
+        }
+        if just_started {
+            return Ok(ReplayStepOutcome::Settled {
+                now_ms: self.now_ms,
+            });
+        }
+
+        loop {
             let (next_timestamp_ms, canonical_timestamp_ms) = self.next_timestamps();
             let Some(canonical_timestamp_ms) = canonical_timestamp_ms else {
                 // Aggregated workers have no external handoff dependency. If
@@ -1328,7 +1357,9 @@ where
             if let Some(cap_ms) = self.max_sim_time_ms
                 && canonical_timestamp_ms > cap_ms
             {
-                break;
+                return Ok(ReplayStepOutcome::TimeLimitReached {
+                    now_ms: self.now_ms,
+                });
             }
             let next_timestamp_ms = next_timestamp_ms
                 .expect("canonical replay activity must have a next scheduled timestamp");
@@ -1338,9 +1369,31 @@ where
             }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
+            return Ok(if self.is_done() {
+                ReplayStepOutcome::Complete
+            } else {
+                ReplayStepOutcome::Settled {
+                    now_ms: self.now_ms,
+                }
+            });
         }
+    }
 
-        self.publish_final_telemetry_sample()?;
+    fn run_to_completion(&mut self) -> anyhow::Result<()> {
+        while let ReplayStepOutcome::Settled { .. } = self.step()? {}
+        if !self.drive_finalized {
+            self.publish_final_telemetry_sample()?;
+            self.drive_finalized = true;
+        }
+        Ok(())
+    }
+
+    /// Run the aggregated offline replay until all arrivals and worker work are exhausted.
+    /// If `max_sim_time_ms` is set, exits gracefully when the next scheduled
+    /// timestamp would exceed that cap; in-flight requests at that point are
+    /// reported as incomplete.
+    pub(crate) fn run(mut self) -> anyhow::Result<(TraceCollector, AggRuntimeStats)> {
+        self.run_to_completion()?;
 
         self.progress.finish();
         if let Some(snapshot) = self.admission.agentic_trajectory_snapshot() {
@@ -1350,6 +1403,12 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
+            self.collector.set_agentic_lifecycle(transcript);
+        }
+        if let Some(outcomes) = self.admission.agentic_play_outcomes() {
+            self.collector.set_agentic_play_outcomes(outcomes);
+        }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))
     }

@@ -106,7 +106,7 @@ a time. Native database loading and hot-path queries release the Python GIL,
 but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
-Nightly CI calls the reusable FPE workflow after confirming that `main` has
+Main branch nightly CI calls the reusable FPE workflow after confirming that `main` has
 changed and building its release artifacts. All FPE shards install the exact
 amd64 nightly wheel, verified against the artifact checksums, source commit,
 and one recorded wheel hash. A manual run requires the full `expected_sha` and
@@ -114,8 +114,9 @@ builds one shared wheel. Neither path rebuilds the native runtime in every
 shard.
 
 The workflow discovers one shard per curated system/backend pair and runs at
-most eight shards concurrently on the repository-specific CPU runner set. Each
-shard runs only `forward_model=op_level` with an eight-thread local pool. A
+most 20 shards concurrently on the repository-specific AMD64 CPU runner set.
+Other CI runs share this pool, so runner availability can reduce concurrency.
+Each shard runs only `forward_model=op_level` with an eight-thread local pool. A
 final job validates reports before combining them into the split web CSV
 artifact. Qualification requires every discovered shard, exact source and wheel
 identity, consistent package version and workload, complete role-appropriate
@@ -137,15 +138,12 @@ count, plus the source SHA from the measured run.
 
 ## Website publication
 
-GitHub Pages rebuilds after a successful main-branch FPE or Nightly run and on
-public-documentation changes. Every deployment selects the retained qualified
-FPE artifact with the newest tested source commit in the current main history.
-Manual runs can test an `expected_sha` that differs from the workflow event SHA;
-Pages uses the qualification manifest's tested SHA and verifies that every CSV
-row agrees. Re-running an older commit cannot displace a newer qualified snapshot.
-The newest artifact ID wins when several artifacts qualify the same source.
-The page shows the snapshot's source SHA, artifact creation time, and producing
-CI run.
+GitHub Pages rebuilds after a successful FPE Support Matrix, Main branch nightly CI,
+or Release branch nightly CI run and on public-documentation changes. For main, every
+deployment selects the retained qualified FPE artifact with the newest tested
+source commit in the current main history.
+Re-running an older commit cannot displace a newer qualified snapshot. The page
+shows the snapshot's source SHA, artifact creation time, and producing CI run.
 
 Pages checks the producing workflow, successful main-branch run, qualification
 manifest, row source identities, and complete shard count. It copies only the
@@ -157,21 +155,8 @@ rerun **GitHub Pages** if needed. Web artifacts are retained for 90 days, subjec
 to the repository's retention policy. Artifacts generated before the qualification
 manifest was introduced cannot be published by this path.
 
-A partial Nightly retry can retain the FPE artifact from an earlier attempt.
-If the newest qualified snapshot belongs to a retried run whose latest attempt
-has not completed successfully, Pages stops deployment and preserves the current
-website. Retrying an older tested source does not block a newer qualified snapshot.
-Initially failed or unfinished runs remain ineligible.
-
-An expired artifact does not reveal which source it tested. Pages stops if an
-otherwise eligible artifact has expired or is malformed, unless a validated
-snapshot at current main HEAD with a higher artifact ID already proves that
-remaining older artifacts cannot win. Consequently, an expired historical run
-can block publication when the available qualified snapshot is older than main
-HEAD. Refresh FPE at the current main SHA to restore publication.
-
 Staging waits for the complete matrix. Each shard has a 480-minute timeout;
-the eight-shard concurrency limit and runner queues can make the total wait
+the 20-shard concurrency limit and runner queues can make the total wait
 longer than that per-shard limit. A successful wheel build alone does not make
 the nightly available. No release-latency percentile is promised until complete
 runs have been measured with this gate enabled.
@@ -181,3 +166,108 @@ The final platform-wheel check invokes the package verifier with
 repository generator and Git checkout; its subprocess runs from an unrelated
 temporary directory against the installed wheel. The reduced Docker build
 context runs the package/runtime verifier without the repository-only FPE flag.
+
+
+## Main and release branches
+
+The published matrix's **Branch** selector defaults to `main` and lists the
+repository's `release/*` branches. Share a selection using
+`?branch=release%2F0.12.0`; the model search (`q`) is preserved when switching.
+Each selection loads a separate packaged dataset with its own tested source
+SHA, timestamp, and evidence link. Release results never fall back to main's data.
+
+Pages discovers release branches from the fetched `origin` refs. For each
+branch, it selects the newest retained qualified artifact with a source SHA in
+that branch's history. Eligible producers are successful runs of
+`fpe-support-matrix.yml` or `nightly-ci.yml` on the selected branch, or the
+main-hosted release workflow described below with explicit release and tooling
+provenance. An old-commit rerun cannot displace a newer tested commit.
+A release without retained qualification is labeled **unavailable**; an
+expired release artifact also removes its data from the next deployment.
+The page shows a **Results not available yet** notice with a **Check again**
+button and a link to the release nightly runs. Coverage appears after a
+successful qualified nightly run and Pages deployment.
+Malformed qualification fails the deployment. Main still requires a retained
+qualified snapshot before the site can deploy.
+
+**Release branch nightly CI** runs daily at 09:23 UTC from trusted `main`, and can
+also be dispatched on `main`. It discovers every fetched `release/<version>`
+branch and records its current commit SHA before building. New branches such as
+`release/0.13.0` join the next run automatically, without a workflow edit or
+backport. Versions may contain letters, digits, dots, underscores, and hyphens,
+starting with a letter or digit. An empty inventory skips qualification.
+
+The scheduler calls the same reusable qualification workflow for each release,
+one release at a time. It builds one wheel from each unmodified checkout and uses
+the release's locked dependencies, curated model inventory, SDK, estimator,
+model definitions, and performance tables. Up to 20 system/backend shards run
+concurrently with eight probe threads each; the runner pool is shared with
+other CI. The serial release matrix keeps this limit at 20 across the release
+nightly run. A failed release does not cancel the remaining releases, but
+publication requires the entire nightly run to succeed. Every scheduled run
+refreshes the evidence, even if the release SHA is unchanged, so retained
+artifacts do not silently expire.
+
+The probe harness and required-probe manifest come from the workflow's exact
+`main` commit. CI records that tooling SHA separately from the tested release
+SHA and wheel digest. Before discovery or probing, it verifies the installed
+package bytes and import locations against the shared wheel. The release branch
+does not need a workflow backport. This job produces qualification evidence;
+it does not stage or publish release packages.
+
+After a release's shards and required probes pass, CI uploads its own
+`fpe-support-matrix-web-release-<version>` artifact for 90 days. Wheels and raw
+reports also have version-specific names, so releases in one run cannot mix
+data. A successful nightly run triggers Pages. The publisher verifies the
+trusted producing workflow, its main-history tooling commit, the artifact's release identity,
+and the tested source's membership in release history. It ranks snapshots by
+tested source history, then artifact ID, while preserving the existing failed
+rerun and expired-artifact protections. An older-source rerun cannot replace a
+newer tested source.
+
+Release results come only from GitHub Actions artifacts. No manual ZIP,
+committed-result fallback, or main-data fallback is used. Until the first
+qualified release run succeeds, the release selector shows **unavailable**.
+The page links to the CI run and shows both tested source and probe tooling.
+
+To reproduce a release result, check out the recorded tooling commit at the
+workspace root and the recorded release source under `release-source/`.
+Download the run's `fpe-release-wheel-<version>` artifact into the workspace (preserving
+its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
+release's locked environment and exact wheel as in the workflow. The matrix's
+per-cell command uses `release-source/python/aisimulate/.venv/bin/python`
+directly to run the verified release wrapper with the recorded source, tooling,
+and branch. Each invocation requires a fresh `release-probe-harness/` directory;
+remove only that generated directory between reproductions. Raw shard reports
+and the wheel are retained for seven
+days; the smaller qualified web dataset is retained for 90 days.
+
+The deployed `data/fpe-support-matrix/branches.json` catalog lists available
+and unavailable branches. Main retains the existing data path, and release
+data lives under `data/fpe-support-matrix/branches/release/<version>/`.
+Repository previews package main's committed snapshot only and require no
+GitHub credentials or artifact downloads.
+
+
+## Legacy AIC snapshot provenance
+
+The Legacy AIC Support Matrix displays a **Historical snapshot** and
+**Qualification not recorded**. Its **Latest data change** timestamp is the
+commit time of the most recent change to its index or an indexed CSV, with a
+link to that data commit. It is not the website build time or evidence of a
+complete matrix rerun. No full-matrix generation time or qualification report
+was recorded for the retained legacy data.
+
+The Pages builder adds this provenance to the packaged
+`data/support-matrix/index.json`. Website-only changes do not refresh the data
+date. A build with modified/untracked data, a shallow Git history, or no Git
+history leaves the date unavailable. Direct source-tree previews also show the
+missing-date state because the committed legacy index contains no provenance.
+
+To reproduce the browser checks, install Chromium with
+`uv run --python 3.12 --with playwright playwright install chromium`, then run
+`uv run --python 3.12 --with playwright python scripts/check_legacy_support_matrix_browser.py`.
+The script builds a temporary site and verifies real data, commit links, missing
+and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
+Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
+`--screenshot /path/to/preview.png` to capture the real page before test fixtures.

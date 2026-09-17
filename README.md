@@ -40,8 +40,8 @@ aisimulate --help
 
 ### With Dynamo
 
-Install AISimulate with Dynamo to enable the `dynamo` runner plus Dynamo-owned
-Router and Planner configuration adapters:
+Install compatible AISimulate and Dynamo releases to enable the `dynamo`
+runner and Dynamo-owned configuration adapters:
 
 ```bash
 python3 -m pip install aisimulate ai-dynamo
@@ -51,6 +51,34 @@ aisimulate predict --help
 AISimulate remains the CLI owner in both profiles. Select the integration at
 runtime with `--stack dynamo`; installing Dynamo does not add another
 simulation command.
+
+**Planner needs additional dependencies.** The two-package installation above
+supports basic Dynamo prediction, but does not install the complete Planner
+environment. Before using a top-level `planner` section, install Dynamo's
+`container/deps/requirements.planner.txt` from the same release tag or commit
+as your Dynamo wheels. For example, after installing the Dynamo 1.5.0 RC9
+artifacts and their compatible AISimulate wheel:
+
+```bash
+# Example for Dynamo 1.5.0 RC9; change this to your installed build's revision.
+DYNAMO_REF=ffd7c1a90eb403c0d43911690c5c9b8457acd826
+python3 -m pip install "grpcio-tools<=1.76.0" -r \
+  "https://raw.githubusercontent.com/ai-dynamo/dynamo/${DYNAMO_REF}/container/deps/requirements.planner.txt"
+python3 -m pip check
+```
+
+The `grpcio-tools` cap matches RC9's
+[common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
+It keeps the tooling compatible with Planner's `protobuf==6.33.6` pin.
+When selecting another Dynamo revision, check its common requirements and
+update this cap together with `DYNAMO_REF`.
+
+For release candidates, use the exact release artifacts; a package version
+alone may not identify the RC build. Alternatively, use the matching
+`dynamo-planner` image, which includes the Planner prerequisites. See the
+[Planner installation example](docs/cli/examples/dynamo-planner/README.md)
+for a complete CPU-only prediction that loads Planner. `predict --help`
+does not verify that optional adapters can load.
 
 ### Upgrade from standalone AIConfigurator
 
@@ -225,6 +253,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
+- [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
 - [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)

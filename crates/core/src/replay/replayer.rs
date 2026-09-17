@@ -9,6 +9,8 @@ use std::time::Instant;
 use anyhow::Result as AnyResult;
 use uuid::Uuid;
 
+use crate::engine::KvEvictionPolicy;
+use crate::engine::belady::{BeladyOracle, input_sequence_hashes};
 use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::artifact::{
@@ -368,7 +370,7 @@ impl<C: ReplayComposition> Replayer<C> {
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
         validate_request_dp_ranks(&self.spec, &engine_config)?;
-        let runtime_input = match self.runtime_input.take() {
+        let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
                 input
@@ -387,16 +389,36 @@ impl<C: ReplayComposition> Replayer<C> {
             .composition
             .take_scaling_policy()
             .map_err(|error| ReplayError::Scaling(format!("{error:#}")))?;
+        let belady_oracle = if engine_config.kv_eviction_policy == KvEvictionPolicy::Belady {
+            if self.spec.max_in_flight.is_some()
+                || self.spec.adapters.scaling.provider != "none"
+                || scaling.is_some()
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "belady requires fixed workers and open-loop traffic without max_in_flight or scaling"
+                        .into(),
+                ));
+            }
+            Some(prepare_belady_oracle(
+                &mut runtime_input,
+                engine_config.rank.block_size,
+            )?)
+        } else {
+            None
+        };
         let telemetry = self.telemetry.take();
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
-                let role_factory = self.factory.role_factory(
+                let mut role_factory = self.factory.role_factory(
                     &engine_config,
                     WorkerStage::Aggregated,
                     C::Observation::capture_engine_kv_events(WorkerStage::Aggregated)
                         || artifact_sink.is_some(),
                 )?;
+                if let Some(oracle) = belady_oracle {
+                    role_factory = role_factory.with_belady_oracle(oracle);
+                }
                 let startup_time_ms = positive_delay(workers.startup_delay_ms);
                 if artifact_sink.is_some()
                     && (workers.initial_workers != 1
@@ -518,9 +540,72 @@ impl<C: ReplayComposition> Replayer<C> {
             }
         };
 
-        Ok(finish_report(collector, self.spec.sla)
-            .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0))
+        let mut report = finish_report(collector, self.spec.sla)
+            .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0);
+        report.kv_eviction_policy = engine_config.kv_eviction_policy;
+        report.kv_eviction_assumption = (engine_config.kv_eviction_policy
+            == KvEvictionPolicy::Belady)
+            .then_some("global_input_trace_order_v1");
+        Ok(report)
     }
+}
+
+fn prepare_belady_oracle(
+    input: &mut ReplayRuntimeInput,
+    engine_block_size: usize,
+) -> ReplayResult<BeladyOracle> {
+    let block_size = u32::try_from(engine_block_size)
+        .ok()
+        .filter(|size| *size > 0)
+        .ok_or_else(|| {
+            ReplayError::InvalidSpec("belady requires a positive u32 block size".into())
+        })?;
+    // This external, noncausal forecast only ranks native eviction candidates.
+    // It never populates KV, changes arrivals, or predicts future routing. Demand
+    // means input occurrences, not actual chunk/recomputation/output accesses;
+    // refining it from simulated execution would change the deliberate contract.
+    let requests = match input {
+        ReplayRuntimeInput::Requests(requests) => {
+            let mut previous_arrival = 0.0;
+            let mut forecast = Vec::with_capacity(requests.len());
+            for request in requests {
+                if !request.prompt_tokens_are_placement_safe() {
+                    return Err(ReplayError::InvalidSpec(
+                        "belady requires materialized input tokens or trace block hashes; length-only prompts are unsupported"
+                            .into(),
+                    ));
+                }
+                let arrival = request.arrival_timestamp_ms.ok_or_else(|| {
+                    ReplayError::InvalidSpec("belady requires fixed request arrival times".into())
+                })?;
+                if !arrival.is_finite() || arrival < previous_arrival {
+                    return Err(ReplayError::InvalidSpec(
+                        "belady runtime requests must have finite, nonnegative arrival times in queue order"
+                            .into(),
+                    ));
+                }
+                previous_arrival = arrival;
+                let request_id = *request.uuid.get_or_insert_with(Uuid::new_v4);
+                forecast.push((
+                    request_id,
+                    input_sequence_hashes(&request.tokens, block_size as usize),
+                ));
+            }
+            forecast
+        }
+        ReplayRuntimeInput::Workload(driver) => {
+            driver
+                .prepare_belady_requests(engine_block_size)
+                .map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))?
+        }
+        ReplayRuntimeInput::GeneratedRequests(_) => {
+            return Err(ReplayError::InvalidSpec(
+                "belady requires a complete open-loop input trace; generated requests are unsupported"
+                    .into(),
+            ));
+        }
+    };
+    BeladyOracle::new(requests).map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))
 }
 
 fn validate_request_dp_ranks(
@@ -642,6 +727,7 @@ fn lower_requests(
                     turn_index: request.turn_index,
                     metadata: request.metadata.clone(),
                     prompt_token_source,
+                    agentic: None,
                 }),
             })
         })
@@ -691,6 +777,66 @@ mod tests {
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
+
+    #[test]
+    fn belady_native_forecast_preserves_queue_identity_and_rejects_unordered_arrivals() {
+        let first_id = Uuid::from_u128(91);
+        let mut input = ReplayRuntimeInput::Requests(VecDeque::from([
+            DirectRequest {
+                tokens: vec![11, 12, 13, 14],
+                uuid: Some(first_id),
+                arrival_timestamp_ms: Some(1.0),
+                ..Default::default()
+            },
+            DirectRequest {
+                tokens: vec![11, 12, 21, 22],
+                arrival_timestamp_ms: Some(1.0),
+                ..Default::default()
+            },
+        ]));
+        let oracle = prepare_belady_oracle(&mut input, 2).unwrap();
+        let ReplayRuntimeInput::Requests(requests) = &mut input else {
+            unreachable!()
+        };
+        assert_eq!(requests[0].uuid, Some(first_id));
+        assert_eq!(requests[0].arrival_timestamp_ms, Some(1.0));
+        assert_eq!(requests[1].arrival_timestamp_ms, Some(1.0));
+        let second_id = requests[1].uuid.unwrap();
+        let shared_hash = input_sequence_hashes(&requests[0].tokens, 2)[0];
+        assert_eq!(oracle.next_use(shared_hash), 0);
+        oracle.retire_requests([second_id]);
+        assert_eq!(oracle.next_use(shared_hash), 0);
+        oracle.retire_requests([first_id]);
+        assert_eq!(oracle.next_use(shared_hash), usize::MAX);
+
+        requests[1].arrival_timestamp_ms = Some(0.0);
+        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        let ReplayRuntimeInput::Requests(requests) = &input else {
+            unreachable!()
+        };
+        assert_eq!(requests[0].uuid, Some(first_id));
+        assert_eq!(requests[1].uuid, Some(second_id));
+    }
+
+    #[test]
+    fn belady_native_forecast_rejects_duplicate_ids_and_invalid_arrivals() {
+        for arrival in [None, Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut input = ReplayRuntimeInput::Requests(VecDeque::from([DirectRequest {
+                tokens: vec![1, 2],
+                arrival_timestamp_ms: arrival,
+                ..Default::default()
+            }]));
+            assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        }
+        let request = DirectRequest {
+            tokens: vec![1, 2],
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        };
+        let mut input = ReplayRuntimeInput::Requests(VecDeque::from([request.clone(), request]));
+        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+    }
 
     #[test]
     fn replay_spec_lowering_preserves_correlation_routing_and_prompt_provenance() {
