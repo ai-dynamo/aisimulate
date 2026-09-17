@@ -292,6 +292,13 @@ pub trait SteppableReplay {
     /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
     fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)>;
 
+    /// Greatest prefix-cache reuse observed across all scheduler admissions
+    /// for `uuid`. This remains distinct from [`Self::request_admission`],
+    /// whose reuse value is deliberately pinned to the first admission.
+    fn request_reused_input_tokens(&self, _uuid: Uuid) -> Option<usize> {
+        None
+    }
+
     /// Output tokens actually emitted for `uuid`.
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize>;
 
@@ -706,6 +713,10 @@ where
         self.runtime.collector().request_admission(uuid)
     }
 
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.runtime.collector().request_reused_input_tokens(uuid)
+    }
+
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
         self.runtime.collector().actual_output_length(uuid)
     }
@@ -800,6 +811,10 @@ impl SteppableReplay for SteppableEngine {
 
     fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
         self.inner.request_admission(uuid)
+    }
+
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.inner.request_reused_input_tokens(uuid)
     }
 
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
@@ -1074,6 +1089,9 @@ where
     }
     fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
         self.runtime.collector().request_admission(uuid)
+    }
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.runtime.collector().request_reused_input_tokens(uuid)
     }
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
         self.runtime.collector().actual_output_length(uuid)
