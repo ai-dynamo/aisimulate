@@ -203,3 +203,17 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
     assert (seen[0].tp, seen[0].kv_block_size, seen[0].backend_version) == (2, 64, "current")
     resolver.resolve_candidate({**sample, "tp": 4, "backend": "sglang", "agg_block_size": 1})
     assert (seen[-1].tp, seen[-1].kv_block_size, seen[-1].backend_version) == (4, 1, None)
+
+
+def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
+    from aisimulate.sweeper.config import SearchSpace
+
+    common = {"model_name": "m", "hardware_sku": "h200_sxm", "deployment_mode": ["agg"]}
+    with pytest.raises(ValueError, match="estimation_mode"):
+        SearchSpace(**common, estimation_mode="typo")
+    with pytest.raises(ValueError, match="default timing"):
+        SearchSpace(
+            **common, database_mode="HYBRID", agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        )
+    with pytest.raises(ValueError, match="unknown estimator override"):
+        SearchSpace(**common, role_estimator_controls={"agg": {"estimation_mod": "op_level"}})

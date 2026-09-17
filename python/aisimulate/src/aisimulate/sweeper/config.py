@@ -482,11 +482,11 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
-    database_mode: str = "SILICON"
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL", "SOL_FULL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] = Field(default_factory=lambda: ["default"], min_length=1)
-    estimation_mode: str = "auto"
-    fallback_policy: str = "deny"
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
     role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
@@ -687,6 +687,50 @@ class SearchSpace(BaseModel):
             replicas = companion.get("replicas", 1)
             if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
                 raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
+        return self
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_estimator_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("systems_paths")
+    @classmethod
+    def _validate_estimator_roots(cls, value):
+        if any(not path.strip() for path in value):
+            raise ValueError("systems_paths entries must be nonempty")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_estimator_controls(self):
+        allowed = {
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+            "systems_paths",
+            "database_mode",
+            "transfer_policy",
+        }
+        for role, controls in self.role_estimator_controls.items():
+            if role not in {"agg", "prefill", "decode"} or set(controls) - allowed:
+                raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
+        nondefault = (
+            self.database_mode != "SILICON"
+            or self.transfer_policy is not None
+            or self.systems_paths != ["default"]
+            or self.estimation_mode != "auto"
+            or self.fallback_policy != "deny"
+            or bool(self.estimator_config)
+        )
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        if nondefault and (
+            set(self.deployment_mode) & {"afd", "afd+pd"}
+            or self.encoder is not None
+            or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing in every role")
         return self
 
     @model_validator(mode="after")
