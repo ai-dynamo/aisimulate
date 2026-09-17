@@ -33,9 +33,12 @@ preparing.
 ## The barrier
 
 The barrier opens only after every preparation request has succeeded **and**
-its server resources and outstanding native cache offload work have settled. Client completion and server settlement are
-recorded separately. This deliberately requires more than a client terminal
-event and leaves no preparation request in flight at the transition.
+its server resources and outstanding native work have settled. For separate
+prefill/decode (P/D) workers, this includes KV transfers, source holds,
+destination reservations, and handoff cleanup in both pools. Client completion
+and server settlement are recorded separately. This deliberately requires more
+than a client terminal event and leaves no preparation request in flight at the
+transition.
 
 At the transition the runtime retains its engine, router, workers, KV cache,
 and play identities. The saved frontier starts from this instant, preserving
@@ -54,8 +57,9 @@ fixed-duration recycling remain separate follow-up work.
 
 The opt-in control is `traffic.load.agentic_warmup: true`, alongside positive
 `agentic_lanes` and `agentic_snapshot: {seed: ...}`. Omitting the control keeps
-the existing cold snapshot behavior. The initial public qualification covers
-vLLM and SGLang aggregated Engine replay. For example:
+the existing cold snapshot behavior. The built-in Engine runner supports offline
+vLLM and SGLang replay with either aggregated workers or separate prefill/decode
+pools. Both use HBM-only KV cache with speculative decoding disabled. For example:
 
 ```yaml
 traffic:
@@ -67,19 +71,33 @@ traffic:
     agentic_warmup: true
 ```
 
-Offline disaggregation is qualified
-separately by AIC-1895.
+For P/D, use `engine.mode: disaggregated` and configure `engine.workers.prefill`
+and `engine.workers.decode` for the same target model; the traffic configuration
+above is unchanged. Each primer and warmup is one logical request through the
+native P/D handshake, not a separate replay on each pool. Its tokens and typed
+play/conversation/cache identity survive that handshake. The barrier retains
+both pools' caches for the profile suffix. Actual reuse still depends on native
+placement, cache capacity, and eviction; preparing a prefix does not guarantee
+it remains resident on every worker.
+
+Weka, Agentic Mooncake, and agentic Dynamo trace inputs use this same offline
+path. Reading a Dynamo trace does not require the Dynamo integration. Agentic
+TensorRT-LLM, host offload, speculative decoding, and online P/D are rejected;
+the built-in runner does not silently change the requested configuration.
+Dynamo-owned routing and online integration require separate downstream
+qualification.
 
 `agentic_phases` records per-lane completion, request phase/source identity,
 input length, cacheable complete-block tokens (`expected_full_block_tokens`),
 actual first-admission reuse, terminal and settlement times, and barrier state.
 The cacheable token count describes full prompt blocks, not expected admission
-reuse. Both engines recompute the final input token, so same-length admission
-of a nonempty input can reuse at most
-`floor((input_length - 1) / block_size) * block_size` tokens.
-For a 128-token input with 64-token blocks, 128 tokens cover complete blocks
-while at most 64 tokens are reused. Eviction and disabled caching can reduce
-reuse further. Router overlap is not an actual cache-hit measurement.
+reuse. Native admission accounts for reuse according to the backend and block
+size: in the qualification fixture with a resident 128-token input, vLLM with
+64-token blocks reuses 64 tokens and SGLang with its default one-token blocks
+reuses 127. Both leave work for the final input token. P/D reports retain both
+prefill and decode admission records; their first-admission reuse comes from
+prefill. Eviction and disabled caching can reduce reuse further. Router overlap
+and transferred KV are not substitutes for actual admission evidence.
 
 Measured per-request timestamps and `agentic_play_outcomes` terminal/settlement
 times start at the barrier, whose absolute `profile_start_ms` is recorded.
@@ -111,3 +129,11 @@ Qualification must assert exact input tokens, ten requests per lane, one output
 token per request, barrier ordering, timer preservation, failure behavior, and
 actual cache reuse with caching enabled and disabled. It must also retain cold
 snapshot compatibility and deterministic repeated runs.
+
+The initial offline P/D qualification covers the public Rust, Python, and CLI
+paths, request identity through the handoff, and the same preparation/profile
+barrier. Reports remain `functional_only`; these checks do not establish
+prediction accuracy or full AgentX benchmark fidelity. Fixed-duration recycling,
+cutoff behavior, and late events from recycled play instances still need joint
+qualification under AIC-1813, AIC-1896, and AIC-1818. This initial boundary does
+not complete all AIC-1895 acceptance work.

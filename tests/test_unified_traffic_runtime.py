@@ -22,16 +22,18 @@ from aisimulate.sweeper.replay import ReplayOutputRequirements
 _TRACE_FIXTURES = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces"
 
 
-def _engine() -> dict:
+def _engine(mode: str = "aggregated") -> dict:
     return {
+        "mode": mode,
         "model": "example/model",
         "hardware": "h200_sxm",
         "context_length": 1024,
         "workers": {
-            "aggregated": {
+            role: {
                 "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
                 "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
             }
+            for role in (["aggregated"] if mode == "aggregated" else ["prefill", "decode"])
         },
     }
 
@@ -515,9 +517,10 @@ def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_engine_stack_runs_weka_directory_with_one_agentic_lane(backend: str) -> None:
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_engine_stack_runs_weka_directory_with_one_agentic_lane(backend: str, mode: str) -> None:
     corpus = _TRACE_FIXTURES / "weka"
-    engine = {**_engine(), "backend": backend}
+    engine = {**_engine(mode), "backend": backend}
     report = _run(
         {
             "traffic": {
@@ -761,8 +764,9 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
 @pytest.mark.parametrize("backend,expected_warm_reuse", [("vllm", 64), ("sglang", 127)])
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("prefix_caching", [False, True])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
-    tmp_path, backend: str, expected_warm_reuse: int, warmup: bool, prefix_caching: bool
+    tmp_path, backend: str, expected_warm_reuse: int, warmup: bool, prefix_caching: bool, mode: str
 ) -> None:
     # Self-authored trace: every request shares one conversation and prefix.
     path = tmp_path / "snapshot.json"
@@ -789,7 +793,7 @@ def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
         )
     )
     config = {
-        "engine": {**_engine(), "backend": backend},
+        "engine": {**_engine(mode), "backend": backend},
         "traffic": {
             "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
             "load": {
@@ -800,8 +804,9 @@ def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
             },
         },
     }
-    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
-    config["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_caching"] = prefix_caching
+    for worker in config["engine"]["workers"].values():
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
+        worker["kv_cache"]["prefix_caching"] = prefix_caching
     expected_warm_reuse = expected_warm_reuse if prefix_caching else 0
     first = _run(config).metadata["native_report"]
     repeated = _run(config).metadata["native_report"]
@@ -847,6 +852,10 @@ def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
     # Both schedulers recompute the final prompt token. With the default block
     # sizes (vLLM 64, SGLang 1), the shared 128-token prompt reuses 64 or 127.
     assert subsequent["admission_history"][0]["reused_input_tokens"] == expected_warm_reuse
+    if mode == "disaggregated":
+        for record in first["per_request"]:
+            assert {admission["pool"] for admission in record["admission_history"]} == {"prefill", "decode"}
+            assert record["prefill_admit_ms"] <= record["decode_admit_ms"]
     assert all(record["agentic"]["cache_id"] == evidence["cache_id"] for record in first["per_request"])
 
     config["traffic"]["load"]["speedup"] = 2.0
@@ -858,7 +867,8 @@ def test_seeded_agentic_snapshot_preserves_suffix_and_source_time(
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path, backend: str) -> None:
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path, backend: str, mode: str) -> None:
     # Self-authored v2 input keeps its source clock: normalization before
     # sampling would move this cut from [1250, 1750) into [250, 750).
     path = tmp_path / "offset-snapshot.jsonl"
@@ -897,13 +907,14 @@ def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path,
         )
     path.write_text("\n".join(json.dumps(record) for record in [header, *rows]) + "\n")
     config = {
-        "engine": {**_engine(), "backend": backend},
+        "engine": {**_engine(mode), "backend": backend},
         "traffic": {
             "source": {"type": "trace", "format": "agentic_mooncake", "paths": [str(path)], "block_size": 64},
             "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
         },
     }
-    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    for worker in config["engine"]["workers"].values():
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
     evidence = None
     for speedup in [1.0, 2.0]:
         config["traffic"]["load"]["speedup"] = speedup
@@ -930,8 +941,9 @@ def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path,
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_cold_suffix(
-    tmp_path, backend: str
+    tmp_path, backend: str, mode: str
 ) -> None:
     # Self-authored native request-trace events, selected as agentic by context.
     path = tmp_path / "dynamo-agentic-snapshot.jsonl"
@@ -959,13 +971,14 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
     ]
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
     config = {
-        "engine": {**_engine(), "backend": backend},
+        "engine": {**_engine(mode), "backend": backend},
         "traffic": {
             "source": {"type": "trace", "format": "dynamo", "paths": [str(path)], "block_size": 64},
             "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
         },
     }
-    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    for worker in config["engine"]["workers"].values():
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
     evidence = None
     for speedup in [1.0, 2.0]:
         config["traffic"]["load"] = {"type": "trace_timestamps", "agentic_lanes": 1, "speedup": speedup}

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -376,14 +377,21 @@ def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
-    tmp_path: Path, backend: str, warmup: bool
+    tmp_path: Path, backend: str, warmup: bool, mode: str
 ) -> None:
     config_path = _REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["engine"]["backend"] = backend
     config["engine"]["workers"]["aggregated"]["kv_cache"]["block_size"] = 2
     config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 2048
+    config["engine"]["mode"] = mode
+    if mode == "disaggregated":
+        worker = config["engine"]["workers"].pop("aggregated")
+        config["engine"]["workers"] = {role: copy.deepcopy(worker) for role in ("prefill", "decode")}
+    config_path = tmp_path / "predict.yaml"
+    config_path.write_text(yaml.safe_dump(config))
     config["traffic"]["load"]["agentic_snapshot"] = {"seed": 42}
     config["traffic"]["load"]["agentic_warmup"] = warmup
     runner = EngineReplayRunnerFactory().create(0)
@@ -401,12 +409,6 @@ def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
         "engine",
         "--config",
         str(config_path),
-        "--set",
-        f"engine.backend={backend}",
-        "--set",
-        "engine.workers.aggregated.kv_cache.block_size=2",
-        "--set",
-        "engine.workers.aggregated.kv_cache.capacity.blocks=2048",
         "--set",
         "traffic.load.agentic_snapshot.seed=42",
         "--set",
@@ -432,8 +434,12 @@ def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(
     first_request = min(records, key=lambda record: record["first_admit_ms"])
     assert first_request["admission_history"][0]["reused_input_tokens"] == (2 if warmup else 0)
 
-    config["engine"]["workers"]["aggregated"]["parallelism"]["preset"] = False
-    config["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+    for worker in config["engine"]["workers"].values():
+        worker["parallelism"]["preset"] = False
+    config["optimization"] = {
+        "target": "throughput",
+        "constraints": {"max_candidate_gpus": len(config["engine"]["workers"])},
+    }
     config["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 11}
     recommendation_config = tmp_path / "recommend.yaml"
     recommendation_config.write_text(yaml.safe_dump(config))

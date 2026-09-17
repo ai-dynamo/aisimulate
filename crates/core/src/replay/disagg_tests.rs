@@ -2851,3 +2851,607 @@ fn test_concurrency_workload_holds_session_slot_depth_first() {
         vec![64, 192, 128]
     );
 }
+
+mod agentic_pd_qualification {
+    use super::*;
+    use crate::engine::{TimingModel, TimingModelConfig};
+    use crate::replay::loadgen::{
+        AgenticReplayPhase, AgenticSnapshotOptions, PreparedAgenticSnapshots,
+    };
+
+    fn config(backend: EngineType, caching: bool) -> TestDisaggConfig {
+        let mut config = match backend {
+            EngineType::Vllm => disagg_config(),
+            EngineType::Sglang => sglang_disagg_config(),
+            EngineType::Trtllm => unreachable!(),
+        };
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        for args in [&mut config.prefill_args, &mut config.decode_args] {
+            args.speedup_ratio = 1.0;
+            args.decode_speedup_ratio = 1.0;
+            args.enable_prefix_caching = caching;
+            args.max_num_seqs = 1;
+            args.timing_model = TimingModelConfig::Fixed {
+                prefill_ms: 3.0,
+                decode_ms: 2.0,
+            };
+        }
+        config
+    }
+
+    fn graph(with_frontier: bool) -> AgenticTrace {
+        let mut history = agentic_row("history", "play", 128, 1, 64, 10, vec![]);
+        history.recorded_api_time_ms = Some(5.0);
+        let mut future = agentic_row(
+            "future",
+            "play",
+            192,
+            2,
+            64,
+            10,
+            vec![AgenticDependency {
+                request_id: "history".into(),
+                trigger: AgenticDependencyTrigger::Completion,
+                relation: AgenticDependencyRelation::Sequence,
+                delay_ms: 0.0,
+            }],
+        );
+        future.not_before_ms = 100.0;
+        let mut rows = vec![history, future];
+        if with_frontier {
+            let mut child = agentic_row(
+                "child",
+                "play",
+                256,
+                2,
+                64,
+                30,
+                vec![AgenticDependency {
+                    request_id: "future".into(),
+                    trigger: AgenticDependencyTrigger::Dispatch,
+                    relation: AgenticDependencyRelation::Spawn,
+                    delay_ms: 12.0,
+                }],
+            );
+            child.session_id = "background".into();
+            child.not_before_ms = 112.0;
+            let mut join = agentic_row(
+                "join",
+                "play",
+                320,
+                2,
+                64,
+                40,
+                ["future", "child"]
+                    .into_iter()
+                    .map(|id| AgenticDependency {
+                        request_id: id.into(),
+                        trigger: AgenticDependencyTrigger::Completion,
+                        relation: AgenticDependencyRelation::Join,
+                        delay_ms: 8.0,
+                    })
+                    .collect(),
+            );
+            join.not_before_ms = 112.0;
+            rows.extend([child, join]);
+        }
+        agentic_trace(64, rows)
+    }
+
+    fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
+        let prepared = graph
+            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        PreparedAgenticSnapshots::from_plays(
+            (0..lanes)
+                .map(|lane| {
+                    prepared
+                        .context()
+                        .prepare_play(lane, 0, Some(50.0))
+                        .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn runtime(
+        config: &TestDisaggConfig,
+        prepared: PreparedAgenticSnapshots,
+        warmup: bool,
+        speedup: f64,
+        factory: ReplayEngineFactory,
+    ) -> RoundRobinDisaggRuntime {
+        let driver = if warmup {
+            WorkloadDriver::new_agentic_warmup(prepared, 64, true, speedup)
+        } else {
+            WorkloadDriver::new_agentic_snapshots(prepared, 64, true, speedup)
+        }
+        .unwrap();
+        let mut config = config.runtime_config_with_factory(false, factory).unwrap();
+        config.handoff_latency_ms = 5.0;
+        RoundRobinDisaggRuntime::new_round_robin_workload(&config, driver, ReplayMode::Trace)
+            .unwrap()
+            .with_per_request_records(true)
+    }
+
+    fn finish(mut runtime: RoundRobinDisaggRuntime) -> ReplayReport {
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.is_done());
+        assert!(runtime.prefill_engine.is_drained());
+        assert!(runtime.decode_engine.is_drained());
+        assert!(runtime.flow.action_queues.is_empty());
+        assert!(runtime.flow.requests_by_handoff.is_empty());
+        let (collector, _) = runtime.run().unwrap();
+        collector.finish()
+    }
+
+    #[test]
+    fn prepared_identity_cache_and_reports_survive_both_native_handoff_orders() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for caching in [false, true] {
+                let prepared = prepared(graph(false), 2);
+                let expected = prepared
+                    .snapshots()
+                    .iter()
+                    .map(|snapshot| {
+                        snapshot
+                            .requests
+                            .iter()
+                            .find(|r| r.source_request_id == "future")
+                            .unwrap()
+                            .identity
+                            .clone()
+                    })
+                    .collect::<Vec<_>>();
+                assert_ne!(expected[0].play_id, expected[1].play_id);
+                assert_ne!(expected[0].cache_id, expected[1].cache_id);
+                for warmup in [false, true] {
+                    let run = || {
+                        finish(runtime(
+                            &config(backend, caching),
+                            prepared.clone(),
+                            warmup,
+                            1.0,
+                            ReplayEngineFactory::new(),
+                        ))
+                    };
+                    let report = run();
+                    assert_eq!(
+                        serde_json::to_value(&report).unwrap(),
+                        serde_json::to_value(run()).unwrap(),
+                        "same topology and input must reproduce the complete report"
+                    );
+                    assert_eq!(report.request_counts.num_requests, 2);
+                    assert_eq!(report.request_counts.completed_requests, 2);
+                    for identity in &expected {
+                        let record = report
+                            .per_request
+                            .iter()
+                            .find(|r| r.agentic.as_ref() == Some(identity))
+                            .unwrap();
+                        // Equality above covers request, lane, incarnation, root,
+                        // parent, conversation and cache, after native P -> D.
+                        assert!(identity.root_id.is_some());
+                        assert!(identity.lane_id.is_some());
+                        assert_eq!(record.play_id.as_ref(), Some(&identity.play_id));
+                        assert_eq!(record.session_id.as_ref(), Some(&identity.conversation_id));
+                        assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+                        assert_eq!(record.output_length, 2);
+                        assert!(record.prefill_admit_ms.is_some());
+                        assert!(record.destination_activated_ms.is_some());
+                        assert!(record.decode_admit_ms.is_some());
+                        assert!(record.source_released_ms.is_some());
+                        assert_eq!(record.prefill_route_overlap_tokens, Some(0));
+                        assert_eq!(
+                            record.admission_history[0].reused_input_tokens,
+                            if caching && warmup { 128 } else { 0 }
+                        );
+                    }
+                    if warmup {
+                        let phases = report.agentic_phases.as_ref().unwrap();
+                        assert_eq!(phases.requests.len(), 22);
+                        assert_eq!(phases.phase, AgenticReplayPhase::Profile);
+                        let barrier = phases.profile_start_ms.unwrap();
+                        for request in &phases.requests {
+                            assert_eq!(request.observed_output_tokens, 1);
+                            assert_eq!(
+                                request.terminal_status,
+                                Some(ReplayTerminalStatus::Completed)
+                            );
+                            assert!(request.quiescent_at_ms.unwrap() <= barrier);
+                            assert_eq!(
+                                request.first_admission_reused_input_tokens,
+                                Some(if caching && request.phase == AgenticReplayPhase::Warmup {
+                                    64
+                                } else {
+                                    0
+                                })
+                            );
+                        }
+                        assert!(
+                            report
+                                .per_request
+                                .iter()
+                                .all(|r| r.agentic_phase == Some(AgenticReplayPhase::Profile))
+                        );
+                    } else {
+                        assert!(report.agentic_phases.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_retains_snapshot_frontier_and_scaled_spawn_join_timers() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let prepared = prepared(graph(true), 1);
+            let run = |warmup| {
+                finish(runtime(
+                    &config(backend, false),
+                    prepared.clone(),
+                    warmup,
+                    2.0,
+                    ReplayEngineFactory::new(),
+                ))
+            };
+            let cold = run(false);
+            let warm = run(true);
+            assert_eq!(cold.agentic_snapshots, warm.agentic_snapshots);
+            assert_eq!(warm.request_counts.completed_requests, 3);
+            for record in &warm.per_request {
+                let original = cold
+                    .per_request
+                    .iter()
+                    .find(|r| r.agentic == record.agentic)
+                    .unwrap();
+                assert_eq!(record.arrival_time_ms, original.arrival_time_ms);
+                assert_eq!(record.terminal_time_ms, original.terminal_time_ms);
+                assert_eq!(record.output_length, original.output_length);
+                assert_eq!(record.reused_input_tokens, 0);
+            }
+            let by_id = warm
+                .per_request
+                .iter()
+                .map(|r| (r.request_id.as_deref().unwrap(), r))
+                .collect::<std::collections::HashMap<_, _>>();
+            let child_identity = &prepared.snapshots()[0]
+                .requests
+                .iter()
+                .find(|r| r.source_request_id == "child")
+                .unwrap()
+                .identity;
+            assert!(child_identity.parent_id.is_some());
+            assert_eq!(by_id["child"].agentic.as_ref(), Some(child_identity));
+            assert_eq!(by_id["future"].arrival_time_ms, 25.0);
+            assert_eq!(by_id["child"].arrival_time_ms, 31.0);
+            assert_eq!(
+                by_id["join"].arrival_time_ms,
+                by_id["future"]
+                    .terminal_time_ms
+                    .max(by_id["child"].terminal_time_ms)
+                    + 4.0
+            );
+        }
+    }
+
+    #[derive(Default)]
+    struct RoleEvidenceTiming {
+        evidence: Mutex<crate::engine::TimingEvidenceSummary>,
+        cleared: Mutex<Vec<crate::engine::TimingEvidenceSummary>>,
+    }
+
+    impl TimingModel for RoleEvidenceTiming {
+        fn predict_prefill_ms(&self, batch: usize, input: usize, _prefix: usize) -> Result<f64> {
+            let latency = if batch == 0 {
+                0.0
+            } else if input >= 1024 {
+                40.0
+            } else {
+                3.0
+            };
+            self.evidence.lock().unwrap().prefill.try_accumulate(
+                crate::engine::TimingPhaseEvidence::try_from_operations(vec![
+                    crate::engine::TimingOperationEvidence::new(
+                        format!("prefill-{input}"),
+                        latency,
+                        Some(latency * 100.0),
+                        crate::engine::TimingEvidenceSource::Silicon,
+                    )?,
+                ])?,
+            )?;
+            Ok(latency)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _active: usize,
+            _context: usize,
+            _total: usize,
+        ) -> Result<f64> {
+            let latency = if batch == 0 { 0.0 } else { 2.0 };
+            self.evidence.lock().unwrap().decode.try_accumulate(
+                crate::engine::TimingPhaseEvidence::try_from_operations(vec![
+                    crate::engine::TimingOperationEvidence::new(
+                        "decode",
+                        latency,
+                        Some(latency * 200.0),
+                        crate::engine::TimingEvidenceSource::Silicon,
+                    )?,
+                ])?,
+            )?;
+            Ok(latency)
+        }
+
+        fn evidence_summary(&self) -> Option<crate::engine::TimingEvidenceSummary> {
+            Some(self.evidence.lock().unwrap().clone())
+        }
+
+        fn reset_evidence(&self) -> Result<()> {
+            self.cleared
+                .lock()
+                .unwrap()
+                .push(std::mem::take(&mut *self.evidence.lock().unwrap()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn barrier_resets_both_power_roles_and_profile_measurement_windows() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let prepared = prepared(graph(false), 1);
+            let run = |warmup| {
+                let prefill = Arc::new(RoleEvidenceTiming::default());
+                let decode = Arc::new(RoleEvidenceTiming::default());
+                let samples = Arc::new(Mutex::new(Vec::new()));
+                let ticks = Rc::new(RefCell::new(None));
+                let replay = runtime(
+                    &config(backend, false),
+                    prepared.clone(),
+                    warmup,
+                    1.0,
+                    ReplayEngineFactory::with_optional_role_timing_models(
+                        Some(prefill.clone()),
+                        Some(decode.clone()),
+                    ),
+                )
+                .with_max_sim_time_ms(Some(70.0))
+                .with_telemetry_observer(
+                    7.0,
+                    Box::new(CaptureTelemetryObserver {
+                        samples: samples.clone(),
+                    }),
+                )
+                .with_scaling_policy(Box::new(CaptureOncePolicy {
+                    at_ms: 0.0,
+                    captured: ticks.clone(),
+                }));
+                let report = finish(replay);
+                (report, prefill, decode, samples, ticks)
+            };
+            let (cold, cold_p, cold_d, _, _) = run(false);
+            let (warm, warm_p, warm_d, samples, ticks) = run(true);
+            let barrier = warm
+                .agentic_phases
+                .as_ref()
+                .unwrap()
+                .profile_start_ms
+                .unwrap();
+            assert!(
+                barrier > 70.0,
+                "preparation must not consume the profile cap"
+            );
+            assert_eq!(warm.request_counts.completed_requests, 1);
+            assert_eq!(warm.per_request[0].arrival_time_ms, 50.0);
+            assert_eq!(warm.throughput.duration_ms, cold.throughput.duration_ms);
+            assert!(
+                (warm.throughput.prefill_worker_seconds - cold.throughput.prefill_worker_seconds)
+                    .abs()
+                    < 1e-9
+            );
+            assert!(
+                (warm.throughput.decode_worker_seconds - cold.throughput.decode_worker_seconds)
+                    .abs()
+                    < 1e-9
+            );
+            assert_eq!(warm_p.evidence_summary(), cold_p.evidence_summary());
+            assert_eq!(warm_d.evidence_summary(), cold_d.evidence_summary());
+            assert_eq!(warm_p.cleared.lock().unwrap().len(), 1);
+            assert_eq!(warm_d.cleared.lock().unwrap().len(), 1);
+            assert!(warm_p.cleared.lock().unwrap()[0].prefill.latency_ms > 0.0);
+            assert!(cold_p.cleared.lock().unwrap().is_empty());
+            assert!(cold_d.cleared.lock().unwrap().is_empty());
+            let samples = samples.lock().unwrap();
+            assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+            assert_eq!(samples[0].sampled_at_ms, barrier);
+            assert!(samples.iter().all(|s| s.interval_start_ms >= barrier));
+            assert_eq!(
+                samples
+                    .iter()
+                    .map(|s| s.traffic.arriving_requests)
+                    .sum::<usize>(),
+                1
+            );
+            assert_eq!(
+                samples
+                    .iter()
+                    .map(|s| s.traffic.completed_requests)
+                    .sum::<usize>(),
+                1
+            );
+            let ticks = ticks.borrow();
+            let tick = ticks.as_ref().unwrap();
+            assert_eq!(tick.now_ms, barrier);
+            assert_eq!(tick.traffic.num_req, 0);
+            assert!(tick.prefill_fpm.is_empty());
+            assert!(tick.decode_fpm.is_empty());
+        }
+    }
+
+    #[test]
+    fn warmup_tracks_client_terminal_before_source_cleanup_and_waits_for_quiescence() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let rows = [("small", 128), ("large", 4096)]
+                .into_iter()
+                .flat_map(|(play, length)| {
+                    let history_id = format!("{play}-history");
+                    let mut history = agentic_row(&history_id, play, length, 1, 64, 10, vec![]);
+                    history.recorded_api_time_ms = Some(5.0);
+                    let mut future = agentic_row(
+                        &format!("{play}-future"),
+                        play,
+                        length,
+                        2,
+                        64,
+                        10,
+                        vec![AgenticDependency {
+                            request_id: history_id,
+                            trigger: AgenticDependencyTrigger::Completion,
+                            relation: AgenticDependencyRelation::Sequence,
+                            delay_ms: 0.0,
+                        }],
+                    );
+                    future.not_before_ms = 100.0;
+                    [history, future]
+                })
+                .collect();
+            let prepared = prepared(agentic_trace(64, rows), 2);
+            let mut replay = runtime(
+                &config(backend, false),
+                prepared,
+                true,
+                1.0,
+                ReplayEngineFactory::with_timing_model(Arc::new(RoleEvidenceTiming::default())),
+            );
+            let mut saw_cleanup = false;
+            for _ in 0..256 {
+                replay.step().unwrap();
+                let phases = replay.admission.agentic_phase_evidence().unwrap();
+                if let Some(request) = phases
+                    .requests
+                    .iter()
+                    .find(|r| r.causal_terminal_at_ms.is_some() && r.quiescent_at_ms.is_none())
+                {
+                    let state = replay.state(request.uuid).unwrap();
+                    assert_eq!(state.phase, DisaggPhase::CleanupPending);
+                    assert!(!state.counted_in_flight);
+                    assert!(!state.coordinator.is_complete());
+                    assert!(
+                        replay
+                            .flow
+                            .requests_by_handoff
+                            .contains_key(&state.handoff_id)
+                    );
+                    assert!(phases.profile_start_ms.is_none());
+                    assert!(!replay.finish_agentic_preparation().unwrap());
+                    saw_cleanup = true;
+                }
+                if !replay.admission.is_agentic_preparing() {
+                    break;
+                }
+            }
+            assert!(
+                saw_cleanup,
+                "{backend:?}: fixture must expose deferred source cleanup"
+            );
+            let report = finish(replay);
+            assert_eq!(report.request_counts.completed_requests, 2);
+            let phases = report.agentic_phases.unwrap();
+            let barrier = phases.profile_start_ms.unwrap();
+            assert!(
+                phases
+                    .requests
+                    .iter()
+                    .all(|r| r.quiescent_at_ms.is_some_and(|at| at <= barrier))
+            );
+            assert!(
+                phases
+                    .requests
+                    .iter()
+                    .any(|r| r.causal_terminal_at_ms < r.quiescent_at_ms)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_or_canceled_preparation_handoff_drains_without_profile() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for canceled in [false, true] {
+                let mut replay = runtime(
+                    &config(backend, true),
+                    prepared(graph(false), 1),
+                    true,
+                    1.0,
+                    ReplayEngineFactory::new(),
+                );
+                let uuid = replay.admission.agentic_phase_evidence().unwrap().requests[0].uuid;
+                for _ in 0..16 {
+                    replay.step().unwrap();
+                    if replay.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    replay.state(uuid).unwrap().phase,
+                    DisaggPhase::TransferPending
+                );
+                let handoff_id = replay.state(uuid).unwrap().handoff_id;
+                replay
+                    .apply_handoff_fact(
+                        uuid,
+                        if canceled {
+                            HandoffFact::Canceled { handoff_id }
+                        } else {
+                            HandoffFact::Failed { handoff_id }
+                        },
+                    )
+                    .unwrap();
+                replay.run_to_completion().unwrap();
+                assert!(!replay.profile_observers_started);
+                assert!(replay.is_done());
+                // An old preparation callback cannot become a profile token.
+                let before = replay.admission.agentic_phase_evidence().unwrap();
+                for prefill in [false, true] {
+                    let signal = OutputSignal {
+                        uuid,
+                        token_id: Some(999),
+                        completed: true,
+                        rejected: false,
+                        handoff_delay_ms: None,
+                        cached_tokens: None,
+                    };
+                    if prefill {
+                        replay.process_prefill_signal(signal).unwrap();
+                    } else {
+                        replay.process_decode_signal(signal).unwrap();
+                    }
+                }
+                assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), before);
+                let report = finish(replay);
+                assert_eq!(report.request_counts.num_requests, 0);
+                assert!(report.per_request.is_empty());
+                let phases = report.agentic_phases.unwrap();
+                assert_eq!(phases.phase, AgenticReplayPhase::Aborted);
+                assert_eq!(phases.profile_start_ms, None);
+                assert_eq!(phases.failure_request_id, Some(uuid));
+                assert_eq!(
+                    phases.requests[0].terminal_status,
+                    Some(if canceled {
+                        ReplayTerminalStatus::Canceled
+                    } else {
+                        ReplayTerminalStatus::Failed
+                    })
+                );
+                assert!(phases.requests[0].quiescent_at_ms.is_some());
+                assert!(
+                    phases.requests[1..]
+                        .iter()
+                        .all(|r| r.dispatched_at_ms.is_none())
+                );
+            }
+        }
+    }
+}

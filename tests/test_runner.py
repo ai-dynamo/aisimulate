@@ -141,7 +141,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_trace_format("weka")
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
-    assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert not capabilities.supports_agentic_host_offload
     assert not capabilities.supports_agentic_speculative_decoding
@@ -150,6 +150,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
 @pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize(
     ("unsupported", "message"),
     [
@@ -159,18 +160,20 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     ],
 )
 def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
-    trace_format, nested_rank, unsupported, message
+    trace_format, nested_rank, role, unsupported, message
 ):
     runtime = RecordingRuntime()
-    args = _engine_args() | unsupported
+    args = _engine_args(role=role) | unsupported
     if nested_rank:
         args = {"rank": args}
     spec = _spec(
         deployment=BackendDeploymentSpec(
-            deployment_mode="agg",
+            deployment_mode="agg" if role == "aggregated" else "disagg",
             backend="vllm",
             backend_version="test",
-            agg_engine_args=args,
+            agg_engine_args=args if role == "aggregated" else None,
+            prefill_engine_args=args if role == "prefill" else _engine_args(role="prefill"),
+            decode_engine_args=args if role == "decode" else _engine_args(role="decode"),
             num_workers=1,
         ),
         workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
@@ -182,10 +185,11 @@ def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
 
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
-def test_agentic_capabilities_reject_trtllm(trace_format):
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+def test_agentic_capabilities_reject_trtllm(trace_format, topology):
     spec = _spec(
         deployment=BackendDeploymentSpec(
-            deployment_mode="agg",
+            deployment_mode=topology,
             backend="trtllm",
             backend_version="test",
             agg_engine_args=_engine_args(backend="trtllm"),
@@ -322,21 +326,98 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["weka_nested_timestamp_basis"] == "relative"
 
 
-def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
-    capabilities = EngineReplayRunnerFactory().capabilities()
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_engine_capability_rejects_online_disaggregated_weka_before_runtime(backend: str) -> None:
+    runtime = RecordingRuntime()
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend=backend,
+            backend_version="test",
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        execution_mode="online",
+        workload={"source_type": "trace", "trace_format": "weka"},
+        goal={},
+    )
+
+    with pytest.raises(ValueError, match="does not support execution mode 'online'"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+@pytest.mark.parametrize("model_source", ["engine_args", "metadata"])
+@pytest.mark.parametrize("decode_model", [None, "different-model", "test-model"])
+def test_disaggregated_agentic_requires_same_target_model(trace_format, model_source, decode_model):
+    runtime = RecordingRuntime()
+    prefill = _engine_args(role="prefill")
+    decode = _engine_args(role="decode")
+    metadata = {}
+    if model_source == "metadata":
+        prefill.pop("aic_model_path")
+        decode.pop("aic_model_path")
+        metadata = {
+            role: {"provider": "aic", "config": {"model_path": model}}
+            for role, model in [("prefill", "test-model"), ("decode", decode_model)]
+        }
+    else:
+        decode["aic_model_path"] = decode_model
     spec = _spec(
         deployment=BackendDeploymentSpec(
             deployment_mode="disagg",
             backend="vllm",
             backend_version="test",
+            prefill_engine_args=prefill,
+            decode_engine_args=decode,
+            performance_model_metadata=metadata,
             num_prefill_workers=1,
             num_decode_workers=1,
         ),
-        workload={"source_type": "trace", "trace_format": "weka"},
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
     )
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    if decode_model != "test-model":
+        with pytest.raises(ValueError, match="prefill and decode must use the same configured target model"):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
 
-    with pytest.raises(ValueError, match="agentic trace format 'weka'.*topology 'disagg'"):
-        capabilities.require_compatible(spec)
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo", "standard_dynamo"])
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize("timing_model", ["test-model", "other-model"])
+def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role, timing_model):
+    runtime = RecordingRuntime()
+    roles = {name: _engine_args(role=name) for name in ("prefill", "decode")}
+    roles[role]["timing_model"] = {"type": "external", "provider": "aic", "config": {"model": timing_model}}
+    workload = {"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1}
+    if trace_format == "standard_dynamo":
+        workload = {"source_type": "trace", "trace_format": "dynamo"}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend="vllm",
+            backend_version="test",
+            prefill_engine_args=roles["prefill"],
+            decode_engine_args=roles["decode"],
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        workload=workload,
+    )
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    if timing_model != "test-model" and trace_format != "standard_dynamo":
+        with pytest.raises(ValueError, match=f"agentic {role} AIC timing model must match"):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+        assert runtime.execution_spec["spec"]["engine"][role]["rank"]["timing_model"]["config"]["model"] == timing_model
 
 
 @pytest.mark.parametrize(

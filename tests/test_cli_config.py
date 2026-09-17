@@ -745,25 +745,27 @@ def test_agentic_lane_contract_rejects_unsupported_inputs(traffic: dict) -> None
         CorePredictionConfig.model_validate({"traffic": traffic, "engine": _engine()})
 
 
-def test_weka_requires_aggregated_engine() -> None:
-    with pytest.raises(ValidationError, match="weka requires aggregated"):
-        CorePredictionConfig.model_validate(
-            {
-                "traffic": {
-                    "source": {
-                        "type": "trace",
-                        "paths": ["weka-corpus"],
-                        "format": "weka",
-                    },
-                    "load": {"type": "trace_timestamps"},
-                },
-                "engine": {
-                    **_engine(),
-                    "mode": "disaggregated",
-                    "workers": {"prefill": {}, "decode": {}},
-                },
-            }
-        )
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo", "mooncake-delta"])
+@pytest.mark.parametrize("schema", [CorePredictionConfig, CoreRecommendationConfig])
+def test_disaggregated_agentic_inputs_preserve_delta_restriction(trace_format: str, schema) -> None:
+    config = {
+        "traffic": {
+            "source": {"type": "trace", "paths": ["corpus"], "format": trace_format},
+            "load": {"type": "trace_timestamps"},
+        },
+        "engine": {
+            **_engine(),
+            "mode": "disaggregated",
+            "workers": {"prefill": {}, "decode": {}},
+        },
+    }
+    if schema is CoreRecommendationConfig:
+        config["optimization"] = {"target": "throughput"}
+    if trace_format == "mooncake-delta":
+        with pytest.raises(ValidationError, match="mooncake-delta requires aggregated"):
+            schema.model_validate(config)
+    else:
+        assert schema.model_validate(config).engine.mode == "disaggregated"
 
 
 def test_finite_rate_and_timeout_contract() -> None:

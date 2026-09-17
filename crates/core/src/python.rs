@@ -824,7 +824,6 @@ fn build_agentic_driver(
 fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
-    allow_agentic: bool,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
     ensure!(
@@ -873,7 +872,6 @@ fn build_runtime_input(
                 traffic.load_type.as_deref() == Some("trace_timestamps"),
                 "agentic_mooncake requires trace_timestamps load"
             );
-            ensure!(allow_agentic, "agentic trace requires aggregated topology");
             ensure!(
                 traffic.max_sim_time_ms.is_none(),
                 "agentic trace does not support max virtual time"
@@ -901,10 +899,6 @@ fn build_runtime_input(
             ensure!(
                 traffic.load_type.as_deref() == Some("trace_timestamps"),
                 "weka requires trace_timestamps load"
-            );
-            ensure!(
-                allow_agentic,
-                "Weka agentic trace requires aggregated topology"
             );
             ensure!(
                 traffic.max_sim_time_ms.is_none(),
@@ -955,10 +949,6 @@ fn build_runtime_input(
                     ensure!(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
-                    );
-                    ensure!(
-                        allow_agentic,
-                        "agentic Dynamo trace requires aggregated topology"
                     );
                     ensure!(
                         traffic.max_sim_time_ms.is_none(),
@@ -1394,7 +1384,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
             let built_input = traffic
-                .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
+                .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size))
                 .transpose()?;
             if let Some(built) = &built_input {
                 validate_public_agentic_engine(&built.input, &engine_config.rank)?;
@@ -1419,6 +1409,42 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .decode
                 .clone()
                 .unwrap_or_else(|| aggregated_role(&engine_config));
+            // Determine the loaded kind before compiling either timing model:
+            // Dynamo inputs may contain ordinary or agentic requests. Retain
+            // the built input so this validation does not load the trace twice.
+            let trace_input = if traffic.as_ref().is_some_and(|traffic| {
+                traffic.source_type == "trace"
+                    && matches!(
+                        traffic.trace_format.as_deref(),
+                        Some("weka" | "agentic_mooncake" | "dynamo")
+                    )
+            }) {
+                let traffic = traffic.as_ref().expect("trace traffic was checked");
+                let built = build_runtime_input(traffic.clone(), prefill.rank.block_size)?;
+                if let ReplayRuntimeInput::Workload(driver) = &built.input
+                    && driver.is_agentic()
+                {
+                    let target = traffic.execution_model
+                        .as_deref()
+                        .map(str::trim)
+                        .context("agentic execution requires a configured target model")?;
+                    for (name, role) in [("prefill", &prefill), ("decode", &decode)] {
+                        if let TimingModelConfig::External { provider, config } =
+                            &role.rank.timing_model
+                            && provider == "aic"
+                        {
+                            let model = config.get("model").and_then(serde_json::Value::as_str);
+                            ensure!(
+                                model == Some(target),
+                                "{name} AIC timing model {model:?} must match agentic execution model {target:?}"
+                            );
+                        }
+                    }
+                }
+                Some(built)
+            } else {
+                None
+            };
             let prefill_capacity_is_explicit = prefill
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("prefill")));
@@ -1450,8 +1476,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let built_input = traffic
-                .map(|traffic| {
+            let built_input = match trace_input {
+                Some(built) => Some(built),
+                None => traffic.map(|traffic| {
                     build_runtime_input(
                         traffic,
                         engine_config
@@ -1460,10 +1487,18 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                             .expect("prefill role was materialized")
                             .rank
                             .block_size,
-                        false,
                     )
                 })
-                .transpose()?;
+                .transpose()?,
+            };
+            if let Some(built) = &built_input {
+                for role in [&engine_config.prefill, &engine_config.decode] {
+                    validate_public_agentic_engine(
+                        &built.input,
+                        &role.as_ref().expect("P/D role was materialized").rank,
+                    )?;
+                }
+            }
             let resolved_basis = built_input
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
@@ -1656,7 +1691,7 @@ mod tests {
         traffic["agentic_warmup"] = serde_json::json!(true);
         let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
         assert!(
-            build_runtime_input(traffic, 64, true)
+            build_runtime_input(traffic, 64)
                 .err()
                 .unwrap()
                 .to_string()
@@ -1694,7 +1729,7 @@ mod tests {
             traffic[field] = invalid;
             let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
             assert!(
-                build_runtime_input(traffic, 64, true)
+                build_runtime_input(traffic, 64)
                     .err()
                     .unwrap()
                     .to_string()
@@ -1797,10 +1832,128 @@ mod tests {
                 if agentic {
                     let error = format!("{:#}", result.unwrap_err());
                     assert!(error.contains(message), "{format}: {error}");
+                    // Public P/D must validate both roles, including a decode
+                    // role whose invalid configuration is absent from prefill.
+                    for invalid_role in ["prefill", "decode"] {
+                        let mut disagg = payload.clone();
+                        disagg["spec"]["topology"] = serde_json::json!({
+                            "kind": "disaggregated",
+                            "prefill": {"initial_workers": 1},
+                            "decode": {"initial_workers": 1}
+                        });
+                        let valid = serde_json::json!({
+                            "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+                            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                        });
+                        disagg["spec"]["engine"] = serde_json::json!({
+                            "prefill": {"rank": valid}, "decode": {"rank": valid}
+                        });
+                        disagg["spec"]["engine"][invalid_role]["rank"] = rank.clone();
+                        let error = format!(
+                            "{:#}",
+                            execute_json(&disagg.to_string(), false).unwrap_err()
+                        );
+                        assert!(error.contains(message), "{format}/{invalid_role}: {error}");
+                    }
                 } else {
                     let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
                     assert_eq!(report["completed_requests"], 1);
                     assert!(report.get("agentic_qualification").is_none());
+                }
+            }
+            // Exercise all three importers through the actual native P/D
+            // entrypoint. Standard Dynamo remains a non-agentic workload.
+            for backend in ["vllm", "sglang"] {
+                let rank = serde_json::json!({
+                    "backend": backend, "block_size": 4, "num_gpu_blocks": 16,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                let mut payload = serde_json::json!({
+                    "spec": {
+                        "version": 1,
+                        "topology": {
+                            "kind": "disaggregated",
+                            "prefill": {"initial_workers": 1},
+                            "decode": {"initial_workers": 1}
+                        },
+                        "engine": {"prefill": {"rank": rank}, "decode": {"rank": rank}},
+                        "requests": []
+                    },
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps",
+                        "trace_format": format, "trace_path": path,
+                        "trace_block_size": 4, "execution_model": "model"
+                    }
+                });
+                if agentic {
+                    for invalid_roles in
+                        [vec!["prefill"], vec!["decode"], vec!["prefill", "decode"]]
+                    {
+                        let mut invalid = payload.clone();
+                        for role in ["prefill", "decode"] {
+                            invalid["spec"]["engine"][role]["rank"]["timing_model"] = serde_json::json!({
+                                "type": "external", "provider": "aic",
+                                "config": {"model": if invalid_roles.contains(&role) { "different-model" } else { "model" }, "backend": backend, "system": "test-system", "tp": 1}
+                            });
+                        }
+                        let error = format!(
+                            "{:#}",
+                            execute_json(&invalid.to_string(), false).unwrap_err()
+                        );
+                        assert!(
+                            error.contains("must match agentic execution model"),
+                            "{format}/{backend}/{invalid_roles:?}: {error}"
+                        );
+                    }
+                } else {
+                    // Standard Dynamo still reaches ordinary capacity/provider
+                    // validation instead of acquiring an agentic model gate.
+                    let mut ordinary = payload.clone();
+                    ordinary["traffic"]["load_type"] = serde_json::json!("kv_capacity_fraction");
+                    ordinary["traffic"]["kv_load_ratio"] = serde_json::json!(0);
+                    let error = format!(
+                        "{:#}",
+                        execute_json(&ordinary.to_string(), false).unwrap_err()
+                    );
+                    assert!(error.contains("KV load ratio must be positive"), "{error}");
+                    ordinary = payload.clone();
+                    ordinary["spec"]["engine"]["decode"]["rank"]["timing_model"] = serde_json::json!({
+                        "type": "external", "provider": "aic", "config": {"model": "different-model"}
+                    });
+                    let error = format!(
+                        "{:#}",
+                        execute_json(&ordinary.to_string(), false).unwrap_err()
+                    );
+                    assert!(
+                        error.contains("invalid AIC timing provider configuration"),
+                        "{error}"
+                    );
+                }
+                for warmup in [false, true] {
+                    if warmup {
+                        if !agentic {
+                            continue;
+                        }
+                        payload["traffic"]["agentic_lanes"] = serde_json::json!(1);
+                        payload["traffic"]["agentic_snapshot"] = serde_json::json!({"seed": 0});
+                        payload["traffic"]["agentic_warmup"] = serde_json::json!(true);
+                    }
+                    let report: serde_json::Value = serde_json::from_str(
+                        &execute_json(&payload.to_string(), false).unwrap_or_else(|error| {
+                            panic!("{format}/{backend}/{warmup}: {error:#}")
+                        }),
+                    )
+                    .unwrap();
+                    assert_eq!(report["completed_requests"], 1);
+                    assert_eq!(report.get("agentic_qualification").is_some(), agentic);
+                    if warmup {
+                        assert_eq!(report["agentic_phases"]["lanes"][0]["warmup_completed"], 10);
+                        assert!(
+                            report["agentic_phases"]["profile_start_ms"]
+                                .as_f64()
+                                .is_some()
+                        );
+                    }
                 }
             }
         }

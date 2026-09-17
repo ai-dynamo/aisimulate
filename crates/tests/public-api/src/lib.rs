@@ -143,18 +143,17 @@ mod tests {
     fn external_latency_only_provider_needs_no_energy_implementation() {
         use aiconfigurator_core::TimingModel;
         assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
-        assert_eq!(LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(), 1.0);
+        assert_eq!(
+            LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
+            1.0
+        );
     }
 
     #[test]
     fn timing_evidence_types_are_public() {
-        let operation = TimingOperationEvidence::new(
-            "gemm",
-            2.0,
-            Some(900.0),
-            TimingEvidenceSource::Silicon,
-        )
-        .unwrap();
+        let operation =
+            TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
+                .unwrap();
         let phase = TimingPhaseEvidence::from_operations(vec![operation]);
         let summary = TimingEvidenceSummary {
             prefill: phase,
@@ -275,7 +274,7 @@ mod tests {
             first.materialize_prefix("before", 65).unwrap(),
             first.materialize_prefix("after", 128).unwrap()[..65]
         );
-        let warmup = WorkloadDriver::new_agentic_warmup(prepared, 32, true, 2.0).unwrap();
+        let warmup = WorkloadDriver::new_agentic_warmup(prepared.clone(), 32, true, 2.0).unwrap();
         let phases = warmup.agentic_phase_evidence().unwrap();
         assert!(warmup.is_agentic_preparing());
         assert_eq!(phases.lanes[0].primers_expected, 1);
@@ -286,6 +285,60 @@ mod tests {
             .iter()
             .all(|request| request.max_output_tokens == 1));
         assert_eq!(phases.profile_start_ms, None);
+        // An external caller can run the same prepared context through the
+        // public offline P/D executor without private runtime constructors.
+        use aiconfigurator_core::replay::{
+            ReplayEngineConfig, ReplayEngineFactory, ReplayRuntimeInput, ReplaySpec,
+            ReplayTopology, Replayer, WorkerPoolSpec,
+        };
+        let expected = prepared.snapshots()[0]
+            .requests
+            .iter()
+            .find(|request| request.source_request_id == "after")
+            .unwrap()
+            .identity
+            .clone();
+        let driver = WorkloadDriver::new_agentic_warmup(
+            prepared,
+            ReplayEngineConfig::default().rank.block_size,
+            true,
+            2.0,
+        )
+        .unwrap();
+        let spec = ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                decode: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                handoff_latency_ms: 1.0,
+            },
+            engine: Default::default(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: None,
+            record_per_request: true,
+            sla: Default::default(),
+            requests: Vec::new(),
+        };
+        let report = Replayer::new(
+            spec,
+            ReplayEngineFactory::with_timing_model(std::sync::Arc::new(LatencyOnlyProvider)),
+        )
+        .unwrap()
+        .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+        .run()
+        .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.per_request[0].agentic.as_ref(), Some(&expected));
+        let phases = report.agentic_phases.unwrap();
+        assert_eq!(phases.lanes[0].warmup_completed, 10);
+        assert!(phases.profile_start_ms.is_some());
         let mut driver = WorkloadDriver::new_agentic_snapshots(
             PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
             32,
