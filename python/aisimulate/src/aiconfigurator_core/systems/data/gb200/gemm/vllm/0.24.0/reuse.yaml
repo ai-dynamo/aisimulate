@@ -1,12 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# The old collector timed FP8-block eagerly. Preserve history, but do not
-# donate those rows to another version or backend. Other GEMM dtypes remain eligible.
 schema_version: 1
-reuse: []
-donor_kernel_sources:
-  gemm_perf:
-  - torch.nn.functional.linear
-  - CutlassFP8ScaledMMLinearKernel
-  - FlashInferCuteDslNvFp4LinearKernel
+reuse:
+  - table: gemm_perf
+    from_version: "0.25.0"
+    reason: "Replace removed eager FP8-block timings with graph-timed measurements; see PR #219."
+    approved_by: "simone-chen"

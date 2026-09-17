@@ -18,9 +18,9 @@
 //!   1. Active backend/version (primary). No `kernel_source` filter.
 //!   2. Declared donors from the REQUESTED version dir's `reuse.yaml`
 //!      (design §6.3), in file order. The only channel that may borrow a
-//!      version NEWER than requested. Source-owned donor filter if declared.
+//!      version NEWER than requested. No filter.
 //!   3. Same-backend siblings STRICTLY EARLIER than requested (design §6.2),
-//!      nearest first. Source-owned donor filter if declared.
+//!      nearest first. No filter.
 //!   4. Cross-backend fill (design §6.4), kernel-identity gated by
 //!      `perf_data_reuse_manifest.yaml`, newest-first per framework.
 //!
@@ -370,7 +370,6 @@ struct ReuseEntry {
 /// MISSING top-level `reuse` key is a schema error.
 fn parse_reuse_yaml(path: &Path) -> Result<Vec<ReuseEntry>, AicError> {
     let mapping = load_yaml_mapping(path, "reuse.yaml")?;
-    donor_kernel_sources(&mapping, path)?;
     let entries_value = mapping
         .get(serde_yaml::Value::String("reuse".to_string()))
         .ok_or_else(|| {
@@ -434,56 +433,6 @@ fn parse_reuse_yaml(path: &Path) -> Result<Vec<ReuseEntry>, AicError> {
         });
     }
     Ok(validated)
-}
-
-/// Optional source-owned whitelist. It restricts this directory as a donor,
-/// never its primary rows, and cannot broaden a cross-backend manifest filter.
-fn donor_kernel_sources(
-    mapping: &serde_yaml::Mapping,
-    path: &Path,
-) -> Result<BTreeMap<String, BTreeSet<String>>, AicError> {
-    let mut filters = BTreeMap::new();
-    let Some(value) = mapping.get("donor_kernel_sources") else {
-        return Ok(filters);
-    };
-    let entries = value.as_mapping().ok_or_else(|| {
-        perf_err(format!(
-            "{}: donor_kernel_sources must be a mapping",
-            path.display()
-        ))
-    })?;
-    for (table, value) in entries {
-        let table = table
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| {
-                perf_err(format!(
-                    "{}: donor_kernel_sources table must be a non-empty string",
-                    path.display()
-                ))
-            })?;
-        let sources = value.as_sequence().ok_or_else(|| {
-            perf_err(format!(
-                "{}: donor_kernel_sources.{table} must be a list of non-empty strings",
-                path.display()
-            ))
-        })?;
-        let mut allowed = BTreeSet::new();
-        for source in sources {
-            let source = source
-                .as_str()
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| {
-                    perf_err(format!(
-                        "{}: donor_kernel_sources.{table} must be a list of non-empty strings",
-                        path.display()
-                    ))
-                })?;
-            allowed.insert(source.to_string());
-        }
-        filters.insert(table.to_string(), allowed);
-    }
-    Ok(filters)
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,46 +1001,23 @@ pub fn resolve_one(
 
     let finish = |records: Vec<(String, PathBuf, &'static str, Option<BTreeSet<String>>)>,
                   warnings: Vec<ResolverWarning>| {
-        let mut resolved = Vec::with_capacity(records.len());
-        for (version, path, channel, mut ks_filter) in records {
-            if channel != "primary" {
-                let policy_path = path
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .join(REUSE_YAML_MARKER);
-                if policy_path.is_file() {
-                    let mapping = load_yaml_mapping(&policy_path, "reuse.yaml")?;
-                    let mut filters = donor_kernel_sources(&mapping, &policy_path)?;
-                    if let Some(allowed) =
-                        filters.remove(op_file_basename.trim_end_matches(".parquet"))
-                    {
-                        let allowed = match ks_filter {
-                            Some(existing) => existing.intersection(&allowed).cloned().collect(),
-                            None => allowed,
-                        };
-                        if allowed.is_empty() {
-                            continue;
-                        }
-                        ks_filter = Some(allowed);
-                    }
-                }
-            }
-            resolved.push(ResolvedRecord {
-                version,
-                exists: path.is_file(),
-                path: path.display().to_string(),
-                channel,
-                ks_filter,
-            });
-        }
-        Ok(ResolveReport {
-            records: resolved,
+        ResolveReport {
+            records: records
+                .into_iter()
+                .map(|(version, path, channel, ks_filter)| ResolvedRecord {
+                    version,
+                    exists: path.is_file(),
+                    path: path.display().to_string(),
+                    channel,
+                    ks_filter,
+                })
+                .collect(),
             warnings,
-        })
+        }
     };
 
     if !ctx.enable_shared_layer || FRAMEWORK_AGNOSTIC_BASENAMES.contains(&op_file_basename) {
-        return finish(records, warnings);
+        return Ok(finish(records, warnings));
     }
 
     // Communication reuse is derived from the storage namespace. A direct
@@ -1103,11 +1029,11 @@ pub fn resolve_one(
         if storage_backend != backend_lower
             || !FRAMEWORK_VERSIONED_COMM_BACKENDS.contains(&storage_backend)
         {
-            return finish(records, warnings);
+            return Ok(finish(records, warnings));
         }
         Some(storage_backend.to_string())
     } else if comm_namespace_ambiguous {
-        return finish(records, warnings);
+        return Ok(finish(records, warnings));
     } else {
         None
     };
@@ -1257,7 +1183,7 @@ pub fn resolve_one(
         // Framework-owned communication data uses only the primary plus the
         // nearest-earlier same-storage-backend chain. Declared and
         // cross-backend channels remain disabled for every comm table.
-        return finish(records, warnings);
+        return Ok(finish(records, warnings));
     }
 
     // Channel 4 (design §6.4): cross-backend fill, kernel-identity gated.
@@ -1363,7 +1289,7 @@ pub fn resolve_one(
         }
     }
 
-    finish(records, warnings)
+    Ok(finish(records, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -1532,83 +1458,6 @@ mod tests {
 
     fn versions(report: &ResolveReport) -> Vec<&str> {
         report.records.iter().map(|r| r.version.as_str()).collect()
-    }
-
-    #[test]
-    fn donor_whitelist_restricts_declared_implicit_and_cross_backend_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let donor = root.join("data/gemm/vllm/0.24.0");
-        write(&donor.join("gemm_perf.parquet"), "stub");
-        write(
-            &donor.join("reuse.yaml"),
-            "reuse: []\ndonor_kernel_sources:\n  gemm_perf: [safe, unrelated]\n",
-        );
-        let primary = resolve_one(&ctx(root, "vllm", "0.24.0"), "gemm_perf.parquet", None).unwrap();
-        assert!(primary.records[0].ks_filter.is_none());
-        let fallback =
-            resolve_one(&ctx(root, "vllm", "0.25.0"), "gemm_perf.parquet", None).unwrap();
-        let source = fallback
-            .records
-            .iter()
-            .find(|r| r.channel == "fallback")
-            .unwrap();
-        assert_eq!(
-            source.ks_filter.as_ref().unwrap(),
-            &BTreeSet::from(["safe".into(), "unrelated".into()])
-        );
-        write(
-            &root.join("data/gemm/vllm/0.22.0/reuse.yaml"),
-            "reuse:\n- table: gemm_perf\n  from_version: '0.24.0'\n  reason: test\n  approved_by: test\n",
-        );
-        let declared =
-            resolve_one(&ctx(root, "vllm", "0.22.0"), "gemm_perf.parquet", None).unwrap();
-        assert_eq!(
-            declared
-                .records
-                .iter()
-                .find(|r| r.channel == "declared_reuse")
-                .unwrap()
-                .ks_filter,
-            source.ks_filter
-        );
-        write(
-            &root.join("perf_data_reuse_manifest.yaml"),
-            "groups:\n- op_file: gemm_perf.parquet\n  kernel_source: safe\n  tier: shared\n  frameworks: [sglang, vllm]\n- op_file: gemm_perf.parquet\n  kernel_source: bad\n  tier: shared\n  frameworks: [sglang, vllm]\n",
-        );
-        let cross = resolve_one(&ctx(root, "sglang", "0.5.14"), "gemm_perf.parquet", None).unwrap();
-        let source = cross
-            .records
-            .iter()
-            .find(|r| r.channel == "cross_backend")
-            .unwrap();
-        assert_eq!(
-            source.ks_filter.as_ref().unwrap(),
-            &BTreeSet::from(["safe".into()])
-        );
-    }
-
-    #[test]
-    fn empty_donor_whitelist_denies_table_and_malformed_policy_fails_closed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let donor = root.join("data/gemm/vllm/0.24.0");
-        write(&donor.join("gemm_perf.parquet"), "stub");
-        write(
-            &donor.join("reuse.yaml"),
-            "reuse: []\ndonor_kernel_sources:\n  gemm_perf: []\n",
-        );
-        let report = resolve_one(&ctx(root, "vllm", "0.25.0"), "gemm_perf.parquet", None).unwrap();
-        assert!(report.records.iter().all(|r| r.channel != "fallback"));
-        for invalid in ["null", "[]", "{gemm_perf: bad}", "{gemm_perf: [null]}"] {
-            write(
-                &donor.join("reuse.yaml"),
-                &format!("reuse: []\ndonor_kernel_sources: {invalid}\n"),
-            );
-            let error =
-                resolve_one(&ctx(root, "vllm", "0.25.0"), "gemm_perf.parquet", None).unwrap_err();
-            assert!(error.to_string().contains("donor_kernel_sources"));
-        }
     }
 
     #[test]
