@@ -1860,11 +1860,12 @@ def test_nightly_failed_compliance_cannot_stage(result):
 
 
 @pytest.mark.parametrize("attempt", ["1", "2"])
-def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
+def test_manual_nightly_requires_current_approval_to_publish(attempt):
     context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
     assert _nightly_condition("manual-approval", **context)
     assert not _nightly_condition("python-compliance", **context)
     assert not _nightly_condition("build-artifacts", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
     context.update(
         {
             "needs.manual-approval.result": "success",
@@ -1874,11 +1875,12 @@ def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
     assert _nightly_condition("build-artifacts", **context)
     assert _nightly_condition("python-compliance", **context)
     assert _nightly_condition("license-evidence", **context)
-    assert not _nightly_condition("fpe-support-matrix", **context)
-    assert not _nightly_condition("trigger-gitlab-security", **context)
+    assert _nightly_condition("fpe-support-matrix", **context)
+    assert _nightly_condition("trigger-gitlab-security", **context)
     context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
     assert not _nightly_condition("build-artifacts", **context)
     assert not _nightly_condition("python-compliance", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
 
 
 def test_nightly_compliance_requires_approval_dependency_and_respects_cancellation():
