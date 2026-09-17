@@ -6,19 +6,25 @@
 from __future__ import annotations
 
 import base64
+import csv
+import hashlib
+import io
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import yaml
 
 from scripts import build_manylinux_wheel as manylinux_builder
+from scripts import check_python_licenses as python_licenses
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
@@ -1420,6 +1426,7 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
+        "python-compliance": "skipped",
         **{
             component.replace("_", "-"): ("success" if plan[component] == "true" else "skipped")
             for component in COMPONENTS
@@ -1449,6 +1456,7 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
+        "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -1464,6 +1472,7 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
+        "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -1764,3 +1773,385 @@ def test_release_artifact_handoffs_cannot_mix_versions():
                 .replace("${{ matrix.shard.backend }}", "vllm")
             )
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
+
+
+def _nightly_condition(job: str, **overrides) -> bool:
+    """Evaluate the checked-in predicate with explicit Actions context values."""
+    values = {
+        "github.event_name": "schedule",
+        "github.ref": "refs/heads/main",
+        "github.run_attempt": "1",
+        "needs.manual-approval.result": "skipped",
+        "needs.manual-approval.outputs.approved-attempt": "",
+        "needs.changes-guard.outputs.should-build": "true",
+        "vars.GITLAB_SECURITY_TRIGGER_ENABLED": "true",
+        **{
+            f"needs.{name}.result": "success"
+            for name in ("build-artifacts", "python-compliance", "fpe-support-matrix", "license-evidence")
+        },
+        **overrides,
+    }
+    expression = _workflow("nightly-ci.yml")["jobs"][job]["if"]
+    expression = re.sub(r"(?:github|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
+    expression = expression.replace("!cancelled()", "True").replace("&&", " and ").replace("||", " or ")
+    return eval(expression, {"__builtins__": {}})
+
+
+@pytest.mark.parametrize("job", ["build-artifacts", "trigger-gitlab-security"])
+def test_nightly_retries_require_approval_from_the_current_attempt(job):
+    assert _nightly_condition(job)
+    for attempt in ("2", "3"):
+        assert not _nightly_condition(job, **{"github.run_attempt": attempt})
+        assert not _nightly_condition(
+            job,
+            **{
+                "github.run_attempt": attempt,
+                "needs.manual-approval.result": "success",
+                "needs.manual-approval.outputs.approved-attempt": str(int(attempt) - 1),
+            },
+        )
+        assert _nightly_condition(
+            job,
+            **{
+                "github.run_attempt": attempt,
+                "needs.manual-approval.result": "success",
+                "needs.manual-approval.outputs.approved-attempt": attempt,
+            },
+        )
+    push = {"github.event_name": "push", "github.ref": "refs/heads/pull-request/59"}
+    assert not _nightly_condition(job, **push)
+    assert _nightly_condition(
+        job,
+        **push,
+        **{
+            "needs.manual-approval.result": "success",
+            "needs.manual-approval.outputs.approved-attempt": "1",
+        },
+    ) == (job == "build-artifacts")
+
+
+@pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
+def test_nightly_failed_validation_cannot_publish(gate, result):
+    assert not _nightly_condition("trigger-gitlab-security", **{f"needs.{gate}.result": result})
+
+
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
+def test_nightly_failed_compliance_cannot_stage(result):
+    assert not _nightly_condition("build-artifacts", **{"needs.python-compliance.result": result})
+
+
+def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_deploy_secrets():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    compliance = jobs["python-compliance"]
+    assert "environment" not in compliance
+    assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(compliance))
+    assert "scripts/check_python_licenses.py" in _run_commands(compliance)
+    assert "--inventory" in _run_commands(compliance)
+    assert not any("download-artifact@" in s.get("uses", "") for s in compliance["steps"])
+    assert all(
+        s["with"]["path"].endswith("/*.csv") for s in compliance["steps"] if "upload-artifact@" in s.get("uses", "")
+    )
+    build = jobs["build-artifacts"]
+    assert "python-compliance" in build["needs"]
+    assert "pip-licenses" not in _run_commands(build)
+    steps = build["steps"]
+    stage_index = next(i for i, s in enumerate(steps) if s.get("name") == "Stage to Artifactory")
+    fetch_index = next(
+        i for i, s in enumerate(steps) if s.get("name") == "Fetch the staged wheel back from Artifactory"
+    )
+    smoke_index = next(
+        i for i, s in enumerate(steps) if s.get("name") == "Smoke-test the staged wheel on every supported Python"
+    )
+    assert stage_index < fetch_index < smoke_index
+    for step in steps[:stage_index]:
+        if "pip install" in step.get("run", ""):
+            assert "--require-hashes" in step["run"]
+    assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(steps[smoke_index:]))
+    assert "ARTIFACTORY_TOKEN" not in steps[smoke_index].get("env", {})
+    evidence = jobs["license-evidence"]
+    assert "environment" not in evidence
+    assert "pip install" not in _run_commands(evidence)
+    assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
+
+
+def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
+    inventories = tmp_path / "python"
+    inventories.mkdir(exist_ok=True)
+    # Same runtime dependency in multiple Python/architecture inventories must
+    # be deduplicated, while concurrent versions of a crate must survive.
+    for arch in ("amd64", "arm64"):
+        (inventories / f"{arch}-3.12.csv").write_text("Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n")
+    (tmp_path / "cargo-metadata.json").write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {"id": f"getrandom@{version}", "name": "getrandom", "version": version, "license": spdx}
+                    for version, spdx in crates
+                ]
+            }
+        )
+    )
+    prior_csv = io.StringIO()
+    writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
+    writer.writeheader()
+    writer.writerows(prior or [])
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("deps.csv", prior_csv.getvalue())
+
+    def urlopen(request, timeout):
+        assert timeout == 30
+        if lookup_error is not None:
+            raise lookup_error
+        if "/runs?" in request.full_url:
+            payload = (
+                {"workflow_runs": [{"id": 1, "artifacts_url": "https://fixture/artifacts"}]}
+                if prior
+                else {"workflow_runs": []}
+            )
+        elif request.full_url == "https://fixture/artifacts":
+            payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
+        elif request.full_url == "https://fixture/archive":
+            return io.BytesIO(archive.getvalue())
+        else:
+            raise AssertionError(request.full_url)
+        return io.BytesIO(json.dumps(payload).encode())
+
+    step = next(
+        s
+        for s in _workflow("nightly-ci.yml")["jobs"]["license-evidence"]["steps"]
+        if s.get("name") == "Generate license compliance evidence"
+    )
+    source = step["run"].split("<<'EOF'\n", 1)[1].rsplit("\nEOF", 1)[0]
+    with (
+        patch.object(sys, "argv", ["nightly-evidence", str(tmp_path)]),
+        patch.dict(os.environ, {"GH_API_TOKEN": "fixture", "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "2"}),
+        patch("urllib.request.urlopen", side_effect=urlopen),
+    ):
+        exec(compile(source, "nightly-ci-evidence", "exec"), {})
+    with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
+        return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
+
+
+def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(tmp_path):
+    original = [("0.2.17", "MIT"), ("0.3.4", "MIT"), ("0.4.3", "MIT")]
+    inventory, difference = _nightly_license_report(tmp_path, original)
+    assert len(inventory) == len(difference) == 4
+    assert {r["version"] for r in difference if r["dependency_type"] == "crate"} == {"0.2.17", "0.3.4", "0.4.3"}
+    assert all(r["change"] == "added" for r in difference)
+    assert _nightly_license_report(tmp_path, original, inventory)[1] == []
+    removed = _nightly_license_report(tmp_path, original[1:], inventory)[1]
+    assert len(removed) == 1
+    assert (removed[0]["change"], removed[0]["prior_version"]) == ("removed", "0.2.17")
+    changed = _nightly_license_report(tmp_path, [("0.2.17", "Apache-2.0"), *original[1:]], inventory)[1]
+    assert len(changed) == 1
+    assert (changed[0]["change"], changed[0]["version"], changed[0]["prior_spdx_license"]) == (
+        "changed",
+        "0.2.17",
+        "MIT",
+    )
+
+
+@pytest.mark.parametrize("lookup_error", [None, OSError("baseline API unavailable")])
+def test_nightly_license_baseline_warns_only_on_lookup_failure(tmp_path, capsys, lookup_error):
+    inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=lookup_error)
+    assert len(inventory) == len(difference) == 2
+    assert all(row["change"] == "added" for row in difference)
+    assert ("::warning::prior-artifact lookup failed" in capsys.readouterr().out) == (lookup_error is not None)
+
+
+@pytest.mark.parametrize(
+    "conclusion,expected", [("failure", True), ("timed_out", True), ("success", False), ("skipped", False)]
+)
+def test_nightly_alert_collector_includes_timeouts(tmp_path, conclusion, expected):
+    step = next(s for s in _workflow("nightly-ci.yml")["jobs"]["notify-slack"]["steps"] if s.get("id") == "failed")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text('#!/bin/sh\nprintf "%s\\n" "$FIXTURE_JOBS"\n')
+    fake_curl.chmod(0o755)
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "GH_TOKEN": "fixture",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_RUN_ID": "1",
+            "GITHUB_ENV": str(tmp_path / "env"),
+            "GITHUB_OUTPUT": str(output),
+            "MENTION_IDS": "",
+            "FIXTURE_JOBS": json.dumps({"jobs": [{"name": "Build artifacts", "conclusion": conclusion}]}),
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.read_text().strip() == f"has_failures={str(expected).lower()}"
+
+
+def test_full_ci_license_failure_blocks_readiness_and_staging():
+    jobs = _workflow("ci.yml")["jobs"]
+    assert "python-compliance" in jobs["readiness"]["needs"]
+    assert "python-compliance" in jobs["application-wheel"]["needs"]
+    assert "readiness" in jobs["stage-application-wheel"]["needs"]
+    plan = dict.fromkeys(COMPONENTS, "true")
+    results = dict.fromkeys(jobs["readiness"]["needs"], "success")
+    passed = _run_full_ci_aggregate(results, plan)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    results["python-compliance"] = "failure"
+    failed = _run_full_ci_aggregate(results, plan)
+    assert failed.returncode != 0
+    assert "python-compliance=failure, expected success" in failed.stdout
+
+
+def test_python_compliance_workflows_use_the_same_policy():
+    for workflow in ("ci.yml", "nightly-ci.yml"):
+        commands = _run_commands(_workflow(workflow)["jobs"]["python-compliance"])
+        assert "python scripts/check_python_licenses.py" in commands
+        assert "--allow-only" not in commands
+
+
+@pytest.mark.parametrize("license_result", [0, 1])
+def test_python_license_gate_checks_target_environment_before_export(tmp_path, monkeypatch, capsys, license_result):
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisimulate-core==1.0"]\n')
+    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    python = "/fixture/venv/bin/python"
+    inventory = tmp_path / "inventory" / "licenses.csv"
+    csv_output = "Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[0] == python
+        if command[1:4] == ["-m", "pip", "install"]:
+            requirements = Path(command[command.index("-r") + 1]).read_text().splitlines()
+            assert requirements == ["prettytable>=3", "wcwidth"]
+            assert command[-1] == "pip-licenses==5.5.5"
+            assert kwargs["check"]
+            return SimpleNamespace(returncode=0)
+        assert command[1:4] == ["-m", "piplicenses", "--with-system"]
+        if "--allow-only" in command:
+            assert kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL
+            return SimpleNamespace(returncode=license_result)
+        assert "--format=csv" in command and kwargs["check"]
+        kwargs["stdout"].write(csv_output)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(python_licenses.subprocess, "run", run)
+    assert python_licenses.check_licenses(python, inventory) == license_result
+    if license_result:
+        assert len(calls) == 2
+        assert not inventory.exists()
+        assert "::error::" in capsys.readouterr().out
+    else:
+        assert inventory.read_text() == csv_output
+
+
+def test_python_license_install_failure_blocks_check_and_export(tmp_path, monkeypatch):
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\ndependencies = ["prettytable>=3"]\n')
+    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    inventory = tmp_path / "inventory.csv"
+    with (
+        patch.object(python_licenses.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "pip")) as run,
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        python_licenses.check_licenses("python", inventory)
+    assert run.call_count == 1
+    assert not inventory.exists()
+
+
+def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    steps = jobs["build-artifacts"]["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index("Write checksums and provenance") < names.index("Stage to Artifactory")
+    assert (
+        names.index("Fetch the staged wheel back from Artifactory")
+        < names.index("Upload verified nightly artifacts")
+        < names.index("Smoke-test the staged wheel on every supported Python")
+    )
+    upload = steps[names.index("Upload verified nightly artifacts")]["with"]
+    assert upload["name"] == "nightly-dist-${{ matrix.arch }}"
+    assert upload["path"] == "${{ runner.temp }}/nightly-dist/*"
+    assert upload["overwrite"] == "true"
+    artifact = upload["name"].replace("${{ matrix.arch }}", "amd64")
+    assert jobs["fpe-support-matrix"]["with"]["wheel_artifact"] == artifact
+    resolver = _workflow("e2e-accuracy.yml")["jobs"]["resolve"]["steps"][0]["with"]["script"]
+    assert f"artifact.name === '{artifact}'" in resolver
+    consumer = _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
+    download = next(step for step in consumer if "download-artifact@" in step.get("uses", ""))
+    assert download["with"]["name"] == artifact
+
+
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
+    directory = tmp_path / "accuracy-wheel"
+    directory.mkdir()
+    wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
+    wheel.write_bytes(b"fixture wheel")
+    (directory / "aisimulate-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
+    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('[project]\nversion = "0.12.0.dev20260917"\n')
+    python = tmp_path / "tools/venv-build/bin/python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    # Only distribution metadata is needed by the real provenance writer.
+    metadata = tmp_path / "metadata/maturin-1.12.0.dist-info"
+    metadata.mkdir(parents=True)
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: maturin\nVersion: 1.12.0\n")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(metadata.parent),
+        "DIST_DIR": str(directory),
+        "TOOLS_DIR": str(tmp_path / "tools"),
+        "RUNNER_TEMP": str(tmp_path),
+        "MATRIX_ARCH": "amd64",
+        "MATRIX_RUNNER": "fixture",
+        "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
+        "GH_REPOSITORY": "ai-dynamo/aisimulate",
+        "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
+        "GH_REF": "refs/heads/main",
+        "GH_SHA": "a" * 40,
+        "GH_RUN_ID": "123",
+        "GH_RUN_ATTEMPT": "1",
+        "GH_EVENT_NAME": "schedule",
+        "GH_SERVER_URL": "https://github.com",
+        "RUST_TOOLCHAIN": "1.98.0",
+        "UV_VERSION": "0.12.6",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "EXPECTED_SHA": "a" * 40,
+        "NIGHTLY_RUN": "123",
+    }
+    producer = next(
+        step["run"]
+        for step in _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
+        if step.get("name") == "Write checksums and provenance"
+    )
+    result = subprocess.run(["bash", "-e", "-c", producer], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    provenance = json.loads((directory / "provenance.json").read_text())
+    assert provenance["version"] == "0.12.0.dev20260917"
+    assert provenance["artifacts"][wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+    consumer = next(
+        step["run"]
+        for step in _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
+        if step.get("id") == "verify"
+    ).replace("/opt/python/cp312-cp312/bin/python", shlex.quote(sys.executable))
+
+    def verify():
+        return subprocess.run(["bash", "-e", "-c", consumer], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    result = verify()
+    assert result.returncode == 0, result.stdout + result.stderr
+    wheel.write_bytes(b"tampered wheel")
+    assert verify().returncode != 0
+    wheel.write_bytes(b"fixture wheel")
+    env["EXPECTED_SHA"] = "c" * 40
+    assert verify().returncode != 0
