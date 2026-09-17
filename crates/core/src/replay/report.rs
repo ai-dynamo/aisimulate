@@ -1549,6 +1549,14 @@ impl TraceCollector {
         ))
     }
 
+    /// Greatest prefix-cache reuse observed over all scheduler admissions for
+    /// `uuid`. Unlike [`Self::request_admission`], this deliberately reports
+    /// the reduced cache fact rather than the immutable first-admission value.
+    pub(crate) fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        let stats = self.requests.get(&uuid)?;
+        stats.first_admit_ms.map(|_| stats.reused_input_tokens)
+    }
+
     /// Drain measurements while retaining the configuration that applies to
     /// each reporting epoch of a reusable runtime. The absolute report boundary
     /// includes idle time in this epoch and starts the next one.
@@ -2245,6 +2253,18 @@ mod tests {
         assert_eq!(report.request_counts.total_input_tokens, 0);
         assert_eq!(report.request_counts.total_output_tokens, 0);
         assert_eq!(report.throughput.duration_ms, 0.0);
+    }
+
+    #[test]
+    fn request_reused_input_tokens_tracks_the_maximum_across_readmissions() {
+        let mut collector = TraceCollector::default();
+        let uuid = Uuid::from_u128(102);
+        collector.on_arrival(uuid, 0.0, 128, 4);
+        collector.on_admit(uuid, 5.0, 16);
+        collector.on_admit(uuid, 10.0, 64);
+
+        assert_eq!(collector.request_admission(uuid), Some((5.0, 16)));
+        assert_eq!(collector.request_reused_input_tokens(uuid), Some(64));
     }
 
     #[test]
