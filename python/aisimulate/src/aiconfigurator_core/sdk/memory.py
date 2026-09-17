@@ -296,7 +296,7 @@ class KVCacheEstimator:
         ``num_tokens``, KV is recomputed per token), but it is accepted to mirror the
         request shape.
 
-        Raises when AIC cannot build the model/backend or the perf DB is missing --
+        Raises when AIC cannot build the model/backend or the system spec is missing --
         the signal for the caller to fall back to the naive estimator.
         """
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
@@ -322,7 +322,11 @@ class KVCacheEstimator:
         apply_nextn(model_config, nextn)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)
-        database = perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        # Capacity uses model dimensions and system metadata, not measured op
+        # tables. External FPM deployments may have no backend data directory.
+        database = perf_database.get_database(
+            system, backend, backend_version, systems_paths=systems_path, allow_missing_data=True
+        )
 
         # num_tokens = max_num_tokens -> activations track BuildConfig.max_num_tokens
         # (TRT-LLM `_memory_usage_kwargs_for_agg`). With num_tokens > 0 passed
@@ -1134,6 +1138,7 @@ def estimate_num_gpu_blocks(
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
+    diagnostics: dict[str, Any] | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1147,6 +1152,8 @@ def estimate_num_gpu_blocks(
         memory_fraction_kind: ``"of_total"`` (vLLM / SGLang) or ``"of_free"``
             (TRT-LLM); validated against ``backend``.
         memory_fraction_value: the fraction in ``[0, 1]``.
+        diagnostics: optional output mapping populated with the exact memory
+            estimate used for this block count, including its source and units.
         (remaining kwargs mirror :func:`estimate_kv_cache`.)
 
     Returns:
@@ -1197,4 +1204,8 @@ def estimate_num_gpu_blocks(
     else:
         tokens = int(estimate["total_kv_size_tokens"])
 
+    if diagnostics is not None:
+        diagnostics.update(estimate)
+        diagnostics["scheduler_block_size_tokens"] = block_size
+        diagnostics["num_gpu_blocks"] = tokens // block_size
     return tokens // block_size

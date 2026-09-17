@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/backends/base_backend.py
 # Kimi resize/pad is a modified adaptation, copyright 2026 the HuggingFace
 # Inc. team and HuggingFace Team (Apache-2.0):
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
@@ -23,6 +25,7 @@ from aiconfigurator_core.sdk.models import BaseModel
 from aiconfigurator_core.sdk.perf_database import PerfDatabase
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aiconfigurator_core.sdk.rust_engine_step import (
+    _estimate_decode_step_with_rust,
     estimate_decode_step_breakdown_with_rust,
     estimate_mixed_step_breakdown_with_rust,
     estimate_static_latency_breakdown_with_rust,
@@ -53,6 +56,14 @@ def _kimi_resized_spatial_tokens(
     stride = patch * enc_cfg.spatial_merge_size
     padded_height = -(-resized_height // stride) * stride
     padded_width = -(-resized_width // stride) * stride
+    # Kimi K3's fixed rotary lookup: modified adaptation, Apache-2.0,
+    # copyright contributors to the vLLM project.
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.encoder_type == "kimi_k3_moonvit3d_patchmergerv2" and max(padded_height, padded_width) // patch > 512:
+        raise ValueError(
+            "Kimi K3 supports at most 512 spatial patches per side after processor padding, "
+            f"got {padded_height // patch}x{padded_width // patch}"
+        )
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 
@@ -446,6 +457,13 @@ class BaseBackend:
             if has_video_override and (video_height > 0) != (video_width > 0):
                 raise ValueError("Video height and width must either both be provided or both be omitted.")
         has_videos = has_any_video_input
+        if has_videos:
+            temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
+            if enc_cfg.max_temporal_patches and temporal_patches > enc_cfg.max_temporal_patches:
+                raise ValueError(
+                    f"{enc_cfg.encoder_type or 'vision encoder'} supports at most "
+                    f"{enc_cfg.max_temporal_patches} temporal patches; got {temporal_patches}."
+                )
         if has_videos and enc_cfg.max_video_frames and video_frames > enc_cfg.max_video_frames:
             raise ValueError(
                 f"Kimi video modeling supports at most {enc_cfg.max_video_frames} sampled frames per video; "
@@ -562,7 +580,6 @@ class BaseBackend:
             if has_video_dims:
                 # Qwen pads a short final temporal group by repeating its last
                 # frame, so a partial group still produces one temporal patch.
-                temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
                 spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(
                     video_height, video_width, is_video=True
                 )
@@ -571,7 +588,6 @@ class BaseBackend:
                 )
                 pre_merge_per_visual = temporal_patches * spatial_pre_merge
             else:
-                temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
                 tokens_per_visual = video_token_override
                 if not enc_cfg.pool_temporal and tokens_per_visual % temporal_patches != 0:
                     raise ValueError(
@@ -654,7 +670,8 @@ class BaseBackend:
         # stays Python-side; only the per-op values may come from the
         # compiled engine below). Projector ops and the DP exit AllGather run
         # on post-merge tokens. ViT attention uses cu_seqlens: each image tile
-        # or temporal patch is an independent transformer sequence.
+        # or non-pooled temporal patch is an independent transformer sequence;
+        # pooled Kimi video uses one spatial-temporal sequence per video.
 
         def _encoder_shape(op) -> tuple[int, int]:
             name = op._name
@@ -1474,6 +1491,8 @@ class BaseBackend:
         component_latency_ms = dict(components["component_latency_ms"])
         component_energy_wms = dict(components["component_energy_wms"])
         per_op_latency_ms = dict(components["per_op_latency_ms"])
+        per_op_energy_wms = dict(components.get("per_op_energy_wms", {}))
+        covered_latency_ms = float(components.get("covered_latency_ms", 0.0))
         per_op_source = dict(components["per_op_source"])
         latency_ms = float(components["latency_ms"])
         energy_wms = float(components["energy_wms"])
@@ -1490,6 +1509,7 @@ class BaseBackend:
             visual_energy = {name: value / visual_scale for name, value in visual_energy.items()}
             visual_latency_total = sum(visual_latency.values())
             visual_energy_total = sum(visual_energy.values())
+            covered_latency_ms += sum(value for name, value in visual_latency.items() if visual_energy[name] > 0)
             latency_ms += visual_latency_total
             energy_wms += visual_energy_total
             component_latency_ms["context_attention"] = (
@@ -1500,6 +1520,7 @@ class BaseBackend:
             )
             for name, value in visual_latency.items():
                 per_op_latency_ms[name] = per_op_latency_ms.get(name, 0.0) + value
+                per_op_energy_wms[name] = per_op_energy_wms.get(name, 0.0) + visual_energy[name]
                 per_op_source[name] = visual_source[name]
         return StepEstimate(
             latency_ms=latency_ms,
@@ -1507,6 +1528,8 @@ class BaseBackend:
             component_latency_ms=component_latency_ms,
             component_energy_wms=component_energy_wms,
             per_op_latency_ms=per_op_latency_ms,
+            per_op_energy_wms=per_op_energy_wms,
+            covered_latency_ms=covered_latency_ms,
             per_op_source=per_op_source,
             moe_comm_fallbacks=components["moe_comm_fallbacks"],
             context_tokens=step.context_tokens,
@@ -1541,6 +1564,28 @@ class BaseBackend:
             gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
         )
 
+    def _get_genonly_step_estimate(
+        self,
+        model: BaseModel,
+        database: PerfDatabase,
+        runtime_config: RuntimeConfig,
+        gen_tokens: int,
+        isl: int,
+        osl: int,
+    ) -> StepEstimate:
+        """Decode estimate with energy evidence retained for aggregation."""
+        if gen_tokens <= 0:
+            return StepEstimate(latency_ms=0.0, energy_wms=0.0)
+        self._require_rust_engine_step(runtime_config, database, surface="decode")
+        return _estimate_decode_step_with_rust(
+            model,
+            database,
+            gen_tokens=gen_tokens,
+            isl=isl,
+            osl=osl,
+            gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
+        )
+
     # ============== AGG INFERENCE (shared) =============================
 
     def _get_encoder_component_memory(self, model: BaseModel, num_tokens: int, embed_tokens: int) -> dict[str, float]:
@@ -1566,8 +1611,12 @@ class BaseBackend:
                 # language-space embeddings coexist at the adapter boundary.
                 activations += 2 * embed_tokens * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
             else:
-                # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
-                activations = 2 * num_tokens * enc_cfg.hidden_size * 3
+                # Retain the legacy live-activation estimate, but never budget
+                # less than the actual per-rank BF16 QKV output buffer. This is
+                # an analytical lower bound, not a calibrated peak-memory model.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
+                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
                 # Projected embeddings (all projector instances concatenated along hidden)
                 activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
@@ -1730,13 +1779,16 @@ class BaseBackend:
         per_ops_data["mix_step"] = mix_per_ops
         per_ops_source["mix_step"] = mix_per_ops_src
 
+        genonly_step_estimate = self._get_genonly_step_estimate(
+            model, database, runtime_config, num_genonly_tokens, isl, osl
+        )
         (
             genonly_step_latency_ms,
             genonly_step_energy_wms,
             genonly_per_ops,
             genonly_per_ops_src,
             genonly_moe_comm_fallbacks,
-        ) = self._get_genonly_step_latency(model, database, runtime_config, num_genonly_tokens, isl, osl)
+        ) = (*genonly_step_estimate.legacy_tuple(), genonly_step_estimate.moe_comm_fallbacks)
         if genonly_per_ops:
             per_ops_data["genonly_step"] = genonly_per_ops
             per_ops_source["genonly_step"] = genonly_per_ops_src
@@ -1928,6 +1980,38 @@ class BaseBackend:
         summary.set_encoder_power_avg(encoder_energy_wms / encoder_latency_ms if encoder_latency_ms > 0 else 0.0)
         summary.set_encoder_source_dict(encoder_source_dict)
         summary.set_result_dict(result_dict)
+
+        # Retain operation evidence using exactly the scheduling weights used
+        # for total energy and active latency above. Mixed steps include both
+        # prefill and decode work; do not label them as pure context passes.
+        def weighted_step(estimate: StepEstimate, weight: float) -> StepEstimate:
+            return dataclasses.replace(
+                estimate,
+                latency_ms=estimate.latency_ms * weight,
+                energy_wms=estimate.energy_wms * weight,
+                covered_latency_ms=estimate.covered_latency_ms * weight,
+                per_op_latency_ms={name: value * weight for name, value in estimate.per_op_latency_ms.items()},
+                per_op_energy_wms={name: value * weight for name, value in estimate.per_op_energy_wms.items()},
+                component_latency_ms={name: value * weight for name, value in estimate.component_latency_ms.items()},
+                component_energy_wms={name: value * weight for name, value in estimate.component_energy_wms.items()},
+            )
+
+        energy_groups = {
+            "mix_step": weighted_step(mix_step_estimate, mix_efficiency * num_mix_steps),
+            "genonly_step": weighted_step(genonly_step_estimate, num_genonly_steps),
+        }
+        if encoder_latency_dict:
+            energy_groups["encoder"] = StepEstimate(
+                latency_ms=encoder_latency_ms,
+                energy_wms=encoder_energy_wms,
+                covered_latency_ms=sum(
+                    value for name, value in encoder_latency_dict.items() if encoder_energy_wms_dict[name] > 0
+                ),
+                per_op_latency_ms=dict(encoder_latency_dict),
+                per_op_energy_wms=dict(encoder_energy_wms_dict),
+                per_op_source=dict(encoder_source_dict),
+            )
+        summary.set_aggregate_energy_breakdown(energy_groups)
         if encoder_memory:
             summary.set_encoder_memory(encoder_memory)
 
@@ -2129,11 +2213,32 @@ class BaseBackend:
                 ``max_num_tokens`` budget that already caps total per-forward tokens
                 (draft tokens included), so re-multiplying would double-count.
         """
+        from aiconfigurator_core.sdk.speculation import NullScheme, SpecSchemeBase
+        from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
+
+        scheme = getattr(model, "spec_scheme", None)
+        # Exact-type Null check: a scheme SUBCLASSING NullScheme that overrides
+        # the draft hooks is a draft scheme (the test-fake idiom); MTP stays on
+        # the legacy nextn accounting baked into the model families.
+        has_draft_scheme = (
+            isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
+        )
+
         weights = 0.0
         for op in model.context_ops:
+            # Materialized draft ops are excluded here: the scheme's own
+            # byte-exact accounting below is the single source of truth
+            # (the op-list subset under-counts aliased/owned embed and
+            # sampling heads unevenly across schemes).
+            if has_draft_scheme and op._name.startswith("draft_"):
+                continue
             weights += op.get_weights()
         # count weights on a single GPU
         weights /= model.config.pp_size
+        if has_draft_scheme:
+            # Draft weights are resident on every pp stage's GPU that runs
+            # the draft (mirrors the legacy runtime-injection accounting).
+            weights += scheme.draft_weights_bytes(model)
 
         h = model._num_heads * model._head_size
         if num_tokens == 0:
@@ -2168,7 +2273,8 @@ class BaseBackend:
         # engine's max_num_tokens budget that already caps total per-forward tokens
         # (draft tokens included) -- re-multiplying there double-counts and can drive the
         # prefill worker's KV budget negative.
-        if mtp_activation_scaling and model.config.nextn > 0:
+        effective_nextn = int(getattr(model, "_nextn", 0) or model.config.nextn or 0)
+        if mtp_activation_scaling and effective_nextn > 0:
             if mtp_scaled_tokens is not None and num_tokens > 0:
                 # Mixed context+decode step (agg): only the decode-token share
                 # verifies nextn+1 tokens; context tokens are processed once.
@@ -2177,12 +2283,12 @@ class BaseBackend:
                 # inflates activations ~(nextn+1)x and over-prunes concurrency.
                 decode_share = min(max(mtp_scaled_tokens, 0), num_tokens)
                 activations = (
-                    activations * (num_tokens - decode_share + decode_share * (model.config.nextn + 1)) / num_tokens
+                    activations * (num_tokens - decode_share + decode_share * (effective_nextn + 1)) / num_tokens
                 )
             else:
                 # Decode-only steps (disagg decode worker): every token in the
                 # step is part of verification, so the full multiplier applies.
-                activations = activations * (model.config.nextn + 1)
+                activations = activations * (effective_nextn + 1)
 
         # Backend-level activation overhead (SGLang only by default).
         if self.ACTIVATION_OVERHEAD_FRAC > 0:
@@ -2192,6 +2298,8 @@ class BaseBackend:
         # CP shards persistent KV across cp ranks (full/cp per rank); the
         # all-gather is a transient compute buffer, not steady-state footprint.
         kvcache = batch_size * model.get_kvcache_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        if has_draft_scheme:
+            kvcache += batch_size * scheme.draft_kv_bytes_per_sequence(model, seq_tokens)
         # should not be divided by pp_size as you need to hold all kvcache for stages.
 
         # starting from 2.22

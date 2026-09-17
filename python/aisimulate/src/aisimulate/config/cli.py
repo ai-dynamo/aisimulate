@@ -20,6 +20,7 @@ from .common import (
 )
 from .engine import EnginePredictionConfig, EngineRecommendationConfig
 from .traffic import (
+    SyntheticSource,
     TraceSource,
     TrafficPredictionConfig,
     TrafficRecommendationConfig,
@@ -33,7 +34,10 @@ class CorePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CorePredictionConfig:
+        _validate_epd(self.traffic, self.engine)
         source = self.traffic.source
+        if self.engine.mode == "afd" and not isinstance(source, SyntheticSource):
+            raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
         if (
             isinstance(source, TraceSource)
             and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
@@ -56,10 +60,15 @@ class CoreRecommendationConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CoreRecommendationConfig:
+        _validate_epd(self.traffic, self.engine)
         if self.engine.hardware == "auto" and self.optimization.hardware is None:
             raise ValueError("engine.hardware='auto' requires one optimization.hardware")
         source = self.traffic.source if self.traffic is not None else None
         modes = set(self.engine.mode.choices) if hasattr(self.engine.mode, "choices") else {self.engine.mode}
+        if "afd" in modes and source is not None and not isinstance(source, SyntheticSource):
+            raise ValueError("AFD recommendation requires fixed-length synthetic request traffic")
+        if "afd" in modes and self.traffic is not None and self.traffic.load.type == "kv_capacity_fraction":
+            raise ValueError("AFD recommendation requires an absolute traffic load, not kv_capacity_fraction")
         if (
             isinstance(source, TraceSource)
             and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
@@ -76,6 +85,26 @@ class CoreRecommendationConfig(StrictModel):
     @classmethod
     def from_yaml(cls, path: str | Path) -> CoreRecommendationConfig:
         return cls.model_validate(load_yaml(path))
+
+
+def _validate_epd(traffic, engine) -> None:
+    encoder = engine.workers.encoder
+    source = traffic.source if traffic is not None else None
+    images = source.images if isinstance(source, SyntheticSource) else None
+    if (encoder is None) != (images is None):
+        raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")
+    if encoder is None:
+        return
+    if traffic.load.type != "concurrency" or type(traffic.load.concurrency) is not int:
+        raise ValueError("analytical EPD requires fixed synthetic concurrency, not rate or load search")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.timing.type != "default" or worker.timing.forward_model != "op_level":
+            raise ValueError("analytical EPD requires default op_level language timing")
+        if worker.startup_seconds != 0:
+            raise ValueError("analytical EPD requires static worker pools")
 
 
 def prediction_mapping(

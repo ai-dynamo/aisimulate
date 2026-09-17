@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/engine/runtime.rs
 
 //! `Engine`: the compiled-spec execution core.
 //!
@@ -355,11 +357,9 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
-        // FPM whole-model specs must be exactly one op per phase (the Python
-        // rewrite guarantees this shape) and never carry MTP: the Python model
-        // builder rejects `nextn > 0` for forward_model="fpm" (commit
-        // ad93e75f) and the collected data has no speculative points. Guarding
-        // here keeps a hand-built or skewed spec from silently mis-composing.
+        // Whole-model FPM phases lead with the target forward pass, followed
+        // only by draft operations whose work is absent from the collected
+        // autoregressive curves. Validate hand-built specs as well as Python's.
         // The scan is RECURSIVE: an FpmForward nested inside Overlap/Fallback
         // (never produced by the Python rewrite, but expressible in a
         // hand-built spec) would evade a top-level check and ride the
@@ -368,6 +368,7 @@ impl Engine {
         fn contains_fpm(ops: &[Op]) -> bool {
             ops.iter().any(|op| match op {
                 Op::FpmForward(_) => true,
+                Op::TokenScale(o) => contains_fpm(std::slice::from_ref(&o.op)),
                 Op::Overlap(o) => contains_fpm(&o.group_a) || contains_fpm(&o.group_b),
                 Op::Fallback(o) => {
                     contains_fpm(std::slice::from_ref(&o.primary)) || contains_fpm(&o.fallback)
@@ -380,13 +381,20 @@ impl Engine {
             || spec.engine.fpm_parquet_path.is_some()
             || spec.engine.forward_model.as_deref() == Some("fpm")
         {
+            // Hybrid speculative shape: the FIRST op of each phase is the
+            // whole-model FpmForward (target), optionally followed by
+            // op-level DRAFT ops (the Python rewrite keeps a scheme's
+            // `draft_` ops out of the whole-model fold — their cost is not
+            // in the AR-collected curves). The tails must not smuggle in
+            // another FpmForward (nested or top-level).
             let shape_ok = matches!(
-                spec.context_ops.as_slice(),
-                [Op::FpmForward(p)] if p.phase == FpmPhase::Prefill
+                spec.context_ops.first(),
+                Some(Op::FpmForward(p)) if p.phase == FpmPhase::Prefill
             ) && matches!(
-                spec.generation_ops.as_slice(),
-                [Op::FpmForward(d)] if d.phase == FpmPhase::Decode
-            );
+                spec.generation_ops.first(),
+                Some(Op::FpmForward(d)) if d.phase == FpmPhase::Decode
+            ) && !contains_fpm(&spec.context_ops[1..])
+                && !contains_fpm(&spec.generation_ops[1..]);
             crate::config::validate_fpm_parquet_path(
                 spec.engine.fpm_parquet_path.as_deref(),
                 shape_ok,
@@ -394,26 +402,58 @@ impl Engine {
             if !shape_ok {
                 return Err(AicError::InvalidEngineConfig(
                     "forward_model='fpm' spec must contain exactly one FpmForward op per phase \
-                     (prefill in context_ops, decode in generation_ops)"
+                     (leading prefill in context_ops, decode in generation_ops); only op-level \
+                     draft ops may follow it"
                         .to_string(),
                 ));
             }
-            if nextn > 0 {
+            let (prefill, decode) = match (spec.context_ops.first(), spec.generation_ops.first()) {
+                (Some(Op::FpmForward(p)), Some(Op::FpmForward(d))) => (p, d),
+                _ => unreachable!("validated leading FPM operations"),
+            };
+            let expected_width = nextn.checked_add(1).ok_or_else(|| {
+                AicError::InvalidEngineConfig("nextn+1 exceeds the u32 verify width".into())
+            })?;
+            if prefill.verify_width != 1 || decode.verify_width != expected_width {
                 return Err(AicError::InvalidEngineConfig(format!(
-                    "forward_model='fpm' does not support MTP speculative decoding (nextn={nextn})"
+                    "forward_model='fpm' requires prefill verify_width=1 and decode \
+                     verify_width=nextn+1 ({expected_width}); got prefill={} decode={}. \
+                     Plain MTP with nextn>0 is unsupported because its draft cost is \
+                     absent from the AR-collected curves",
+                    prefill.verify_width, decode.verify_width
                 )));
+            }
+            if spec.context_ops[1..]
+                .iter()
+                .chain(&spec.generation_ops[1..])
+                .any(|op| !op.name().starts_with("draft_"))
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "forward_model='fpm' only supports draft_ operations after FpmForward".into(),
+                ));
             }
         }
         Ok(())
     }
 
-    /// FPM whole-model engine: both phase lists are exactly one `FpmForward`
-    /// (validated in [`Engine::build`]). Returns `(prefill_op, decode_op)`.
-    fn fpm_ops(&self) -> Option<(&FpmForwardOp, &FpmForwardOp)> {
-        match (self.context_ops.as_slice(), self.generation_ops.as_slice()) {
-            ([Op::FpmForward(p)], [Op::FpmForward(d)]) => Some((p, d)),
+    /// FPM whole-model engine: each phase list LEADS with one `FpmForward`
+    /// (validated in [`Engine::build`]), optionally followed by op-level
+    /// draft ops (hybrid speculative shape). Returns
+    /// `(prefill_op, decode_op, ctx_draft_tail, gen_draft_tail)`; both tails
+    /// are empty for the plain (non-speculative) fpm engine.
+    fn fpm_split(&self) -> Option<(&FpmForwardOp, &FpmForwardOp, &[Op], &[Op])> {
+        match (self.context_ops.first(), self.generation_ops.first()) {
+            (Some(Op::FpmForward(p)), Some(Op::FpmForward(d))) => {
+                Some((p, d, &self.context_ops[1..], &self.generation_ops[1..]))
+            }
             _ => None,
         }
+    }
+
+    /// Back-compat view of [`Self::fpm_split`] for the call sites that only
+    /// need the whole-model pair.
+    fn fpm_ops(&self) -> Option<(&FpmForwardOp, &FpmForwardOp)> {
+        self.fpm_split().map(|(p, d, _, _)| (p, d))
     }
 
     /// Convenience constructor: deserialize a bincode `EngineSpec` and load the
@@ -827,17 +867,23 @@ impl Engine {
         // Component mapping: FPM has no non-attention/attention split, so the
         // breakdown reports [total, prefill_component, 0, marginal_decode].
         // The component consumers (speculative agg scheduling) only read the
-        // split under MTP, which FPM rejects at build time.
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
+        // split under speculation; the target and draft work stay composed here.
+        if let Some((prefill_op, decode_op, ctx_tail, _gen_tail)) = self.fpm_split() {
             let (prefill_ms, marginal_decode_ms) = self.fpm_mixed_step_components(
                 prefill_op,
                 decode_op,
+                ctx_tail,
                 ctx_tokens,
                 gen_tokens,
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                |_, _, _| {},
             )?;
+            let prefill_ms = prefill_ms.latency_ms;
+            let marginal_decode_ms = marginal_decode_ms.latency_ms;
             return Ok([
                 prefill_ms + marginal_decode_ms,
                 prefill_ms,
@@ -865,16 +911,25 @@ impl Engine {
                 combined as i64 - prefix1 as i64
             )));
         }
-        let shared_non_attention = run_context_ops_with(
-            &self.context_ops,
-            &self.db,
-            1,
-            combined - prefix1,
-            prefix1,
-            seq_imbalance_correction_scale,
-            ContextOpFilter::SkipContextAttention,
-            |op, r| on_op(MixedPass::SharedNonAttention, op, r),
-        )?;
+        let mut shared_non_attention = 0.0;
+        for op in &self.context_ops {
+            // Only target operations share a forward across prefill and
+            // verification. The draft has its own phase-specific graph.
+            if op.is_context_attention() || op.name().starts_with("draft_") {
+                continue;
+            }
+            let result = query_context_op(
+                op,
+                &self.db,
+                1,
+                combined - prefix1,
+                prefix1,
+                seq_imbalance_correction_scale,
+                None,
+            )?;
+            shared_non_attention += result.latency_ms;
+            on_op(MixedPass::SharedNonAttention, op, result);
+        }
 
         // ---- Pass 2: context attention at the prefill shape ----
         // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
@@ -890,21 +945,31 @@ impl Engine {
             }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
-            let attn = run_context_ops_with(
-                &self.context_ops,
-                &self.db,
-                batch2,
-                isl - prefix,
-                prefix,
-                seq_imbalance_correction_scale,
-                ContextOpFilter::OnlyContextAttention,
+            let mut attn = 0.0;
+            for op in &self.context_ops {
+                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // Draft prefill uses the same whole-prefill amortization
+                // as target attention, independently of decode work. It
+                // never sees the combined target verification token count.
+                let result = query_context_op(
+                    op,
+                    &self.db,
+                    batch2,
+                    isl - prefix,
+                    prefix,
+                    seq_imbalance_correction_scale,
+                    None,
+                )?;
+                attn += result.latency_ms;
                 // RAW results to the sink; the per-op wrapper divides the
                 // FOLDED values by scale2 with one true division per name
                 // (Python folds `context_attention` into one key, then
                 // `latency_dict["context_attention"] / scale_factor` —
                 // fold-then-divide, `base_backend.py:1244-1246`).
-                |op, r| on_op(MixedPass::ContextAttention, op, r),
-            )?;
+                on_op(MixedPass::ContextAttention, op, result);
+            }
             context_attention = attn / scale2;
         }
 
@@ -915,16 +980,25 @@ impl Engine {
             // `_run_generation_phase` queries at s = isl_pass3 + i + 1 with
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
-            decode_attention = run_generation_ops_step_beamed_with(
-                &self.generation_ops,
-                &self.db,
-                bs,
-                1,
-                s,
-                gen_seq_imbalance_correction_scale,
-                true,
-                |op, r| on_op(MixedPass::DecodeAttention, op, r),
-            )?;
+            for op in &self.generation_ops {
+                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // The draft's TokenScale maps this verification-width
+                // batch to its own query width before native op lookup.
+                let result = query_generation_op(
+                    op,
+                    &self.db,
+                    bs,
+                    1,
+                    s,
+                    gen_seq_imbalance_correction_scale,
+                    0,
+                    None,
+                )?;
+                decode_attention += result.latency_ms;
+                on_op(MixedPass::DecodeAttention, op, result);
+            }
         }
 
         Ok([
@@ -986,17 +1060,59 @@ impl Engine {
     /// component stays the pass-baseline marginal. Correct only when the
     /// deployed engine configuration (especially the CUDA-graph capture
     /// surface) matches the collection — the cliffs live in the data.
+    ///
+    /// The equivalent-AR surface is an estimate for wide verification. It
+    /// preserves token and KV totals but does not contain measured wide-query
+    /// kernel timing. The caller also retains the whole-prefill scheduling
+    /// approximation when fewer than one full prefill arrives per round.
     fn fpm_mixed_step_components(
         &self,
         prefill_op: &FpmForwardOp,
         decode_op: &FpmForwardOp,
+        ctx_tail: &[Op],
         ctx_tokens: u32,
         gen_tokens: u32,
         isl: u32,
         osl: u32,
         prefix: u32,
-    ) -> Result<(f64, f64), AicError> {
-        let mut prefill_component = 0.0_f64;
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
+        mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
+    ) -> Result<(PerformanceResult, PerformanceResult), AicError> {
+        let mut prefill_component = PerformanceResult::zero();
+        let decode_query_tokens = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
+        let mut price_prefill = |batch: u32, tokens: u32, prefix: u32, scheduled: u32| {
+            let mut result = prefill_op.query_totals(
+                &self.db,
+                &[
+                    batch as f64,
+                    scheduled as f64 + decode_query_tokens as f64,
+                    batch as f64 * prefix as f64,
+                ],
+            )?;
+            on_op(
+                MixedPass::SharedNonAttention,
+                &self.context_ops[0],
+                result.clone(),
+            );
+            // Draft precompute is absent from the whole-model target curve.
+            // Keep energy, provenance and executed fallback metadata together
+            // with its latency for the native per-op reporting endpoint.
+            run_context_ops_with(
+                ctx_tail,
+                &self.db,
+                batch,
+                tokens,
+                prefix,
+                seq_imbalance_correction_scale,
+                ContextOpFilter::All,
+                |op, draft| {
+                    on_op(MixedPass::SharedNonAttention, op, draft.clone());
+                    result = std::mem::take(&mut result).plus(draft);
+                },
+            )?;
+            Ok::<_, AicError>(result)
+        };
         if ctx_tokens > 0 {
             let new_tokens = isl.saturating_sub(prefix);
             if new_tokens == 0 {
@@ -1005,63 +1121,70 @@ impl Engine {
                 )));
             }
             if ctx_tokens >= new_tokens {
-                // Whole prefills this iteration: the scheduled total picks
-                // the regime row.
-                let batch = ctx_tokens.div_ceil(new_tokens);
-                prefill_component = prefill_op
-                    .query_totals(
-                        &self.db,
-                        &[
-                            batch as f64,
-                            (ctx_tokens + gen_tokens) as f64,
-                            (batch * prefix) as f64,
-                        ],
-                    )?
-                    .latency_ms;
+                prefill_component = price_prefill(
+                    ctx_tokens.div_ceil(new_tokens),
+                    new_tokens,
+                    prefix,
+                    ctx_tokens,
+                )?;
             } else {
                 // Chunked prefill: per-chunk totals, per-iteration average.
-                let mut total = 0.0_f64;
                 let mut chunks = 0u32;
                 let mut done = 0u32;
                 while done < new_tokens {
                     let chunk = ctx_tokens.min(new_tokens - done);
-                    total += prefill_op
-                        .query_totals(
-                            &self.db,
-                            &[1.0, (chunk + gen_tokens) as f64, (prefix + done) as f64],
-                        )?
-                        .latency_ms;
+                    prefill_component =
+                        prefill_component.plus(price_prefill(1, chunk, prefix + done, chunk)?);
                     done += chunk;
                     chunks += 1;
                 }
-                prefill_component = total / chunks as f64;
+                // Retain the existing scalar path's division order.
+                prefill_component.latency_ms /= chunks as f64;
+                prefill_component.energy_wms /= chunks as f64;
+                if let Some(sol) = &mut prefill_component.sol {
+                    sol.math_ms /= chunks as f64;
+                    sol.mem_ms /= chunks as f64;
+                }
             }
         }
-        let mut marginal_decode = 0.0_f64;
+        let mut marginal_decode = PerformanceResult::zero();
         if gen_tokens > 0 {
             let rt = RuntimeConfig {
                 batch_size: gen_tokens,
                 isl: isl.saturating_add(osl / 2),
                 osl: 2,
+                gen_seq_imbalance_correction_scale,
                 ..Default::default()
             };
-            let gen_ms = self.run_generation_phase(&rt, DEFAULT_STATIC_STRIDE)?;
-            let baseline_ms = if ctx_tokens > 0 {
-                // run_generation_phase scaled the batch by (nextn + 1) and
-                // sampled its single step at `s = rt.isl + 1`, so the decode
-                // query above landed on `(bs, bs * s)`. The baseline must be
-                // taken at that SAME coordinate: it selects its bracket rows
-                // by KV coverage, and a different KV can select different
-                // rows than the query used.
+            let mut target = PerformanceResult::zero();
+            let mut draft = PerformanceResult::zero();
+            self.run_generation_phase_with(&rt, DEFAULT_STATIC_STRIDE, |op, result| {
+                let component = if matches!(op, Op::FpmForward(_)) {
+                    &mut target
+                } else {
+                    on_op(MixedPass::DecodeAttention, op, result.clone());
+                    &mut draft
+                };
+                *component = std::mem::take(component).plus(result);
+            })?;
+            if ctx_tokens > 0 {
+                // Use the equivalent-AR query's same batch and KV coordinates
+                // so the current per-curve coverage policy chooses the same rows.
                 let baseline_batch = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
-                let baseline_kv = baseline_batch as f64 * (rt.isl as f64 + 1.0);
-                decode_op
+                let baseline_kv = gen_tokens as f64 * (rt.isl as f64 + 1.0);
+                let baseline_ms = decode_op
                     .query_pass_baseline(&self.db, baseline_batch, baseline_kv)?
-                    .latency_ms
-            } else {
-                0.0
-            };
-            marginal_decode = (gen_ms - baseline_ms).max(0.0);
+                    .latency_ms;
+                target.latency_ms = (target.latency_ms - baseline_ms).max(0.0);
+            }
+            // Draft work has no twin in the prefill pass and must survive
+            // even when the target's marginal cost clamps to zero.
+            on_op(
+                MixedPass::DecodeAttention,
+                &self.generation_ops[0],
+                target.clone(),
+            );
+            marginal_decode = target.plus(draft);
         }
         Ok((prefill_component, marginal_decode))
     }
@@ -1194,37 +1317,41 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<MixedStepPerOpValuesWithMetadata, AicError> {
-        // Whole-model FPM: never the name-filtered three-pass split (see
-        // mixed_step_breakdown_with). Report the scalar path's component
-        // mapping as per-op entries — the prefill component under the
-        // prefill op's name in the shared bucket, the decode marginal under
-        // the decode op's name — so the Python fold sees the same keys as
-        // its own FPM branch.
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
-            let (prefill_ms, marginal_decode_ms) = self.fpm_mixed_step_components(
+        // Preserve the FPM component contract while reporting the actual target
+        // and draft operations independently. The same execution path supplies
+        // scalar costs, energy, provenance, and fallback metadata.
+        if let Some((prefill_op, decode_op, ctx_tail, _gen_tail)) = self.fpm_split() {
+            let mut shared = PerOpFold::new("context");
+            let mut dec_attn = PerOpFold::new("generation");
+            self.fpm_mixed_step_components(
                 prefill_op,
                 decode_op,
+                ctx_tail,
                 ctx_tokens,
                 gen_tokens,
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                |pass, op, result| match pass {
+                    MixedPass::SharedNonAttention => shared.add(op, result),
+                    MixedPass::DecodeAttention => dec_attn.add(op, result),
+                    MixedPass::ContextAttention => unreachable!("FPM uses the prefill component"),
+                },
             )?;
-            let mut shared: Vec<PerOpValueWithMetadata> = Vec::new();
-            if ctx_tokens > 0 {
-                shared.push((prefill_op.name.clone(), prefill_ms, 0.0, "silicon", None));
+            let mut shared = shared.into_values();
+            let new_tokens = isl.max(1).saturating_sub(prefix);
+            if ctx_tokens > 0 && ctx_tokens < new_tokens {
+                // Fold each name before the same single division used by the
+                // scalar chunked-prefill path.
+                let chunks = new_tokens.div_ceil(ctx_tokens) as f64;
+                for row in &mut shared {
+                    row.1 /= chunks;
+                    row.2 /= chunks;
+                }
             }
-            let mut dec_attn: Vec<PerOpValueWithMetadata> = Vec::new();
-            if gen_tokens > 0 {
-                dec_attn.push((
-                    decode_op.name.clone(),
-                    marginal_decode_ms,
-                    0.0,
-                    "silicon",
-                    None,
-                ));
-            }
-            return Ok((shared, Vec::new(), dec_attn));
+            return Ok((shared, Vec::new(), dec_attn.into_values()));
         }
         let mut shared = PerOpFold::new("context");
         let mut ctx_attn = PerOpFold::new("context");
@@ -1592,8 +1719,18 @@ impl Engine {
         // op consumes batch/s/prefix from the RuntimeContext naturally); a
         // mixed rank composes prefill + marginal decode, mirroring
         // `_get_fpm_mix_step_latency` at the telemetry counts (already packed,
-        // so no `(nextn + 1)` anywhere — and FPM engines enforce nextn == 0).
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
+        // so no `(nextn + 1)` anywhere; speculative FPM is rejected below).
+        if let Some((prefill_op, decode_op, ctx_tail, gen_tail)) = self.fpm_split() {
+            if !ctx_tail.is_empty() || !gen_tail.is_empty() || self.nextn > 0 {
+                // The telemetry counts are packed AR semantics; the hybrid
+                // speculative shape (draft tails / widened verify) has no
+                // defined mapping here yet.
+                return Err(AicError::InvalidEngineConfig(
+                    "forward_model='fpm' with speculative decoding does not support the \
+                     ForwardPassMetrics rank dispatch"
+                        .to_string(),
+                ));
+            }
             // The telemetry sums ARE the fpm_forward tables' native coordinate
             // system (per-rank iteration totals) — query them via
             // `query_totals` instead of the op-level per-request-average
@@ -1625,7 +1762,7 @@ impl Engine {
                 if has_prefill {
                     // Mixed rank: marginal-decode composition, mirroring
                     // `_get_fpm_mix_step_latency` (counts already packed, no
-                    // `(nextn + 1)` — FPM engines enforce nextn == 0).
+                    // `(nextn + 1)` — speculative FPM was rejected above).
                     let baseline_ms = decode_op
                         .query_pass_baseline(
                             &self.db,
@@ -1783,6 +1920,8 @@ mod tests {
                 kv_cache_dtype: KvCacheQuantMode::Fp8,
                 lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
                 use_qk_norm: false,
+                scale_num_tokens: 1,
+                verify_query_tokens: 0,
             }),
         ]
     }
@@ -2195,6 +2334,210 @@ mod tests {
         assert_eq!(ms, breakdown[0]);
     }
 
+    #[test]
+    fn mixed_draft_phases_preserve_native_results_and_target_composition() {
+        use crate::operators::op::TokenScaleOp;
+
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            let db = Arc::new(
+                PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::default()),
+            );
+            let mut config = fixture_engine_config(Some(3));
+            config.database_mode = mode;
+            let target = Engine::build(
+                EngineSpec::new(config.clone(), context_ops(), generation_ops()),
+                db.clone(),
+            )
+            .unwrap();
+            let ctx_draft: Vec<_> = context_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    op
+                })
+                .collect();
+            let gen_draft: Vec<_> = generation_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    Op::TokenScale(TokenScaleOp {
+                        op: Box::new(op),
+                        numerator: 1,
+                        denominator: 4,
+                    })
+                })
+                .collect();
+            let mut ctx_ops = context_ops();
+            ctx_ops.extend(ctx_draft.clone());
+            let mut gen_ops = generation_ops();
+            gen_ops.extend(gen_draft.clone());
+            let engine = Engine::build(EngineSpec::new(config, ctx_ops, gen_ops), db).unwrap();
+
+            for (ctx, generation, prefix) in
+                [(0_u32, 7, 0), (128, 0, 64), (128, 7, 64), (8192, 7, 64)]
+            {
+                let mut ctx_expected = PerformanceResult::zero();
+                if ctx > 0 {
+                    for op in &ctx_draft {
+                        ctx_expected = ctx_expected.plus(
+                            query_context_op(
+                                op,
+                                &engine.db,
+                                ctx.div_ceil(4096),
+                                4096 - prefix,
+                                prefix,
+                                1.0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    ctx_expected = ctx_expected.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                let mut gen_expected = PerformanceResult::zero();
+                if generation > 0 {
+                    for op in &gen_draft {
+                        // Independent width-one draft queries, before the
+                        // verification-width wrapper is applied.
+                        let Op::TokenScale(wrapper) = op else {
+                            unreachable!()
+                        };
+                        gen_expected = gen_expected.plus(
+                            query_generation_op(
+                                &wrapper.op,
+                                &engine.db,
+                                generation,
+                                1,
+                                4129,
+                                1.0,
+                                0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                }
+                let mut observed_ctx = PerformanceResult::zero();
+                let mut observed_gen = PerformanceResult::zero();
+                let result = engine
+                    .mixed_step_breakdown_with(
+                        ctx,
+                        generation,
+                        4096,
+                        64,
+                        prefix,
+                        1.0,
+                        1.0,
+                        |pass, op, r| {
+                            if op.name().starts_with("draft_") {
+                                match pass {
+                                    MixedPass::SharedNonAttention => {
+                                        panic!("draft charged as shared target work")
+                                    }
+                                    MixedPass::ContextAttention => {
+                                        observed_ctx = observed_ctx.clone().plus(r)
+                                    }
+                                    MixedPass::DecodeAttention => {
+                                        observed_gen = observed_gen.clone().plus(r)
+                                    }
+                                }
+                            }
+                        },
+                    )
+                    .unwrap();
+                if ctx > 0 {
+                    observed_ctx = observed_ctx.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                // Includes energy, source, SOL components and fallback records.
+                assert_eq!(observed_ctx, ctx_expected);
+                assert_eq!(observed_gen, gen_expected);
+                let baseline = target
+                    .mixed_step_breakdown(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                assert_eq!(result[1], baseline[1]);
+                assert!((result[2] - baseline[2] - ctx_expected.latency_ms).abs() < 1e-10);
+                assert!((result[3] - baseline[3] - gen_expected.latency_ms).abs() < 1e-10);
+                let (shared, prefill, decode) = engine
+                    .mixed_step_breakdown_per_op(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                let per_op_sum: f64 = shared
+                    .iter()
+                    .chain(&prefill)
+                    .chain(&decode)
+                    .map(|r| r.1)
+                    .sum();
+                assert!((result[0] - per_op_sum).abs() < 1e-10);
+                for (rows, expected) in [(prefill, ctx_expected), (decode, gen_expected)] {
+                    let draft_energy: f64 = rows
+                        .iter()
+                        .filter(|r| r.0.starts_with("draft_"))
+                        .map(|r| r.2)
+                        .sum();
+                    assert!((draft_energy - expected.energy_wms).abs() < 1e-10);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_draft_composites_keep_executed_fallback_metadata() {
+        use crate::operators::op::{FallbackOp, OverlapOp, TokenScaleOp};
+
+        let mut config = fixture_engine_config(Some(3));
+        config.system_name = "gb200".to_string();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.16".to_string());
+        let comm = Op::MoeAllToAll(MoeAllToAllOp {
+            name: "comm".into(),
+            scale_factor: 1.0,
+            phase: "dispatch".into(),
+            comm_backend: "deepep_ll".into(),
+            comm_dtype: "default".into(),
+            hidden_size: 7168,
+            topk: 8,
+            num_experts: 256,
+            moe_ep_size: 32,
+            node_num: 8,
+            sms: 0,
+            attention_tp_size: 1,
+            workload_distribution: "power_law_1.2".into(),
+            enable_eplb: false,
+        });
+        let composite = Op::Overlap(OverlapOp::new(
+            "draft_overlap",
+            vec![Op::Fallback(FallbackOp::new(
+                "fallback",
+                comm.clone(),
+                vec![],
+            ))],
+            vec![comm],
+        ));
+        let generation = Op::TokenScale(TokenScaleOp {
+            op: Box::new(composite.clone()),
+            numerator: 1,
+            denominator: 4,
+        });
+        let spec = EngineSpec::new(config, vec![composite], vec![generation; 3]);
+        let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root()).unwrap();
+        let (shared, prefill, decode) = engine
+            .mixed_step_breakdown_per_op_with_metadata(1, 1, 2, 2, 0, 1.0, 1.0)
+            .unwrap();
+        assert!(shared.is_empty());
+        for (rows, phase) in [(&prefill, "context"), (&decode, "generation")] {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].4, Some(((phase, "deepep_ll", 32, 8, 4, 1), vec![])));
+            assert!(rows[0].1 > 0.0);
+        }
+        let standalone =
+            query_generation_op(&engine.generation_ops[0], &engine.db, 4, 1, 4, 1.0, 0, None)
+                .unwrap();
+        assert!((decode[0].1 - 3.0 * standalone.latency_ms).abs() < 1e-12);
+        assert!((decode[0].2 - 3.0 * standalone.energy_wms).abs() < 1e-12);
+        assert_eq!(decode[0].3, standalone.source.as_str());
+    }
+
     // ---- FPM whole-model engine branches ----
 
     /// FPM engine over the synthetic pair fixture: context = [FpmForward
@@ -2222,6 +2565,7 @@ mod tests {
                 model_path: "org/model-a".to_string(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
                 sol_ops: vec![],
             })
         };
@@ -2273,6 +2617,7 @@ mod tests {
             model_path: "org/model-a".into(),
             match_identity: default_identity(4),
             weight_bytes: 0.0,
+            verify_width: 1,
             sol_ops: vec![],
         });
         let spec = EngineSpec::new(
@@ -2329,6 +2674,7 @@ mod tests {
                 model_path: "org/model-a".to_string(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
                 sol_ops: vec![],
             })
         };
@@ -2637,6 +2983,7 @@ mod tests {
                 model_path: "org/model-a".into(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
                 sol_ops: vec![],
             })],
             vec![],
@@ -2926,5 +3273,399 @@ mod tests {
             err.to_string().contains("no SOL decomposition"),
             "unexpected error: {err}"
         );
+    }
+    // ---- Hybrid speculative FPM (verify-on-FPM) ----
+
+    /// Oracle: the decode query with `verify_width = w` maps the WIDENED
+    /// token batch onto the equivalent-AR point `(tokens, tokens/w * s)` —
+    /// exact-row hit on the fixture; width 1 keeps the legacy `(b, b*s)`.
+    #[test]
+    fn fpm_verify_width_maps_decode_to_equivalent_ar_point() {
+        use crate::operators::op::RuntimeContext;
+        let tmp = tempfile::tempdir().unwrap();
+        use crate::perf_database::fpm_forward::tests::{
+            default_identity, default_rows, write_pair,
+        };
+        write_pair(tmp.path(), &default_rows());
+        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+            tmp.path().to_path_buf(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+        ));
+        let mut op = FpmForwardOp {
+            name: "fpm_forward_decode".into(),
+            phase: FpmPhase::Decode,
+            model_path: "org/model-a".into(),
+            match_identity: default_identity(4),
+            weight_bytes: 0.0,
+            verify_width: 8,
+            sol_ops: vec![],
+        };
+        // 8 requests x width 8 arrive as batch = 8 widened tokens with ...
+        // here: batch = 8 tokens = 1 request x 8, s = 4096 -> coords
+        // (8, 8/8*4096 = 4096): EXACT fixture row -> 7.0.
+        let ctx = RuntimeContext {
+            batch_size: 8,
+            s: 4096,
+            ..Default::default()
+        };
+        let wide = op.query(&db, &ctx).unwrap().latency_ms;
+        assert!((wide - 7.0).abs() < 1e-12, "verify width coords: {wide}");
+        // Same call at width 1 = legacy token basis: (8, 32768) in-curve lerp.
+        op.verify_width = 1;
+        let ar = op.query(&db, &ctx).unwrap().latency_ms;
+        let want = 7.0 + 2.0 * (32768.0 - 4096.0) / (65536.0 - 4096.0);
+        assert!((ar - want).abs() < 1e-12, "legacy coords: {ar} vs {want}");
+    }
+
+    fn fpm_hybrid_spec(
+        tmp: &std::path::Path,
+        nextn: Option<u32>,
+        verify_width: u32,
+        gen_tail: Vec<Op>,
+        ctx_tail: Vec<Op>,
+    ) -> (EngineSpec, PerfDatabase) {
+        use crate::perf_database::fpm_forward::tests::{
+            default_identity, default_rows, write_pair,
+        };
+        write_pair(tmp, &default_rows());
+        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+            tmp.to_path_buf(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+        ));
+        let fpm_op = |phase: FpmPhase, width: u32| {
+            Op::FpmForward(FpmForwardOp {
+                name: format!("fpm_forward_{}", phase.as_str()),
+                phase,
+                model_path: "org/model-a".to_string(),
+                match_identity: default_identity(4),
+                weight_bytes: 0.0,
+                verify_width: width,
+                sol_ops: vec![],
+            })
+        };
+        let mut ctx_tail = ctx_tail;
+        let mut gen_tail = gen_tail;
+        for op in ctx_tail.iter_mut().chain(&mut gen_tail) {
+            op.set_name(format!("draft_{}", op.name()));
+        }
+        let mut context_ops_list = vec![fpm_op(FpmPhase::Prefill, 1)];
+        context_ops_list.extend(ctx_tail);
+        let mut generation_ops_list = vec![fpm_op(FpmPhase::Decode, verify_width)];
+        generation_ops_list.extend(gen_tail);
+        let spec = EngineSpec::new(
+            fixture_engine_config(nextn),
+            context_ops_list,
+            generation_ops_list,
+        );
+        (spec, db)
+    }
+
+    /// Hybrid shape validation: draft tails are legal; a width/nextn
+    /// mismatch (plain MTP) stays rejected; FpmForward in a tail is illegal.
+    #[test]
+    fn fpm_hybrid_build_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        // nextn=7 + decode verify_width=8 + granular draft tail: builds.
+        let (spec, db) = fpm_hybrid_spec(
+            tmp.path(),
+            Some(7),
+            8,
+            vec![generation_ops().remove(0)],
+            vec![],
+        );
+        Engine::build(spec, Arc::new(db)).expect("hybrid spec must build");
+
+        // nextn=7 with verify_width=1 (plain MTP): rejected.
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 1, vec![], vec![]);
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("verify_width"), "{err}");
+
+        // FpmForward hiding in the tail: rejected.
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
+        let dup = spec.generation_ops[0].clone();
+        spec.generation_ops.push(dup);
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn fpm_hybrid_rejects_fpm_hidden_in_draft_token_scale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
+        spec.generation_ops
+            .push(Op::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(spec.generation_ops[0].clone()),
+                numerator: 1,
+                denominator: 4,
+            }));
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    /// Hybrid decode step = FpmForward at the equivalent-AR point + the
+    /// draft tail priced generically at the WIDENED batch. Exact arithmetic:
+    /// the tail contribution equals the same op run standalone.
+    #[test]
+    fn fpm_hybrid_decode_step_adds_draft_tail_at_widened_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let draft_op = generation_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![draft_op.clone()], vec![]);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        // gen_tokens=1 request, isl=4095, osl=2 -> fpm branch routes through
+        // run_generation_phase: one step, bs = 1*(7+1) = 8 tokens,
+        // s = (4095 + 2/2) + 0 + 1 = 4097.
+        let hybrid = engine.decode_step_latency(1, 4095, 2, 1.0).unwrap();
+        // FpmForward at (8, 8/8*4097 = 4097): in-curve lerp.
+        let fpm_expected = 7.0 + 2.0 * (4097.0 - 4096.0) / (65536.0 - 4096.0);
+        // Tail standalone at the same widened step.
+        let tail_ms =
+            run_generation_ops_step(std::slice::from_ref(&draft_op), &db, 8, 4097, 1.0, false)
+                .unwrap();
+        assert!(
+            (hybrid - (fpm_expected + tail_ms)).abs() < 1e-9,
+            "hybrid {hybrid} vs fpm {fpm_expected} + tail {tail_ms}"
+        );
+    }
+
+    /// Hybrid mixed step: the draft context tail is priced at the prefill
+    /// shape and added to the prefill component (decode side rides the
+    /// generic generation phase, covered above).
+    #[test]
+    fn fpm_hybrid_mixed_step_adds_ctx_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_op = context_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![ctx_op.clone()]);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        let (base_spec, base_db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        let base = Engine::build(base_spec, Arc::new(base_db)).unwrap();
+        // Whole-prefill iteration: ctx=2048, isl=2048 -> batch 1, prefix 0.
+        // gen_tokens=1 request widens to bs = 8 tokens (nextn=7), inside the
+        // fixture decode batch domain [8, 16].
+        let with_tail = engine
+            .mixed_step_latency(2048, 1, 2048, 0, 0, 1.0, 1.0)
+            .unwrap();
+        let without = base
+            .mixed_step_latency(2048, 1, 2048, 0, 0, 1.0, 1.0)
+            .unwrap();
+        let tail_ms = run_context_ops(
+            std::slice::from_ref(&ctx_op),
+            &db,
+            1,
+            2048,
+            0,
+            1.0,
+            ContextOpFilter::All,
+        )
+        .unwrap();
+        assert!(
+            ((with_tail - without) - tail_ms).abs() < 1e-9,
+            "ctx tail delta {} vs {tail_ms}",
+            with_tail - without
+        );
+    }
+    #[test]
+    fn fpm_hybrid_rejects_invalid_widths_and_unclassified_tails() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (nextn, width) in [(None, 0), (None, 8), (Some(7), 7), (Some(u32::MAX), 1)] {
+            let (spec, db) = fpm_hybrid_spec(tmp.path(), nextn, width, vec![], vec![]);
+            assert!(matches!(
+                Engine::build(spec, Arc::new(db)),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        if let Op::FpmForward(prefill) = &mut spec.context_ops[0] {
+            prefill.verify_width = 8;
+        }
+        assert!(
+            Engine::build(spec, Arc::new(db))
+                .unwrap_err()
+                .to_string()
+                .contains("prefill verify_width=1")
+        );
+
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        spec.generation_ops.push(generation_ops().remove(0));
+        assert!(
+            Engine::build(spec, Arc::new(db))
+                .unwrap_err()
+                .to_string()
+                .contains("draft_ operations")
+        );
+    }
+
+    #[test]
+    fn fpm_hybrid_rejects_ar_telemetry_dispatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let error = engine.predict_decode_latency_total(8, 4096).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ForwardPassMetrics rank dispatch"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fpm_hybrid_mixed_preserves_draft_cost_when_target_marginal_is_zero() {
+        use crate::perf_database::fpm_forward::tests::{default_rows, write_pair};
+        let tmp = tempfile::tempdir().unwrap();
+        let draft_op = generation_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![draft_op.clone()], vec![]);
+        // Deliberately noisy synthetic curve: baseline is above the decode
+        // query. The clamp applies only to target work, never the draft tail.
+        let mut rows = default_rows();
+        for row in &mut rows {
+            if row.workload_kind == "decode" && row.total_kv_read_tokens == 8 {
+                row.latency_ms = 20.0;
+            }
+        }
+        write_pair(tmp.path(), &rows);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        let (_, _, decode) = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let expected =
+            run_generation_ops_step(std::slice::from_ref(&draft_op), &db, 8, 2050, 1.0, false)
+                .unwrap();
+        let draft = decode
+            .iter()
+            .find(|row| row.0.starts_with("draft_"))
+            .unwrap();
+        let target = decode
+            .iter()
+            .find(|row| row.0 == "fpm_forward_decode")
+            .unwrap();
+        assert!((draft.1 - expected).abs() < 1e-12);
+        assert_eq!(draft.3, "empirical");
+        assert_eq!(target.1, 0.0);
+    }
+
+    #[test]
+    fn fpm_hybrid_draft_attention_retains_imbalance_scales() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_draft = context_ops()
+            .into_iter()
+            .find(Op::is_context_attention)
+            .unwrap();
+        let gen_draft = generation_ops()
+            .into_iter()
+            .find(Op::is_generation_attention)
+            .unwrap();
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![gen_draft], vec![ctx_draft]);
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let baseline = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        for (context_scale, generation_scale) in [(1.5, 1.0), (1.0, 2.5), (1.5, 2.5)] {
+            let (prefill, _, decode) = engine
+                .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let expected_context = query_context_op(
+                &engine.context_ops[1],
+                &engine.db,
+                1,
+                2048,
+                0,
+                context_scale,
+                None,
+            )
+            .unwrap();
+            let expected_generation = query_generation_op(
+                &engine.generation_ops[1],
+                &engine.db,
+                8,
+                1,
+                2050,
+                generation_scale,
+                0,
+                None,
+            )
+            .unwrap();
+            for (rows, original, expected) in [
+                (&prefill, &baseline.0, expected_context),
+                (&decode, &baseline.2, expected_generation),
+            ] {
+                let target = rows
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                let original_target = original
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                assert_eq!(
+                    target, original_target,
+                    "measured target FPM stays unscaled"
+                );
+                let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+                assert!((draft.1 - expected.latency_ms).abs() < 1e-12);
+                assert!((draft.2 - expected.energy_wms).abs() < 1e-12);
+            }
+            let scalar = engine
+                .mixed_step_latency(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+            assert!((scalar - reported).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn fpm_hybrid_mixed_reports_draft_provenance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (spec, db) = fpm_hybrid_spec(
+            tmp.path(),
+            Some(7),
+            8,
+            vec![generation_ops().remove(0)],
+            vec![context_ops().remove(0)],
+        );
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let (prefill, _, decode) = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let expected_context =
+            query_context_op(&engine.context_ops[1], &engine.db, 1, 2048, 0, 1.0, None).unwrap();
+        let expected_generation = query_generation_op(
+            &engine.generation_ops[1],
+            &engine.db,
+            8,
+            1,
+            2050,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        for (rows, expected) in [(&prefill, expected_context), (&decode, expected_generation)] {
+            assert_eq!(rows.len(), 2);
+            let target = rows
+                .iter()
+                .find(|row| row.0.starts_with("fpm_forward_"))
+                .unwrap();
+            let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+            assert_eq!(target.3, "silicon");
+            assert_eq!(draft.3, "empirical");
+            assert!(draft.1 > 0.0);
+            assert_eq!(draft.1, expected.latency_ms);
+            // This fixture can carry the existing unavailable-energy sentinel.
+            assert_eq!(draft.2, expected.energy_wms);
+        }
+        let scalar = engine
+            .mixed_step_latency(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+        assert!((scalar - reported).abs() < 1e-12);
     }
 }

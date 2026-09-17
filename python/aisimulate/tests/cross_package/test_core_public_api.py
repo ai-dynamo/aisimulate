@@ -297,6 +297,32 @@ def test_distribution_carries_typing_contract() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
+def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
+    root = importlib.resources.files("aiconfigurator_core")
+    stub = ast.parse((root / "_aiconfigurator_core.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method_name = "regression_store_diagnostics"
+    method = next(
+        (node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+        None,
+    )
+    assert method is not None, f"The shipped RustForwardPassPerfModel stub omits {method_name}"
+    assert [argument.arg for argument in method.args.args] == ["self"]
+    assert ast.unparse(method.returns) == "str"
+
+    native_model = importlib.import_module(namespace).RustForwardPassPerfModel.from_regression("aggregated")
+    diagnostics = getattr(native_model, method_name)()
+    assert isinstance(diagnostics, str)
+    assert json.loads(diagnostics) == [
+        {"workload_kind": kind, "ready": False, "retained_observations": 0}
+        for kind in ("pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill")
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
 def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aiconfigurator_core")
     stub = ast.parse((root / "_aiconfigurator_core.pyi").read_text(encoding="utf-8"))

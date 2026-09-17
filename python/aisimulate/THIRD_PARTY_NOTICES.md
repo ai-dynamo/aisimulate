@@ -35,7 +35,103 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
+`src/aiconfigurator_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+power measurements derived from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Sixteen tables are
+unmodified, byte-identical copies. The context-attention and
+generation-attention tables are modified derivatives: AISimulate preserves
+newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
+to those local-only identities. Source paths, row counts, measured coverage,
+and merge details are recorded in
+`src/aiconfigurator_core/systems/data/b200_sxm/README.md`. The two unmodified
+upstream attention copies under
+`src/aiconfigurator_core/systems/data/b200_sxm/power_upstream/` support focused
+import regression tests, which pin source and packaged SHA-256 digests.
+
+The corresponding energy expectations in the repository-root file
+`crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
+derivatives of those measurements. AISimulate's native pinning workflow at
+commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;
+the adjacent parity README records the reviewed energy-only delta.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
+
+## NVIDIA AIConfigurator speculative decoding
+
+The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
+
+Derived AISimulate paths are under `python/aisimulate/src/aiconfigurator_core/sdk/`, `python/aisimulate/src/aiconfigurator/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aiconfigurator/cli/`, `python/aisimulate/src/aiconfigurator/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's `docs/aic-pr1563-migration.md` lists the exact original and mapped paths. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. Licensed under Apache-2.0; the original license is at:
+https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/LICENSE
+
+This records provenance for NVIDIA-authored predecessor code, without implying ownership by an unaffiliated third party.
+
+## NVIDIA AIConfigurator CI provenance
+
+Selected CI definitions and a recommendation test were adapted from NVIDIA's
+AIConfigurator repository at commit
+`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISimulate's
+unified package layout and Fast CI / Full CI execution model:
+
+- repository-root `.github/workflows/ci.yml` (selected jobs)
+- repository-root `.github/actions/build-platform-wheel/action.yml`
+- repository-root `.github/actions/setup-python-rust/action.yml`
+- repository-root `.github/workflows/collector-check.yml`
+- repository-root `.github/workflows/prediction-regression-gate.yml`
+- repository-root `.github/workflows/validate-platform-wheels.yml`
+- `tests/e2e/cli/test_cli_recommend.py`
+
+Upstream source:
+https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+
+Copyright (c) NVIDIA CORPORATION & AFFILIATES.
+
+AIConfigurator is licensed under the Apache License, Version 2.0. The full
+Apache-2.0 license text is reproduced in `LICENSE`. This section records
+cross-repository provenance for NVIDIA-authored predecessor code; it is not a
+claim that AIConfigurator is owned by an unaffiliated third party.
+
 ## vLLM
+
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
+
+The independently written Rust deferred-queue and post-lookup-touch behavior in
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
+and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at
+immutable revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`:
+[`vllm/v1/core/sched/scheduler.py`](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/core/sched/scheduler.py),
+`vllm/v1/core/sched/request_queue.py` and `vllm/v1/kv_offload/tiering/manager.py`.
+The upstream project is copyright contributors to the vLLM project and licensed
+under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
+no upstream method bodies are copied. The Rust implementation and fixtures are
+modified for simulation and do not reproduce native filesystem timing.
 
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
@@ -63,10 +159,14 @@ Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
 
 This material is licensed under the Apache License 2.0.
 
-The Kimi K2.5 vision-tower topology and pooled multimodal adapter modeled in
+The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
+PatchMergerV2 adapters modeled in
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
-`src/aiconfigurator_core/sdk/utils.py`, with regression derivatives in
-`tests/unit/sdk/models/test_kimi_k25_vision.py`, are modified adaptations of vLLM at commit
+`src/aiconfigurator_core/sdk/utils.py`, with Kimi K3 rotary-grid validation in
+`src/aiconfigurator_core/sdk/backends/base_backend.py` and regression derivatives in
+`tests/unit/sdk/models/test_kimi_k25_vision.py` and
+`tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the
+MoonViT3D implementation that Kimi K3 reuses from Kimi K2.5 in vLLM at commit
 `d2906091bfc579cebefe3d8e8fb9077397ce9882`:
 
 - https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25.py
@@ -528,10 +628,11 @@ Upstream sources:
 Copyright 2026 the HuggingFace Team. All rights reserved.
 This Gemma 4 material is licensed under the Apache License 2.0.
 
-The Kimi K2.5 spatial-temporal vision-tower, processor, and temporal-pooling
+The Kimi K2.5 and Kimi K3 spatial-temporal vision-tower, processor, and temporal-pooling
 behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py`,
 `src/aiconfigurator_core/sdk/utils.py`, and `src/aiconfigurator_core/sdk/backends/base_backend.py`,
-with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`,
+with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`
+and `tests/unit/sdk/models/test_kimi_k3_vision.py`,
 are modified adaptations of Hugging Face Transformers at
 commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 

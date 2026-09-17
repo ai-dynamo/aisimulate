@@ -34,6 +34,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 
+from ..power import normalize_power_summary
 from .config import (
     Candidate,
     OptimizationGoal,
@@ -56,7 +57,14 @@ _METRIC_KEYS = (
     "goodput_output_throughput_tok_s",
     "gpu_hours",
     "duration_ms",
+    "power_w",
+    "power_coverage",
     "planner_total_ticks",
+    "encoder_latency_ms",
+    "encoder_gpus",
+    "encoder_memory_gib",
+    "encoder_power_coverage",
+    "encoder_power_w",
 )
 
 
@@ -255,7 +263,8 @@ def make_candidate(
     ``pareto`` target, ``pareto_objectives`` must be given; the per-objective raw values are
     stored in ``Candidate.objectives`` (Pareto dominance reads these) and ``score`` carries
     the first objective's value as a headline number (it is not used for ranking)."""
-    metrics = {key: float(report[key]) for key in _METRIC_KEYS if key in report}
+    metrics = {key: float(report[key]) for key in _METRIC_KEYS if key in report and report[key] is not None}
+    metrics.update(normalize_power_summary(report))
     if target is OptimizationTarget.PARETO:
         if not pareto_objectives:
             raise ValueError("a pareto candidate needs pareto_objectives")

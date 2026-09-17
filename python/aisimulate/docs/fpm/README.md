@@ -27,7 +27,7 @@ AISimulate checkout; pass its path as `fpm_parquet_path`.
 
 - [Collector usage and publication contract](../../collector/README.md#whole-forward-fpm-campaign)
 - [Generator FPM target and runtime responsibilities](../generator_overview.md#fpm-v1-target)
-- [AISimulate CLI configuration](../../../../docs/cli/design.md)
+- [AISimulate CLI configuration](../../../../docs/cli/user-guide.md)
 - [Core API](../../../../docs/core-api.md)
 - [Offline FPM modeling plan](aic-fpm-modeling-plan.md): design background;
   some milestones and implementation descriptions are historical.

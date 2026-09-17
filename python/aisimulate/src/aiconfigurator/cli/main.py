@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/src/aiconfigurator/cli/main.py
 
 import argparse
 import logging
@@ -196,11 +198,49 @@ def _parse_nextn(value: str) -> int | str:
     return parsed
 
 
+def _speculative_block_from_args(args) -> dict | None:
+    """Assemble the Task ``speculative:`` block from --spec-* flags.
+
+    Returns None when --spec-method is absent; Task-level validation owns the
+    consistency rules (acceptance bound, nextn mutual exclusion, key checks).
+    """
+    method = getattr(args, "spec_method", None)
+    if not method:
+        for flag in ("spec_draft_model_path", "spec_num_draft_tokens", "spec_accepted_tokens"):
+            if getattr(args, flag, None) is not None:
+                raise SystemExit(f"--{flag.replace('_', '-')} requires --spec-method.")
+        return None
+    params: dict = {}
+    if getattr(args, "spec_num_draft_tokens", None) is not None:
+        if method == "mtp":
+            token_key = "depth"
+        elif method in ("ngram", "draft_model", "eagle3"):
+            token_key = "num_speculative_tokens"
+        else:
+            token_key = "num_draft_tokens"
+        params[token_key] = args.spec_num_draft_tokens
+    block: dict = {"method": method, "params": params}
+    if getattr(args, "spec_draft_model_path", None):
+        block["draft_model_path"] = args.spec_draft_model_path
+    if getattr(args, "spec_accepted_tokens", None) is not None:
+        block["accepted_tokens"] = args.spec_accepted_tokens
+    return block
+
+
 def _resolve_and_validate_nextn(args) -> None:
     """Fail fast on inconsistent MTP input; resolve --nextn auto to the checkpoint depth.
 
     Mutates ``args.nextn`` in place so everything downstream sees a plain int.
     """
+    speculative = _speculative_block_from_args(args)
+    if speculative is not None:
+        from aiconfigurator.sdk.speculative import resolve_speculative_block
+
+        try:
+            resolution = resolve_speculative_block(speculative, nextn=args.nextn, nextn_accepted=args.nextn_accepted)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        args.nextn, args.nextn_accepted = resolution.nextn, resolution.nextn_accepted
     if args.nextn == "auto":
         try:
             resolved = resolve_nextn_auto(args.model_path)
@@ -839,6 +879,33 @@ def _add_generate_mode_arguments(parser):
     )
 
 
+def _add_speculative_scheme_arguments(parser):
+    """Speculation scheme flags for the single-point estimate command."""
+    parser.add_argument(
+        "--spec-method",
+        default=None,
+        help="Speculative decoding method (ngram, draft_model, eagle3, dflash, dspark, or mtp). "
+        "Non-MTP methods support agg/static estimates and require --spec-accepted-tokens.",
+    )
+    parser.add_argument(
+        "--spec-draft-model-path",
+        default=None,
+        help="Draft checkpoint (Hugging Face repo or local path) providing the draft config.json.",
+    )
+    parser.add_argument(
+        "--spec-num-draft-tokens",
+        type=int,
+        default=None,
+        help="Drafted tokens per round (MTP depth for --spec-method mtp).",
+    )
+    parser.add_argument(
+        "--spec-accepted-tokens",
+        type=float,
+        default=None,
+        help="Measured average accepted draft tokens per round; no built-in acceptance assumption.",
+    )
+
+
 def _add_estimate_mode_arguments(parser):
     """Add arguments for the estimate mode (single-point TTFT/TPOT/power estimation)."""
     parser.add_argument(
@@ -1317,6 +1384,7 @@ def _add_estimate_mode_arguments(parser):
         "there is no built-in acceptance assumption — use a measured value from "
         "your deployment.",
     )
+    _add_speculative_scheme_arguments(parser)
     parser.add_argument(
         "--stride",
         type=int,
@@ -2660,6 +2728,7 @@ def _run_estimate_epd(args, estimate_mode: str) -> None:
         forward_model=args.forward_model,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
     )
     workload.update({name: getattr(args, name) for name in _QUANT_ENUM_TABLES if getattr(args, name, None)})
     encoder_kwargs = dict(
@@ -2843,6 +2912,7 @@ def _run_estimate_mode(args):
         prefix=args.prefix,
         nextn=args.nextn,
         nextn_accepted=args.nextn_accepted,
+        speculative=_speculative_block_from_args(args),
         stride=args.stride,
     )
 

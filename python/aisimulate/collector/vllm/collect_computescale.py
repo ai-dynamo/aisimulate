@@ -3,7 +3,11 @@
 
 """Measure vLLM FP8 activation quantization overhead for static-FP8 GEMM."""
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968047:
+# compute_scale: 8/8 representative cases. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import torch
 from vllm import _custom_ops as ops

@@ -974,6 +974,7 @@ misc:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -1001,6 +1002,74 @@ mod tests {
             "resolved GEMM parquet must exist: {}",
             gemm_sources[0].0.display()
         );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_power_reaches_gemm_query() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let value = db
+            .gemm
+            .query(GemmQuantMode::Bfloat16, 16_384, 65_536, 51_200)
+            .expect("the shipped measured GEMM identity must be queryable");
+
+        assert!(value.latency > 0.0);
+        assert!(value.power > 0.0);
+        assert_eq!(
+            value.energy.to_bits(),
+            (value.power * value.latency).to_bits()
+        );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_attention_power_sentinels_reach_queries() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let lanes = vec!["torch_flow".to_string()];
+
+        let measured_context = db
+            .attention
+            .query_context(
+                &lanes,
+                4,
+                16_384,
+                96,
+                96,
+                64,
+                0,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+            )
+            .expect("the shipped measured context-attention identity must be queryable");
+        let sentinel_context = db
+            .attention
+            .query_context(
+                &lanes,
+                64,
+                2_048,
+                64,
+                1,
+                256,
+                0,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Fp8,
+            )
+            .expect("the shipped sentinel context-attention identity must be queryable");
+        assert!(measured_context.power > 0.0);
+        assert!(measured_context.energy > 0.0);
+        assert_eq!(sentinel_context.power.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(sentinel_context.energy.to_bits(), 0.0_f64.to_bits());
+
+        let measured_generation = db
+            .attention
+            .query_generation(&lanes, 32, 2, 64, 64, 64, 0, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped measured generation-attention identity must be queryable");
+        let sentinel_generation = db
+            .attention
+            .query_generation(&lanes, 32, 3, 32, 2, 128, 2_048, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped sentinel generation-attention identity must be queryable");
+        assert!(measured_generation.energy > 0.0);
+        assert_eq!(sentinel_generation.energy.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]

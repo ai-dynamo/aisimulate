@@ -880,6 +880,7 @@ def _parse_hf_config_json(config: dict) -> dict:
     # For multimodal models, unwrap the nested text config so that all LLM
     # parameters (layers, hidden_size, MoE fields, etc.) are read from the
     # correct sub-dictionary while keeping the top-level architecture name.
+    processor_cfg = config.get("preprocessor_config")
     text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
     if text_key and text_key in config:
         text_cfg = config[text_key]
@@ -1055,6 +1056,90 @@ def _parse_hf_config_json(config: dict) -> dict:
                 "silently dropped and produce a wrong hybrid layer plan."
             )
         layer_types = tuple("linear_attention" if (i + 1) in kda_layer_ids else "full_attention" for i in range(layers))
+        kimi_vision_config = None
+        if vision_cfg is not None and not isinstance(vision_cfg, dict):
+            raise ValueError("Kimi K3 vision_config must be an object")
+        if vision_cfg:
+            # Kimi K3 reuses the MoonViT3D tower and PatchMergerV2 implemented
+            # for Kimi K2.5. Sources: Transformers commit
+            # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 and vLLM commit
+            # d2906091bfc579cebefe3d8e8fb9077397ce9882.
+            def positive_int(value, name):
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    raise ValueError(f"Kimi K3 vision_config.{name} must be a positive integer")
+                return value
+
+            merge_kernel = vision_cfg.get("merge_kernel_size")
+            if (
+                not isinstance(merge_kernel, (list, tuple))
+                or len(merge_kernel) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in merge_kernel)
+            ):
+                raise ValueError("Kimi K3 vision_config.merge_kernel_size must contain two positive integers")
+            if merge_kernel[0] != merge_kernel[1]:
+                raise ValueError(f"Kimi K3 requires a square merge_kernel_size, got {merge_kernel!r}")
+            if vision_cfg.get("merge_type") != "sd2_tpool":
+                raise ValueError(
+                    f"Kimi K3 vision modeling requires merge_type='sd2_tpool', got {vision_cfg.get('merge_type')!r}"
+                )
+            if vision_cfg.get("mm_projector_type") != "patchmergerv2":
+                raise ValueError(
+                    "Kimi K3 vision modeling requires mm_projector_type='patchmergerv2', "
+                    f"got {vision_cfg.get('mm_projector_type')!r}"
+                )
+
+            vision_hidden = positive_int(vision_cfg.get("vt_hidden_size"), "vt_hidden_size")
+            # The patch embedder constructs a temporal sin/cos table even for images.
+            if vision_hidden % 2 != 0:
+                raise ValueError("Kimi K3 vision_config.vt_hidden_size must be even for temporal position embeddings")
+            vision_heads = positive_int(vision_cfg.get("vt_num_attention_heads"), "vt_num_attention_heads")
+            vision_depth = positive_int(vision_cfg.get("vt_num_hidden_layers"), "vt_num_hidden_layers")
+            vision_intermediate = positive_int(vision_cfg.get("vt_intermediate_size"), "vt_intermediate_size")
+            patch_size = positive_int(vision_cfg.get("patch_size"), "patch_size")
+            # The upstream attention layer defaults only absent/null QKV width
+            # to the tower width; zero and other falsy values are malformed.
+            qkv_hidden = vision_cfg.get("qkv_hidden_size")
+            qkv_hidden = vision_hidden if qkv_hidden is None else positive_int(qkv_hidden, "qkv_hidden_size")
+            if qkv_hidden % vision_heads != 0:
+                raise ValueError(
+                    f"Kimi K3 qkv_hidden_size ({qkv_hidden}) must be divisible by "
+                    f"vt_num_attention_heads ({vision_heads})"
+                )
+            if (qkv_hidden // vision_heads) % 4 != 0:
+                raise ValueError("Kimi K3 attention head dimension must be divisible by 4 for 2D rotary embeddings")
+            if positive_int(vision_cfg.get("mm_hidden_size"), "mm_hidden_size") != vision_hidden:
+                raise ValueError("Kimi K3 PatchMergerV2 requires mm_hidden_size to match vt_hidden_size")
+            out_hidden = positive_int(vision_cfg.get("text_hidden_size"), "text_hidden_size")
+            if out_hidden != hidden_size:
+                raise ValueError(
+                    f"Kimi K3 vision text_hidden_size ({out_hidden}) must match "
+                    f"the language hidden_size ({hidden_size})"
+                )
+            max_temporal_patches = positive_int(vision_cfg.get("init_pos_emb_time"), "init_pos_emb_time")
+            merger_dim = vision_hidden * merge_kernel[0] * merge_kernel[1]
+            kimi_vision_config = VisionEncoderConfig(
+                depth=vision_depth,
+                hidden_size=vision_hidden,
+                num_heads=vision_heads,
+                intermediate_size=vision_intermediate,
+                patch_size=patch_size,
+                temporal_patch_size=1,
+                spatial_merge_size=merge_kernel[0],
+                out_hidden_size=out_hidden,
+                projector_dims=((merger_dim, merger_dim), (merger_dim, out_hidden)),
+                partial_rotary_factor=1.0,
+                in_channels=3,
+                qkv_hidden_size=qkv_hidden,
+                final_norm=True,
+                pool_temporal=True,
+                video_attention_type="spatial_temporal",
+                max_temporal_patches=max_temporal_patches,
+                projector_post_norm=True,
+                projector_replicated=True,
+                projector_pre_norm=False,
+                **_kimi_processor_limits(processor_cfg, vision_cfg),
+                encoder_type="kimi_k3_moonvit3d_patchmergerv2",
+            )
         extra_params = KimiK3Config(
             layer_types=layer_types,
             kda_num_heads=linear_attn_cfg["num_heads"],
@@ -1074,11 +1159,13 @@ def _parse_hf_config_json(config: dict) -> dict:
             first_k_dense_replace=config.get("first_k_dense_replace", 0),
             dense_inter_size=config.get("intermediate_size", 0),
             attn_res_block_size=config.get("attn_res_block_size", 0) or 0,
+            vision_config=kimi_vision_config,
         )
         logger.info(
             f"Kimi-K3 hybrid config: kda_layers={layer_types.count('linear_attention')}, "
             f"mla_layers={layer_types.count('full_attention')}, num_experts={num_experts}, "
-            f"latent={extra_params.routed_expert_hidden_size}, shared={extra_params.num_shared_experts}"
+            f"latent={extra_params.routed_expert_hidden_size}, shared={extra_params.num_shared_experts}, "
+            f"vision={'enabled' if kimi_vision_config is not None else 'absent'}"
         )
     elif architecture in {"DeepSeekForCausalLM", "DeepseekV3ForCausalLM"}:
         # DeepSeek V3 / R1 / Kimi K2: MLA latent geometry from config so the KV
@@ -1793,7 +1880,14 @@ def get_model_config_from_model_path(model_path: str) -> dict:
         Quantization metadata retains its original root or text_config scope.
     """
     raw_config = _load_model_config_from_model_path(model_path)
-    if raw_config.get("architectures") == ["KimiK25ForConditionalGeneration"] and model_path not in DefaultHFModels:
+    if (
+        raw_config.get("architectures")
+        in (
+            ["KimiK25ForConditionalGeneration"],
+            ["KimiK3ForConditionalGeneration"],
+        )
+        and model_path not in DefaultHFModels
+    ):
         # Only Kimi consumes these processor files. Bundled checkpoints use
         # the pinned processor defaults; local/downloaded checkpoints may
         # override them with the original media_proc_cfg or native HF layout.

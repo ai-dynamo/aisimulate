@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
 use crate::replay::PlacementCacheSample;
-use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
+use crate::replay::loadgen::{
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticTrajectorySnapshot,
+};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
@@ -19,9 +21,13 @@ use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 const DDSKETCH_RELATIVE_ACCURACY: f64 = 0.001;
 const DDSKETCH_MAX_BINS: usize = 32_768;
 
+/// Match AIC's fail-closed publication gate for modeled power.
+pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
+
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -29,10 +35,24 @@ pub struct ReplayReport {
     pub latency: TraceLatencyStats,
     pub trajectories: Option<TraceTrajectoryStats>,
     pub agentic_graph: Option<AgenticGraphIdentity>,
+    /// Canonical driver lifecycle evidence. The compact JSON report publishes
+    /// only its digest and event count; conformance tests can inspect all events.
+    pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    /// One explicit completed, failed, or incomplete result per authored play.
+    pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
     pub goodput: Option<TraceGoodputStats>,
+    /// Modeled forward-pass power per GPU. Present only when the selected
+    /// timing provider exposes power evidence. `power_w` is null below
+    /// AIC's latency-weighted coverage threshold while `coverage` explains
+    /// why the estimate was withheld.
+    pub power: Option<TracePowerStats>,
+    /// Complete typed operation-energy diagnostics for bindings and direct
+    /// Rust consumers. `None` means the caller did not request or attach
+    /// diagnostics; an attached payload carries its own availability status.
+    pub power_diagnostics: Option<ReplayPowerDiagnostics>,
     /// Per-request records, one per admitted request. Populated by
     /// `TraceCollector::finish`. Intentionally NOT serialized into the summary
     /// JSON (see custom `Serialize` impl below) — consumers that want per-
@@ -101,6 +121,119 @@ pub struct TraceGoodputStats {
     pub output_throughput_tok_s: f64,
 }
 
+/// Replay-level power summary derived from timing-provider energy evidence.
+///
+/// External callers construct validated values and cannot mutate their fields:
+///
+/// ```compile_fail
+/// use aisimulate_core::replay::TracePowerStats;
+/// let mut power = TracePowerStats::new(Some(500.0), 1.0).unwrap();
+/// power.coverage = 0.1;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TracePowerStats {
+    /// Active forward-pass average power per GPU, in watts. `None` means the
+    /// publication conditions did not all hold. JSON always includes this field.
+    pub(crate) power_w: Option<f64>,
+    /// Latency-weighted fraction of modeled forward-pass work with positive
+    /// measured energy, in `[0, 1]`.
+    pub(crate) coverage: f64,
+}
+
+/// Complete replay power diagnostics shared by Rust and serialized bindings.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPowerDiagnostics {
+    pub schema_version: &'static str,
+    pub scope: &'static str,
+    pub power_w_unit: &'static str,
+    pub energy_unit: &'static str,
+    pub latency_unit: &'static str,
+    pub coverage_gate: f64,
+    pub publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covered_latency_ms: Option<f64>,
+    pub power_w: Option<f64>,
+    pub power_coverage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<&'static str>,
+    pub phases: Vec<ReplayPhasePowerDiagnostics>,
+}
+
+/// Per-phase operation-energy diagnostics.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPhasePowerDiagnostics {
+    pub name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    pub publication_status: &'static str,
+    pub power_w: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub operations: Vec<ReplayOperationPowerDiagnostics>,
+}
+
+/// Per-operation energy evidence and provenance.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayOperationPowerDiagnostics {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_contribution: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncovered_reason: Option<&'static str>,
+}
+
+impl TracePowerStats {
+    /// Validate finite values and the inclusive power publication threshold.
+    pub fn new(power_w: Option<f64>, coverage: f64) -> anyhow::Result<Self> {
+        let stats = Self { power_w, coverage };
+        stats.validate()?;
+        Ok(stats)
+    }
+
+    /// Active forward-pass watts per GPU, or `None` when publication is withheld.
+    pub fn power_w(&self) -> Option<f64> {
+        self.power_w
+    }
+
+    /// Latency-weighted energy-evidence coverage, in `[0, 1]`.
+    pub fn coverage(&self) -> f64 {
+        self.coverage
+    }
+
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.coverage.is_finite() && (0.0..=1.0).contains(&self.coverage),
+            "/summary/power_coverage must be finite and in [0, 1]"
+        );
+        if let Some(watts) = self.power_w {
+            anyhow::ensure!(
+                watts.is_finite() && watts > 0.0,
+                "/summary/power_w must be finite and positive"
+            );
+            anyhow::ensure!(
+                self.coverage >= POWER_DATA_COVERAGE_THRESHOLD,
+                "/summary/power_w requires power_coverage >= 0.9"
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceDistributionStats {
     pub mean_ms: f64,
@@ -147,6 +280,19 @@ impl ReplayReport {
         self
     }
 
+    pub fn with_power(mut self, power: Option<TracePowerStats>) -> Self {
+        self.power = power;
+        self
+    }
+
+    pub fn with_power_diagnostics(
+        mut self,
+        power_diagnostics: Option<ReplayPowerDiagnostics>,
+    ) -> Self {
+        self.power_diagnostics = power_diagnostics;
+        self
+    }
+
     pub fn processed_tokens(&self) -> usize {
         self.request_counts.total_input_tokens + self.request_counts.total_output_tokens
     }
@@ -168,6 +314,9 @@ impl ReplayReport {
 
 impl Display for ReplayReport {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        if let Some(power) = self.power {
+            power.validate().map_err(|_| std::fmt::Error)?;
+        }
         writeln!(
             f,
             "  completed_requests: {}",
@@ -205,6 +354,19 @@ impl Display for ReplayReport {
         )?;
         writeln!(f, "  mean_ttft_ms: {:.6}", self.latency.ttft.mean_ms)?;
         writeln!(f, "  mean_e2e_latency_ms: {:.6}", self.latency.e2e.mean_ms)?;
+        if let Some(power) = self.power {
+            match power.power_w {
+                Some(power_w) => writeln!(f, "  power_w: {power_w:.6}")?,
+                None => writeln!(f, "  power_w: unavailable")?,
+            }
+            writeln!(f, "  power_coverage: {:.6}", power.coverage)?;
+        } else {
+            writeln!(f, "  power_w: unavailable (energy provider unsupported)")?;
+            writeln!(
+                f,
+                "  power_coverage: unavailable (energy provider unsupported)"
+            )?;
+        }
         writeln!(
             f,
             "  prefix_cache_reused_ratio: {:.6}",
@@ -224,7 +386,13 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(70))?;
+        if let Some(power) = self.power {
+            power.validate().map_err(serde::ser::Error::custom)?;
+        }
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(g3) = &self.g3_offload {
+            map.serialize_entry("g3_offload", g3)?;
+        }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -284,6 +452,11 @@ impl Serialize for ReplayReport {
                 &goodput.output_throughput_tok_s,
             )?;
         }
+        map.serialize_entry("power_w", &self.power.and_then(|power| power.power_w))?;
+        map.serialize_entry("power_coverage", &self.power.map(|power| power.coverage))?;
+        if let Some(power_diagnostics) = &self.power_diagnostics {
+            map.serialize_entry("power_diagnostics", power_diagnostics)?;
+        }
         map.serialize_entry("processed_tokens", &self.processed_tokens())?;
         map.serialize_entry("processed_tokens_per_s", &self.processed_tokens_per_s())?;
         map.serialize_entry(
@@ -315,6 +488,16 @@ impl Serialize for ReplayReport {
         }
         if let Some(agentic_graph) = &self.agentic_graph {
             map.serialize_entry("agentic_graph", agentic_graph)?;
+        }
+        if let Some(lifecycle) = &self.agentic_lifecycle {
+            map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
+            map.serialize_entry(
+                "agentic_lifecycle_digest",
+                &lifecycle.digest().map_err(serde::ser::Error::custom)?,
+            )?;
+        }
+        if let Some(outcomes) = &self.agentic_play_outcomes {
+            map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
         serialize_rate_distribution(
@@ -745,7 +928,11 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    /// Simulated timestamp at which this reporting epoch began. Request
+    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
     itl_distribution: StreamingDistribution,
@@ -778,6 +965,8 @@ pub struct TraceCollector {
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
+    agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
 
 impl TraceRequestStats {
@@ -861,6 +1050,10 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.requests.contains_key(&uuid)
+    }
+
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;
@@ -985,6 +1178,14 @@ impl TraceCollector {
 
     pub fn set_agentic_graph(&mut self, identity: AgenticGraphIdentity) {
         self.agentic_graph = Some(identity);
+    }
+
+    pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
+        self.agentic_lifecycle = Some(transcript);
+    }
+
+    pub fn set_agentic_play_outcomes(&mut self, outcomes: Vec<AgenticPlayOutcome>) {
+        self.agentic_play_outcomes = Some(outcomes);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1339,7 +1540,38 @@ impl TraceCollector {
             .map(TraceRequestStats::actual_output_length)
     }
 
-    pub fn finish(mut self) -> ReplayReport {
+    /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
+    pub(crate) fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        let stats = self.requests.get(&uuid)?;
+        Some((
+            stats.first_admit_ms?,
+            stats.first_admission_reused_input_tokens,
+        ))
+    }
+
+    /// Drain measurements while retaining the configuration that applies to
+    /// each reporting epoch of a reusable runtime. The absolute report boundary
+    /// includes idle time in this epoch and starts the next one.
+    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+        debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
+        let next = Self {
+            report_start_ms: report_end_ms,
+            defer_token_timeline_finalization: self.defer_token_timeline_finalization,
+            capture_per_request: self.capture_per_request,
+            sla: self.sla,
+            static_worker_count: self.static_worker_count,
+            prefill_gpus_per_worker: self.prefill_gpus_per_worker,
+            decode_gpus_per_worker: self.decode_gpus_per_worker,
+            ..Default::default()
+        };
+        std::mem::replace(self, next).finish_at(Some(report_end_ms))
+    }
+
+    pub fn finish(self) -> ReplayReport {
+        self.finish_at(None)
+    }
+
+    fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1380,6 +1612,7 @@ impl TraceCollector {
             Vec::new()
         };
         let sla = self.sla;
+        let report_start_ms = self.report_start_ms;
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
@@ -1387,6 +1620,8 @@ impl TraceCollector {
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
+        let agentic_lifecycle = self.agentic_lifecycle;
+        let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -1405,7 +1640,9 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
-        let mut duration_ms = 0.0_f64;
+        let mut duration_ms = report_end_ms
+            .map(|end_ms| (end_ms - report_start_ms).max(0.0))
+            .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
@@ -1435,7 +1672,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - report_start_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())
@@ -1492,6 +1729,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            g3_offload: self.g3_offload,
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -1538,7 +1776,11 @@ impl TraceCollector {
             },
             trajectories,
             agentic_graph,
+            agentic_lifecycle,
+            agentic_play_outcomes,
             goodput,
+            power: None,
+            power_diagnostics: None,
             per_request,
             runtime_evidence,
         }
@@ -1905,6 +2147,88 @@ mod tests {
         assert_eq!(summary["num_ttft_samples"], 0);
         assert_eq!(summary["num_tpot_samples"], 0);
         assert_eq!(summary["num_e2e_latency_samples"], 0);
+    }
+
+    #[test]
+    fn power_display_rejects_invalid_statistics_before_writing() {
+        use std::fmt::Write;
+
+        for (power_w, coverage) in [
+            (Some(500.0), 0.89),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            let report = TraceCollector::default()
+                .finish()
+                .with_power(Some(TracePowerStats { power_w, coverage }));
+            let mut output = String::new();
+            assert!(write!(&mut output, "{report}").is_err());
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
+    fn power_serialization_preserves_coverage_and_fails_closed() {
+        let available = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: Some(487.5),
+                coverage: 0.95,
+            }));
+        let summary = serde_json::to_value(&available).unwrap();
+        assert_eq!(summary["power_w"], 487.5);
+        assert_eq!(summary["power_coverage"], 0.95);
+
+        let unavailable = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: None,
+                coverage: 0.42,
+            }));
+        let summary = serde_json::to_value(&unavailable).unwrap();
+        assert_eq!(summary.get("power_w"), Some(&Value::Null));
+        assert_eq!(summary["power_coverage"], 0.42);
+
+        let absent = TraceCollector::default().finish();
+        assert_eq!(absent.power, None);
+        assert_eq!(absent.power_diagnostics, None);
+        let summary = serde_json::to_value(&absent).unwrap();
+        assert_eq!(summary.get("power_w"), Some(&Value::Null));
+        assert_eq!(summary.get("power_coverage"), Some(&Value::Null));
+        assert!(summary.get("power_diagnostics").is_none());
+
+        let diagnostics = ReplayPowerDiagnostics {
+            schema_version: "1.0",
+            scope: "active_forward_pass_per_gpu",
+            power_w_unit: "W",
+            energy_unit: "W-ms",
+            latency_unit: "ms",
+            coverage_gate: POWER_DATA_COVERAGE_THRESHOLD,
+            publication_status: "unsupported",
+            energy_wms: None,
+            latency_ms: None,
+            covered_latency_ms: None,
+            power_w: None,
+            power_coverage: None,
+            unavailable_reason: Some("timing provider has no operation-energy evidence"),
+            phases: Vec::new(),
+        };
+        let typed = TraceCollector::default()
+            .finish()
+            .with_power_diagnostics(Some(diagnostics.clone()));
+        assert_eq!(typed.power_diagnostics, Some(diagnostics));
+        let summary = serde_json::to_value(&typed).unwrap();
+        assert_eq!(summary["power_diagnostics"]["schema_version"], "1.0");
+        assert_eq!(
+            summary["power_diagnostics"]["publication_status"],
+            "unsupported"
+        );
     }
 
     #[test]

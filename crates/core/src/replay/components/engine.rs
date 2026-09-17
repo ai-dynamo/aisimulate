@@ -51,6 +51,7 @@ struct LogicalWorker {
     in_flight_by_rank: Vec<BTreeSet<Uuid>>,
     pending_pass: Option<PendingPass>,
     consecutive_same_timestamp_retries: usize,
+    same_timestamp_countdown: Option<usize>,
     #[cfg(test)]
     same_timestamp_retries_total: usize,
 }
@@ -175,6 +176,14 @@ where
         num_workers: usize,
         startup_time_ms: Option<f64>,
     ) -> Result<Self> {
+        let mut factory = factory;
+        if let Some(config) = factory.g3_config.clone() {
+            factory.g3_tier = Some(crate::engine::g3_offload::G3Tier::new(
+                config,
+                0,
+                factory.g3_block_bytes,
+            )?);
+        }
         let mut component = Self {
             stage,
             _pass_mode: pass_mode,
@@ -235,6 +244,13 @@ where
                 rank.set_host_offload_observer(Arc::clone(&observer));
             }
         }
+    }
+
+    pub(crate) fn g3_stats(&self) -> Option<crate::engine::G3Stats> {
+        self.factory
+            .g3_tier
+            .as_ref()
+            .map(|r| r.lock().unwrap().snapshot())
     }
 
     fn required_worker(&self, worker_id: usize) -> Result<&LogicalWorker> {
@@ -309,6 +325,7 @@ where
             in_flight_by_rank: vec![BTreeSet::new(); dp_size],
             pending_pass: None,
             consecutive_same_timestamp_retries: 0,
+            same_timestamp_countdown: None,
             #[cfg(test)]
             same_timestamp_retries_total: 0,
         }));
@@ -356,6 +373,9 @@ where
         // Validate every fallible invariant before mutating the fleet. If a
         // planner-triggered removal fails, Replay can now return the error
         // without leaving a half-tombstoned worker behind.
+        if let Some(registry) = &self.factory.g3_tier {
+            registry.lock().unwrap().unregister_worker(worker_id)?;
+        }
         self.ready_workers.remove(&worker_id);
         self.deferred_ready_workers.remove(&worker_id);
         self.workers
@@ -832,6 +852,23 @@ where
                 && self.ready_workers.contains(&worker_id);
             if same_timestamp_candidate {
                 match same_timestamp_retry {
+                    SameTimestampRetry::Countdown { remaining } => {
+                        let worker = self.required_worker_mut(worker_id)?;
+                        if worker
+                            .same_timestamp_countdown
+                            .is_some_and(|previous| remaining >= previous)
+                        {
+                            let in_flight = worker.total_in_flight();
+                            bail!(
+                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining"
+                            );
+                        }
+                        // Configured round counts can exceed the admission
+                        // convergence limit. Strict decrease proves this retry
+                        // is bounded without inventing time or visible effects.
+                        worker.same_timestamp_countdown = Some(remaining);
+                        continue;
+                    }
                     SameTimestampRetry::Retry => {
                         let worker = self.required_worker_mut(worker_id)?;
                         worker.consecutive_same_timestamp_retries += 1;
@@ -867,6 +904,8 @@ where
             }
             self.required_worker_mut(worker_id)?
                 .consecutive_same_timestamp_retries = 0;
+            self.required_worker_mut(worker_id)?
+                .same_timestamp_countdown = None;
             if effects.is_empty() {
                 if self.ready_workers.remove(&worker_id) {
                     self.deferred_ready_workers.insert(worker_id);
@@ -1220,6 +1259,47 @@ mod tests {
             startup_time_ms,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn g3_scale_in_does_not_wait_for_an_unrelated_workers_io() {
+        use crate::engine::HostBlockKey;
+        use crate::engine::g3_offload::Direction;
+        let config: ReplayEngineConfig = serde_json::from_value(serde_json::json!({"rank": {
+            "num_gpu_blocks": 8, "block_size": 4, "enable_prefix_caching": true,
+            "kv_cache_bytes_per_token": 256,
+            "native_host_offload": {"num_host_blocks": 8},
+            "g3_offload": {"scope": "cluster_shared", "num_g3_blocks": 8, "latency_to_first_byte_ms": 100.0}
+        }})).unwrap();
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            2,
+            None,
+        )
+        .unwrap();
+        let registry = component.factory.g3_tier.clone().unwrap();
+        let job = registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[HostBlockKey::new(1)], 0.0)
+            .unwrap();
+        let (_, _, removed) = component.apply_target_count(1).unwrap();
+        assert_eq!(removed, vec![1]);
+        assert!(registry.lock().unwrap().has_work(0));
+        assert_eq!(component.add_worker().unwrap(), 2);
+        // A retiring owner is retained until its own I/O has settled.
+        component.mark_for_removal(0);
+        assert!(component.try_remove_drained().unwrap().is_empty());
+        assert!(component.workers[0].is_some());
+        registry.lock().unwrap().cancel(job, 0.0);
+        assert_eq!(component.try_remove_drained().unwrap(), vec![0]);
+        assert_eq!(component.apply_target_count(0).unwrap().2, vec![2]);
+        assert_eq!(component.add_worker().unwrap(), 3);
     }
 
     fn decode_component(num_workers: usize) -> EngineComponent {

@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/attention.rs
 
 //! Attention operators: context, generation, encoder.
 //!
@@ -182,7 +184,7 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 17).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 18).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Whether the fused prefill kernel applies rotary position embeddings.
@@ -195,7 +197,7 @@ pub struct ContextAttentionOp {
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 17).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 18).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
@@ -383,13 +385,36 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 17).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 18).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Per-head RMSNorm on Q and K before decode attention. Appended at the
     /// struct tail because bincode payloads are positional (schema v16).
     #[serde(default)]
     pub use_qk_norm: bool,
+    /// Batch divisor for materialized speculative widths (the attention twin
+    /// of the gemm/elementwise `scale_num_tokens` channel). The engine widens
+    /// the decode batch by `(nextn + 1)`, but a block attention pass reads
+    /// each request's KV once for ALL its query tokens — so the op is priced
+    /// at `batch / scale_num_tokens` (the request batch, "sequence basis").
+    /// Default 1: every legacy spec and the MTP contract stay bit-identical.
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub scale_num_tokens: u32,
+    /// Real query tokens per request behind the divided-out width (verify
+    /// width for target verify attention, drafted tokens for a block-drafting
+    /// scheme's own attention; 0/1 = plain decode). Drives the roofline
+    /// guard: the table row prices one query per request (math term ≈
+    /// 1/verify_query_tokens of the true QK+PV work), so the price is lifted
+    /// to `verify_query_tokens x SOL math` when even ideal-peak compute for
+    /// the full query block exceeds the (KV-read-anchored) table value. In
+    /// the memory-bound decode regime this never fires (arithmetic intensity
+    /// ≈ 2·n/(n_kv·kv_bytes)·w FLOP/byte — w would need to exceed ~75 on
+    /// H100 GQA-4 to cross the roofline); it exists to keep the short-s /
+    /// extreme-width corner honest without collected wide-query data. No
+    /// fitted constants anywhere on this channel: the sequence-basis floor
+    /// and the ideal-peak guard are both physical bounds.
+    #[serde(default)]
+    pub verify_query_tokens: u32,
 }
 
 impl GenerationAttentionOp {
@@ -410,6 +435,8 @@ impl GenerationAttentionOp {
             kv_cache_dtype,
             lane_order: default_lane_order(),
             use_qk_norm: false,
+            scale_num_tokens: 1,
+            verify_query_tokens: 0,
         }
     }
 
@@ -420,10 +447,20 @@ impl GenerationAttentionOp {
         kv_seq_tokens: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<PerformanceResult, AicError> {
+        // Sequence basis: fold the engine's speculative width multiplier out
+        // of the batch — one KV read per REQUEST, not per query token.
+        let width = self.scale_num_tokens;
+        if width == 0 || (width > 1 && (batch_size == 0 || batch_size % width != 0)) {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "generation attention requires a positive scale_num_tokens dividing batch_size; \
+                 got scale_num_tokens={width}, batch_size={batch_size}"
+            )));
+        }
+        let seq_batch = batch_size / width;
         let mut result = query_generation_attention_table(
             db,
             &self.lane_order,
-            batch_size,
+            seq_batch,
             kv_seq_tokens,
             self.n,
             self.n_kv,
@@ -431,6 +468,32 @@ impl GenerationAttentionOp {
             self.window_size,
             self.kv_cache_dtype,
         )?;
+        if self.verify_query_tokens > 1 {
+            // Roofline guard (see field doc): lift to the ideal-peak math
+            // term of the full query block when it exceeds the table value.
+            {
+                let attn_flops = generation_attn_flops(&db.system_spec, self.kv_cache_dtype)?;
+                let sol = generation_attention_sol(
+                    &db.system_spec,
+                    self.n_kv,
+                    self.head_size,
+                    self.window_size,
+                    self.kv_cache_dtype,
+                    self.n as f64,
+                    seq_batch as f64,
+                    kv_seq_tokens as f64,
+                    attn_flops,
+                );
+                let block_math_ms = sol.math_ms * self.verify_query_tokens as f64;
+                if let Some(components) = &mut result.sol {
+                    components.math_ms = block_math_ms;
+                }
+                if block_math_ms > result.latency_ms {
+                    result.latency_ms = block_math_ms;
+                    result.source = result.source.combine(Source::Sol);
+                }
+            }
+        }
         if self.use_qk_norm {
             // Match ContextAttention's Q/K RMSNorm accounting: two memory
             // passes before the norm, two for the norm, then the established
@@ -2399,5 +2462,71 @@ mod tests {
             flashinfer.latency_ms
         );
         assert_ne!(default.latency_ms, flashinfer.latency_ms);
+    }
+    /// Speculative width channel: `scale_num_tokens = w` folds the engine's
+    /// widened decode batch back to the request batch before the table
+    /// lookup (one KV read per request, "sequence basis").
+    #[test]
+    fn generation_attention_sequence_basis_folds_batch() {
+        let db = b200_vllm_db();
+        let mut op = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        let unfolded = op.query(&db, 64, 4096, 1.0).expect("plain query");
+        op.scale_num_tokens = 8;
+        let folded = op.query(&db, 512, 4096, 1.0).expect("folded query");
+        assert_eq!(folded.latency_ms, unfolded.latency_ms);
+        assert_eq!(folded.energy_wms, unfolded.energy_wms);
+    }
+
+    /// Roofline guard: an absurd `verify_query_tokens` forces the ideal-peak
+    /// math term of the query block over the table value, lifting the price.
+    /// The fixture remains memory-bound at width eight.
+    #[test]
+    fn generation_attention_roofline_guard_lifts_on_compute_domination() {
+        let db = b200_vllm_db();
+        let mut op = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        op.scale_num_tokens = 8;
+        let base = op.query(&db, 512, 4096, 1.0).expect("base").latency_ms;
+        // Width eight remains memory-bound on this fixture.
+        op.verify_query_tokens = 8;
+        let physical = op.query(&db, 512, 4096, 1.0).expect("physical").latency_ms;
+        assert_eq!(physical, base);
+        op.verify_query_tokens = 100_000;
+        let lifted = op.query(&db, 512, 4096, 1.0).expect("lifted").latency_ms;
+        assert!(lifted > base, "guard must lift: {lifted} vs {base}");
+    }
+    #[test]
+    fn generation_attention_rejects_invalid_batch_divisor() {
+        let db = b200_vllm_db();
+        let mut op = GenerationAttentionOp::new("gen", 64, 4, 128, KvCacheQuantMode::Fp8);
+        for (width, batch) in [(0, 8), (8, 0), (8, 7), (8, 9)] {
+            op.scale_num_tokens = width;
+            assert!(matches!(
+                op.query(&db, batch, 4096, 1.0),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn generation_attention_verify_sol_keeps_decomposition_consistent() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut op = GenerationAttentionOp::new("gen", 64, 4, 128, KvCacheQuantMode::Fp8);
+        op.scale_num_tokens = 8;
+        op.verify_query_tokens = 100_000;
+        let result = op.query(&db, 512, 4096, 1.0).unwrap();
+        assert_eq!(result.source, Source::Sol);
+        assert_eq!(result.latency_ms, result.sol.unwrap().time_ms());
     }
 }

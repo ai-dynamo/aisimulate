@@ -22,8 +22,9 @@ from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from ..power import POWER_FIELDS, normalize_power_summary, power_unavailable_reason
 from .config import Candidate, SmartSearchConfig
 from .replay import ReplaySpec, canonical_json, validate_json_value
 
@@ -119,11 +120,18 @@ class CandidateRecord(BaseModel):
     prediction_config: dict[str, JsonValue] | None = None
     used_gpus: int | None = Field(default=None, ge=0)
     score: float | None = Field(default=None, allow_inf_nan=False)
-    metrics: dict[str, float] = Field(default_factory=dict)
+    metrics: dict[str, float | None] = Field(default_factory=dict)
     objectives: dict[str, float] | None = None
     reason_category: ReasonCategory | None = None
     reason: str | None = None
     provenance: CandidateProvenance
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _normalize_power_fields(cls, metrics):
+        if isinstance(metrics, dict) and metrics:
+            return {**metrics, **normalize_power_summary(metrics)}
+        return metrics
 
     @model_validator(mode="after")
     def _validate_status_payload(self) -> CandidateRecord:
@@ -132,7 +140,11 @@ class CandidateRecord(BaseModel):
             self.prediction_config,
             path=f"candidate {self.candidate_id} prediction config",
         )
-        non_finite_metrics = [name for name, value in self.metrics.items() if not math.isfinite(value)]
+        non_finite_metrics = [
+            name
+            for name, value in self.metrics.items()
+            if not (value is None and name in POWER_FIELDS) and (value is None or not math.isfinite(value))
+        ]
         non_finite_objectives = [name for name, value in (self.objectives or {}).items() if not math.isfinite(value)]
         if non_finite_metrics or non_finite_objectives:
             raise ValueError(
@@ -361,6 +373,9 @@ class SweepResult(BaseModel):
             "reason",
             "used_gpus",
             "score",
+            "power_w",
+            "power_coverage",
+            "power_source",
             "config_json",
             "prediction_config_json",
             "metrics_json",
@@ -385,6 +400,9 @@ class SweepResult(BaseModel):
                     "reason": candidate.reason or "",
                     "used_gpus": "" if candidate.used_gpus is None else candidate.used_gpus,
                     "score": "" if candidate.score is None else candidate.score,
+                    "power_w": candidate.metrics.get("power_w", ""),
+                    "power_coverage": candidate.metrics.get("power_coverage", ""),
+                    "power_source": candidate.provenance.power.get("source", ""),
                     "config_json": canonical_json(candidate.config),
                     "prediction_config_json": canonical_json(candidate.prediction_config),
                     "metrics_json": canonical_json(candidate.metrics),
@@ -428,7 +446,7 @@ def make_candidate_provenance(
     candidate_config: dict[str, JsonValue],
     *,
     replay_spec: ReplaySpec | None = None,
-    metrics: dict[str, float] | None = None,
+    metrics: dict[str, float | None] | None = None,
     runner_metadata: dict[str, JsonValue] | None = None,
 ) -> CandidateProvenance:
     """Normalize a materialized replay plus optional runner evidence.
@@ -460,6 +478,7 @@ def make_candidate_provenance(
                 "strategy",
                 "replicas",
                 "prefill_tp",
+                "prefill_hardware_sku",
                 "prefill_pp",
                 "prefill_attention_dp",
                 "prefill_moe_tp",
@@ -467,6 +486,7 @@ def make_candidate_provenance(
                 "prefill_strategy",
                 "prefill_replicas",
                 "decode_tp",
+                "decode_hardware_sku",
                 "decode_pp",
                 "decode_attention_dp",
                 "decode_moe_tp",
@@ -477,6 +497,11 @@ def make_candidate_provenance(
         }
     )
     raw_performance_data = runner_metadata.get("performance_data", [])
+    encoder = candidate_config.get("encoder")
+    if isinstance(encoder, dict):
+        topology_fields["encoder"] = deepcopy(encoder)
+        topology_fields["language_gpus"] = candidate_config.get("language_gpus")
+        topology_fields["total_gpus"] = candidate_config.get("used_gpus")
     performance_data: list[dict[str, JsonValue]] = (
         deepcopy(raw_performance_data)
         if isinstance(raw_performance_data, list) and all(isinstance(item, dict) for item in raw_performance_data)
@@ -493,6 +518,8 @@ def make_candidate_provenance(
                     }
                 )
     identity_config: dict[str, JsonValue] = {}
+    if isinstance(encoder, dict):
+        performance_data.append({"role": "encoder", "provider": "aic", "database_mode": "SILICON", **deepcopy(encoder)})
     if deployment is not None:
         for raw_metadata in deployment.performance_model_metadata.values():
             if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("config"), dict):
@@ -521,9 +548,25 @@ def make_candidate_provenance(
                     )
                 )
     power = {key: value for key, value in (metrics or {}).items() if "power" in key or "energy" in key}
+    if power:
+        power.update(
+            {
+                "source": "runner_reported",
+                "scope": "unspecified",
+                "publication_status": "reported",
+            }
+        )
     raw_power = runner_metadata.get("power")
     if isinstance(raw_power, dict):
         power.update(raw_power)
+    if metrics is not None:
+        normalized_power = normalize_power_summary(metrics)
+        power.update(normalized_power)
+        if normalized_power["power_w"] is None:
+            power["publication_status"] = (
+                "withheld" if normalized_power["power_coverage"] is not None else "unavailable"
+            )
+            power["unavailable_reason"] = power_unavailable_reason(normalized_power)
     workload: dict[str, JsonValue] = {}
     goal_payload: dict[str, JsonValue] = {}
     if replay_spec is not None:
