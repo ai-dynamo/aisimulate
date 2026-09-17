@@ -41,12 +41,11 @@ and [Hopper absorbed MLA](https://github.com/sgl-project/sglang/blob/4289f36ef96
 The installed Blackwell backend source hash matches that immutable revision:
 `b83137cfc31a095425062aab3d80835cd670b4190cf13ada14c7802b63fddb8d`.
 
-The 74 Blackwell failures now have a measured FP8/FP8 profile slice and pass
-the original replay. The 10 H200 FP8/BF16 queries still require a predictor
-precision-mapping fix: the measured serving path uses BF16 compute.
-No FP8/BF16 rows were fabricated.
+The 74 Blackwell failures are resolved by measured FP8/FP8 profiles. The 10
+H200 failures are resolved by mapping inferred attention to the observed BF16
+execution dtype before building native ops. No FP8/BF16 rows were fabricated.
 
-## Original 84-point replay
+## Profile-only 84-point replay
 
 The exact point set was recovered from the E2E Gym
 `inferencex-coverage-20260917` audit, release `db-dump/2026-09-14`.
@@ -85,6 +84,35 @@ Point identities, metrics, errors, commands, and hashes are in the
 [replay evidence](mla-precision-20260917-replay.json). Full inputs, native
 per-request reports, scripts, and retry logs are retained locally at
 `/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/`.
+
+## Execution mapping and final replay
+
+`resolve_sglang_mla_compute()` resolves BF16 compute before model construction
+for SGLang 0.5.14 SM90 FA3 and the measured DeepSeek-V3/R1 BF16 model geometry
+(512-rank KV, 64-dimensional RoPE). Native compilation, KV memory construction,
+and the estimate-path FMHA resolver share this rule. It does not depend on
+which precision tables are available. Explicit FMHA overrides, Blackwell,
+whole-model FPM, and unaudited backend/version/geometry combinations are preserved.
+
+A fresh wheel from `2cfe6f836fa3f2c81786d250125406cc624c1357` replayed all
+84 original points successfully: B300 **45/45**, B200 **29/29**, H200 **10/10**.
+All 21,430 requests completed, with zero truncated outputs and positive finite
+metrics. The 84 input replay specs and original source fields were unchanged.
+The three installed profile hashes match the collected data, and all 124 Python
+source files in the replay/core packages match the branch checkout.
+
+This final run uses the complete branch wheel, including the main updates;
+the profile-only experiment above separately isolates the data contribution.
+The original silicon/query-version mismatch remains, so these results establish
+coverage recovery rather than version-matched accuracy.
+
+- [Final replay evidence](mla-precision-20260917-mapping-replay.json) records
+  point identities, metrics, wheel/runtime hashes, and commands.
+- Full per-request reports and scripts are retained in
+  `/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/`.
+- 106 focused mapping, compilation, and memory tests passed; all eight native
+  version-resolution tests passed. Tests verify both primary and fallback MLA
+  op serialization, explicit precision, and Blackwell behavior.
 
 ## Runtime and measurement
 

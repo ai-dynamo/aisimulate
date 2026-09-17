@@ -1,0 +1,1848 @@
+{
+  "summary": {
+    "selected": 84,
+    "success": 84,
+    "failed": 0,
+    "unsupported": 0,
+    "by_gpu": {
+      "h200": 10,
+      "b200": 29,
+      "b300": 45
+    },
+    "completed_requests_verified": 21430,
+    "requests_by_gpu": {
+      "h200": 2480,
+      "b200": 9020,
+      "b300": 9930
+    },
+    "truncated_requests": 0,
+    "identical_original_replay_specs": 84,
+    "original_source_fields_unchanged": true,
+    "query_version": "0.5.14",
+    "profile_hashes": {
+      "h200_sxm": "e3eddbdc52bd05b17465ce741414b0025dab022e6d91c88673e00cb2ff9d4088",
+      "b200_sxm": "ac81dbd8980356f05d0aa5c8b70423f3bb807f9d9a131c95c02073816c4af2ba",
+      "b300_sxm": "c5ceb7a4a3211f66587d90986f3647f29f8927003643a31aec70419f14cf96a0"
+    },
+    "installed_python_sources_verified": 124,
+    "runtime": {
+      "runner": "aisimulate.engine_replay",
+      "packages": {
+        "aisimulate": "0.12.0"
+      },
+      "aic_allow_unlisted_versions": false,
+      "runner_module_sha256": "82540d4e3d9d7a0f8adc29619c7051a602b1b6a119c0b6e711083dd9facf9bc5",
+      "aic_materializer_sha256": "4d565b466ed52a478c7a33a5405f8d4541230e803833ffd57932459508de76cc",
+      "native_runtime_sha256": "863e47820361d0319ae573d8f36f177682854df5d47097a34ed21b0b2dd09fbd",
+      "aiconfigurator_core_sha256": "7926c7036412f3febd5f3a30756d9e30dd6725639762dbacdc194670ade00a49",
+      "source_checkout": {
+        "commit_sha": "2cfe6f836fa3f2c81786d250125406cc624c1357",
+        "clean": true
+      }
+    },
+    "scope": "Full branch wheel with measured profiles and execution-precision mapping. Earlier profile-only replay remains a separate controlled experiment. Silicon/runtime version mismatch prevents a version-matched accuracy claim."
+  },
+  "manifest": {
+    "revision": "2cfe6f836fa3f2c81786d250125406cc624c1357",
+    "wheel": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/wheels/aisimulate-0.12.0-cp311-abi3-macosx_11_0_arm64.whl",
+    "wheel_sha256": "006a3bba530a4555e8b4c2d5ea47eb363e3dc3182c2e4eebfb146c343c813756",
+    "source_selection": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/selection.json",
+    "source_selection_sha256": "2165f6b422eadf9a2fbe546c690170b33773a30216c44416ce5c95086f86d0a3",
+    "auditor_sha256": "a1072585b4c1fb93b82b08f979eaa5e07c708b3a6657da99355bce5cfa0650e4",
+    "commands": [
+      {
+        "argv": [
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/venv/bin/python",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/audit_runner.py",
+          "--predictions",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/shard-0-input.json",
+          "--output",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-0.json",
+          "--aisimulate-git-sha",
+          "2cfe6f836fa3f2c81786d250125406cc624c1357",
+          "--aisimulate-source-clean",
+          "--checkpoint-every",
+          "1",
+          "--log-every",
+          "5"
+        ],
+        "log": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-0.log"
+      },
+      {
+        "argv": [
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/venv/bin/python",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/audit_runner.py",
+          "--predictions",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/shard-1-input.json",
+          "--output",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-1.json",
+          "--aisimulate-git-sha",
+          "2cfe6f836fa3f2c81786d250125406cc624c1357",
+          "--aisimulate-source-clean",
+          "--checkpoint-every",
+          "1",
+          "--log-every",
+          "5"
+        ],
+        "log": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-1.log"
+      },
+      {
+        "argv": [
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/venv/bin/python",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/audit_runner.py",
+          "--predictions",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/shard-2-input.json",
+          "--output",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-2.json",
+          "--aisimulate-git-sha",
+          "2cfe6f836fa3f2c81786d250125406cc624c1357",
+          "--aisimulate-source-clean",
+          "--checkpoint-every",
+          "1",
+          "--log-every",
+          "5"
+        ],
+        "log": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-2.log"
+      },
+      {
+        "argv": [
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/venv/bin/python",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/replay-84/audit_runner.py",
+          "--predictions",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/shard-3-input.json",
+          "--output",
+          "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-3.json",
+          "--aisimulate-git-sha",
+          "2cfe6f836fa3f2c81786d250125406cc624c1357",
+          "--aisimulate-source-clean",
+          "--checkpoint-every",
+          "1",
+          "--log-every",
+          "5"
+        ],
+        "log": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84/output-3.log"
+      }
+    ],
+    "inputs": {
+      "shard-0-input.json": "ecd8db48a20494863a272c5651f5cece1ec7d3d4d1c1e7e6977f6cee9d220453",
+      "shard-1-input.json": "63da5c7d6997115bc8bc1bdf3846793bbe60d137a8b643632ff6ee88ee97e477",
+      "shard-2-input.json": "3be02b323d4ec6e1d1ddc965fa35b23cb089685e4f90b99ced2db681f1ecb572",
+      "shard-3-input.json": "524582819e4c37091ca79aa848ae2c60974f45b0367c46ab2e7d9a2b0faeccb4"
+    },
+    "exit_codes": [
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "source_predictions_sha256": "dca0cee0e750295e6d7f7d33af8b085d38276ecb63a00a0acdee8c8deebc2d6b",
+  "local_artifacts": "/Users/simonec/.cache/aisim-e2e-gym/mla-fp8-20260917/mapping-84",
+  "artifact_hashes": {
+    "build.log": "d328ec1aebf1cca3409ea6a4aa878eb8d80b4edd5f10d3cebd79783f763ed8f1",
+    "finalize.py": "fdcda30d4dd46378ee5cedab5f230283c91fdff6e6be8b0040e68e16ae780af9",
+    "install.log": "c07618c61cb8b36d3650b730fc7e1d5db26825fe78a0ceb6654c7f3f9f43a40c",
+    "installed-source-hashes.json": "6e2dcebee30d21748026ffe10116759d295d55eb49f51433f29b977235155c2f",
+    "manifest.json": "a95fbb090e7dc396f6936fb20c3c3d5a2cd73503909681c048181a5c5d6cb355",
+    "output-0.coverage.json": "823cb19c7e35b16b2be873f862ae2d37b6d3f964bf241bd120d0dff91ab386b5",
+    "output-0.json": "f4cf472df21c81dcf1179705f1ad5a4f8cb396c6a82f4a7fdc8f8ad8172e9224",
+    "output-0.log": "2a4ae66e528bcee4fd2e7fc14a81f879c9f29082bf1e733e3845801c7b9bce2b",
+    "output-1.coverage.json": "260a9ce7b0badab829840bdb6df8cec5f3886cfbdf9f9a0410bf64f9a4916b22",
+    "output-1.json": "717ebca3c9ac4217ffaf0c7c313d7e1917c3ab68f1765322a5ff0cd6a97df0a8",
+    "output-1.log": "b31c1eab96f5008ee0b96e6861ce7dc4d81ff68e734d03b210950da30cc5bafb",
+    "output-2.coverage.json": "0bff04ec535bb8116520983e80d7b760d798e956054d6d69f80c1655e94b79bf",
+    "output-2.json": "e7ce562a4af392c8ab0b78fd6ae69f8771dc857313a9bcc4b3e95d9c9f4713d0",
+    "output-2.log": "546f61631f560c405fb0f249a149fc29f0d51f744a0b3a4c8574ada12c7c01d9",
+    "output-3.coverage.json": "d8d50d98403ce80a4b91bc5660694c78174565f6f05d05532ab12d82ed64b59a",
+    "output-3.json": "37821356d32f84dd9f2414b75e459496c568a290e15e6a48a25645b963f011e4",
+    "output-3.log": "f39f9aa618c71051661b9979b0c9c8b7bdf57150fc02591b8fdc4c9b496a6e5b",
+    "run.log": "3aa57daa28e035a2491b638cf239f8764af7c73d723f3574fda809410ca00fcb",
+    "run.py": "dc0aa6df85b48ba0cdbdf360d3d3c28ed48bffc371c0a6c44b030fc3acb44851",
+    "shard-0-input.json": "ecd8db48a20494863a272c5651f5cece1ec7d3d4d1c1e7e6977f6cee9d220453",
+    "shard-1-input.json": "63da5c7d6997115bc8bc1bdf3846793bbe60d137a8b643632ff6ee88ee97e477",
+    "shard-2-input.json": "3be02b323d4ec6e1d1ddc965fa35b23cb089685e4f90b99ced2db681f1ecb572",
+    "shard-3-input.json": "524582819e4c37091ca79aa848ae2c60974f45b0367c46ab2e7d9a2b0faeccb4"
+  },
+  "points": [
+    {
+      "selected_index": 0,
+      "source_index": 0,
+      "source_row_sha256": "3ef8447f21ded10952c08c4b9b9a5f68d66c30908dd5bef1567f67715ee870e9",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 14961.067120285876,
+        "dynamo_tpot_ms": 27.973249176284195,
+        "dynamo_request_latency_ms": 40615.61222646698,
+        "dynamo_tput_per_gpu_output": 175.11213410752157
+      },
+      "spec_sha256": "118034ca04c444dc26d022e7a3157ce88f2f1e9d26c566b4865c4318cef57f7f",
+      "native_report_sha256": "62b76f3dfec3f078e7e9db0a67564341f7c2919e1cc66cebb4471668ded2c2da"
+    },
+    {
+      "selected_index": 1,
+      "source_index": 1,
+      "source_row_sha256": "16dbc1cefe58574f0397a163cbee72ef5beeeedadd2be9f50e0770b71fdbedd9",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 88.75392216874957,
+        "dynamo_tpot_ms": 18.225960032856683,
+        "dynamo_request_latency_ms": 16825.037488318667,
+        "dynamo_tput_per_gpu_output": 107.18990732630236
+      },
+      "spec_sha256": "4bd76e9f0d237502900cfc345d7a64369596cec4fe74b054aa33aa13696074b0",
+      "native_report_sha256": "66ca6b45c504c3af00d0954820fc57cb70e519063f93defe70eada3068351f1e"
+    },
+    {
+      "selected_index": 2,
+      "source_index": 2,
+      "source_row_sha256": "99aa60aee66de350bcf6b93ca175e8ebc6ddc1e6cc9d06459e4ba1b9afc470e6",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 115.91421539999973,
+        "dynamo_tpot_ms": 23.696209884774927,
+        "dynamo_request_latency_ms": 21855.44776688124,
+        "dynamo_tput_per_gpu_output": 163.69386397204735
+      },
+      "spec_sha256": "539d97bc7a2e716ba1696e96fb54afb54415c3d145f35c19f3233a5117822524",
+      "native_report_sha256": "ad37e9e553f127a992864a3aa6337117ae8af10edd2cc7731dc17fc086010195"
+    },
+    {
+      "selected_index": 3,
+      "source_index": 3,
+      "source_row_sha256": "f4646ff14e44fbc3071f583cd2914f38474e747ba6300d81139434921b60a863",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 66.27560352499934,
+        "dynamo_tpot_ms": 10.228399043426446,
+        "dynamo_request_latency_ms": 9520.80332127501,
+        "dynamo_tput_per_gpu_output": 47.70180540920501
+      },
+      "spec_sha256": "767ee0b386302523ba4833bec35a3f696d62f9a0458dc3d487fc7418430404e2",
+      "native_report_sha256": "31215ee47e37cfa145f7011d2068e6b24b382104aea0fcc5f21369fdfe253920"
+    },
+    {
+      "selected_index": 4,
+      "source_index": 4,
+      "source_row_sha256": "decf208861a1d0bb41790696db509baac3f417ee75552f9bfaa1a9656ee7b4be",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 77.26372322500029,
+        "dynamo_tpot_ms": 12.185365764577515,
+        "dynamo_request_latency_ms": 11332.858403987479,
+        "dynamo_tput_per_gpu_output": 80.08670120418627
+      },
+      "spec_sha256": "2bf938be969f8742f81c85ddbe032e2521c527c61136ad515445444bb637a9c5",
+      "native_report_sha256": "305f290f62ef76692a6042c134a8e13dff6856f1ddcd3c3418c1d51c588eef72"
+    },
+    {
+      "selected_index": 5,
+      "source_index": 5,
+      "source_row_sha256": "0879ab18c6814921154475ac12f5ceb883a566192a0efb2bd5caaf44757fd9ba",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 373.06578115000065,
+        "dynamo_tpot_ms": 11.487676499354388,
+        "dynamo_request_latency_ms": 10997.243153774993,
+        "dynamo_tput_per_gpu_output": 41.37512252560332
+      },
+      "spec_sha256": "5f3b289e221dd6751154ac746fe2131dfe385432134452ce22f9c608a3d64652",
+      "native_report_sha256": "d03ce2d6b9c46995fc19ff69b83e76b62450c8741aecdc5fec55a83f62b34bdd"
+    },
+    {
+      "selected_index": 6,
+      "source_index": 6,
+      "source_row_sha256": "979173c2ee42e759f90adf5acbfd6fc8d2afd6ad030fff25e089ff4f50e7364d",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 103251.69142945527,
+        "dynamo_tpot_ms": 17.18341725775808,
+        "dynamo_request_latency_ms": 119020.50914364781,
+        "dynamo_tput_per_gpu_output": 58.99527601534756
+      },
+      "spec_sha256": "b9065c3cfc12b948010fb9db0666a9d6882faf5b1da222feb06266f043b0b554",
+      "native_report_sha256": "4c7ce22ebea39a6bc5be7ad39d1db7a2be8d914febd7b2e31746f05f0693038d"
+    },
+    {
+      "selected_index": 7,
+      "source_index": 7,
+      "source_row_sha256": "e4222d3a7fccae88de84820397afc1907d7e82c055b67676e00a6f92645279d6",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 2334.914751474999,
+        "dynamo_tpot_ms": 14.179223615909532,
+        "dynamo_request_latency_ms": 15439.37975523747,
+        "dynamo_tput_per_gpu_output": 58.061081374603845
+      },
+      "spec_sha256": "a666b432749ddf4687c07fb71ac27760949a0ee1da9e24faa2d94fc870fd377c",
+      "native_report_sha256": "f45d014e64f7aa1df42b2e2aef45264d9b7e88edaf92c3d65018ab9876d541bc"
+    },
+    {
+      "selected_index": 8,
+      "source_index": 8,
+      "source_row_sha256": "bf35e9ce1856cddd965a649a430b5949ede41a96f05f361e2cd7392f50eb6213",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 16859.82502226251,
+        "dynamo_tpot_ms": 14.598733206517625,
+        "dynamo_request_latency_ms": 30270.407282562497,
+        "dynamo_tput_per_gpu_output": 58.486606768219886
+      },
+      "spec_sha256": "a377acff6618a96dc4cab0f054e0708d247213b13da548cce55acb6973762108",
+      "native_report_sha256": "0fa08651f4e3798d4d36ff8e3e6066bda776ad4b0ccb435a49c5fac50f583903"
+    },
+    {
+      "selected_index": 9,
+      "source_index": 9,
+      "source_row_sha256": "4547ca5083fae6f3354c389df23a6c3b9974ef32035e79b4adab3b77d631a253",
+      "config_id": 81,
+      "hardware": "h200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 46141.06273929715,
+        "dynamo_tpot_ms": 14.711424392744117,
+        "dynamo_request_latency_ms": 59631.64458750973,
+        "dynamo_tput_per_gpu_output": 59.05689359002171
+      },
+      "spec_sha256": "e7bae6110c0517ac661245da92389809f1e6bd3e69d65034642a8a219eeaa1ed",
+      "native_report_sha256": "a8a956cb850f95cb07be0f29b32edd184fa86728a0a095fb116befd5be883325"
+    },
+    {
+      "selected_index": 10,
+      "source_index": 19,
+      "source_row_sha256": "8851f06e3cc324b9d3be31fce5658a53aa15fb40de26c6b25bc314fed1e92b1d",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 62.0709676687499,
+        "dynamo_tpot_ms": 12.894602902038685,
+        "dynamo_request_latency_ms": 11903.181676256208,
+        "dynamo_tput_per_gpu_output": 151.04112606161408
+      },
+      "spec_sha256": "37f750ed80842601bbf3576d4373b27d50e9a659f5b6942b83e2d43137dfdd8e",
+      "native_report_sha256": "10bda21c8ff392ac5703b57404811bcf975a432a6abc962b818491cce9125700"
+    },
+    {
+      "selected_index": 11,
+      "source_index": 20,
+      "source_row_sha256": "699d8f2cf1ca3975eb6f62d23661c2fcf5ec128095a2d54d33db694c7a948fb2",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 111.47492875937533,
+        "dynamo_tpot_ms": 20.483799639482466,
+        "dynamo_request_latency_ms": 18910.53142600643,
+        "dynamo_tput_per_gpu_output": 378.69222558096226
+      },
+      "spec_sha256": "a6f3ec0c3624f5cb4ade2277ac41c08feca3113c3f68809ef651c88130647c8d",
+      "native_report_sha256": "cb59c52595478b8064a853a1d4d7c6b8e9074fb1906dd9127460bcedf0c158af"
+    },
+    {
+      "selected_index": 12,
+      "source_index": 21,
+      "source_row_sha256": "19168c0c20cc6baae7a45361c360468ae49e6aa62650e3f97d993558788ed27e",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 54.78413898750033,
+        "dynamo_tpot_ms": 10.21242721925845,
+        "dynamo_request_latency_ms": 9487.69531961253,
+        "dynamo_tput_per_gpu_output": 95.61335816160334
+      },
+      "spec_sha256": "c62ba983ae83977ef55201131eac6d285e4bf7942cf33131a4ce221e5b9dd0e6",
+      "native_report_sha256": "82b4bdf4b9b0d27942ddba4fc83019962f126bafe72142f4aac6d8e698c26b0f"
+    },
+    {
+      "selected_index": 13,
+      "source_index": 22,
+      "source_row_sha256": "802c37c36234b29811704c601e0b6fe67b5948e03d81e7ed64c393df57915633",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 78.87881348125008,
+        "dynamo_tpot_ms": 15.162218297218837,
+        "dynamo_request_latency_ms": 13990.538077243424,
+        "dynamo_tput_per_gpu_output": 253.99435771536065
+      },
+      "spec_sha256": "894caf308c8b4d2931a5dde7901b40af300bd435c069533a605e19fd3ba9face",
+      "native_report_sha256": "f58b3e444cb569dbf9411b2598d0f627c28e0ec8e4d1db1a5ec28338f22db684"
+    },
+    {
+      "selected_index": 14,
+      "source_index": 23,
+      "source_row_sha256": "04cc06e409ee773225e77ef11c35a33a3b607e19aca6be2e860bf66053ade43d",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 48.1014189499998,
+        "dynamo_tpot_ms": 8.484920774678823,
+        "dynamo_request_latency_ms": 7890.985078149997,
+        "dynamo_tput_per_gpu_output": 57.527715237028495
+      },
+      "spec_sha256": "a9c67329c2c75e257204969cb43fd934e4fff066c8fadcfcd0af238d665ba870",
+      "native_report_sha256": "ca70c4c42e03707f11e2342229f6f59884a18043627db24abce106902b848a91"
+    },
+    {
+      "selected_index": 15,
+      "source_index": 24,
+      "source_row_sha256": "4767f931c3c7a75420e887bba6338124e1c6c8e1c1eef2c1de0f383e034b4062",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 191.01793285,
+        "dynamo_tpot_ms": 8.983858063484526,
+        "dynamo_request_latency_ms": 8497.816450549979,
+        "dynamo_tput_per_gpu_output": 53.475144361226775
+      },
+      "spec_sha256": "1d91452903d18e26fe52cd69c11e66c94570df1b0f6937d7e9a7dd72574c59a5",
+      "native_report_sha256": "ed46e4d990b2acd11a18037e74d0b3b5e0d0df78427aa1ae3347233a316c300e"
+    },
+    {
+      "selected_index": 16,
+      "source_index": 25,
+      "source_row_sha256": "3387315412b31a58391e2f62f5c688082af9615e21a9e804921921dde1f6755e",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 44.8963775999998,
+        "dynamo_tpot_ms": 7.4081097403938285,
+        "dynamo_request_latency_ms": 6928.309744150001,
+        "dynamo_tput_per_gpu_output": 32.776486402010654
+      },
+      "spec_sha256": "e3c1d7800f376bfbb0a9e9e45494a50849896c0e77195150d902cf1fe4bd542c",
+      "native_report_sha256": "f72e915c0ea17033046ed4bb4d1ad16b0b23764ac60b4fa9ee94a0ab903abcfb"
+    },
+    {
+      "selected_index": 17,
+      "source_index": 26,
+      "source_row_sha256": "aac3981dabd27c14a1ffc0e50e5d0e49e7cd9530b5d6a2aca9d391c4e83ff426",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 173.12833569999952,
+        "dynamo_tpot_ms": 7.6498835574451745,
+        "dynamo_request_latency_ms": 7280.835450449998,
+        "dynamo_tput_per_gpu_output": 31.209619266782497
+      },
+      "spec_sha256": "7aa767da096fe92f7c5c167e19352b12425d123e5fab01d869ac205ce219016e",
+      "native_report_sha256": "fce5f800b5db4ee3023981d7fd447c6c68ac8af877120c9915cb90c60e4716b0"
+    },
+    {
+      "selected_index": 18,
+      "source_index": 27,
+      "source_row_sha256": "111b1542593d2827721e946b3aafe3b67bbf270194c7ecc2c7bef8893cbd8a97",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 43.2198187,
+        "dynamo_tpot_ms": 7.1330514063747685,
+        "dynamo_request_latency_ms": 6523.903244800001,
+        "dynamo_tput_per_gpu_output": 17.426300748806593
+      },
+      "spec_sha256": "e36d48bc4d11f86ad7a12ae1618f01a184caee223d4c078885fb84d3ede54e3d",
+      "native_report_sha256": "13a958f23b041298b461bfd35a124bfa75b9664eaee5a6efda157c56e32adcb8"
+    },
+    {
+      "selected_index": 19,
+      "source_index": 28,
+      "source_row_sha256": "c26ffce615e4e2c628c9f2f47132951b73280b352a9105d63dbab44baa7ae28c",
+      "config_id": 87,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 166.33088420000018,
+        "dynamo_tpot_ms": 7.325254534211856,
+        "dynamo_request_latency_ms": 6821.580554800002,
+        "dynamo_tput_per_gpu_output": 16.66585904640587
+      },
+      "spec_sha256": "8caaf981fdc15ffb1bf98fa13a6a16111c2cbbec1f3b66d5f0ef4858e643ed79",
+      "native_report_sha256": "6c82271a92e440c0c69fae05c2d23f2fb6a9d4918cd3d11774475503303fbcd7"
+    },
+    {
+      "selected_index": 20,
+      "source_index": 118,
+      "source_row_sha256": "7f4cb10f154746e5a7a135bb8c21c3292b328542e4a49efb58f3b0e540a1a652",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 96.75120268749932,
+        "dynamo_tpot_ms": 20.012186269394675,
+        "dynamo_request_latency_ms": 18461.085054265513,
+        "dynamo_tput_per_gpu_output": 775.166908901846
+      },
+      "spec_sha256": "3876dddb3330f78eaa317ab4b29dbf5ce7d21dfa3d092aa532a9e85e02a543f2",
+      "native_report_sha256": "87c6b572f0167d03a3a29c55477713c96a6a9eff96bf35f3e1dd0c0eab06f2af"
+    },
+    {
+      "selected_index": 21,
+      "source_index": 119,
+      "source_row_sha256": "3dfe5d1c216e5fd59c33adf79f621b89fb5279177248338c6b6cf785fc09f6cc",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 51.81753826249998,
+        "dynamo_tpot_ms": 12.656344150648675,
+        "dynamo_request_latency_ms": 11673.288611618787,
+        "dynamo_tput_per_gpu_output": 308.50488520356186
+      },
+      "spec_sha256": "ce1f7e558d1f3b35837678c681113c9ce51f3ab487650b9292def38e9e2017a4",
+      "native_report_sha256": "4f2137e43684dbfb4c82adfb25c04db477e6c81d19221609160799a9eeb17726"
+    },
+    {
+      "selected_index": 22,
+      "source_index": 120,
+      "source_row_sha256": "5e1ef25f777719d707784fef84650614cc1e5f3890002a4384aabb6a0d272271",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 670.1656864953122,
+        "dynamo_tpot_ms": 31.727020187636576,
+        "dynamo_request_latency_ms": 29804.600307276683,
+        "dynamo_tput_per_gpu_output": 484.62188008296465
+      },
+      "spec_sha256": "0a95600c584610779e5af31758cb2e74149e3a5472129c364e30f60ffbc93c98",
+      "native_report_sha256": "a511797c8004a55fcf7112f4f8a326970670c48d83d0afb773382edf357da5bf"
+    },
+    {
+      "selected_index": 23,
+      "source_index": 121,
+      "source_row_sha256": "be22af0638ba91f9d7c5fe34252a64c1ff467a1f384fd46aea8f2188e3c69fea",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 128,
+      "status": "success",
+      "completed_requests": 1280,
+      "metrics": {
+        "dynamo_ttft_ms": 1184.1550886148452,
+        "dynamo_tpot_ms": 49.17029678156986,
+        "dynamo_request_latency_ms": 46548.20732100368,
+        "dynamo_tput_per_gpu_output": 625.6662400446829
+      },
+      "spec_sha256": "2ac71b1e34f31dc1c4fb58f6ce6b97eefeaec656fdc8d402e30f7f307d5e4934",
+      "native_report_sha256": "6a3247217a120ebcf822d893e8cb1f4922927c7e7eb0a7ff83eca4950eef8fca"
+    },
+    {
+      "selected_index": 24,
+      "source_index": 122,
+      "source_row_sha256": "72cd9da26a8c1d628a4e78320ea5af5772ef41212c4d8d586d43273af65fb2dd",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 217.63780899999955,
+        "dynamo_tpot_ms": 11.494277410965177,
+        "dynamo_request_latency_ms": 10850.345669175,
+        "dynamo_tput_per_gpu_output": 168.68065526669153
+      },
+      "spec_sha256": "9a0b39ea94b6dde4fd4a3fadc94a1f007a1d174969e54506535c38c247ad4cbc",
+      "native_report_sha256": "1ee8711c2c972751fbfb09f66dc87870593d4c04f661d2ef336d521aaff5ba18"
+    },
+    {
+      "selected_index": 25,
+      "source_index": 123,
+      "source_row_sha256": "d94ccdd46ba3a021bb8bcf1809a598811278a8fa3da9e9fb3ea9d9d5322f3774",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 278.6058016499998,
+        "dynamo_tpot_ms": 15.418726142051506,
+        "dynamo_request_latency_ms": 14459.026290649994,
+        "dynamo_tput_per_gpu_output": 250.78947613828345
+      },
+      "spec_sha256": "d0236961ce983a232c06a6a2bd91ca13bd297ece16a5873d8e098421d65a3899",
+      "native_report_sha256": "a5a43e521a7c32583b3b198c58a5057aa9002ed4504a1fcee0d0264d850f3648"
+    },
+    {
+      "selected_index": 26,
+      "source_index": 124,
+      "source_row_sha256": "b820f6fc7c0c2eba0d736a31330f21d22a94c0576e03098e0e0ef61e678c2b57",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 183.0560428249999,
+        "dynamo_tpot_ms": 8.907818464568031,
+        "dynamo_request_latency_ms": 8418.872810575009,
+        "dynamo_tput_per_gpu_output": 108.27653915726029
+      },
+      "spec_sha256": "73a8b36d66ed958e1d96e585b7537d7e2f3dbe62c37c11f255ae7c7fb4e5047b",
+      "native_report_sha256": "d8ed9d30a7ed46d65fc5f5880dbb9bc45fc31e8996f04d8e313d82a352da75b0"
+    },
+    {
+      "selected_index": 27,
+      "source_index": 125,
+      "source_row_sha256": "b21960d30193d4ccfec03f8569f031c645eb25d33686001249defcec9609ad99",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 411.923095859375,
+        "dynamo_tpot_ms": 21.633148906924855,
+        "dynamo_request_latency_ms": 20273.236422040645,
+        "dynamo_tput_per_gpu_output": 356.20032508768026
+      },
+      "spec_sha256": "6d72b7d93b1414498105a8002e4c878e6d8990a8ae348a640310553407138a8c",
+      "native_report_sha256": "f830533aede1d3be6a66de35e7e885b119722df27aa70c5c80d62a1ab642dd3d"
+    },
+    {
+      "selected_index": 28,
+      "source_index": 126,
+      "source_row_sha256": "49627f839e61680c48c280afc8156e168c4f04b3dcb17b85b7324fdedf0b52ee",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 67.11521716562447,
+        "dynamo_tpot_ms": 15.730054428267902,
+        "dynamo_request_latency_ms": 14497.978904815627,
+        "dynamo_tput_per_gpu_output": 491.96301082441346
+      },
+      "spec_sha256": "b0e72bbd29e34dc6a3801926fd073307bb8a0c7b401a2baa52a1b6ae16732899",
+      "native_report_sha256": "9474ccf34315b3188284942c383b98a2a428466fa4d7d43f5022b06c6173dce7"
+    },
+    {
+      "selected_index": 29,
+      "source_index": 127,
+      "source_row_sha256": "fc4623a649f38988e887dfbd5aa060f84cae7178302aee15c0891f83ac132c8b",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 128,
+      "status": "success",
+      "completed_requests": 1280,
+      "metrics": {
+        "dynamo_ttft_ms": 154.84327068124963,
+        "dynamo_tpot_ms": 25.8411309370807,
+        "dynamo_request_latency_ms": 23959.416679528098,
+        "dynamo_tput_per_gpu_output": 1202.927441664868
+      },
+      "spec_sha256": "f139e2beac7c97c8319a248ecbbc956b31eb988388439814cce3f2ff071e7de7",
+      "native_report_sha256": "cbd5212df2d02ea198fdba445852a31a4c7ecaf53454a258c2d9bed637eff6b0"
+    },
+    {
+      "selected_index": 30,
+      "source_index": 128,
+      "source_row_sha256": "9c9896c71164f9a4f4068c92d678ee1e5a648f543e40ced23b770b42b6b3e455",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 38.713947025000174,
+        "dynamo_tpot_ms": 8.280904187522822,
+        "dynamo_request_latency_ms": 7692.379612450002,
+        "dynamo_tput_per_gpu_output": 118.39156581666029
+      },
+      "spec_sha256": "ee4f4764729f438dfb8b4e63284157cca73a73705cb67cdcd6790f87d8d13322",
+      "native_report_sha256": "d6600d890ac48216e37518feebad6079c77ee86eb081c40e7b2809f1e9c9f515"
+    },
+    {
+      "selected_index": 31,
+      "source_index": 129,
+      "source_row_sha256": "db45010b42ca5839df98c6af18a968da1b11d504c5bac89da7c80593548896b8",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 45.17589427499978,
+        "dynamo_tpot_ms": 10.114595716940174,
+        "dynamo_request_latency_ms": 9386.882288699959,
+        "dynamo_tput_per_gpu_output": 193.689788956393
+      },
+      "spec_sha256": "4cb1eb447ee47d193159ab53a1e69cf6a87d67c9d9e15e5ab5a4bcde9466e862",
+      "native_report_sha256": "b408eb365759a481fd3eb5f73ea9e3637e5fc73b2cfa9a20ea4b000b9d03e58d"
+    },
+    {
+      "selected_index": 32,
+      "source_index": 130,
+      "source_row_sha256": "12e5be2766a90b38f1e5370c412f2dba6740abeee3a6a7be7fb0d2ace6949583",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 34.151613399999746,
+        "dynamo_tpot_ms": 5.555249340889342,
+        "dynamo_request_latency_ms": 5081.413613300001,
+        "dynamo_tput_per_gpu_output": 44.74640667015824
+      },
+      "spec_sha256": "277ff792f63ef0fa96981f97cbb31748818b3ff149877c2e99edec8fde65fefb",
+      "native_report_sha256": "745cd54ac02cf4ca9ba9205dfff94619b9383c340b307e268b52a0906baf7636"
+    },
+    {
+      "selected_index": 33,
+      "source_index": 131,
+      "source_row_sha256": "b34bc81a29a2b961437225a2deeeec6a744d9df8005895c4265db4d868070caf",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 35.65581814999997,
+        "dynamo_tpot_ms": 5.912122950408359,
+        "dynamo_request_latency_ms": 5529.001978050005,
+        "dynamo_tput_per_gpu_output": 82.18803885935534
+      },
+      "spec_sha256": "ec70eca2cdf43ca9bd096edd99d931d6aaad87c586ce827b166d8a601a656806",
+      "native_report_sha256": "962cb8b8dfcf3a7a345592a26e3ff9c171af7a7385c2a7c196ccb73796f90566"
+    },
+    {
+      "selected_index": 34,
+      "source_index": 132,
+      "source_row_sha256": "fa0af9ced3b0cd5e45d87078875a79a91df9dedb86ed55cf2bf1eb6c0f47cd43",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 165.42895964999929,
+        "dynamo_tpot_ms": 6.2341600585262835,
+        "dynamo_request_latency_ms": 5957.480082099997,
+        "dynamo_tput_per_gpu_output": 76.35544631810131
+      },
+      "spec_sha256": "d950dd42b58e523ea880cb4e8541bfba6330d2c963a3f3ed580328d0e27941b7",
+      "native_report_sha256": "966fa943a8ddcff3bc45538fd8ff3f81c3c520849ac23a52320b776e1b1908e2"
+    },
+    {
+      "selected_index": 35,
+      "source_index": 133,
+      "source_row_sha256": "a32b7863a447c84c2557ed0e6614d3e9122b356c50d76dd222860356043cec9f",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 159.4832268999997,
+        "dynamo_tpot_ms": 5.755445071850314,
+        "dynamo_request_latency_ms": 5388.634624199987,
+        "dynamo_tput_per_gpu_output": 42.19528987526349
+      },
+      "spec_sha256": "3765d9dbaecb99d90a1123b276e9422a3c61801ba6bda51ef70bcae3ec80a585",
+      "native_report_sha256": "2f8a42ff3c39ba85a25a150fa452be0a97f764d85d0de0e2669d057b270d160f"
+    },
+    {
+      "selected_index": 36,
+      "source_index": 134,
+      "source_row_sha256": "2f4fdfe4ac1bf1ec863701994d3f1f8c36487cd1b8635bc4db0b178548c497bc",
+      "config_id": 202,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 256,
+      "status": "success",
+      "completed_requests": 2560,
+      "metrics": {
+        "dynamo_ttft_ms": 271.75052356484343,
+        "dynamo_tpot_ms": 33.591140938095286,
+        "dynamo_request_latency_ms": 31264.224218256353,
+        "dynamo_tput_per_gpu_output": 1846.2271359576648
+      },
+      "spec_sha256": "0314fe7c05daf43a4f1c5461e46e58b860461236e7e05ba56dd81be5f91aae43",
+      "native_report_sha256": "ddfab774b046b17e8fc10518606ce7e24396f397a04e2fc7704dceb1a90425bb"
+    },
+    {
+      "selected_index": 37,
+      "source_index": 135,
+      "source_row_sha256": "33a22bc68d9481c86d0965633749ad1f70346c4d2ae8d569400c6b4fd06c9f09",
+      "config_id": 201,
+      "hardware": "b200",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 129.89416649999959,
+        "dynamo_tpot_ms": 6.581434847409599,
+        "dynamo_request_latency_ms": 6109.383651700002,
+        "dynamo_tput_per_gpu_output": 18.608669299785294
+      },
+      "spec_sha256": "2941556a0ed1bc0d93c17ec6678c633dbf2871e0a5a7ebd604840565a2802bad",
+      "native_report_sha256": "7d8d21f3b652b338863557e056307089b3390d68eea35666728853cb4aaa7ff2"
+    },
+    {
+      "selected_index": 38,
+      "source_index": 136,
+      "source_row_sha256": "64459d53bf2e5256f550dcdd38784b57b7a8bfe05ac51a2e479841d7915719e5",
+      "config_id": 201,
+      "hardware": "b200",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 25.91360420000003,
+        "dynamo_tpot_ms": 6.389231725693987,
+        "dynamo_request_latency_ms": 5830.836850400001,
+        "dynamo_tput_per_gpu_output": 19.49763008584281
+      },
+      "spec_sha256": "64836564f0bd0f97852786b8f64812537f15bfd623660027a1e22eb8c747e9c0",
+      "native_report_sha256": "be3b1933f0160378c5424794b719ba4584441328ff059a297ad5c6a0dac55cf0"
+    },
+    {
+      "selected_index": 39,
+      "source_index": 221,
+      "source_row_sha256": "39dc00463dc0ad7061513ae0f1ff1a9ef3a391c1745bfa12a33a24937ca68aee",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 257.57488734374954,
+        "dynamo_tpot_ms": 14.545366182723843,
+        "dynamo_request_latency_ms": 13634.457707025034,
+        "dynamo_tput_per_gpu_output": 265.906210446404
+      },
+      "spec_sha256": "721ebc38849dcb04ca8f4e7c0bc45b948b6cc1c20362b02c17b73a151ec725f9",
+      "native_report_sha256": "04976ec7d49ec8d9e0da08d52e65bd85065a68b42c80430cdafa0463f9fd1425"
+    },
+    {
+      "selected_index": 40,
+      "source_index": 222,
+      "source_row_sha256": "d6a0cc0160f7a7006e83b24b41a5aea980434787f061ce70fcaa513bc4b23f85",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 201.28206276249938,
+        "dynamo_tpot_ms": 10.950701182451457,
+        "dynamo_request_latency_ms": 10330.7639073625,
+        "dynamo_tput_per_gpu_output": 177.1752840253173
+      },
+      "spec_sha256": "19b1493b9a03c3366f69dedef53e1712f5e6ace8861fcad0215ff59a2a5c5a7e",
+      "native_report_sha256": "326938ee42c32ad4a82233ee398fea7a641cb21ff7787ff18fae5c7408004a94"
+    },
+    {
+      "selected_index": 41,
+      "source_index": 223,
+      "source_row_sha256": "dcb61b6fe5fbad205586275992385c2742ca381db15dde1452d588734c296f76",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 93.28671987812511,
+        "dynamo_tpot_ms": 20.17313837312512,
+        "dynamo_request_latency_ms": 18604.865299271878,
+        "dynamo_tput_per_gpu_output": 770.40926492123
+      },
+      "spec_sha256": "18755724f69b7ab7399b44fb5cd742d9e8b2afcaaeb4669c14524184ec3d372a",
+      "native_report_sha256": "ab3683422955ef98947a384745c4bf3e3c600dc8eea32becd88ce98f7834a384"
+    },
+    {
+      "selected_index": 42,
+      "source_index": 224,
+      "source_row_sha256": "0dca55516b17a1115c44b3719a72bf54ccce7fc3aa281b52d9dc6351e6af1fd2",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 44.302812012500105,
+        "dynamo_tpot_ms": 9.773473148145074,
+        "dynamo_request_latency_ms": 9070.977479899986,
+        "dynamo_tput_per_gpu_output": 200.47813587586546
+      },
+      "spec_sha256": "36fdd04958e560cbc6c9d6bf3003ff954ca3950dafd083394a9882e4687b1c64",
+      "native_report_sha256": "31d23c1eca93ada072f6a0bd7bcfa8238a59529971c493f704432230f44caf6a"
+    },
+    {
+      "selected_index": 43,
+      "source_index": 225,
+      "source_row_sha256": "4711970890720fe22cf5ff1b4eb183ed727c369a991da0abec9eefe45550252b",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 619.7365300656255,
+        "dynamo_tpot_ms": 31.207399618803652,
+        "dynamo_request_latency_ms": 29274.599241471828,
+        "dynamo_tput_per_gpu_output": 493.59192010765827
+      },
+      "spec_sha256": "35b51192cf675d90085b3fa9d110585b4ffc863cb2088ee2e0581c15dbd563bf",
+      "native_report_sha256": "8a03b62a7de5dc464afcb15a9e9d126cc38cd0ce801f90e2018f279d84304d78"
+    },
+    {
+      "selected_index": 44,
+      "source_index": 226,
+      "source_row_sha256": "532d3992a99c7418e8c76688d0e4bb9f0d53cd0a862c1a90c240d8657a94c7bc",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 38.23562689999967,
+        "dynamo_tpot_ms": 7.613797335173501,
+        "dynamo_request_latency_ms": 7075.489126849985,
+        "dynamo_tput_per_gpu_output": 128.64734488211667
+      },
+      "spec_sha256": "ae91872e46f73a346846fbc591574698956b5120cd87dead95f8ce697fddc0ff",
+      "native_report_sha256": "a0aea4db29a12c474021d4266ac0111e66e5a17869f351f1181408bc52517dbb"
+    },
+    {
+      "selected_index": 45,
+      "source_index": 227,
+      "source_row_sha256": "daeff2c0de76527e094e9f927ef50b7f2508a387936572eec84f771c9c0fd7c7",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 380.90807766875014,
+        "dynamo_tpot_ms": 20.58654391452979,
+        "dynamo_request_latency_ms": 19280.619509806504,
+        "dynamo_tput_per_gpu_output": 374.55090411420633
+      },
+      "spec_sha256": "25a516a298e094e858d6dfc08795744243bd6faea00f730d831fd55f6ac95a32",
+      "native_report_sha256": "96b7b310ec2d4f0edb081dfbbb34ed582cd0972a8aa642c20c14e3c311c37e4b"
+    },
+    {
+      "selected_index": 46,
+      "source_index": 228,
+      "source_row_sha256": "7f6e3b061c3ca43616ebd1b279188ec58fc2118b793b5a7592719d6910b635fe",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 169.14430352500042,
+        "dynamo_tpot_ms": 8.1557692874932,
+        "dynamo_request_latency_ms": 7709.801129125,
+        "dynamo_tput_per_gpu_output": 118.16155410727967
+      },
+      "spec_sha256": "968b68dec226883e269a6eaf724ffc2fdd7cf35d1c00ee0dd6c1fa739e23f406",
+      "native_report_sha256": "9093693101226a2cb44448fe7d4a22ec6b63888cba778646cb91a94fd4f614f6"
+    },
+    {
+      "selected_index": 47,
+      "source_index": 229,
+      "source_row_sha256": "ffc53f231449f58dcda3567ed9cccde2ff226f08a35dd59e1a13e552ac38f285",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 128,
+      "status": "success",
+      "completed_requests": 1280,
+      "metrics": {
+        "dynamo_ttft_ms": 1095.34869801094,
+        "dynamo_tpot_ms": 47.45391711235177,
+        "dynamo_request_latency_ms": 44871.60050875817,
+        "dynamo_tput_per_gpu_output": 648.9674919293169
+      },
+      "spec_sha256": "ad8b7e9b5298a459d44f742519f3ec7ac308047607a3f904f9f6db9f2c159985",
+      "native_report_sha256": "5e2823118f7c7ef4d351d217864d611cf2c3d234fb4bd39081df1044acd45f2e"
+    },
+    {
+      "selected_index": 48,
+      "source_index": 230,
+      "source_row_sha256": "a5b6f8aa91c5c6652545c88f14325d1d0fb63092237e353ef3918416104d752a",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 65.15438578750015,
+        "dynamo_tpot_ms": 14.99098896090202,
+        "dynamo_request_latency_ms": 13818.13991287502,
+        "dynamo_tput_per_gpu_output": 516.4140643449863
+      },
+      "spec_sha256": "d4197e23734b1099fcee37770978a84dac8dcd5f0df0355441981c08a895f388",
+      "native_report_sha256": "9c49153a611ce4614e2af3a18064d0903fa5d8533395707ed79a88aa045a7efd"
+    },
+    {
+      "selected_index": 49,
+      "source_index": 231,
+      "source_row_sha256": "4e2a01844296f4c2f24f5ee561ffb527e9373d0e5e99066eae1bca4c2d876b7b",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 128,
+      "status": "success",
+      "completed_requests": 1280,
+      "metrics": {
+        "dynamo_ttft_ms": 148.50172913749975,
+        "dynamo_tpot_ms": 25.616039229836513,
+        "dynamo_request_latency_ms": 23745.609118964803,
+        "dynamo_tput_per_gpu_output": 1214.4305264439317
+      },
+      "spec_sha256": "7cb4e375ba89304a9b577dcc20483ec2a54168f0035cbdbf7e72149cb12aa463",
+      "native_report_sha256": "a170dc4b0384c35c71429b27373a4998ab7cd614e4c0a28a09cb2ff18c33820b"
+    },
+    {
+      "selected_index": 50,
+      "source_index": 232,
+      "source_row_sha256": "5f1b1435b79f50c3544ed54fc682a414bdff5bb1b8ce8fd00be2de15aacbeed9",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 50.626209499999945,
+        "dynamo_tpot_ms": 11.89002365655917,
+        "dynamo_request_latency_ms": 10968.71854063128,
+        "dynamo_tput_per_gpu_output": 328.2170143093038
+      },
+      "spec_sha256": "302f6e494e00b4e5af92d6635275d863ed5bcdcbc2f3c45d6bb1657b7f8c239d",
+      "native_report_sha256": "be0029765e1b7ef586f26ec6312ffc93ba62116dbe2915778cbf414f1c455ec7"
+    },
+    {
+      "selected_index": 51,
+      "source_index": 233,
+      "source_row_sha256": "37ace4f444aaae49bce12e66540f77dda36a26cbeab6e19870e2b84f8181d026",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 147.31763590000028,
+        "dynamo_tpot_ms": 5.327730362195839,
+        "dynamo_request_latency_ms": 4987.718636600001,
+        "dynamo_tput_per_gpu_output": 45.58697403889559
+      },
+      "spec_sha256": "b879bf366f27fd8071ee4826e99db324a1a1e10666cc5197ee3bc0c90c0bfa4c",
+      "native_report_sha256": "a0cbe6918075db6aba9112fb5f2a728023f70f4c31c74aaa439cefc302baf917"
+    },
+    {
+      "selected_index": 52,
+      "source_index": 234,
+      "source_row_sha256": "c0291924a1ccce205e73b3e3eb46399a89097fe102cabb97d23bf9c8a84d3b99",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 33.991352900000784,
+        "dynamo_tpot_ms": 5.1920206272268805,
+        "dynamo_request_latency_ms": 4750.999042300019,
+        "dynamo_tput_per_gpu_output": 47.858355258671
+      },
+      "spec_sha256": "62d26c0eb610848436961362cf59ad929323de0604310b3795cb4b0bcf6179eb",
+      "native_report_sha256": "3ff8ff569da2cf0a8a3f82c0624c19ce6af94ea6d42748da55bbeb1a207d64f3"
+    },
+    {
+      "selected_index": 53,
+      "source_index": 235,
+      "source_row_sha256": "384cc171b6f21e2e92730f2c3e18fac7b2859e78ebd45468d2a6bc9c0202290c",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 35.36040230000033,
+        "dynamo_tpot_ms": 5.621416100751691,
+        "dynamo_request_latency_ms": 5258.416747650003,
+        "dynamo_tput_per_gpu_output": 86.45863479088504
+      },
+      "spec_sha256": "c411074b51989167f8a3da29b52b7e687dcd94c387d93442ff8037a1a70ee90f",
+      "native_report_sha256": "f5951bbb5a5242c421354e6090f98b14fddbf1f08a221e8fabf4fe3acb3280dc"
+    },
+    {
+      "selected_index": 54,
+      "source_index": 236,
+      "source_row_sha256": "290780b8ed7d60d1096932e6a870e70726a3f9232a27e48ead5b9aab1c5292aa",
+      "config_id": 717,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 153.1123904499996,
+        "dynamo_tpot_ms": 5.947670125556267,
+        "dynamo_request_latency_ms": 5678.8237898000025,
+        "dynamo_tput_per_gpu_output": 80.15062407556393
+      },
+      "spec_sha256": "76d29d2c89e7905d03d31bb85a0e6df707a1817e3b7416d480114a878e0bb5e0",
+      "native_report_sha256": "e65dedcffb5a23e3cf985408e1ea00f7fb8d994f4bdcbf2572a04824633208dc"
+    },
+    {
+      "selected_index": 55,
+      "source_index": 237,
+      "source_row_sha256": "54a56824191bfa685adfbeef6935d0089ba1c062e3d015e70e45120b2e4ee337",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 78.42707460468758,
+        "dynamo_tpot_ms": 14.670969209581477,
+        "dynamo_request_latency_ms": 13541.72464953441,
+        "dynamo_tput_per_gpu_output": 527.7059038396604
+      },
+      "spec_sha256": "d11d01cc44562c738d259bb5d6748b8bc54071cb9e1513f0e98a65e9c4de5b8d",
+      "native_report_sha256": "e61384a1870d009c49181cfeeba0f6b1babd4814192d1640cbe07bc3642cc214"
+    },
+    {
+      "selected_index": 56,
+      "source_index": 238,
+      "source_row_sha256": "d0d0026cc158499c895d1e664d9fd476e8e0d9770343446dbb58d931c8eca264",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 41.02326971250026,
+        "dynamo_tpot_ms": 9.035476236558559,
+        "dynamo_request_latency_ms": 8338.122275625015,
+        "dynamo_tput_per_gpu_output": 214.81785237065387
+      },
+      "spec_sha256": "5e4be122b9fd4b1ef6c7f54fc06d7519b5755d7ea62f3e127edd418cef13fa22",
+      "native_report_sha256": "ca6ab5ef88a8a5665e941994e245581826860bbd5f67ca5d436c65812ea66831"
+    },
+    {
+      "selected_index": 57,
+      "source_index": 239,
+      "source_row_sha256": "a03f772a114b4c1fc2964a731339400318ef2749966887facf7ed865cff8c409",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 53.79963869687482,
+        "dynamo_tpot_ms": 11.268134690153493,
+        "dynamo_request_latency_ms": 10391.79062301567,
+        "dynamo_tput_per_gpu_output": 340.9475167024021
+      },
+      "spec_sha256": "af85d29c37a97c2dcbb18a3cac83910cb495b61d69592d9eed58c484d46d2916",
+      "native_report_sha256": "2c9beb22164398f07361b03ce95a1cc8b253afb0fb968ecbfebe3283b4bcb20a"
+    },
+    {
+      "selected_index": 58,
+      "source_index": 240,
+      "source_row_sha256": "85ae75d5454361678c3c8a1c51474e506f3862e8d78a37ea280735704795e116",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 217.54252299374988,
+        "dynamo_tpot_ms": 10.951496276842086,
+        "dynamo_request_latency_ms": 10290.84506433732,
+        "dynamo_tput_per_gpu_output": 175.6873814538563
+      },
+      "spec_sha256": "20625dadbab807f63c9b310caebe70792082c5a6ba803a1436d66067c8cf2ec0",
+      "native_report_sha256": "1eb65904a93d58cb318f94aa3ba587883d2861f920cc29acfb77e09d8dbdcb1b"
+    },
+    {
+      "selected_index": 59,
+      "source_index": 241,
+      "source_row_sha256": "7e6a96cba73610df7c7984d75e2b0496f81aaed1c227125ec5081301eb044f41",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 35.588246324999865,
+        "dynamo_tpot_ms": 8.186305049620367,
+        "dynamo_request_latency_ms": 7596.804454862472,
+        "dynamo_tput_per_gpu_output": 119.30072790944162
+      },
+      "spec_sha256": "a16e0fb4e3c5db785a4d66a200668b16d014a42599aa842bf03f875121643db5",
+      "native_report_sha256": "6d197e567dd7e2a2c38ec7aedeb1d4f773c9f544c14af4f6731c76582cb1de80"
+    },
+    {
+      "selected_index": 60,
+      "source_index": 242,
+      "source_row_sha256": "fe10c3d240205311f91978a0a4b4c3fc299046ed0c7fddacaa3b35149e3acf61",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 170.0179699124998,
+        "dynamo_tpot_ms": 9.080262693927612,
+        "dynamo_request_latency_ms": 8569.678825100009,
+        "dynamo_tput_per_gpu_output": 106.49270803059895
+      },
+      "spec_sha256": "00b71d232279cbba24e8fd86fa21c2a75b111fb439df81cae68927fbeefd5cb5",
+      "native_report_sha256": "58268e5a97934a6bbfb832022c06ac9c1b8946788ad39b649c89f2477dc203e7"
+    },
+    {
+      "selected_index": 61,
+      "source_index": 243,
+      "source_row_sha256": "4f4c18c02de68a57e322ce7faace3c4f0dd8a76e533e0a3b96f9a87943985018",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 142.83005889999987,
+        "dynamo_tpot_ms": 7.5530486916938795,
+        "dynamo_request_latency_ms": 7126.329482300008,
+        "dynamo_tput_per_gpu_output": 63.743378211386926
+      },
+      "spec_sha256": "a7b43b6a40802f7aac0d0ad16158b4bc93401b58188540964ca1f571be04ec19",
+      "native_report_sha256": "87ab49b4f9e3e832b3e0306ce584dc36465557d65cfde2b68e71ed7ce0696fcc"
+    },
+    {
+      "selected_index": 62,
+      "source_index": 244,
+      "source_row_sha256": "b8bf4b08d579729689ad4e5e0c703d57157c38ee44dd695e36406fc164870f47",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 128,
+      "status": "success",
+      "completed_requests": 1280,
+      "metrics": {
+        "dynamo_ttft_ms": 126.6313237804688,
+        "dynamo_tpot_ms": 17.631944805050935,
+        "dynamo_request_latency_ms": 16371.190219318718,
+        "dynamo_tput_per_gpu_output": 878.6490440772452
+      },
+      "spec_sha256": "406ae620d7d5bcc49c19fa1c5aea88dd9262b22b9220beb7886de040f2581d6e",
+      "native_report_sha256": "d4d37b6eda5ccc4e515020c7fe0eae6dc978fc8d313f12c1a7302ced549141e9"
+    },
+    {
+      "selected_index": 63,
+      "source_index": 245,
+      "source_row_sha256": "31cec914ea11a09afda85a721aac9f5e9e615e0942ff7527dbdaa29484b619d2",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 30.56680770000047,
+        "dynamo_tpot_ms": 7.020481399682625,
+        "dynamo_request_latency_ms": 6519.691370675013,
+        "dynamo_tput_per_gpu_output": 69.58693287046606
+      },
+      "spec_sha256": "7a7bf7fb01bdba9822ee393b9a3ad814d01c195fce96c8c64b0271a417f01f2f",
+      "native_report_sha256": "84fa3423c1f9e8fea26d6b6fa759d3dcfb5c38c8b385fdd7b1e62c2856ba9ed1"
+    },
+    {
+      "selected_index": 64,
+      "source_index": 246,
+      "source_row_sha256": "6ac8ffe24fd4ca3da2388ff124144d18238545fc52f9d83ec2e2c9fdb5cf1a7f",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 129.36358949999982,
+        "dynamo_tpot_ms": 6.525466771448618,
+        "dynamo_request_latency_ms": 6192.339621549998,
+        "dynamo_tput_per_gpu_output": 36.69852468641563
+      },
+      "spec_sha256": "c4a4bfe66149dcb6dab8bd854c27fba178c3ebbc567db8b6b8ac6bd218b18400",
+      "native_report_sha256": "174b26935bc663ca3145eeb72862abc885be82ed2af8b4b7323f4e5f9fa83476"
+    },
+    {
+      "selected_index": 65,
+      "source_index": 247,
+      "source_row_sha256": "5bb3cba291351bd46dc9770cce6946ba6515312fe849c716d3c9101052c35ffd",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 124.38701400000014,
+        "dynamo_tpot_ms": 6.210667858089869,
+        "dynamo_request_latency_ms": 5767.033426499997,
+        "dynamo_tput_per_gpu_output": 19.713341607766047
+      },
+      "spec_sha256": "5b077dfed6d8c8f3d2d5c89c2b3ea1a0593d44fe895c00b49f3b6bf341dc2998",
+      "native_report_sha256": "30676db8961687617cd950a0be7bec09d8d339910f4d7cd4b5c9e9a100909263"
+    },
+    {
+      "selected_index": 66,
+      "source_index": 248,
+      "source_row_sha256": "a481531bc375d0e0aec00b1e7d7ed8f4a5f13990533a7997fc7d049013ab09f0",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 27.656624249999442,
+        "dynamo_tpot_ms": 6.3006684344281085,
+        "dynamo_request_latency_ms": 5882.1441233000205,
+        "dynamo_tput_per_gpu_output": 38.60368624610611
+      },
+      "spec_sha256": "46889ef2a9ca46d7402fc510066a39c7f2d8bdffa3d9e463cbe4e392d0aef1c7",
+      "native_report_sha256": "e5bc2d165ab6aa4309e77a5da883c998f35e060ed75c47fa85a6425b8b6180b7"
+    },
+    {
+      "selected_index": 67,
+      "source_index": 249,
+      "source_row_sha256": "37297efb3474b4a05077515753b7396d3e66c0810a4e21e3f7cb74b8b2e9613a",
+      "config_id": 718,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 26.254209299999893,
+        "dynamo_tpot_ms": 6.087942279624866,
+        "dynamo_request_latency_ms": 5557.190832899996,
+        "dynamo_tput_per_gpu_output": 20.457728269279656
+      },
+      "spec_sha256": "8a9551f7e5183d7ad66681e7cd9d09dfcc3814714bbee08c420c3e91a2476114",
+      "native_report_sha256": "640f721c5cba31dc9979c91c2a632546b3964c3b8406e5376b17c806cb43684b"
+    },
+    {
+      "selected_index": 68,
+      "source_index": 250,
+      "source_row_sha256": "94344578d4bfc6f751122584f95f11965cdf6fe7ae2c8bab83f32b4a1efeac96",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 53.04911003749993,
+        "dynamo_tpot_ms": 9.646296276947217,
+        "dynamo_request_latency_ms": 8963.152356337489,
+        "dynamo_tput_per_gpu_output": 101.19907148789085
+      },
+      "spec_sha256": "f2e63ac9d4065aa232f1caade1197c5fbee96dbd353535a70d9152cefb1862ee",
+      "native_report_sha256": "16131567494021e770e39669c73da89f1fdc26d4171fcca7d0242d6a08597708"
+    },
+    {
+      "selected_index": 69,
+      "source_index": 251,
+      "source_row_sha256": "fa80857547f38e923e4aa4f622956b10ab8555664f04c0c2c0187faf0404669e",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 64,
+      "status": "success",
+      "completed_requests": 640,
+      "metrics": {
+        "dynamo_ttft_ms": 107.28289610781266,
+        "dynamo_tpot_ms": 20.02282820339688,
+        "dynamo_request_latency_ms": 18483.18151140923,
+        "dynamo_tput_per_gpu_output": 387.59980500149425
+      },
+      "spec_sha256": "bc2a2e7f14675fa61064a0b56f5e3320aa0c3fb9a8b7a0e23940d08b6a09180d",
+      "native_report_sha256": "40ad4d9ad4aeaeaaf021a2ed1fe8b49842b4f7090b502c6cca3fada37deb04fa"
+    },
+    {
+      "selected_index": 70,
+      "source_index": 252,
+      "source_row_sha256": "432680fe630a42251e51b31dbbe6c36cb42e0bbf8b9110eacc6cc7d75d49c725",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 179.78770219999984,
+        "dynamo_tpot_ms": 8.5556279497351,
+        "dynamo_request_latency_ms": 8090.5675053500045,
+        "dynamo_tput_per_gpu_output": 56.17422673604272
+      },
+      "spec_sha256": "afb1055f1ccd7b0187ce510fae7b5bde494d574df436e0a99b5ad9378f14bc05",
+      "native_report_sha256": "5d7f9f8e7a8e4132c53f66487fb6f04eb8f2a9fb13295d2ae68e95ab4c03765a"
+    },
+    {
+      "selected_index": 71,
+      "source_index": 253,
+      "source_row_sha256": "9f6eb94956d38b62c0a9573444498c4d202e158ae8ae5ad4ef7b3de5e8ba2020",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 76.10483955312505,
+        "dynamo_tpot_ms": 15.085252650905659,
+        "dynamo_request_latency_ms": 13916.791659971877,
+        "dynamo_tput_per_gpu_output": 255.7717603226728
+      },
+      "spec_sha256": "8f20fffa9879bf97bc1e1c5fd237d39e08db96ad70accea9b6fed2c3535d7b59",
+      "native_report_sha256": "5e01e893d3f3caab2f303ce7e029bf8f3febebe6f80961bdd413dfae0b42d876"
+    },
+    {
+      "selected_index": 72,
+      "source_index": 254,
+      "source_row_sha256": "addd2a715dfa60c71e400fc42e50121d6a131e805b3247edfbd692557bcc7ea8",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 60.03140046875033,
+        "dynamo_tpot_ms": 11.854147714458692,
+        "dynamo_request_latency_ms": 10946.040426243775,
+        "dynamo_tput_per_gpu_output": 164.13877885015324
+      },
+      "spec_sha256": "2f67f280a9499e7f23d615712edf46cd152ab5fce0a693e93afa35d918bc8704",
+      "native_report_sha256": "0c456a508a165591a4e925eb805061df7c61fbfda630b862b3a50511affdb3e7"
+    },
+    {
+      "selected_index": 73,
+      "source_index": 255,
+      "source_row_sha256": "edb5cdb65b6a2e6b8558bb3a6a1885fc37ee81d55aa8f0878dbde1801b2b05cb",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 46.70155635000018,
+        "dynamo_tpot_ms": 7.970713711499703,
+        "dynamo_request_latency_ms": 7414.327755574986,
+        "dynamo_tput_per_gpu_output": 61.22227975824006
+      },
+      "spec_sha256": "bcd6ff2d3cce8697a28a973b14f8c2cef2bab7ae0dcca186fbefe37d3840fcd9",
+      "native_report_sha256": "680273c095f4269e9d50847633344e13d8c2810a211079c36c277c7549525cf6"
+    },
+    {
+      "selected_index": 74,
+      "source_index": 256,
+      "source_row_sha256": "c374a85d5b7d8bdf1ca6d968e367fdb0433ac48fe0520e76c8ad8bc21b7e55f5",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 162.96540805000035,
+        "dynamo_tpot_ms": 7.184744026873359,
+        "dynamo_request_latency_ms": 6838.335160099993,
+        "dynamo_tput_per_gpu_output": 33.2401668971445
+      },
+      "spec_sha256": "28625d8554af0b7f1ada86b777d66ac9fd34868a34ae3b6f32441dd0d7aa5f62",
+      "native_report_sha256": "5f1b870c7a8f1e7697d475f967ecbc89f0950eccef0e463c0c7f14d82fe3e816"
+    },
+    {
+      "selected_index": 75,
+      "source_index": 257,
+      "source_row_sha256": "cba7d75eac66842dce978817528c54ab75c2b2fcc69448ee6204b4865a2228aa",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 42.0648005000001,
+        "dynamo_tpot_ms": 6.658684323831295,
+        "dynamo_request_latency_ms": 6091.520571200001,
+        "dynamo_tput_per_gpu_output": 18.663238295131308
+      },
+      "spec_sha256": "7bb4bc1d5794282660a2ae5c03064db87b547493faaddead5f21b7fb09c0cf3f",
+      "native_report_sha256": "e1996eff2501d7418dfe5b854f6a9d925e0ad979420fe505bb7e42b9a16ef1c8"
+    },
+    {
+      "selected_index": 76,
+      "source_index": 258,
+      "source_row_sha256": "456a38839d1ec603b760c2e15f4494094f640bd91fee41a39d8784cb648d8974",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 1024,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 43.61995289999966,
+        "dynamo_tpot_ms": 6.942383220058666,
+        "dynamo_request_latency_ms": 6494.2318067500155,
+        "dynamo_tput_per_gpu_output": 34.97299083088897
+      },
+      "spec_sha256": "2880e16441b6567a394606456b7320e515391ea2280c888459c36d8a9aed317e",
+      "native_report_sha256": "76793c384763d5e22eceb77dcbfefccee9fb9bf822930cf08ffcdbee4ccf1694"
+    },
+    {
+      "selected_index": 77,
+      "source_index": 259,
+      "source_row_sha256": "429c2e70ea72c58d4c71576b21cc038ea2b3810d117ce0fc7c1a39b49cd4de5e",
+      "config_id": 719,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 156.54970139999998,
+        "dynamo_tpot_ms": 6.78140989738578,
+        "dynamo_request_latency_ms": 6317.715256599999,
+        "dynamo_tput_per_gpu_output": 17.995033866275122
+      },
+      "spec_sha256": "e9b28e1b599f3a5a9ccd7f27b0b19e812151658892a3a281d0eae703002ec632",
+      "native_report_sha256": "70015ad64e6dd869c4aa3f10640e69e925e28c6ef9175168de130d0192b890cd"
+    },
+    {
+      "selected_index": 78,
+      "source_index": 260,
+      "source_row_sha256": "365618028db2f4f5f4e5ae63bcc5004c6565bf7696a2ef0e26f2a062fca25fbe",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 8,
+      "status": "success",
+      "completed_requests": 80,
+      "metrics": {
+        "dynamo_ttft_ms": 284.7292866125,
+        "dynamo_tpot_ms": 13.369500303279214,
+        "dynamo_request_latency_ms": 12654.27912115002,
+        "dynamo_tput_per_gpu_output": 144.5122348626548
+      },
+      "spec_sha256": "99503f2a89b83231e6249bc40761bc1029df9d002f70a5ebff645fc9f77796e0",
+      "native_report_sha256": "21f4737048b2953b53cfca7c82a775ab8db739c3cae215bd85c7d1ecb2e4d3b0"
+    },
+    {
+      "selected_index": 79,
+      "source_index": 261,
+      "source_row_sha256": "2e16df429585d28a4a164742d1225354afcd08026a3a66cad4c94289ec785912",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 32,
+      "status": "success",
+      "completed_requests": 320,
+      "metrics": {
+        "dynamo_ttft_ms": 538.8106920718756,
+        "dynamo_tpot_ms": 27.358701053078306,
+        "dynamo_request_latency_ms": 25657.65781100628,
+        "dynamo_tput_per_gpu_output": 281.5901164095373
+      },
+      "spec_sha256": "d2116adbe141eb6006f05889d990551d4ff1701aa567e306680a65c41bc316e8",
+      "native_report_sha256": "07b68b442225b13acb83f7e57c6cd824c0151da61c0c8b9a38c11e8b1b731600"
+    },
+    {
+      "selected_index": 80,
+      "source_index": 262,
+      "source_row_sha256": "a9b555c58778028ecf9ebc8ca2bb04fb4b97ac8a599598c82f64e0d6de935a1b",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 16,
+      "status": "success",
+      "completed_requests": 160,
+      "metrics": {
+        "dynamo_ttft_ms": 364.33893546875044,
+        "dynamo_tpot_ms": 19.252801936145122,
+        "dynamo_request_latency_ms": 18071.626899681232,
+        "dynamo_tput_per_gpu_output": 200.70801397042874
+      },
+      "spec_sha256": "0e873c7a14cdce98dde9bbaaa7c6340f2e269fef71d8f704ba4ac74c03ceec34",
+      "native_report_sha256": "b14dd8a0de58fdfa441a94813eba3aa274359d33b14b491c9c089b99ef72a49f"
+    },
+    {
+      "selected_index": 81,
+      "source_index": 263,
+      "source_row_sha256": "f80049e01e290f63092fba655eb7b7aefe1e8fdd259ab838c1c53e4d831e0346",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 4,
+      "status": "success",
+      "completed_requests": 40,
+      "metrics": {
+        "dynamo_ttft_ms": 239.2314613750002,
+        "dynamo_tpot_ms": 10.391009007856734,
+        "dynamo_request_latency_ms": 9847.313349600012,
+        "dynamo_tput_per_gpu_output": 92.3935405310653
+      },
+      "spec_sha256": "8a98f6ca2e766f4d503d82beb6bfc9b9625aca6ead89df60aedc50602080273e",
+      "native_report_sha256": "7fee2345a71a491add801df34f09977afaeac4e34718aafc202bb8deb537616c"
+    },
+    {
+      "selected_index": 82,
+      "source_index": 264,
+      "source_row_sha256": "8ec33b0ac5f1e98b5231cd8dc7cb5ec7ed4d5ec673265292b2ab91222e4279df",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 2,
+      "status": "success",
+      "completed_requests": 20,
+      "metrics": {
+        "dynamo_ttft_ms": 216.61967954999963,
+        "dynamo_tpot_ms": 8.38395448683885,
+        "dynamo_request_latency_ms": 8005.1849235,
+        "dynamo_tput_per_gpu_output": 56.93828426069649
+      },
+      "spec_sha256": "4d9667b11eb0e7a8bb8c8aae1d1cd7de5be3f37909bc6e69e9c0aabb48b32a79",
+      "native_report_sha256": "1ee54d53ef6bbe5eec9487ac93a3707f772ea5ad54fab983583499f1bf544ca3"
+    },
+    {
+      "selected_index": 83,
+      "source_index": 265,
+      "source_row_sha256": "45a4e10868916774396c5073a6d4189176e46b2b793f64a2919e3b0bc7cba7b2",
+      "config_id": 720,
+      "hardware": "b300",
+      "isl": 8192,
+      "osl": 1024,
+      "conc": 1,
+      "status": "success",
+      "completed_requests": 10,
+      "metrics": {
+        "dynamo_ttft_ms": 208.3503514999996,
+        "dynamo_tpot_ms": 7.016595542625924,
+        "dynamo_request_latency_ms": 6583.085368800003,
+        "dynamo_tput_per_gpu_output": 34.53927562258653
+      },
+      "spec_sha256": "f1059e4f447f051cb0ff91e895c2d3a1c408d80acd99cfff43851cff1201c221",
+      "native_report_sha256": "293a06e4d99bb60185d7723b99052631b26823178b87a0cfe838ce6a70535ddb"
+    }
+  ]
+}
