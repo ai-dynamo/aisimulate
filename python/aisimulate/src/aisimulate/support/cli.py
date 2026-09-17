@@ -8,9 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, get_args
 
@@ -19,6 +21,16 @@ from pydantic import ValidationError
 
 from aisimulate.config.common import load_yaml
 
+from .config_profile import (
+    FIELD_CHOICES,
+    INTEGER_FIELDS,
+    ModelConfig,
+    ProfileDraft,
+    ProfileRequestError,
+    derive_profile,
+    load_model_config,
+    validate_overrides,
+)
 from .fpm import run_fpm
 from .plan import create_plan, request_id
 from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, SupportRequest, WorkloadSpec
@@ -38,8 +50,9 @@ def add_support_parser(subparsers: Any) -> None:
         "init",
         help="Declare a model, target hardware, and FPM pilot workload.",
         description=(
-            "Use --interactive for terminal prompts. Scripted setup requires --model, --model-revision, "
-            "--model-kind, --framework-version, --gpu, --gpu-count, and --interconnect. "
+            "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
+            "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
+            "--model, --model-revision, --model-kind, --framework-version, --gpu, --gpu-count, and --interconnect. "
             "One node and a small TP1 synthetic pilot are defaults; review the saved scope before collection."
         ),
     )
@@ -63,7 +76,16 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--attention-data-parallel", type=int, help="Attention data-parallel size (default: 1).")
     init.add_argument("--moe-tensor-parallel", type=int, help="Expert tensor-parallel size (default: TP for MoE).")
     init.add_argument("--moe-expert-parallel", type=int, help="Expert-parallel size (default: 1).")
-    init.add_argument("--fpm-profile", help="JSON/YAML identity and resource profile for class-independent FPM.")
+    profile_source = init.add_mutually_exclusive_group()
+    profile_source.add_argument(
+        "--fpm-profile", help="JSON/YAML identity and resource profile for class-independent FPM."
+    )
+    profile_source.add_argument("--model-config", metavar="PATH", help="Local Hugging Face-style config.json.")
+    init.add_argument(
+        "--resource-overrides",
+        metavar="PATH",
+        help="Flat JSON/YAML profile field overrides; requires --model-config. Resource bytes are per rank.",
+    )
     init.add_argument("--input-tokens", type=int, help="Input tokens per request (default: 1024).")
     init.add_argument("--output-tokens", type=int, help="Output tokens per request (default: 128).")
     init.add_argument("--concurrency", type=int, help="Concurrent requests (default: 1).")
@@ -233,40 +255,225 @@ def _prompt(args: argparse.Namespace, name: str) -> None:
         return
 
 
-def _guided_request(args: argparse.Namespace) -> SupportRequest:
+def _require_terminal() -> None:
     if not sys.stdin.isatty():
         raise ValueError(
             "--interactive requires a terminal; for automation supply options (aisimulate onboard init --help)"
         )
+
+
+def _guided_request(args: argparse.Namespace) -> SupportRequest:
+    _require_terminal()
     print("Onboard a model for FPM simulation on a target hardware platform.")
     print("Start with a pure-TP worker and a small synthetic workload on vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if getattr(args, name) is None:
             _prompt(args, name)
+    return _validate_guided_request(args)
+
+
+def _correct_option(args: argparse.Namespace, exc: ValueError, *, require_known_field: bool = False) -> None:
+    name, message = None, str(exc)
+    if isinstance(exc, ProfileRequestError):
+        name = exc.field
+    if isinstance(exc, ValidationError):
+        error = exc.errors(include_url=False)[0]
+        name = error["loc"][-1] if error["loc"] else None
+        message = error["msg"]
+    if name == "backend_version":
+        name = "framework_version"
+    if require_known_field and name not in _CORRECTION_PROMPTS:
+        raise exc
+    print(f"{name or 'Request'}: {message}")
+    while name not in _CORRECTION_PROMPTS:
+        name = input("Option to correct (for example --tensor-parallel): ").strip().removeprefix("--").replace("-", "_")
+        if name not in _CORRECTION_PROMPTS:
+            print("Choose one of: " + ", ".join(key.replace("_", "-") for key in _CORRECTION_PROMPTS))
+    _prompt(args, name)
+
+
+def _validate_guided_request(args: argparse.Namespace) -> SupportRequest:
     while True:
         try:
             return _request_from_args(args)
         except ValidationError as exc:
-            error = exc.errors(include_url=False)[0]
-            name = error["loc"][-1] if error["loc"] else None
-            print(f"{name or 'Request'}: {error['msg']}")
-        while name not in _CORRECTION_PROMPTS:
-            name = (
-                input("Option to correct (for example --tensor-parallel): ")
-                .strip()
-                .removeprefix("--")
-                .replace("-", "_")
+            _correct_option(args, exc)
+
+
+class _ResourceOverridesLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        values = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise ValueError("resource override field names must be strings")
+            if key in values:
+                raise ValueError(f"duplicate resource override field: {key}")
+            values[key] = self.construct_object(value_node, deep=deep)
+        return values
+
+
+def _load_resource_overrides(path: str | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    source = Path(path).expanduser()
+    try:
+        values = yaml.load(source.read_text(encoding="utf-8"), Loader=_ResourceOverridesLoader)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"malformed resource overrides in {source}: {exc}") from exc
+    if not isinstance(values, dict):
+        raise ValueError(f"resource overrides in {source} must be a flat JSON/YAML mapping")
+    return values
+
+
+def _memory_field(name: str) -> bool:
+    return name.endswith("_bytes") or name == "kv_bytes_per_token"
+
+
+def _resource_answer(name: str, answer: str) -> str | int:
+    if name not in INTEGER_FIELDS:
+        return answer
+    if _memory_field(name):
+        units = {"B": 1, **{f"{prefix}B": 1000**power for power, prefix in enumerate("KMGT", 1)}}
+        units.update({f"{prefix}IB": 1024**power for power, prefix in enumerate("KMGT", 1)})
+        match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s*([KMGT]i?B|B)", answer, re.IGNORECASE)
+        if match:
+            value = Fraction(match[1]) * units[match[2].upper()]
+            if value.denominator != 1:
+                raise ValueError("memory quantities must resolve to a whole number of bytes")
+            return value.numerator
+        try:
+            return int(answer)
+        except ValueError as exc:
+            raise ValueError("enter integer bytes or an explicit unit, for example 70 GiB or 512 MiB") from exc
+    try:
+        return int(answer)
+    except ValueError as exc:
+        raise ValueError("enter a valid integer") from exc
+
+
+def _prompt_profile_value(
+    config: ModelConfig,
+    request: SupportRequest | None,
+    overrides: dict[str, Any],
+    draft: ProfileDraft,
+    name: str,
+) -> tuple[dict[str, Any], ProfileDraft]:
+    print(f"{name}: {draft.missing[name]}")
+    choices = f" ({', '.join(FIELD_CHOICES[name])})" if name in FIELD_CHOICES else ""
+    if _memory_field(name):
+        choices += " (per rank; integer bytes or units such as GiB/MiB)"
+    while True:
+        answer = input(f"{name}{choices}: ").strip()
+        if not answer:
+            print("A value is required.")
+            continue
+        try:
+            supplied = validate_overrides({name: _resource_answer(name, answer)})
+        except ValueError as exc:
+            print(f"{name}: {exc}")
+            continue
+        # Retain a valid answer if final profile validation asks for an identity
+        # correction. Other derivation failures cannot be repaired by repeating
+        # this answer, so let the caller report the actual error.
+        overrides.update(supplied)
+        updated = derive_profile(config, request, overrides)
+        print(f"  {name}: {updated.resolved[name]} (source: {updated.sources[name]})")
+        return overrides, updated
+
+
+def _config_request(args: argparse.Namespace) -> SupportRequest:
+    config = load_model_config(args.model_config)
+    overrides = _load_resource_overrides(args.resource_overrides)
+    preview = derive_profile(config, None, overrides)
+    print(f"Model config source: {Path(args.model_config).expanduser()} (SHA-256 {config.sha256}).")
+    for name, note in config.notes.items():
+        print(f"Config {name}: {note}")
+    for name in ("architecture", "context_length", "num_experts"):
+        if name in preview.resolved:
+            print(f"{name}: {preview.resolved[name]} (source: {preview.sources[name]})")
+    if args.interactive:
+        _require_terminal()
+        for name in ("architecture", "context_length", "num_experts"):
+            if name in preview.missing:
+                overrides, preview = _prompt_profile_value(config, None, overrides, preview, name)
+    if args.model is None:
+        args.model = config.suggestions.get("model")
+    if args.model_kind is None:
+        experts = preview.resolved.get("num_experts")
+        args.model_kind = (
+            ("moe" if experts > 0 else "dense") if experts is not None else config.suggestions.get("model_kind")
+        )
+    if args.context_length is None and "context_length" in preview.resolved:
+        args.context_length = min(
+            preview.resolved["context_length"], SearchProfile.model_fields["context_length"].default
+        )
+    if args.interactive:
+        request = _guided_request(args)
+    else:
+        try:
+            request = _request_from_args(args)
+        except ValidationError as exc:
+            details = []
+            for error in exc.errors(include_url=False):
+                name = error["loc"][-1] if error["loc"] else None
+                option = "--" + name.replace("_", "-") if name in _CORRECTION_PROMPTS else "request"
+                details.append(f"  {option}: {error['msg']}")
+            raise ValueError(
+                "Complete deployment identity and pilot options before dependent profile derivation:\n"
+                + "\n".join(details)
+                + "\nThen supply unresolved profile fields with --resource-overrides PATH (flat JSON/YAML), "
+                "or use --interactive."
+            ) from exc
+    while True:
+        try:
+            draft = derive_profile(config, request, overrides)
+        except (ProfileRequestError, ValidationError) as exc:
+            if not args.interactive:
+                raise
+            _correct_option(args, exc, require_known_field=True)
+            request = _validate_guided_request(args)
+            continue
+        print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
+        for name, value in draft.resolved.items():
+            print(f"  {name}: {value} (source: {draft.sources[name]})")
+        if draft.missing and not args.interactive:
+            raise ValueError(
+                "Unresolved profile fields for this deployment:\n"
+                + "\n".join(f"  {name}: {reason}" for name, reason in draft.missing.items())
+                + "\nSupply these flat fields in --resource-overrides PATH (JSON/YAML; integer bytes per rank), "
+                "or use --interactive."
             )
-            if name not in _CORRECTION_PROMPTS:
-                print("Choose one of: " + ", ".join(key.replace("_", "-") for key in _CORRECTION_PROMPTS))
-        _prompt(args, name)
+        try:
+            while draft.missing:
+                # Resolve dtype/layout/envelope inputs before asking for dependent memory amounts.
+                name = min(draft.missing, key=_memory_field)
+                overrides, draft = _prompt_profile_value(config, request, overrides, draft, name)
+        except (ProfileRequestError, ValidationError) as exc:
+            _correct_option(args, exc, require_known_field=True)
+            request = _validate_guided_request(args)
+            continue
+        if draft.profile is None:
+            raise ValueError("model config did not produce a complete FPM profile")
+        try:
+            return SupportRequest.model_validate({**request.model_dump(), "fpm_profile": draft.profile})
+        except ValidationError as exc:
+            if not args.interactive:
+                raise
+            _correct_option(args, exc)
+            request = _validate_guided_request(args)
 
 
 def _init(args: argparse.Namespace) -> int:
+    if args.resource_overrides and not args.model_config:
+        raise ValueError("--resource-overrides requires --model-config")
     _request_target(args.output, overwrite=args.overwrite)
     try:
-        request = _guided_request(args) if args.interactive else _request_from_args(args)
+        if args.model_config:
+            request = _config_request(args)
+        else:
+            request = _guided_request(args) if args.interactive else _request_from_args(args)
         path = _write_request(request, args.output, overwrite=args.overwrite)
     except (EOFError, KeyboardInterrupt):
         print("Setup cancelled.", file=sys.stderr)
@@ -280,10 +487,17 @@ def _init(args: argparse.Namespace) -> int:
         f"concurrency {workload.concurrency}, {workload.request_count} requests, "
         f"up to {request.search.max_candidates} candidate(s)."
     )
-    print(
-        "Request saved. Model metadata/resources, runtime compatibility and FPM data are unchecked; "
-        "accuracy is not assessed. Setup has not launched GPU work."
-    )
+    if args.model_config:
+        print(
+            "Request saved with the complete FPM profile and declared or estimated resources. "
+            "Runtime compatibility and FPM data are unchecked; accuracy is not assessed. "
+            "Setup has not launched GPU work."
+        )
+    else:
+        print(
+            "Request saved. Model metadata/resources, runtime compatibility and FPM data are unchecked; "
+            "accuracy is not assessed. Setup has not launched GPU work."
+        )
     _print(
         {
             "request_id": request_id(request),

@@ -38,7 +38,7 @@ aisimulate onboard init \
 
 Replace the model and runtime placeholders with the actual inputs. The example does not identify an Inkling checkpoint or claim that four H200s can run your model. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
 
-The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. Scripted setup defaults to TP1 unless `--tensor-parallel` is supplied. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
+The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. With `--model-config`, the default pilot context is capped at the config's known context limit. Scripted setup defaults to TP1 unless `--tensor-parallel` is supplied. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
 
 One node is the default; GPUs per node then equals `--gpu-count`. For multiple nodes, supply both `--node-count` and `--gpus-per-node`; their product must equal the total allocation. Each selected worker must fit on one node. Advanced flags include `--request-count`, `--max-candidates`, `--objective`, `--seed`, and `--sm`.
 
@@ -51,6 +51,69 @@ One node is the default; GPUs per node then equals `--gpu-count`. For multiple n
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
 The first profile implementation supports vLLM decoder-only models with PP1, CP1 and linear KV storage. AFD, encoder pools, speculative decoding, nonlinear recurrent state, wide EP and EPLB need additional metadata/semantics and are rejected by this route.
+
+## Start from a local model config
+
+Use a local Hugging Face-style JSON configuration to fill supported metadata and create the existing FPM profile:
+
+```bash
+aisimulate onboard init \
+  --model-config /models/your-pinned-checkpoint/config.json \
+  --interactive --output support-request.yaml
+```
+
+Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before pilot options so the model's context limit can bound the pilot. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system, allocation, and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
+
+Profile memory quantities describe the largest requirement on any rank of the exact selected TP, DEP, or TEP worker. The prompt explains why each unresolved value needs input. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, runtime version, and deployment conflicts return to the corresponding option while retaining accepted resource answers. Incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
+
+For automation, supply missing profile fields through a flat JSON or YAML file. Resource quantities in the file must be integer bytes. This example shows the shape for an explicitly declared BF16 decoder; its numbers are illustrative, not measured bounds for your model. Replace them with justified per-rank bounds and describe their source before planning:
+
+```yaml
+# resource-overrides.yaml
+gemm_quant_mode: bfloat16
+moe_quant_mode: bfloat16
+fmha_quant_mode: bfloat16
+comm_quant_mode: half
+kv_cache_dtype: bfloat16
+cache_layout: linear
+weights_bytes: 2147483648
+activations_bytes: 536870912
+runtime_overhead_bytes: 1073741824
+comm_overhead_bytes: 268435456
+kv_bytes_per_token: 262144
+max_num_tokens: 8192
+max_batch_size: 1
+provenance: Illustrative file shape only; replace values and this explanation with their actual source.
+```
+
+```bash
+aisimulate onboard init \
+  --model-config /models/your-pinned-checkpoint/config.json \
+  --resource-overrides resource-overrides.yaml \
+  --model /models/your-pinned-checkpoint \
+  --model-revision YOUR_IMMUTABLE_REVISION \
+  --framework-version YOUR_PINNED_VLLM_VERSION \
+  --gpu h200_sxm --gpu-count 4 --interconnect nvswitch \
+  --tensor-parallel 4 --output support-request.yaml
+```
+
+Replace the model, revision, runtime and hardware inputs with the deployment you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved. Validation first lists all missing or invalid deployment identity and pilot options. Once that stage is valid, it lists all unresolved profile fields, explains why each is unavailable, and asks for `--resource-overrides` or guided setup.
+
+The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `moe_backend`, `attention_backend`, and optional `provenance`. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects the smaller pilot limit and cannot exceed it. A scheduler envelope is per attention-DP rank and defaults to 8,192 tokens and the pilot concurrency; `max_num_tokens` and `max_batch_size` can declare different bounds.
+
+Derivation is deliberately limited. Unambiguous architecture, context, expert count and model kind can be read independently of memory support. The initial supported estimates are:
+
+| Quantity | Supported derivation and limits |
+| --- | --- |
+| Weight bytes | Vanilla full-attention Llama, Mistral, Qwen2, Qwen3 and Mixtral BF16 layouts with complete geometry and vocabulary divisible by 64 and TP. Estimates include supported biases, tied/untied embeddings, replicated norms, and the Mixtral router. Quantized storage, unknown padding, auxiliary prediction tensors, shared experts and unsupported custom bias layouts need explicit bounds. |
+| KV bytes per token | Full-attention MHA/GQA in those layouts plus Qwen3 MoE and MiniMax-M2, with an explicit supported cache dtype and static tensor storage. KV heads shard or replicate according to TP; attention DP does not divide a rank's cache. MLA/DSA storage and dynamic or per-token quantization scales need explicit accounting. |
+| Activation bytes | The existing backend estimate for those full-attention layouts, 16-bit FMHA, and TP1/2/4/8, within the declared scheduler envelope. It has a 70 MiB floor and does not cover DSA workspaces or speculative decoding. |
+| Runtime overhead | The selected packaged hardware specification's per-rank `misc.other_mem` estimate when present. It excludes the separate CUDA graph reservation. |
+| Communication overhead | The exact `misc.nccl_mem` TP entry for a pure-TP worker when present. DEP and TEP require an explicit declaration; total GPU count does not establish their communication storage. |
+
+Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or communication precision. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. MiniMax and GLM configs may therefore supply useful identity facts while still requiring weight, cache, activation, or communication bounds. These estimates do not certify runtime memory fit. Unknown layouts must supply the remaining supported semantics explicitly; known incompatible layouts are rejected.
+
+The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
 ## Provide identity and resource metadata
 
