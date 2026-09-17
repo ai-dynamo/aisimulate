@@ -25,6 +25,7 @@ pub(crate) struct BucketedRegression {
     samples: BucketedSamples<RegressionObservation>,
     min_observations: usize,
     fit: Option<LinearFit>,
+    ridge_scale: f64,
 }
 
 impl StoreStats for BucketedRegression {
@@ -43,6 +44,7 @@ impl BucketedRegression {
             samples: BucketedSamples::new_dynamic(options, FEATURE_DIMENSION),
             min_observations: options.min_observations,
             fit: None,
+            ridge_scale: options.regression_ridge_scale,
         }
     }
 
@@ -71,7 +73,7 @@ impl BucketedRegression {
             .into_iter()
             .map(|(_, observation)| observation)
             .collect::<Vec<_>>();
-        self.fit = fit_regression(&retained, self.min_observations);
+        self.fit = fit_regression_with_ridge(&retained, self.min_observations, self.ridge_scale);
         true
     }
 
@@ -186,9 +188,18 @@ struct StandardizedObservation {
     observed_ms: f64,
 }
 
+#[cfg(test)]
 fn fit_regression(
     observations: &[RegressionObservation],
     min_observations: usize,
+) -> Option<LinearFit> {
+    fit_regression_with_ridge(observations, min_observations, 1e-9)
+}
+
+fn fit_regression_with_ridge(
+    observations: &[RegressionObservation],
+    min_observations: usize,
+    ridge_scale: f64,
 ) -> Option<LinearFit> {
     if observations.len() < min_observations {
         return None;
@@ -224,7 +235,9 @@ fn fit_regression(
                 (active_mask & (1usize << mask_axis) != 0).then_some(*feature_axis)
             })
             .collect::<Vec<_>>();
-        let Some(fit) = fit_linear_active_set(&standardized, standardization, &fitted_axes) else {
+        let Some(fit) =
+            fit_linear_active_set(&standardized, standardization, &fitted_axes, ridge_scale)
+        else {
             continue;
         };
         let squared_error = standardized
@@ -263,6 +276,7 @@ fn fit_linear_active_set(
     observations: &[StandardizedObservation],
     standardization: Standardization,
     fitted_axes: &[usize],
+    ridge_scale: f64,
 ) -> Option<LinearFit> {
     let size = fitted_axes.len() + 1;
     let mut lhs = vec![vec![0.0_f64; size]; size];
@@ -283,7 +297,7 @@ fn fit_linear_active_set(
     }
 
     let solution = solve_linear_system(lhs.clone(), rhs.clone())
-        .or_else(|| solve_regularized_linear_system(lhs, rhs))?;
+        .or_else(|| solve_regularized_linear_system(lhs, rhs, ridge_scale))?;
     if !solution.iter().all(|value| value.is_finite())
         || solution[1..].iter().any(|coefficient| *coefficient < 0.0)
     {
@@ -302,14 +316,18 @@ fn fit_linear_active_set(
 }
 
 /// Retry a singular normal equation with ridge regularization on slopes only.
-fn solve_regularized_linear_system(mut lhs: Vec<Vec<f64>>, rhs: Vec<f64>) -> Option<Vec<f64>> {
+fn solve_regularized_linear_system(
+    mut lhs: Vec<Vec<f64>>,
+    rhs: Vec<f64>,
+    ridge_scale: f64,
+) -> Option<Vec<f64>> {
     let scale = lhs
         .iter()
         .enumerate()
         .map(|(axis, row)| row[axis].abs())
         .sum::<f64>()
         .max(1.0);
-    let ridge = scale * 1e-9;
+    let ridge = scale * ridge_scale;
     for (axis, row) in lhs.iter_mut().enumerate().skip(1) {
         row[axis] += ridge;
     }
@@ -594,7 +612,7 @@ mod tests {
         // normal equation is singular. The fallback regularizes only the two
         // slopes, leaving the free intercept at the population target mean.
         let regularized_fit =
-            fit_linear_active_set(&standardized, standardization, &[0, 1]).unwrap();
+            fit_linear_active_set(&standardized, standardization, &[0, 1], 1e-9).unwrap();
         assert!(
             regularized_fit
                 .coefficients

@@ -754,3 +754,10 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
         assert record["metrics"] == {}
         assert record["provenance"]["power"] == {}
     assert result.selected_candidates == []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_result_orchestration(monkeypatch):
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})

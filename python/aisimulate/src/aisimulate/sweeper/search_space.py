@@ -209,6 +209,14 @@ def _runner_supports_parallel_config(
     )
 
 
+def _estimator_root_kwargs(search_space):
+    if search_space.systems_paths == ["default"]:
+        return {}
+    from .forward_pass_estimator import resolve_systems_paths
+
+    return {"systems_paths": list(resolve_systems_paths(search_space.systems_paths))}
+
+
 def _role_runtime(search_space, backend: str, role: str) -> tuple[int, int, float, int | None]:
     token_name = f"{role}_max_num_batched_tokens"
     sequence_name = f"{role}_max_num_seqs"
@@ -244,9 +252,12 @@ def _heterogeneous_disagg_configs(
 ) -> list[DisaggParallelConfig]:
     """Enumerate each P/D role against its own hardware, then apply the shared budget."""
     role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
-    backend_version = search_space.backend_version
+    backend_version = search_space.requested_backend_version(backend)
     if backend_version is None:
-        role_versions = {role: resolve_backend_version(hardware, backend) for role, hardware in role_hardware.items()}
+        role_versions = {
+            role: resolve_backend_version(hardware, backend, **_estimator_root_kwargs(search_space))
+            for role, hardware in role_hardware.items()
+        }
         if len(set(role_versions.values())) != 1:
             raise NoPerfDatabase(
                 "heterogeneous P/D hardware requires one common backend_version; "
@@ -268,6 +279,7 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
+                **_estimator_root_kwargs(search_space),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -384,7 +396,7 @@ def _afd_branch(
                     gpu_budget=ss.gpu_budget,
                     deployment_mode="agg",
                     backend=backend,
-                    backend_version=ss.backend_version,
+                    backend_version=ss.requested_backend_version(backend),
                     min_gpu_budget=None,
                     max_seq_len=max_seq_len,
                     role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
@@ -587,10 +599,11 @@ def enumerate_branches(
                         gpu_budget=ss.gpu_budget,
                         deployment_mode=deployment_mode,
                         backend=backend,
-                        backend_version=ss.backend_version,
+                        backend_version=ss.requested_backend_version(backend),
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                        **_estimator_root_kwargs(ss),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

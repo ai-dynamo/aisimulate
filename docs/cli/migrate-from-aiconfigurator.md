@@ -1145,8 +1145,9 @@ alone does not establish support for an entire CLI workflow.
 
 ### 5.6 Estimator controls and speculative decoding
 
-Backend version and op-level/FPM selection have unified mappings. The following controls still
-require AIC or the estimator SDK.
+Backend version, estimator selection, database mode, transfer policy, and request-scoped system
+roots have unified mappings. Explicit quantization/kernel selectors and the remaining controls
+below continue to use AIC or the estimator SDK.
 
 **Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
 the bundled system definitions:
@@ -1166,6 +1167,40 @@ the prediction. A policy choice does not guarantee coverage. `SOL` selects theor
 custom system directories can be added to `--systems-paths`. See
 [database modes](legacy-aic-user-guide.md#database-mode) and
 [system paths](legacy-aic-user-guide.md#systems-paths).
+
+**After — carry the policy into serving prediction and recommendation:**
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --set engine.estimation_mode=auto --set engine.fallback_policy=deny \
+  --output-dir ./policy-prediction
+
+aisimulate recommend --config budget-search.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --output-dir ./policy-search
+```
+
+Use an ordered list of existing directories plus `default` to search custom data before the
+bundled root. These controls require regular aggregated/disaggregated language workers with
+default timing in every role. AFD, analytical encoder pools, and fixed/polynomial providers keep
+their existing paths. Recommendation YAML pins each selected role's effective data root, version,
+policy, estimator mode, and full estimator configuration for a subsequent prediction.
+
+Auto searches `op_level -> fpm_interpolation -> fpm_regression` during construction. The default
+fallback policy is deny; auto selection still searches the full priority list. Deny prevents
+switching away from an explicitly requested estimator. An untrained regression remains unready,
+and queries do not silently switch estimators during execution. Existing saved timing configured
+with `forward_model` preserves its explicit mode and strict selection when migrated.
+
+`engine.estimator_config` carries supported regression/correction controls; see the
+[canonical API](../core-api.md#estimator-controls). Shared role-based correction is deferred:
+current native correction stores and the latest role-bound regression routing remain unchanged.
+These additions do not replace AIC's per-operation source breakdown in the preceding example.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:

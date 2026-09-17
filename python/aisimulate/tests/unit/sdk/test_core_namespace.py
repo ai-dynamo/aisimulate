@@ -16,3 +16,9 @@ def test_task_v2_remains_upper_owned() -> None:
 
     assert task.__module__ == "aiconfigurator.sdk.task_v2"
     assert importlib.util.find_spec("aiconfigurator_core.sdk.task_v2") is None
+
+
+def test_low_level_engine_builder_is_not_a_python_estimator_api() -> None:
+    core = importlib.import_module("aiconfigurator_core")
+
+    assert not hasattr(core, "AicEngineBuilder")

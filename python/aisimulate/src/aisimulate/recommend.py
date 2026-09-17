@@ -118,6 +118,32 @@ def recommendation_to_sweeper(
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
+    for name in (
+        "database_mode",
+        "transfer_policy",
+        "systems_paths",
+        "estimation_mode",
+        "fallback_policy",
+        "estimator_config",
+    ):
+        if name in engine:
+            search_space[name] = deepcopy(engine[name])
+    search_space["role_estimator_controls"] = {
+        ("agg" if role == "aggregated" else role): {
+            name: deepcopy(raw.get("timing", {})[name])
+            for name in (
+                "estimation_mode",
+                "fallback_policy",
+                "estimator_config",
+                "systems_paths",
+                "database_mode",
+                "transfer_policy",
+            )
+            if name in raw.get("timing", {})
+        }
+        for role, raw in workers.items()
+        if role in {"aggregated", "prefill", "decode"}
+    }
     for role in ("prefill", "decode"):
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
@@ -366,7 +392,10 @@ def _role_search_space(
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
-        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
+        if timing.get("estimation_mode") is not None:
+            result[f"{legacy_role}_forward_model"] = (
+                "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
+            )
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -709,6 +738,17 @@ def _candidate_prediction(
         "workers": {},
     }
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    if deployment.forward_pass_estimators:
+        for name in (
+            "database_mode",
+            "transfer_policy",
+            "systems_paths",
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+        ):
+            if name in raw_engine:
+                engine[name] = deepcopy(raw_engine[name])
     if deployment.encoder is not None:
         from .config.epd import encoder_prediction_fields
 
@@ -759,6 +799,19 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
+        estimator = deployment.forward_pass_estimators.get(role)
+        if estimator is not None:
+            resolved = estimator.config
+            timing = {
+                "type": "default",
+                "estimation_mode": resolved["estimation_mode"],
+                "fallback_policy": "deny",
+                "estimator_config": deepcopy(resolved["estimator_config"]),
+            }
+            # Per-role roots can differ; preserve them next to the role's timing.
+            timing["systems_paths"] = list(resolved["systems_paths"])
+            timing["database_mode"] = resolved["database_mode"]
+            timing["transfer_policy"] = list(resolved["transfer_policy"] or [])
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],

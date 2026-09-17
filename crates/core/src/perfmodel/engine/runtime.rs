@@ -508,6 +508,19 @@ impl Engine {
         Ok(())
     }
 
+    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+        let Some((prefill, decode)) = self.fpm_ops() else {
+            return Ok(());
+        };
+        self.db
+            .fpm_forward
+            .select_cell(&prefill.match_identity, &prefill.model_path)?;
+        self.db
+            .fpm_forward
+            .select_cell(&decode.match_identity, &decode.model_path)?;
+        Ok(())
+    }
+
     /// Shared perf database handle.
     pub fn database(&self) -> &Arc<PerfDatabase> {
         &self.db

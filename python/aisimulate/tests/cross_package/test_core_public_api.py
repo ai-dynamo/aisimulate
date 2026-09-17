@@ -26,6 +26,8 @@ from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 EXPECTED_FACADE = {
     "AttentionBackend",
     "EngineHandle",
+    "ForwardPassPerfModelConfig",
+    "ForwardPassPerfOptions",
     "ModelConfig",
     "MoEBackend",
     "RuntimeConfig",
@@ -34,6 +36,20 @@ EXPECTED_FACADE = {
     "estimate_kv_cache",
     "estimate_num_gpu_blocks",
 }
+
+
+def _raw_regression_model(worker_type, options_json=None, *, cls=None):
+    cls = cls or aiconfigurator_core.RustForwardPassPerfModel
+    config = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": worker_type,
+        "estimation_mode": "fpm_regression",
+    }
+    if options_json is not None:
+        config["estimator_config"] = json.loads(cls.legacy_estimator_config(options_json))
+    return cls.best_available(json.dumps(config))
 
 
 def test_sdk_facade_import_is_lazy_in_a_fresh_interpreter() -> None:
@@ -89,49 +105,22 @@ def test_stable_function_signatures() -> None:
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
-    assert str(inspect.signature(RustForwardPassPerfModel.from_regression)) == (
-        "(worker_type: 'str', options: 'dict[str, Any] | None' = None) -> 'RustForwardPassPerfModel'"
-    )
-    assert str(inspect.signature(RustForwardPassPerfModel.best_available)) == (
-        "(config: 'dict[str, Any]', worker_type: 'str', "
-        "options: 'dict[str, Any] | None' = None) -> 'RustForwardPassPerfModel'"
-    )
+    assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
+    assert not hasattr(RustForwardPassPerfModel, "from_regression")
+    assert not hasattr(RustForwardPassPerfModel, "from_native")
 
 
 @pytest.mark.parametrize("worker_type", ["agg", "Prefill", "AGGREGATED", ""])
 def test_raw_fpm_binding_rejects_worker_type_aliases(worker_type: str) -> None:
-    with pytest.raises(ValueError, match="invalid worker_type"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(worker_type)
-    config = json.dumps(
-        {
-            "schema_version": 1,
-            "model_name": "this/model-is-not-compiled",
-            "system_name": "b200_sxm",
-            "backend": "vllm",
-            "backend_version": "0.19.0",
-            "tp_size": 1,
-            "pp_size": 1,
-            "attention_dp_size": 1,
-            "moe_tp_size": None,
-            "moe_ep_size": None,
-            "weight_dtype": None,
-            "activation_dtype": None,
-            "moe_dtype": None,
-            "kv_cache_dtype": None,
-            "kv_block_size": None,
-            "nextn": None,
-            "extra": {},
-        }
-    )
-    with pytest.raises(ValueError, match="invalid worker_type"):
-        aiconfigurator_core.RustForwardPassPerfModel.best_available(config, worker_type)
+    with pytest.raises(ValueError, match="worker_type"):
+        _raw_regression_model(worker_type)
 
 
 def test_raw_fpm_binding_requires_worker_type() -> None:
-    with pytest.raises(TypeError):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression()
-    with pytest.raises(TypeError):
-        aiconfigurator_core.RustForwardPassPerfModel.best_available("{}")
+    with pytest.raises(ValueError, match="worker_type"):
+        aiconfigurator_core.RustForwardPassPerfModel.best_available(
+            json.dumps({"model": "m", "system": "s", "backend": "vllm"})
+        )
 
 
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
@@ -143,9 +132,9 @@ def test_raw_fpm_binding_constructs_every_worker_type_with_weights(worker_type: 
             "regression_ffn_token_weight": 4.0,
         }
     )
-    model = aiconfigurator_core.RustForwardPassPerfModel.from_regression(worker_type, options)
+    model = _raw_regression_model(worker_type, options)
     diagnostics = json.loads(model.diagnostics())
-    assert diagnostics == {
+    assert {key: value for key, value in diagnostics.items() if key != "provenance"} == {
         "source": "fallback_regression",
         "readiness": "insufficient_data",
         "retained_observations": 0,
@@ -212,7 +201,7 @@ def _raw_regression_iteration(worker_type: str, index: int) -> dict[str, object]
 
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
 def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
-    model = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+    model = _raw_regression_model(
         worker_type,
         '{"min_observations":5}',
     )
@@ -222,7 +211,7 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
     model.tune_with_fpms(json.dumps(iterations))
 
     diagnostics = json.loads(model.diagnostics())
-    assert diagnostics == {
+    assert {key: value for key, value in diagnostics.items() if key != "provenance"} == {
         "source": "fallback_regression",
         "readiness": "ready",
         "retained_observations": 6,
@@ -235,7 +224,7 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
 
 def test_raw_fpm_binding_validates_regression_weights() -> None:
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+        _raw_regression_model(
             "prefill",
             '{"regression_attention_kv_weight": 0.0}',
         )
@@ -256,15 +245,15 @@ def test_raw_fpm_binding_decodes_exact_nonfinite_weight_sentinels(
 ) -> None:
     """Raw ``options_json`` callers use quoted sentinels rather than non-JSON numbers."""
     with pytest.raises(ValueError, match=field):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+        _raw_regression_model(
             "aggregated",
             json.dumps({field: sentinel}),
         )
 
 
 def test_raw_fpm_binding_rejects_unknown_nonfinite_weight_sentinel() -> None:
-    with pytest.raises(ValueError, match="invalid options JSON"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+    with pytest.raises(ValueError, match="invalid legacy options"):
+        _raw_regression_model(
             "decode",
             '{"regression_ffn_token_weight":"Inf"}',
         )
@@ -312,7 +301,7 @@ def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: s
     assert [argument.arg for argument in method.args.args] == ["self"]
     assert ast.unparse(method.returns) == "str"
 
-    native_model = importlib.import_module(namespace).RustForwardPassPerfModel.from_regression("aggregated")
+    native_model = _raw_regression_model("aggregated", cls=importlib.import_module(namespace).RustForwardPassPerfModel)
     diagnostics = getattr(native_model, method_name)()
     assert isinstance(diagnostics, str)
     assert json.loads(diagnostics) == [

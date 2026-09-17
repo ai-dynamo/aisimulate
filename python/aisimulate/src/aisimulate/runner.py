@@ -1159,6 +1159,21 @@ def _materialize_engine_role(
     # the AIC timing config because the native runtime rematerializes inferred
     # capacity before execution.
     cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
+    timing_rank = role_config.get("rank", role_config)
+    timing = timing_rank.get("timing_model") if isinstance(timing_rank, dict) else None
+    if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+        canonical = timing.get("config", {})
+        for aliases, fields in (
+            (("tensor_parallel_size", "aic_tp_size"), ("tp", "tp_size")),
+            (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
+        ):
+            expected = canonical.get(fields[0], canonical.get(fields[1]))
+            if expected is not None:
+                for alias in aliases:
+                    if alias in role_config and role_config[alias] != expected:
+                        raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
+                if not any(alias in role_config for alias in aliases):
+                    role_config[aliases[0]] = expected
     raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
     raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
     dp_size = _positive_int(

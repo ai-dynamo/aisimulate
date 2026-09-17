@@ -130,7 +130,10 @@ def test_prediction_rejects_wrong_backend_scheduler_interval(backend, field, val
         engine["workers"] = {"prefill": {}, "decode": {}}
     engine["workers"][role] = {"scheduler": {field: value}}
 
-    with pytest.raises(ValidationError, match=rf"workers.{role}.scheduler.{field}.*backend={required_backend}"):
+    with pytest.raises(
+        ValidationError,
+        match=rf"workers.{role}.scheduler.{field}.*backend={required_backend}",
+    ):
         CorePredictionConfig.model_validate({"engine": engine})
 
 
@@ -407,6 +410,7 @@ def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> N
                 **_engine(),
                 "mode": "aggregated",
                 "backend_version": "0.19.0",
+                "backend": "vllm",
                 "context_length": 4096,
                 "workers": {
                     "aggregated": {
@@ -820,7 +824,9 @@ def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> No
         {"type": "polynomial", "forward_model": "fpm"},
     ],
 )
-def test_prediction_timing_rejects_fpm_forward_model_without_default_timing(timing: dict) -> None:
+def test_prediction_timing_rejects_fpm_forward_model_without_default_timing(
+    timing: dict,
+) -> None:
     engine = _engine()
     engine["workers"]["aggregated"] = {"timing": timing}
 
@@ -870,7 +876,12 @@ def _fpm_recommendation() -> CoreRecommendationConfig:
                 "context_length": 2048,
                 "workers": {
                     "aggregated": {
-                        "parallelism": {"preset": False, "tensor": 1, "moe_tensor": 1, "moe_expert": 1},
+                        "parallelism": {
+                            "preset": False,
+                            "tensor": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 1,
+                        },
                         "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
                         "timing": {"type": "default", "forward_model": "fpm"},
                     }
@@ -932,7 +943,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
         adapter_sections={},
     )
 
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "fpm"}
+    assert prediction["engine"]["workers"]["aggregated"]["timing"]["estimation_mode"] == "fpm_interpolation"
+    assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
     CorePredictionConfig.model_validate(prediction)
 
 
@@ -962,7 +974,8 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     )
 
     # Normalization materializes every schema default into the candidate; forward_model is no exception.
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "op_level"}
+    assert prediction["engine"]["workers"]["aggregated"]["timing"]["estimation_mode"] == "op_level"
+    assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
 
 
 def _pd_hardware_config(*, recommend=False, **overrides):
@@ -986,7 +999,16 @@ def _pd_hardware_config(*, recommend=False, **overrides):
 @pytest.mark.parametrize("role", ["prefill", "decode"])
 @pytest.mark.parametrize(
     "value",
-    ["", " ", "auto", " auto ", " gb200 ", "gb200 ", "\th200_sxm", {"choices": ["h200_sxm", "gb200"]}],
+    [
+        "",
+        " ",
+        "auto",
+        " auto ",
+        " gb200 ",
+        "gb200 ",
+        "\th200_sxm",
+        {"choices": ["h200_sxm", "gb200"]},
+    ],
 )
 def test_worker_hardware_requires_concrete_sku(recommend, role, value):
     schema = CoreRecommendationConfig if recommend else CorePredictionConfig
@@ -1038,14 +1060,17 @@ def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expec
     sample["backend_version"] = "0.24.0"
     deployment = build_backend_deployment(sample, backend_version="0.24.0")
     mapping = _candidate_prediction(
-        source, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
+        source,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
     )
     concrete = CorePredictionConfig.model_validate(yaml.safe_load(yaml.safe_dump(mapping)))
     compiled = prediction_to_replay_spec(concrete).backend_deployment
     assert concrete.engine.hardware == "h200_sxm"
     for role, hardware in zip(("prefill", "decode"), expected, strict=True):
         assert ("hardware" in mapping["engine"]["workers"][role]) == (role in overrides)
-        assert getattr(compiled, f"{role}_engine_args")["aic_system"] == hardware
+        assert getattr(compiled, f"{role}_engine_args")["timing_model"]["config"]["system"] == hardware
         assert compiled.performance_model_metadata[role]["config"]["system"] == hardware
         assert getattr(deployment, f"{role}_engine_args")["aic_system"] == hardware
 
@@ -1080,7 +1105,7 @@ def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_v
         deployment = prediction_to_replay_spec(config).backend_deployment
         assert deployment.backend_version == "0.24.0"
         for role in ("prefill", "decode"):
-            assert getattr(deployment, f"{role}_engine_args")["aic_backend_version"] == "0.24.0"
+            assert getattr(deployment, f"{role}_engine_args")["timing_model"]["config"]["backend_version"] == "0.24.0"
     else:
         with pytest.raises(ValueError, match="Set engine.backend_version"):
             prediction_to_replay_spec(config)
@@ -1113,7 +1138,7 @@ def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeyp
     raw = _pd_hardware_config(**{role: "custom_worker_sku"})
     config = CorePredictionConfig.model_validate(raw)
     deployment = prediction_to_replay_spec(config).backend_deployment
-    assert getattr(deployment, f"{role}_engine_args")["aic_system"] == "custom_worker_sku"
+    assert getattr(deployment, f"{role}_engine_args")["timing_model"]["config"]["system"] == "custom_worker_sku"
 
 
 @pytest.mark.parametrize("override", [False, True])
@@ -1155,3 +1180,13 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
     else:
         with pytest.raises(ValueError, match="does not match effective prefill_hardware_sku"):
             prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
+
+
+def test_new_default_selection_survives_serialization_without_becoming_legacy_op_level():
+    config = CorePredictionConfig.model_validate({"engine": _engine()})
+    serialized = config.model_dump(mode="json", exclude_none=True)
+    timing = serialized["engine"]["workers"]["aggregated"]["timing"]
+    assert "forward_model" not in timing
+    reloaded = CorePredictionConfig.model_validate(serialized)
+    assert reloaded.engine.estimation_mode == "auto"
+    assert reloaded.engine.workers.aggregated.timing.estimation_mode is None

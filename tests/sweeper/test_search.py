@@ -10,7 +10,11 @@ import pytest
 import aisimulate.sweeper.search as search_mod
 from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
 from aisimulate.sweeper.kv_load import KVLoadResolution
-from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+)
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
     ReplayReport,
@@ -1020,3 +1024,12 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
         ("throughput_per_user", True),
     ]
     assert all(set(metrics) == {"throughput_per_gpu", "throughput_per_user"} for metrics in seen["sampler"].observed)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_orchestration(monkeypatch):
+    # These tests use synthetic models/runners. Native construction is exercised
+    # by the estimator contract tests and CLI round trips.
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})

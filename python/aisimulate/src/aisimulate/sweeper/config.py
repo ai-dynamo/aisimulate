@@ -472,7 +472,7 @@ class SearchSpace(BaseModel):
     # deployment: branch + backend + legal parallel shapes
     deployment_mode: list[str] = ["disagg", "agg"]  # branches to explore; pin with one
     backend: list[str] = ["vllm"]  # vllm | sglang | trtllm
-    backend_version: str | None = None
+    backend_version: str | dict[str, str] | None = None
     parallel_configs: list[dict[str, Any]] = Field(default_factory=list)  # generated when empty
     parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     flat_parallel_modes: list[str] = Field(default_factory=list)
@@ -482,6 +482,13 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    database_mode: str = "SILICON"
+    transfer_policy: str | list[str] | None = None
+    systems_paths: list[str] = Field(default_factory=lambda: ["default"], min_length=1)
+    estimation_mode: str = "auto"
+    fallback_policy: str = "deny"
+    estimator_config: dict[str, Any] = Field(default_factory=dict)
+    role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
     decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
@@ -681,6 +688,41 @@ class SearchSpace(BaseModel):
             if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
                 raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
         return self
+
+    @model_validator(mode="after")
+    def _validate_backend_versions(self) -> SearchSpace:
+        configured = list(dict.fromkeys(self.backend))
+        if isinstance(self.backend_version, str):
+            if not self.backend_version.strip():
+                raise ValueError("backend_version must be a non-empty version")
+            if len(configured) != 1:
+                raise ValueError(
+                    "a string backend_version requires exactly one configured backend; "
+                    "use a {backend: version} mapping for a multi-backend search"
+                )
+            self.backend_version = self.backend_version.strip()
+        elif isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - set(configured))
+            if unknown:
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
+            invalid = [
+                backend
+                for backend, version in self.backend_version.items()
+                if not isinstance(version, str) or not version.strip()
+            ]
+            if invalid:
+                raise ValueError(f"backend_version needs a non-empty version for {sorted(invalid)}")
+            self.backend_version = {backend: version.strip() for backend, version in self.backend_version.items()}
+        return self
+
+    def requested_backend_version(self, backend: str) -> str | None:
+        """Return the version pin for ``backend``; ``None`` means resolve latest."""
+
+        if isinstance(self.backend_version, str):
+            return self.backend_version
+        if isinstance(self.backend_version, dict):
+            return self.backend_version.get(backend)
+        return None
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:

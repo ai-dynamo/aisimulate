@@ -51,6 +51,70 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert "nextn" not in calls[0]
 
 
+def test_materializer_uses_the_same_canonical_config_as_replay(monkeypatch) -> None:
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 222
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    lowered = aic.materialize_aic_num_gpu_blocks(
+        {
+            "block_size": 32,
+            "max_num_batched_tokens": 4096,
+            "max_num_seqs": 19,
+            "free_gpu_memory_fraction": 0.8,
+            "timing_model": {
+                "type": "external",
+                "provider": "aic",
+                "config": {
+                    "model": "test-model",
+                    "system": "b200_sxm",
+                    "backend": "trtllm",
+                    "backend_version": "1.2.3",
+                    "tp": 4,
+                    "pp": 2,
+                    "attention_dp": 2,
+                    "moe_tp_size": 2,
+                    "moe_ep_size": 4,
+                    "gemm_quant_mode": "fp8_block",
+                    "systems_paths": ["/resolved/systems"],
+                    "fallback_policy": "error",
+                },
+            },
+        }
+    )
+
+    assert lowered["num_gpu_blocks"] == 222
+    assert lowered["dp_size"] == 2
+    assert calls == [
+        {
+            "backend_name": "trtllm",
+            "system": "b200_sxm",
+            "model_path": "test-model",
+            "tp_size": 4,
+            "block_size": 32,
+            "max_num_batched_tokens": 4096,
+            "max_num_sequences": 19,
+            "gpu_memory_utilization": None,
+            "mem_fraction_static": None,
+            "free_gpu_memory_fraction": 0.8,
+            "backend_version": "1.2.3",
+            "pp_size": 2,
+            "moe_tp_size": 2,
+            "moe_ep_size": 4,
+            "attention_dp_size": 2,
+            "gemm_dtype": "fp8_block",
+            "moe_dtype": None,
+            "fmha_dtype": None,
+            "kv_cache_dtype": None,
+            "comm_dtype": None,
+            "systems_path": "/resolved/systems",
+        }
+    ]
+
+
 def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     monkeypatch,
 ) -> None:
