@@ -38,7 +38,7 @@
 //! must remain bit-identical to a RAW `Grid { k_tail: 1 }`; the differential
 //! tests in `axis_curve.rs` enforce that relationship.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::OnceLock;
 
 use crate::common::error::AicError;
@@ -716,70 +716,51 @@ struct HoldAnchor {
 }
 
 /// One entry in the bounded nearest-leaf set.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct HoldCandidate {
     distance_sq: f64,
     leaf_idx: usize,
 }
 
-impl HoldCandidate {
-    fn cmp(self, other: Self) -> std::cmp::Ordering {
+impl Ord for HoldCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.distance_sq
             .total_cmp(&other.distance_sq)
             .then_with(|| self.leaf_idx.cmp(&other.leaf_idx))
     }
 }
 
+impl PartialOrd for HoldCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for HoldCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for HoldCandidate {}
+
 struct HoldCandidates {
     limit: usize,
-    values: Vec<HoldCandidate>,
+    values: BinaryHeap<HoldCandidate>,
 }
 
 impl HoldCandidates {
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            values: Vec::with_capacity(limit),
+            values: BinaryHeap::with_capacity(limit),
         }
     }
 
     /// Consume the max-heap and return the exact nearest-first order expected
     /// by validity filtering and support-radius selection.
-    fn into_sorted_values(mut self) -> Vec<HoldCandidate> {
-        self.values.sort_unstable_by(|left, right| left.cmp(*right));
-        self.values
-    }
-
-    fn sift_up(&mut self, mut child: usize) {
-        while child > 0 {
-            let parent = (child - 1) / 2;
-            if !self.values[child].cmp(self.values[parent]).is_gt() {
-                break;
-            }
-            self.values.swap(child, parent);
-            child = parent;
-        }
-    }
-
-    fn sift_down(&mut self, mut parent: usize) {
-        loop {
-            let left = parent * 2 + 1;
-            if left >= self.values.len() {
-                break;
-            }
-            let right = left + 1;
-            let worse_child =
-                if right < self.values.len() && self.values[right].cmp(self.values[left]).is_gt() {
-                    right
-                } else {
-                    left
-                };
-            if !self.values[worse_child].cmp(self.values[parent]).is_gt() {
-                break;
-            }
-            self.values.swap(parent, worse_child);
-            parent = worse_child;
-        }
+    fn into_sorted_values(self) -> Vec<HoldCandidate> {
+        self.values.into_sorted_vec()
     }
 }
 
@@ -794,19 +775,18 @@ impl NeighborCollector for HoldCandidates {
         };
         if self.values.len() < self.limit {
             self.values.push(candidate);
-            self.sift_up(self.values.len() - 1);
             return;
         }
 
-        if !candidate.cmp(self.values[0]).is_lt() {
-            return;
+        if candidate < *self.values.peek().expect("full candidate heap") {
+            *self.values.peek_mut().expect("full candidate heap") = candidate;
         }
-        self.values[0] = candidate;
-        self.sift_down(0);
     }
 
     fn cutoff_distance_squared(&self) -> Option<f64> {
-        (self.limit > 0 && self.values.len() == self.limit).then(|| self.values[0].distance_sq)
+        (self.values.len() == self.limit)
+            .then(|| self.values.peek().map(|candidate| candidate.distance_sq))
+            .flatten()
     }
 }
 
@@ -2245,6 +2225,10 @@ mod tests {
             8.0,
             3.0,
             tiny_squared,
+            -0.0,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NAN,
         ];
 
         for limit in [0, 1, 2, 5, 12, 20] {
@@ -2256,7 +2240,7 @@ mod tests {
                     leaf_idx,
                 })
                 .collect::<Vec<_>>();
-            expected.sort_unstable_by(|left, right| left.cmp(*right));
+            expected.sort_unstable();
             expected.truncate(limit);
 
             let mut actual = HoldCandidates::new(limit);
@@ -2273,6 +2257,23 @@ mod tests {
             }
             assert_eq!(actual.into_sorted_values(), expected);
         }
+
+        let negative_zero = HoldCandidate {
+            distance_sq: -0.0,
+            leaf_idx: 0,
+        };
+        let positive_zero = HoldCandidate {
+            distance_sq: 0.0,
+            leaf_idx: 0,
+        };
+        assert_ne!(negative_zero, positive_zero);
+        assert!(negative_zero < positive_zero);
+        let nan = HoldCandidate {
+            distance_sq: f64::NAN,
+            leaf_idx: 0,
+        };
+        assert_eq!(nan, nan);
+        assert_eq!(nan.partial_cmp(&nan), Some(std::cmp::Ordering::Equal));
     }
 
     #[test]
