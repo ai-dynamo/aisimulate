@@ -640,7 +640,8 @@ impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
         requests: Vec<PlacementBatchRequest<'_, ReplayRequestPayload, DynamicPlacementMetadata>>,
         now_ms: f64,
     ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
-        let prepare = || -> Result<(Vec<Option<Vec<u8>>>, Vec<PlacementMutationV1>)> {
+        type PreparedBatch = (Vec<Option<Vec<u8>>>, Vec<PlacementMutationV1>);
+        let prepare = || -> Result<PreparedBatch> {
             ensure!(
                 now_ms.is_finite(),
                 "dynamic placement mutation time must be finite"

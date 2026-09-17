@@ -105,12 +105,7 @@ where
         let mut released = Vec::new();
         for request in requests {
             let effects = staged
-                .place(
-                    request.request,
-                    request.metadata,
-                    request.session_id,
-                    now_ms,
-                )
+                .place(request.request, (), request.session_id, now_ms)
                 .map_err(PlacementBatchError::unchanged)?;
             decisions.push(effects.decision);
             released.extend(effects.released);
