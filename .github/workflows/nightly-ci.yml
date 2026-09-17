@@ -12,8 +12,9 @@ name: Main branch nightly CI
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. Isolated compliance jobs gate the build/staging jobs. Each
 # arch job then builds, stages to Artifactory, and smoke-tests the downloaded
-# wheel on every supported Python. Release artifacts stay in Artifactory;
-# GitHub retains only dependency inventories and license evidence here.
+# wheel on every supported Python. Verified copies, checksums, and
+# provenance remain in nightly-dist-* for FPE, accuracy, and installation
+# consumers; GitHub also retains dependency inventories and license evidence.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
@@ -371,6 +372,74 @@ jobs:
           echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
           echo "wheel OK: ${wheel} (version ${version})"
 
+      - name: Write checksums and provenance
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          CONTAINER_IMAGE: ${{ matrix.container_image }}
+          MATRIX_RUNNER: ${{ matrix.runner }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          (cd "${DIST_DIR}" && sha256sum -- * > SHA256SUMS.txt)
+          "${TOOLS_DIR}/venv-build/bin/python" - <<'EOF'
+          import importlib.metadata as metadata
+          import json
+          import os
+          import platform
+          import tomllib
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          pyproject = Path("python/aisimulate/pyproject.toml")
+          version = tomllib.loads(pyproject.read_text())["project"]["version"]
+          provenance = {
+              "version": version,
+              "repository": os.environ["GH_REPOSITORY"],
+              "workflow_ref": os.environ["GH_WORKFLOW_REF"],
+              "ref": os.environ["GH_REF"],
+              "commit": os.environ["GH_SHA"],
+              "run_url": (
+                  f"{os.environ['GH_SERVER_URL']}/{os.environ['GH_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GH_RUN_ID']}"
+                  f"/attempts/{os.environ['GH_RUN_ATTEMPT']}"
+              ),
+              "event": os.environ["GH_EVENT_NAME"],
+              "arch": os.environ["MATRIX_ARCH"],
+              "runner_label": os.environ["MATRIX_RUNNER"],
+              "container_image": os.environ["CONTAINER_IMAGE"],
+              "built_at_utc": datetime.now(timezone.utc).isoformat(),
+              "toolchain": {
+                  "python": platform.python_version(),
+                  "rust": os.environ["RUST_TOOLCHAIN"],
+                  "uv": os.environ["UV_VERSION"],
+                  "maturin": metadata.version("maturin"),
+              },
+              "artifacts": {
+                  line.split(maxsplit=1)[1]: line.split(maxsplit=1)[0]
+                  for line in (dist / "SHA256SUMS.txt").read_text().splitlines()
+                  if not line.endswith("SHA256SUMS.txt")
+              },
+          }
+          (dist / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          EOF
+          # Cover provenance.json too, so the smoke and staging jobs'
+          # `sha256sum --check` verifies every file crossing the artifact store.
+          (cd "${DIST_DIR}" && sha256sum provenance.json >> SHA256SUMS.txt)
+          {
+            echo "### Nightly artifacts (${MATRIX_ARCH})"
+            echo '```'
+            cat "${DIST_DIR}/SHA256SUMS.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       # Capture trusted crate metadata before smoke dependencies execute.
       - name: Capture the locked crate inventory
         if: matrix.arch == 'amd64'
@@ -478,6 +547,22 @@ jobs:
             exit 1
           }
           echo "fetched ${wheel} (checksum matches the build)"
+
+      # Preserve the established consumer handoff only after the staged
+      # wheel has been downloaded and verified against the build. Upload
+      # before dependency code runs so the artifact remains immutable.
+      - name: Upload verified nightly artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-dist-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist/*
+          if-no-files-found: error
+          # Wheels and crates are already compressed; skip recompression.
+          compression-level: 0
+          # Matches the Dynamo nightly compliance policy's 30-day window.
+          retention-days: 30
+          overwrite: true
+
 
       # Installs the wheel fetched back from Artifactory, not the local
       # build, so a corrupted or wrong upload fails here instead of at the
@@ -657,8 +742,7 @@ jobs:
           overwrite: true
 
   # Refresh strict-native op-level FPE coverage at the exact nightly source
-  # SHA. Runs without a wheel_artifact input, so the reusable workflow builds
-  # its own qualification wheel — no build artifact is ever stored in GitHub.
+  # SHA and with the same amd64 wheel verified against Artifactory.
   # The GitLab publish trigger below requires this to succeed, and a failed
   # refresh fails the run, so consumers never advance to it.
   fpe-support-matrix:
@@ -670,6 +754,7 @@ jobs:
     uses: ./.github/workflows/fpe-support-matrix.yml
     with:
       expected_sha: ${{ github.sha }}
+      wheel_artifact: nightly-dist-amd64
 
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then

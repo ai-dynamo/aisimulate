@@ -63,12 +63,16 @@ Full CI when a review finishes.
 ```mermaid
 flowchart TD
     subgraph MainNightly["Main branch nightly CI"]
-        MainGuard["Check for a new main commit"] -->|Changed| Build["Build nightly wheels and crate"]
-        Build --> Smoke["Installed-wheel smoke tests"]
-        Build --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
+        MainGuard["Check for a new main commit"] -->|Changed| Licenses["Check Python dependency licenses"]
+        Licenses --> Build["Build nightly wheels and crate"]
+        Build --> NightlyStage["Protected Artifactory staging"]
+        NightlyStage --> Verify["Download and verify staged wheel<br/>Preserve artifacts and provenance"]
+        Verify --> Smoke["Installed-wheel smoke tests"]
+        Smoke --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
+        Smoke --> Evidence["Generate license evidence"]
         MainFPE --> MainQualified["Qualify main matrix artifact"]
-        Smoke --> NightlyStage["Protected nightly package staging"]
-        MainQualified --> NightlyStage
+        MainQualified --> Security["GitLab security handoff when enabled"]
+        Evidence --> Security
     end
 
     subgraph ReleaseNightly["Release branch nightly CI"]
@@ -78,15 +82,15 @@ flowchart TD
         ReleaseQualified --> AllReleases["Require every release to succeed"]
     end
 
-    NightlyStage -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    Security -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
     AllReleases -.->|Release branch nightly CI succeeds| Pages
     Pages --> Deploy["Deploy support matrix pages"]
 ```
 
 The two nightly schedules are independent. **FPE Support Matrix** and
 **FPE Support Matrix (release)** are reusable workflows called by those schedules;
-they have no separate nightly timers. Within main's nightly run, wheel smoke
-tests and FPE qualification run in parallel. Release qualification processes
+they have no separate nightly timers. Within main's nightly run, FPE qualification
+starts after the staged-wheel smoke tests succeed. Release qualification processes
 branches sequentially, with up to 20 shard jobs within each release.
 Each release uses the commit SHA recorded at the start of the run, even if its
 branch receives new commits while the checks are running.
@@ -315,11 +319,19 @@ architecture and one `aisimulate-core` Rust source crate. A changes guard compar
 `main` with the last successful nightly. The build stamps a date-based dev
 version, uses pinned build tooling, and records checksums and provenance.
 
-After artifacts are stored, two kinds of validation run:
+Python dependency licenses are checked in isolated jobs on both architectures
+before building or staging. Artifacts are then staged directly to internal
+Artifactory through the protected `automated-release` environment. Each wheel
+is downloaded again and checked against the build. Immutable copies and their
+checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
+before runtime dependencies execute, preserving the accuracy and installation
+consumer contract.
+
+Two kinds of validation then run:
 
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
-  and console commands are checked without a source checkout.
+  and console commands are checked using the downloaded wheel.
 - **FPE Support Matrix:** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
@@ -331,10 +343,14 @@ builds one wheel for the requested source SHA and uses that same wheel for all
 shards. This is native operation-level support qualification; it does not
 certify hardware accuracy, backend serving performance, or FPM coverage.
 
-Nightly staging depends on both smoke tests and FPE qualification. It uploads
-checksum-verified artifacts to internal Artifactory under `nightly/<run_id>/`
-through the protected `automated-release` environment. FPE output is retained
-as workflow artifacts; publishing dashboard pages is a separate Pages workflow.
+Internal staging uses `nightly/<run_id>/`; staging alone does not certify the
+run. The GitLab security handoff requires both smoke tests, FPE qualification,
+and license evidence to succeed, and only runs when
+`GITLAB_SECURITY_TRIGGER_ENABLED` is enabled. Every rerun also requires approval
+recorded for that run attempt through `manual-release-approver`; environment
+reviewer protections must be configured to enforce it. FPE output is retained
+as workflow artifacts; publishing dashboard pages is a separate Pages workflow
+that consumes successful nightlies.
 
 [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) separately
 discovers every `release/<version>` branch each day, including new releases and

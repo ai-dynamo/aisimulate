@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
 import io
 import json
 import os
@@ -2063,3 +2064,94 @@ def test_python_license_install_failure_blocks_check_and_export(tmp_path, monkey
         python_licenses.check_licenses("python", inventory)
     assert run.call_count == 1
     assert not inventory.exists()
+
+
+def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    steps = jobs["build-artifacts"]["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index("Write checksums and provenance") < names.index("Stage to Artifactory")
+    assert (
+        names.index("Fetch the staged wheel back from Artifactory")
+        < names.index("Upload verified nightly artifacts")
+        < names.index("Smoke-test the staged wheel on every supported Python")
+    )
+    upload = steps[names.index("Upload verified nightly artifacts")]["with"]
+    assert upload["name"] == "nightly-dist-${{ matrix.arch }}"
+    assert upload["path"] == "${{ runner.temp }}/nightly-dist/*"
+    assert upload["overwrite"] == "true"
+    artifact = upload["name"].replace("${{ matrix.arch }}", "amd64")
+    assert jobs["fpe-support-matrix"]["with"]["wheel_artifact"] == artifact
+    resolver = _workflow("e2e-accuracy.yml")["jobs"]["resolve"]["steps"][0]["with"]["script"]
+    assert f"artifact.name === '{artifact}'" in resolver
+    consumer = _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
+    download = next(step for step in consumer if "download-artifact@" in step.get("uses", ""))
+    assert download["with"]["name"] == artifact
+
+
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
+    directory = tmp_path / "accuracy-wheel"
+    directory.mkdir()
+    wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
+    wheel.write_bytes(b"fixture wheel")
+    (directory / "aisimulate-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
+    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('[project]\nversion = "0.12.0.dev20260917"\n')
+    python = tmp_path / "tools/venv-build/bin/python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    # Only distribution metadata is needed by the real provenance writer.
+    metadata = tmp_path / "metadata/maturin-1.12.0.dist-info"
+    metadata.mkdir(parents=True)
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: maturin\nVersion: 1.12.0\n")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(metadata.parent),
+        "DIST_DIR": str(directory),
+        "TOOLS_DIR": str(tmp_path / "tools"),
+        "RUNNER_TEMP": str(tmp_path),
+        "MATRIX_ARCH": "amd64",
+        "MATRIX_RUNNER": "fixture",
+        "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
+        "GH_REPOSITORY": "ai-dynamo/aisimulate",
+        "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
+        "GH_REF": "refs/heads/main",
+        "GH_SHA": "a" * 40,
+        "GH_RUN_ID": "123",
+        "GH_RUN_ATTEMPT": "1",
+        "GH_EVENT_NAME": "schedule",
+        "GH_SERVER_URL": "https://github.com",
+        "RUST_TOOLCHAIN": "1.98.0",
+        "UV_VERSION": "0.12.6",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "EXPECTED_SHA": "a" * 40,
+        "NIGHTLY_RUN": "123",
+    }
+    producer = next(
+        step["run"]
+        for step in _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
+        if step.get("name") == "Write checksums and provenance"
+    )
+    result = subprocess.run(["bash", "-e", "-c", producer], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    provenance = json.loads((directory / "provenance.json").read_text())
+    assert provenance["version"] == "0.12.0.dev20260917"
+    assert provenance["artifacts"][wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+    consumer = next(
+        step["run"]
+        for step in _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
+        if step.get("id") == "verify"
+    ).replace("/opt/python/cp312-cp312/bin/python", shlex.quote(sys.executable))
+
+    def verify():
+        return subprocess.run(["bash", "-e", "-c", consumer], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    result = verify()
+    assert result.returncode == 0, result.stdout + result.stderr
+    wheel.write_bytes(b"tampered wheel")
+    assert verify().returncode != 0
+    wheel.write_bytes(b"fixture wheel")
+    env["EXPECTED_SHA"] = "c" * 40
+    assert verify().returncode != 0
