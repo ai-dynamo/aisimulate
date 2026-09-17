@@ -13,8 +13,10 @@ when not (preserve_engine_limits or false):
 when ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_size):
     agg_prefill_decode tensor_parallel_size = (moe_tensor_parallel_size * moe_expert_parallel_size) // (data_parallel_size or 1)
 
-# GPUs per worker follow the same TP/PP/DP product
-agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
+# GPUs per worker follow the TP/PP/DP product. vLLM's prefill context
+# parallelism (-pcp) EXPANDS the world size (world = tp * pp * pcp), so it
+# multiplies the worker; decode CP (-dcp) reuses TP ranks and adds no GPUs.
+agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1) * (context_parallel_size or 1)
 agg_prefill_decode enable_expert_parallel = ((moe_expert_parallel_size or 1) > 1)
 
 when not (preserve_engine_limits or false):

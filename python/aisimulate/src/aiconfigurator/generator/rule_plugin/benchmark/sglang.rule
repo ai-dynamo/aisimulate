@@ -19,6 +19,10 @@ when ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_si
     agg_prefill_decode tensor_parallel_size = moe_tensor_parallel_size * moe_expert_parallel_size
 
 # GPUs per worker follow the same TP/PP/DP product that SGLang expects
+# Prefill CP ranks live inside --tp on SGLang (see rule_plugin/sglang.rule for
+# why this is a per-role expression rather than a `when` block).
+agg_prefill_decode tensor_parallel_size = ((tensor_parallel_size or 1) * context_parallel_size) if ((context_parallel_size or 1) > 1 and not ModelConfig.is_moe) else (tensor_parallel_size if tensor_parallel_size is defined else none)
+
 agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
 
 agg_prefill_decode enable_attention_dp = ((data_parallel_size or 1) > 1) and ModelConfig.is_moe
