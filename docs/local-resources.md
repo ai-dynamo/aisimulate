@@ -5,9 +5,18 @@
 
 `aisimulate predict`, `aisimulate recommend`, and the public
 `run_recommendation` Python API check host resources before preparing a run.
+
+**No manual resource configuration is required.** AISimulate automatically
+detects the local machine's available RAM and CPU capacity, reserves host
+headroom, and limits parallel simulations to fit the estimated resource budget.
+You can omit the entire `execution.resources` section. Set explicit limits only
+when you want to override the automatic budget.
+
 These controls describe the machine running AISimulate. Simulated GPU counts,
 KV-cache memory fractions, traffic concurrency, and request counts retain their
 original meaning.
+
+Optional resource settings, with defaults shown:
 
 ```yaml
 execution:
