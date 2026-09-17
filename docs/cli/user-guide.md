@@ -1681,6 +1681,37 @@ Recommendation output uses the schema-versioned `SweepResult` contract documente
 ledger, stable status and reason categories, counts, provenance, and candidate-ID selection views.
 Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j`.
 
+The fields `power_w` and `power_coverage` follow the
+[modeled-power contract](../power-model.md). That contract defines active-forward-pass per-GPU
+scope, energy-over-active-latency aggregation, null semantics, and provenance requirements.
+`power_coverage` is the share of modeled active time with operation-energy evidence; `power_w`
+may be numeric at or above 90% coverage, so `0.90` passes while `0.899` does not. This formalizes
+existing AIC semantics; it neither adds a new power calculation nor implies that every runner or
+timing provider implements these fields. Normal prediction and recommendation
+summaries always show both labels, with explicit unavailable values and reasons when needed.
+Summary power is independent of `--detail`; the `energy` selector only adds a breakdown.
+Both JSON keys are always present in conforming summaries: unavailable watts use `null`,
+coverage stays numeric when computable, and an unsupported energy path uses `null` for both.
+Consult the
+[AIC migration guide](migrate-from-aiconfigurator.md) for the current release boundary.
+
+### Power and energy detail
+
+Use `aisimulate predict --stack engine --config prediction.yaml --detail energy`
+to show phase and operation evidence alongside the normal power summary.
+`--detail all` includes energy. `--diagnostics power` remains a compatibility
+alias for its original stdout envelope. `--diagnostics-top-n N` bounds table
+rows per phase; `prediction.json` and JSON detail output retain all operations.
+Each phase shows publication status, source kind, and the concrete source tag.
+Missing or invalid display measurements render as `N/A`.
+
+The native engine export supports this evidence path with op-level timing on
+supported topologies. The external Dynamo Python adapter's diagnostics export
+is not qualified by this PR: native Rust compatibility aliases do not establish
+adapter parity. If a selected runner exports no typed evidence, energy details
+state that reason. FPM, fixed, polynomial, AFD, and analytical EPD energy remain
+unavailable; their summary fields are explicit nulls where unsupported.
+
 <a id="prediction-directory"></a>
 
 ### 22.1 Prediction Directory
@@ -1783,13 +1814,18 @@ sections and skipped-section reasons to the normal prediction summary.
   and simulator wall time remain in the summary.
   This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
   approximation labels in the summary.
-- `all`: the three supported sections above, when evidence exists.
+- `energy`: active forward-pass phase and operation energy evidence per GPU, with coverage,
+  publication status, sources, and missing-evidence reasons. It preserves the normal summary
+  power values. See [Power and energy detail](#power-and-energy-detail).
+- `all`: `summary,memory,time,energy`, with availability reported for each section.
 
 Sections without evidence are omitted from `details.sections` and listed with reasons in
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
-why other roles are unavailable. Missing values are never filled with zero. `energy` and
-`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
-SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+why other roles are unavailable. Energy retains an explicit unavailable status and reason when
+the runner exports no typed evidence. Missing measurements are never invented as zero;
+energy-aware runs with no covered operations report numeric zero coverage. `source` remains
+unsupported and is excluded from `all`. SOL and the remaining timing/source diagnostics are
+[migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -1802,7 +1838,10 @@ Use `prediction.yaml` from [Predict one deployment](#predict-one-deployment): Qw
 one H200, vLLM performance-data version `0.24.0`, 1,024 input tokens, 128 output tokens,
 concurrency four, and twelve requests. These outputs were captured from the built-in engine
 on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
-results; values may change with the implementation or performance data.
+results; values may change with the implementation or performance data. These excerpts retain
+the initial summary/memory/time capture. The energy extension adds another section to `all`;
+see the [captured energy result](migrate-from-aiconfigurator.md#4113-captured-result) for its
+command and output.
 
 ```bash
 aisimulate predict -c prediction.yaml --detail all \
@@ -1933,8 +1972,9 @@ Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC 
 ```
 
 For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
-above. `--detail all` would still include summary and time while skipping memory. Power and
-energy are absent from all these examples.
+above. `--detail all` includes summary, time, and energy while skipping memory. The excerpts
+above omit the subsequently added power labels and energy section; the linked energy capture
+shows them explicitly.
 
 <a id="errors-and-exit-codes"></a>
 

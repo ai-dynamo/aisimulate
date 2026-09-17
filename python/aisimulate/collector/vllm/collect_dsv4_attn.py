@@ -70,7 +70,11 @@ from collector.vllm.utils import (
     setup_distributed,
 )
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968046:
+# CSA/HCA context/generation: 32/32; auxiliary sparse kernels: 4/4. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]

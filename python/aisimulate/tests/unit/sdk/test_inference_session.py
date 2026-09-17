@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_step_estimate_preserves_existing_positional_field_order() -> None:
-    assert [field.name for field in fields(StepEstimate)][:-1] == [
+    original_fields = [
         "latency_ms",
         "energy_wms",
         "component_latency_ms",
@@ -37,8 +37,25 @@ def test_step_estimate_preserves_existing_positional_field_order() -> None:
         "context_tokens",
         "num_decode_requests",
         "num_decode_query_tokens",
+        "moe_comm_fallbacks",
     ]
-    assert fields(StepEstimate)[-1].name == "moe_comm_fallbacks"
+    assert [field.name for field in fields(StepEstimate)][: len(original_fields)] == original_fields
+    original_values = (
+        12.5,
+        50.0,
+        {"context": 4.0},
+        {"context": 16.0},
+        {"gemm": 3.0},
+        {"gemm": "silicon"},
+        4096,
+        7,
+        14,
+        (MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
+    )
+    estimate = StepEstimate(*original_values)
+    assert tuple(getattr(estimate, name) for name in original_fields) == original_values
+    assert estimate.per_op_energy_wms == {}
+    assert estimate.covered_latency_ms == 0.0
 
 
 def test_inference_session_exposes_structured_mixed_step() -> None:

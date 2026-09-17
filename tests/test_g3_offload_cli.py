@@ -152,7 +152,10 @@ def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope, 
     )
     stdout = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "prediction.json").read_text())
-    assert stdout == saved
+    assert stdout == {key: value for key, value in saved.items() if key != "power_diagnostics"}
+    assert saved["power_diagnostics"]["publication_status"] == "unsupported"
+    assert saved["power_diagnostics"]["power_w"] is None
+    assert saved["power_diagnostics"]["power_coverage"] is None
     assert stdout["completed_requests"] == 1
     # The 33-token prompt stores two full 16-token blocks. Even a one-block
     # G3 must retain its leading block instead of discarding the whole cohort.
