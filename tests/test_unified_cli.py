@@ -243,6 +243,17 @@ def test_predict_online_rejects_runner_without_online_capability(tmp_path, monke
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_dry_run_is_rejected_before_execution(command, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: pytest.fail("removed option must stop before replay"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, "--config", "unused.yaml", "--dry-run"])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --dry-run" in capsys.readouterr().err
+
+
 def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     def unavailable(_stack):
         raise cli.StackResolutionError("stack unavailable")
@@ -654,7 +665,6 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
     status = cli._recommend(
         SimpleNamespace(
             stack="engine",
-            dry_run=False,
             format="json",
             output_dir=str(output),
             overwrite=False,

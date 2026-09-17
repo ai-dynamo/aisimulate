@@ -79,9 +79,6 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--output-dir", default="./aisimulate-output")
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
-        child.add_argument(
-            "--dry-run", action="store_true", help="validate core configuration and plan host resources without replay"
-        )
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].epilog = (
         "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
@@ -180,8 +177,6 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
     plan = _resource_plan(args, config, factory)
-    if args.dry_run:
-        return _write_resource_plan(args, plan)
     require_plan(plan)
     factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
     epd = config.engine.workers.encoder is not None
@@ -268,8 +263,6 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
     plan = _resource_plan(args, config, factory)
-    if args.dry_run:
-        return _write_resource_plan(args, plan)
     require_plan(plan)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
@@ -345,11 +338,10 @@ def _resource_plan(args, config, factory) -> dict[str, Any]:
     )
 
 
-def _write_resource_plan(args, plan: dict[str, Any]) -> int:
+def _write_resource_plan(args, plan: dict[str, Any]) -> None:
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     (root / "resource-plan.json").write_text(json.dumps(plan, indent=2, allow_nan=False) + "\n")
     sys.stdout.write(json.dumps(plan, indent=2, allow_nan=False) + "\n")
-    return 3 if plan["status"] == "resource_limited" else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -45,18 +45,15 @@ largest requested load without enumerating its Cartesian product; if that
 candidate cannot fit, the whole request is refused. This increment does not
 silently prune the search space or return partial recommendations.
 
-```sh
-aisimulate recommend --stack dynamo --config sweep.yaml --dry-run \
-  --output-dir resource-plan
-```
-
-`--dry-run` validates the core schema and writes `resource-plan.json` without
-creating a runner or compiling adapters. It is not full backend/adapter
-validation. The plan records the host snapshot, reserved memory, requested and
-effective parallelism, allocation model, lower bound and estimated peak bytes.
-A refused plan or execution exits with status 3 (`resource_limited`). A runtime
-resource refusal aborts the sweep instead of observing a fictitious model score.
-Use a new output directory or `--overwrite` to replace known outputs.
+Resource checks run automatically on every `predict` and `recommend` command.
+If the workload cannot fit, AISimulate stops before creating a runner or
+compiling adapters and exits with status 3 (`resource_limited`). It writes the
+refused plan to `resource-plan.json` in the output directory, including the host
+snapshot, reserved memory, requested and effective parallelism, allocation model,
+lower bound and estimated peak bytes. Use a new output directory or `--overwrite`
+to replace known outputs. An admitted workload proceeds to simulation. A runtime
+resource refusal also exits with status 3 and aborts the sweep instead of
+observing a fictitious model score.
 
 For a synthetic Dynamo workload with 64,512 concurrent requests, 100 requests
 per load unit and 10,240 input tokens, the compatibility estimator calculates

@@ -165,8 +165,7 @@ def test_execution_section_is_core_and_roundtrips():
 
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command, dry_run):
+def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command):
     class NeverExecute:
         def create(self, worker_id):
             pytest.fail("oversized workload must not create a runner")
@@ -186,7 +185,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command,
     config.write_text(yaml.safe_dump(raw))
     out = tmp_path / "result"
     args = [command, "--stack", "dynamo", "--config", str(config), "--output-dir", str(out)]
-    assert cli.main(args + (["--dry-run"] if dry_run else [])) == 3
+    assert cli.main(args) == 3
     report = json.loads((out / "resource-plan.json").read_text())
     assert report["status"] == "resource_limited"
     assert report["estimate"]["input_token_bytes"] == 264_241_152_000
