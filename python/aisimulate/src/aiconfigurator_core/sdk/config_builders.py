@@ -40,6 +40,8 @@ def build_model_config(
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
     speculation=None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     return ModelConfig(
@@ -48,6 +50,8 @@ def build_model_config(
         attention_dp_size=attention_dp_size,
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
+        cp_size=cp_size,
+        dcp_size=dcp_size,
         gemm_quant_mode=GEMMQuantMode[gemm_quant_mode] if gemm_quant_mode else None,
         kvcache_quant_mode=KVCacheQuantMode[kvcache_quant_mode] if kvcache_quant_mode else None,
         fmha_quant_mode=FMHAQuantMode[fmha_quant_mode] if fmha_quant_mode else None,

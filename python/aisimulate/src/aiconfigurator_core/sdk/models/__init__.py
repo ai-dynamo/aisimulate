@@ -189,6 +189,18 @@ def get_model(
     else:
         model_config.cp_style = "none"
 
+    # Decode context parallelism is a separate modeling capability: the model
+    # class must price the KV-sharded decode attention (+ LSE merge comm) before
+    # dcp>1 can be estimated. Deployment policy (whether a role may combine
+    # prefill CP with DCP) is decided by the topology layer, not here; this only
+    # guards against silently wrong numbers.
+    if model_config.dcp_size > 1 and not cls.supports_dcp(backend_name):
+        raise NotImplementedError(
+            f"Decode context parallelism (dcp_size={model_config.dcp_size}) is not supported for "
+            f"model_family={model_family!r} on backend={backend_name!r}. The model class "
+            f"must override ``supports_dcp`` and implement the KV-sharded decode path."
+        )
+
     # Resolve the speculative scheme BEFORE construction (an explicit mtp
     # scheme writes its depth back onto nextn, which model families read),
     # attach it after, and gate unsupported (model, backend) combinations.
@@ -206,6 +218,11 @@ def get_model(
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
+    # Decode CP rewrite runs after speculation materialized the draft ops (so
+    # they can be skipped by name) and before the FPM fold (so the whole-model
+    # SOL roofline carries the sharded decode attention + merge collectives).
+    if model_config.dcp_size > 1:
+        model._apply_decode_context_parallel()
     if forward_model == "fpm":
         model = _apply_forward_model_fpm(model)
     return model

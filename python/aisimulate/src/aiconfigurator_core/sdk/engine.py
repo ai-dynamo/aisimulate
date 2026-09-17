@@ -323,6 +323,9 @@ def _engine_config_dict(
         "moe_tp_size": _opt_int(getattr(cfg, "moe_tp_size", None)),
         "moe_ep_size": _opt_int(getattr(cfg, "moe_ep_size", None)),
         "cp_size": _opt_int(getattr(cfg, "cp_size", None)),
+        # Decode CP joins the identity too: a dcp variant prices decode attention
+        # and KV capacity differently, so it must never share a compiled handle.
+        "dcp_size": _opt_int(getattr(cfg, "dcp_size", None)),
         # QuantizationConfig (flattened)
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
@@ -414,6 +417,8 @@ def compile_engine(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     nextn: int = 0,
     speculation: dict | None = None,
     kv_block_size: int | None = None,
@@ -453,6 +458,8 @@ def compile_engine(
         forward_model=forward_model,
         attention_backend=attention_backend,
         speculation=resolved_speculation,
+        cp_size=cp_size,
+        dcp_size=dcp_size,
     )
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
@@ -648,6 +655,7 @@ def build_database_probe_spec_json(
         "moe_tp_size": None,
         "moe_ep_size": None,
         "cp_size": None,
+        "dcp_size": None,
         "weight_dtype": None,
         "moe_dtype": None,
         "activation_dtype": None,

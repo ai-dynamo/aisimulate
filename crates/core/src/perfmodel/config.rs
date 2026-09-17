@@ -80,7 +80,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19 (decode context parallelism): `GenerationAttentionOp`,
+//   `GenerationMlaOp`, `WideEpGenerationMlaOp` and `DsaModuleOp` gained a
+//   tail-appended `dcp_size` (gathered query heads over a 1/dcp KV stripe).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -208,6 +211,14 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    /// Decode-context-parallel size (vLLM `-dcp` / SGLang `--dcp-size`): the
+    /// decode KV cache is striped by token position across ranks inside the
+    /// attention group. Part of the engine identity so dcp variants get
+    /// distinct compiled handles. `None`/1 means no DCP. Like `cp_size`, the
+    /// per-op math is carried on the ops themselves, not re-derived here.
+    /// Additive-optional: absent in older payloads.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field

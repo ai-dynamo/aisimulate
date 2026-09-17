@@ -1254,6 +1254,38 @@ def test_memory_detail_with_explicit_blocks_does_not_guess_components():
     assert "memory_breakdown" not in data
 
 
+def test_runner_forwards_decode_cp_to_aic_timing_and_capacity(monkeypatch):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("num_gpu_blocks")
+    engine_args.pop("timing_model")
+    engine_args["aic_backend_version"] = "test"
+    engine_args["aic_dcp_size"] = 4
+    engine_args["gpu_memory_utilization"] = 0.8
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+
+    timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
+    assert timing_config["dcp_size"] == 4
+    assert "cp_size" not in timing_config
+    assert calls[0]["dcp_size"] == 4
+    assert calls[0]["cp_size"] == 1
+
+
 def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
     import sys
     from types import ModuleType

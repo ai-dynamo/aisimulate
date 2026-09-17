@@ -1155,3 +1155,88 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
     else:
         with pytest.raises(ValueError, match="does not match effective prefill_hardware_sku"):
             prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
+
+
+def test_prediction_parallelism_accepts_context_parallel_knobs() -> None:
+    config = CorePredictionConfig.model_validate(
+        {"engine": {**_engine(), "workers": {"aggregated": {"parallelism": {"decode_context": 4}}}}}
+    )
+    assert config.engine.workers.aggregated is not None
+    parallel = config.engine.workers.aggregated.parallelism
+    assert parallel.prefill_context == 1
+    assert parallel.decode_context == 4
+
+
+@pytest.mark.parametrize("field", ["prefill_context", "decode_context"])
+def test_prediction_rejects_nonpositive_context_parallel(field: str) -> None:
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(
+            {"engine": {**_engine(), "workers": {"aggregated": {"parallelism": {field: 0}}}}}
+        )
+
+
+def test_aggregated_deployment_rejects_prefill_and_decode_cp_together() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "workers": {"aggregated": {"parallelism": {"prefill_context": 2, "decode_context": 2}}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="at most one of parallelism.prefill_context"):
+        _deployment(config.engine, workload={}, afd_performance_model=None)
+
+
+def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "workers": {"aggregated": {"parallelism": {"decode_context": 4}}},
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    # cp=1 is not spelled out, so pre-CP deployments stay byte-identical.
+    assert "cp" not in spec.parallel_config
+    assert spec.parallel_config["dcp"] == 4
+    assert spec.agg_engine_args["aic_dcp_size"] == 4
+    assert "aic_cp_size" not in spec.agg_engine_args
+    assert spec.performance_model_metadata["aggregated"]["config"]["dcp_size"] == 4
+    assert "cp_size" not in spec.performance_model_metadata["aggregated"]["config"]
+
+
+def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "sglang",
+                "workers": {
+                    "prefill": {"parallelism": {"prefill_context": 2}},
+                    "decode": {"parallelism": {"decode_context": 4}},
+                },
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    assert spec.parallel_config["prefill_cp"] == 2
+    assert "prefill_dcp" not in spec.parallel_config
+    assert "decode_cp" not in spec.parallel_config
+    assert spec.parallel_config["decode_dcp"] == 4
+    assert spec.prefill_engine_args["aic_cp_size"] == 2
+    assert "aic_dcp_size" not in spec.prefill_engine_args
+    assert spec.decode_engine_args["aic_dcp_size"] == 4
+    assert "aic_cp_size" not in spec.decode_engine_args
+    assert spec.performance_model_metadata["prefill"]["config"]["cp_size"] == 2
+    assert spec.performance_model_metadata["decode"]["config"]["dcp_size"] == 4

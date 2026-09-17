@@ -94,6 +94,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
                 moe_tp_size: None,
                 moe_ep_size: None,
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: None,

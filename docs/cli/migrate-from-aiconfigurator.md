@@ -1347,10 +1347,14 @@ and pins CP=1.
 
 #### 5.7.2 Context parallelism (CP)
 
-**The unified AISimulate CLI has no CP configuration field.** AIC exposes per-role
-`agg_cp_candidates`, `prefill_cp_candidates`, and `decode_cp_candidates`. CP>1 support depends on
-the model family and backend; the dense-model PP example above does not establish CP>1 support.
-Keep supported CP workflows on AIC. See
+**The unified `predict` CLI exposes CP as two per-phase knobs; `recommend` does not sweep them.**
+`parallelism.prefill_context` is prefill context parallelism (AIC `*_cp_candidates`: SGLang
+`--attn-cp-size`, vLLM `-pcp`) and `parallelism.decode_context` is decode context parallelism
+(AIC `dcp_size` / `prefill_dcp_size` / `decode_dcp_size`: vLLM `-dcp`, SGLang `--dcp-size`).
+Aggregated workers accept at most one of the two above 1; disaggregated roles carry each knob
+independently. Support above 1 depends on the model family and backend (`supports_cp` /
+`supports_dcp` on the model class); the dense-model PP example above does not establish CP>1
+support. For CP candidate sweeps keep the workflow on AIC. See
 [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
 
 #### 5.7.3 GPUs per worker and parallelism search domains

@@ -147,6 +147,7 @@ def _deployment(
     if mode == "agg":
         assert engine.workers.aggregated is not None
         worker = engine.workers.aggregated
+        _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
         return BackendDeploymentSpec(
             parallel_config=parallel,
@@ -285,9 +286,30 @@ def _afd_deployment(
     )
 
 
+def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> None:
+    """Aggregated workers model prefill CP and decode CP as mutually exclusive.
+
+    This is a deployment-topology rule, deliberately NOT a ModelConfig rule:
+    disaggregated deployments carry the two knobs on different workers, so the
+    same ModelConfig fields are valid there without any cross-check. In one
+    aggregated engine the frameworks either do not compose the two at all
+    (SGLang's prefill CP and DCP paths never reference each other) or only for
+    a narrow model class (vLLM: sparse MLA with ``ag_rs``), so the simulator
+    prices them one at a time.
+    """
+    parallel = worker.parallelism
+    if parallel.prefill_context > 1 and parallel.decode_context > 1:
+        raise ValueError(
+            "aggregated workers support at most one of parallelism.prefill_context and "
+            f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
+            f"decode_context={parallel.decode_context}); use a disaggregated deployment to apply "
+            "prefill CP on the prefill worker and decode CP on the decode worker"
+        )
+
+
 def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[str, JSONValue]:
     parallel = worker.parallelism
-    return {
+    mapping: dict[str, JSONValue] = {
         f"{prefix}replicas": parallel.replicas,
         f"{prefix}tp": parallel.tensor,
         f"{prefix}pp": parallel.pipeline,
@@ -295,6 +317,14 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
     }
+    # Context-parallel knobs are spelled out only when set: cp=dcp=1 deployments
+    # stay byte-identical to pre-CP outputs and comparable with the sweeper's
+    # parallel_config, which never carries them.
+    if parallel.prefill_context != 1:
+        mapping[f"{prefix}cp"] = parallel.prefill_context
+    if parallel.decode_context != 1:
+        mapping[f"{prefix}dcp"] = parallel.decode_context
+    return mapping
 
 
 def _worker_performance_model_metadata(
@@ -302,7 +332,7 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
-    return {
+    metadata: dict[str, Any] = {
         "provider": "aic",
         "config": {
             "backend": engine.backend,
@@ -318,6 +348,13 @@ def _worker_performance_model_metadata(
             "forward_model": worker.timing.forward_model,
         },
     }
+    # Context-parallel knobs join the perf identity only when set, so cp=dcp=1
+    # metadata stays byte-identical to pre-CP outputs.
+    if parallel.prefill_context != 1:
+        metadata["config"]["cp_size"] = parallel.prefill_context
+    if parallel.decode_context != 1:
+        metadata["config"]["dcp_size"] = parallel.decode_context
+    return metadata
 
 
 def _worker_engine_args(
@@ -359,6 +396,12 @@ def _worker_engine_args(
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
+    # Context-parallel knobs are spelled out only when set, so cp=dcp=1 specs stay
+    # byte-identical to pre-CP outputs.
+    if parallel.prefill_context != 1:
+        payload["aic_cp_size"] = parallel.prefill_context
+    if parallel.decode_context != 1:
+        payload["aic_dcp_size"] = parallel.decode_context
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
@@ -401,6 +444,8 @@ def _worker_engine_args(
             "aic_model_path",
             "aic_moe_tp_size",
             "aic_moe_ep_size",
+            "aic_cp_size",
+            "aic_dcp_size",
         ):
             payload.pop(name, None)
     host_offload = cache.host_offload

@@ -415,6 +415,24 @@ pub struct GenerationAttentionOp {
     /// and the ideal-peak guard are both physical bounds.
     #[serde(default)]
     pub verify_query_tokens: u32,
+    /// Decode context parallelism (vLLM `-dcp` / SGLang `--dcp-size`). The
+    /// KV cache is striped by token position across `dcp_size` ranks of the
+    /// attention group; each rank all-gathers the group's query heads, attends
+    /// them over its own `ceil(kv / dcp)` stripe, and the partial outputs are
+    /// merged by LSE (the merge collectives are separate NCCL ops emitted by
+    /// the model class). So the kernel prices `n * dcp` query heads against a
+    /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
+    /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
+    /// bincode payloads are positional (schema v19).
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub dcp_size: u32,
+}
+
+/// Decode-CP kernel geometry shared by every decode attention operator:
+/// `(query heads seen by the kernel, per-rank KV tokens)` for `dcp` ranks.
+pub(crate) fn dcp_geometry(n_local: u32, kv_tokens: u32, dcp: u32) -> (u32, u32) {
+    let dcp = dcp.max(1);
+    (n_local * dcp, kv_tokens.div_ceil(dcp))
 }
 
 impl GenerationAttentionOp {
@@ -437,6 +455,7 @@ impl GenerationAttentionOp {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         }
     }
 
@@ -457,12 +476,15 @@ impl GenerationAttentionOp {
             )));
         }
         let seq_batch = batch_size / width;
+        // Decode CP: the kernel sees the whole DCP group's query heads over
+        // this rank's 1/dcp KV stripe (see the `dcp_size` field docs).
+        let (n_kernel, kv_local) = dcp_geometry(self.n, kv_seq_tokens, self.dcp_size);
         let mut result = query_generation_attention_table(
             db,
             &self.lane_order,
             seq_batch,
-            kv_seq_tokens,
-            self.n,
+            kv_local,
+            n_kernel,
             self.n_kv,
             self.head_size,
             self.window_size,
@@ -479,9 +501,9 @@ impl GenerationAttentionOp {
                     self.head_size,
                     self.window_size,
                     self.kv_cache_dtype,
-                    self.n as f64,
+                    n_kernel as f64,
                     seq_batch as f64,
-                    kv_seq_tokens as f64,
+                    kv_local as f64,
                     attn_flops,
                 );
                 let block_math_ms = sol.math_ms * self.verify_query_tokens as f64;
@@ -2528,5 +2550,25 @@ mod tests {
         let result = op.query(&db, 512, 4096, 1.0).unwrap();
         assert_eq!(result.source, Source::Sol);
         assert_eq!(result.latency_ms, result.sol.unwrap().time_ms());
+    }
+
+    /// Decode CP: a rank with `n` local heads and `dcp` stripes prices exactly
+    /// like an un-striped kernel over `n * dcp` heads and `kv / dcp` tokens,
+    /// and strictly cheaper than the same rank without DCP (the KV read is
+    /// the decode bottleneck and shrinks by `dcp`).
+    #[test]
+    fn generation_attention_dcp_prices_gathered_heads_over_kv_stripe() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut striped = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered = GenerationAttentionOp::new("gen", 64, 1, 128, KvCacheQuantMode::Fp8);
+        let plain = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        let a = striped.query(&db, 32, 8192, 1.0).unwrap();
+        let b = gathered.query(&db, 32, 2048, 1.0).unwrap();
+        let c = plain.query(&db, 32, 8192, 1.0).unwrap();
+        assert!((a.latency_ms - b.latency_ms).abs() < 1e-12);
+        assert!(a.latency_ms < c.latency_ms);
+        assert_eq!(dcp_geometry(16, 8193, 4), (64, 2049));
+        assert_eq!(dcp_geometry(16, 8192, 1), (16, 8192));
     }
 }

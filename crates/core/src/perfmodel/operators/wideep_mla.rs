@@ -545,6 +545,12 @@ pub struct WideEpGenerationMlaOp {
     /// keep the struct shape close to the Python class.
     pub fmha_quant_mode: FmhaQuantMode,
     pub attn_backend: String,
+    /// Decode context parallelism (SGLang `--dcp-size` composes with DP
+    /// attention / large EP): `num_heads * dcp` gathered query heads over
+    /// this rank's `ceil(s / dcp)` latent-KV stripe. Defaults to 1; appended
+    /// at the struct tail (schema v19).
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub dcp_size: u32,
 }
 
 impl WideEpGenerationMlaOp {
@@ -561,6 +567,7 @@ impl WideEpGenerationMlaOp {
             kv_cache_dtype,
             fmha_quant_mode,
             attn_backend: "flashinfer".to_string(),
+            dcp_size: 1,
         }
     }
 
@@ -570,11 +577,13 @@ impl WideEpGenerationMlaOp {
         batch_size: u32,
         s: u32,
     ) -> Result<PerformanceResult, AicError> {
+        let (heads, s_local) =
+            crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
         let (latency, source) = query_wideep_generation_mla_table(
             db,
             batch_size,
-            s,
-            self.num_heads,
+            s_local,
+            heads,
             self.kv_cache_dtype,
             &self.attn_backend,
         )?;

@@ -49,6 +49,17 @@ class DeepSeekModel(BaseModel):
         return backend_name == "sglang"
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # Dense MLA decode CP: vLLM `-dcp` (every MLA backend) and SGLang
+        # `--dcp-size` (flashinfer / trtllm_mla / cutedsl_mla / flashmla). Both
+        # stripe the latent KV inside the TP group and LSE-merge the partial
+        # outputs; BaseModel._apply_decode_context_parallel rewrites the
+        # GenerationMLA / GenerationAttention / WideEPGenerationMLA op and adds
+        # the merge collectives. TRT-LLM's Helix is a different layout (cp adds
+        # ranks, attention weights replicated) and is not modeled.
+        return backend_name in ("vllm", "sglang")
+
+    @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         moe_args = (model_info["topk"], model_info["num_experts"], model_info["moe_inter_size"])
         base_args = (

@@ -62,6 +62,16 @@ pub struct DsaModuleOp {
     /// default. Weight-estimation only; the latency path never reads it.
     #[serde(default)]
     pub attn_projection_quant_modes: Option<DsaProjectionQuants>,
+    /// Decode context parallelism for the sparse-MLA decode module (vLLM
+    /// `flashmla_sparse` / `flashinfer_mla_sparse` and SGLang's DSA DCP path):
+    /// the indexer and the top-k attention run over this rank's `ceil(s / dcp)`
+    /// KV stripe for the DCP group's `num_heads * dcp` gathered query heads.
+    /// `index_topk` is kept whole (each rank's selected set is bounded by the
+    /// global top-k), so the sparse-attention term is an upper bound. Only the
+    /// generation query reads it; context DSA CP is `cp_size`. Defaults to 1;
+    /// appended at the struct tail (schema v19).
+    #[serde(default = "default_cp_size")]
+    pub dcp_size: u32,
 }
 
 /// The four DSA projection groups' quant modes (weight bytes only).
@@ -104,6 +114,7 @@ impl DsaModuleOp {
             cp_size: 1,
             full_frac: 1.0,
             attn_projection_quant_modes: None,
+            dcp_size: 1,
         }
     }
 
@@ -431,10 +442,22 @@ impl DsaModuleOp {
         } else {
             self.effective_full_frac(db.dsa.has_generation_skip_rows()?)
         };
+        // Decode CP: price the DCP group's gathered heads over this rank's KV
+        // stripe (see the `dcp_size` field docs). A geometry-adjusted copy keeps
+        // the table dispatch below unchanged.
+        let (heads, s) =
+            crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
+        let geometry = if self.dcp_size > 1 {
+            let mut op = self.clone();
+            op.num_heads = heads;
+            op
+        } else {
+            self.clone()
+        };
         // `dsa_backend="trtllm"` mirrors Python's generation default
         // (`_query_generation_dsa_module_table(dsa_backend="trtllm")`).
         let q = |skip_indexer: bool| {
-            query_generation_table(db, self, batch_size, s, "trtllm", skip_indexer)
+            query_generation_table(db, &geometry, batch_size, s, "trtllm", skip_indexer)
         };
         let full = q(false)?;
         let result = if w >= 1.0 {
@@ -1109,6 +1132,7 @@ mod tests {
             cp_size,
             full_frac: 1.0,
             attn_projection_quant_modes: None,
+            dcp_size: 1,
         }
     }
 

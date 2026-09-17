@@ -272,6 +272,8 @@ class KVCacheEstimator:
         attention_dp_size: int = 1,
         moe_tp_size: int | None = None,
         moe_ep_size: int | None = None,
+        cp_size: int = 1,
+        dcp_size: int = 1,
         gemm_quant_mode: str | None = None,
         moe_quant_mode: str | None = None,
         kvcache_quant_mode: str | None = None,
@@ -314,6 +316,8 @@ class KVCacheEstimator:
             fmha_quant_mode=fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
+            cp_size=cp_size,
+            dcp_size=dcp_size,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -383,7 +387,12 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)),
+                # Per-RANK persistent KV. Prefill CP keeps the full KV on every
+                # rank (divisor 1); decode CP stripes it, so each rank holds
+                # 1/dcp of every token (see BaseModel._cp_kv_memory_divisor).
+                # Duck-typed model doubles without the hook keep the full KV.
+                "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1))
+                / float(getattr(model, "_cp_kv_memory_divisor", lambda: 1)()),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 # Model's byte-budget -> token-count inverse (KV-curve aware).
                 "tokens_from_kv_bytes": model.get_kvcache_max_tokens,
@@ -994,6 +1003,8 @@ def estimate_kv_cache(
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     gemm_quant_mode: str | None = None,
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
@@ -1081,6 +1092,8 @@ def estimate_kv_cache(
             attention_dp_size=int(attention_dp_size),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
+            cp_size=int(cp_size),
+            dcp_size=int(dcp_size),
             gemm_quant_mode=gemm_quant_mode,
             moe_quant_mode=moe_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
@@ -1142,6 +1155,8 @@ def estimate_num_gpu_blocks(
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     gemm_quant_mode: str | None = None,
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
@@ -1200,6 +1215,8 @@ def estimate_num_gpu_blocks(
         attention_dp_size=int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
+        cp_size=int(cp_size),
+        dcp_size=int(dcp_size),
         gemm_quant_mode=gemm_quant_mode,
         moe_quant_mode=moe_quant_mode,
         kvcache_quant_mode=kvcache_quant_mode,

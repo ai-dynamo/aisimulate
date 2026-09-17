@@ -1166,7 +1166,7 @@ impl PyGenerationAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1180,7 +1180,13 @@ impl PyGenerationAttention {
         lane_order: Option<Vec<String>>,
         scale_num_tokens: u32,
         verify_query_tokens: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1193,6 +1199,7 @@ impl PyGenerationAttention {
             use_qk_norm,
             scale_num_tokens,
             verify_query_tokens,
+            dcp_size,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1219,12 +1226,30 @@ impl PyGenerationAttention {
         kwargs.set_item("lane_order", o.lane_order.clone())?;
         kwargs.set_item("scale_num_tokens", o.scale_num_tokens)?;
         kwargs.set_item("verify_query_tokens", o.verify_query_tokens)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_attention()?.n)
+    }
+
+    /// Decode context parallelism (see `GenerationAttentionOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1496,18 +1521,25 @@ impl PyGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, dcp_size=1))]
     fn new(
         name: String,
         scale_factor: f64,
         num_heads: u32,
         kv_cache_dtype: &Bound<'_, PyAny>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationMla(GenerationMlaOp {
             name,
             scale_factor,
             num_heads,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
+            dcp_size,
         });
         Ok((PyGenerationMLA, PyOperation { inner }))
     }
@@ -1524,12 +1556,31 @@ impl PyGenerationMLA {
             enum_token(&o.kv_cache_dtype),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
     fn num_heads(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_mla()?.num_heads)
+    }
+
+    /// Decode context parallelism (see `GenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kv_cache_dtype)]
@@ -1559,7 +1610,7 @@ impl PyMLAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "module";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None))]
+    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1570,7 +1621,11 @@ impl PyMLAModule {
         fmha_quant_mode: &Bound<'_, PyAny>,
         gemm_quant_mode: &Bound<'_, PyAny>,
         native_num_heads: Option<u32>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
         let module = MlaModuleOp {
             name,
             scale_factor,
@@ -1579,6 +1634,7 @@ impl PyMLAModule {
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             gemm_quant_mode: gemm_quant(gemm_quant_mode)?,
             native_num_heads,
+            dcp_size,
         };
         let inner = if is_context {
             Op::MlaModuleContext(module)
@@ -1606,12 +1662,28 @@ impl PyMLAModule {
             .into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("native_num_heads", o.native_num_heads)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_is_context)]
     fn is_context(slf: PyRef<'_, Self>) -> bool {
         matches!(slf.as_super().op(), Op::MlaModuleContext(_))
+    }
+
+    /// Decode context parallelism (generation variant; see `MlaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().mla_module()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
+        slf.as_super().mla_module_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[setter(_is_context)]
@@ -3162,7 +3234,8 @@ impl PyWideEPGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer"))]
+    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer", dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -3170,11 +3243,17 @@ impl PyWideEPGenerationMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         attn_backend: &str,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
         if tp_size == 0 || 128 % tp_size != 0 {
             return Err(PyValueError::new_err(format!(
                 "WideEPGenerationMLA tp_size must divide 128, got {tp_size}"
             )));
+        }
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
         }
         let inner = Op::WideEpGenerationMla(crate::operators::WideEpGenerationMlaOp {
             name,
@@ -3183,6 +3262,7 @@ impl PyWideEPGenerationMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             attn_backend: attn_backend.to_string(),
+            dcp_size,
         });
         Ok((PyWideEPGenerationMLA, PyOperation { inner }))
     }
@@ -3201,12 +3281,31 @@ impl PyWideEPGenerationMLA {
             o.attn_backend.clone(),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_tp_size)]
     fn tp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(128 / slf.as_super().wideep_generation_mla()?.num_heads.max(1))
+    }
+
+    /// Decode context parallelism (see `WideEpGenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().wideep_generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().wideep_generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kvcache_quant_mode)]
@@ -3571,6 +3670,7 @@ impl PyContextDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size: 1,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
     }
@@ -3686,7 +3786,7 @@ impl PyGenerationDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3698,7 +3798,13 @@ impl PyGenerationDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaGeneration(crate::operators::DsaModuleOp {
@@ -3716,6 +3822,7 @@ impl PyGenerationDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size,
         });
         Ok((PyGenerationDSAModule, PyOperation { inner }))
     }
@@ -3742,7 +3849,25 @@ impl PyGenerationDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
+    }
+
+    /// Decode context parallelism (see `DsaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_num_heads)]

@@ -137,3 +137,49 @@ def test_materializer_preserves_explicit_zero_values(monkeypatch) -> None:
     assert calls[0]["gpu_memory_utilization"] == 0.0
     assert calls[0]["mem_fraction_static"] == 0.0
     assert calls[0]["free_gpu_memory_fraction"] == 0.0
+
+
+def test_materialize_forwards_context_parallel_knobs(monkeypatch) -> None:
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    aic.materialize_aic_num_gpu_blocks(
+        {
+            "engine_type": "vllm",
+            "aic_backend": "vllm",
+            "aic_system": "h200_sxm",
+            "aic_model_path": "test-model",
+            "aic_cp_size": 2,
+            "aic_dcp_size": 4,
+            "block_size": 64,
+        }
+    )
+
+    assert calls[0]["cp_size"] == 2
+    assert calls[0]["dcp_size"] == 4
+
+
+def test_materialize_defaults_context_parallel_knobs_to_one(monkeypatch) -> None:
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    aic.materialize_aic_num_gpu_blocks(
+        {
+            "engine_type": "vllm",
+            "aic_backend": "vllm",
+            "aic_system": "h200_sxm",
+            "aic_model_path": "test-model",
+            "block_size": 64,
+        }
+    )
+
+    assert calls[0]["cp_size"] == 1
+    assert calls[0]["dcp_size"] == 1

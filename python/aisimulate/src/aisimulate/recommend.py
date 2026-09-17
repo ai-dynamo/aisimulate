@@ -455,9 +455,24 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
     return "independent", {"choices": choices, "log_ranges": log_ranges}
 
 
+_CONTEXT_PARALLEL_KEYS = ("prefill_context", "decode_context")
+
+
 def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} entries must be mappings")
+    # Context parallelism is a predict-only knob: preset entries are full
+    # ParallelismPredictionConfig dumps, so they carry the two keys at their
+    # default of 1. The sweeper does not enumerate CP/DCP yet, so anything else
+    # is rejected explicitly instead of being silently dropped.
+    value = dict(value)
+    for key in _CONTEXT_PARALLEL_KEYS:
+        leaf = value.pop(key, 1)
+        if leaf != 1:
+            raise ValueError(
+                f"{path}.{key}={leaf!r} is not supported by recommend; context parallelism "
+                "is a predict-only knob (use `aisimulate predict` with a fixed parallelism)"
+            )
     missing = set(_PARALLEL_KEYS) - set(value)
     unknown = set(value) - set(_PARALLEL_KEYS)
     if missing or unknown:

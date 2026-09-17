@@ -70,6 +70,14 @@ class ParallelismPredictionConfig(StrictModel):
     attention_data: PositiveInt = 1
     moe_tensor: PositiveInt = 1
     moe_expert: PositiveInt = 1
+    # Prefill context parallelism (SGLang ``--attn-cp-size`` / vLLM ``-pcp``):
+    # splits prefill tokens across extra attention ranks; decode stays replicated
+    # on them. Widens the worker like attention_data does.
+    prefill_context: PositiveInt = 1
+    # Decode context parallelism (vLLM ``-dcp`` / SGLang ``--dcp-size``): stripes the
+    # decode KV cache across ranks that already belong to the attention group, so it
+    # adds no GPUs. Aggregated workers accept at most one of the two knobs above 1.
+    decode_context: PositiveInt = 1
 
 
 class SchedulerPredictionConfig(StrictModel):
