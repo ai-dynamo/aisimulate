@@ -608,6 +608,7 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
         "Release branch nightly CI",
         "Nightly CI",
         "E2E Accuracy Matrix",
+        "FPM Accuracy Matrix",
     }
     deploy_build = next(s for s in pages_workflow["jobs"]["build"]["steps"] if "--fpe-data-dir" in s.get("run", ""))
     assert "--accuracy-artifacts" in deploy_build["run"]
@@ -742,9 +743,9 @@ def test_one_run_publishes_main_and_release_independently(artifact, tmp_path, mo
     monkeypatch.setattr(
         pages,
         "_git",
-        lambda repo, *args: "refs/remotes/origin/release/0.12.0"
-        if args[0] == "for-each-ref"
-        else original_git(repo, *args),
+        lambda repo, *args: (
+            "refs/remotes/origin/release/0.12.0" if args[0] == "for-each-ref" else original_git(repo, *args)
+        ),
     )
     site = tmp_path / "site"
     pages.build_site(ROOT, site, accuracy_refs=True, accuracy_artifacts=output)
@@ -778,9 +779,11 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     monkeypatch.setattr(
         publish.subprocess,
         "run",
-        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
-        if args[-1].startswith("origin/main:")
-        else SimpleNamespace(returncode=1),
+        lambda args, **kwargs: (
+            SimpleNamespace(returncode=0, stdout=json.dumps(previous))
+            if args[-1].startswith("origin/main:")
+            else SimpleNamespace(returncode=1)
+        ),
     )
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)

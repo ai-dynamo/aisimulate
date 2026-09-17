@@ -226,7 +226,7 @@ jobs:
           name: fpe-support-matrix-web
           path: |
             fpe-qualification.json
-            python/aisimulate/docs/fpe-support-matrix/index.html
+            pages/fpe-support-matrix/index.html
             python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           if-no-files-found: error
           # Pages reuses the latest qualified snapshot on documentation pushes.

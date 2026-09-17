@@ -1,0 +1,5 @@
+# Evaluation dependencies; the exact AISim wheel is installed separately.
+huggingface-hub==1.32.0
+pyarrow==25.0.1
+pydantic==2.13.5
+PyYAML==6.0.3

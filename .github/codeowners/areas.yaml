@@ -19,6 +19,7 @@ areas:
       - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
+      - pages/
       - python/aisimulate/src/aisimulate/__init__.py
       - tests/conftest.py
   - label: forward-pass-engine
@@ -87,6 +88,8 @@ areas:
       - tests/test_pages_site.py
       - tests/test_release_fpe.py
       - tests/test_e2e_accuracy_overview.py
+      - tests/fpm_accuracy/
+      - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
       - tests/test_e2e_accuracy_workflow.mjs
@@ -97,6 +100,12 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: pages/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/fpm_accuracy/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_fpm_accuracy_workflow.mjs
+    owners: [infra, maintainers]
   # The full AIC product and estimator migration belongs to the Forward Pass
   # Engine area. Maintainers remain co-owners across the compatibility window.
   - glob: crates/core/src/perfmodel/

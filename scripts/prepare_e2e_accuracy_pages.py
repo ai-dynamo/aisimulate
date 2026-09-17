@@ -463,19 +463,18 @@ def prepare(repo: Path, output: Path) -> None:
         raise ValueError("accuracy output must be empty")
     written = 0
     for branch, summary in selected.items():
-        committed = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "show",
-                "origin/" + branch + ":python/aisimulate/docs/e2e-accuracy/summary.json",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if committed.returncode == 0:
-            previous = _accuracy_summary(committed.stdout)["snapshot"]
+        committed = None
+        for path in ("pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"):
+            result = subprocess.run(
+                ["git", "-C", str(repo), "show", "origin/" + branch + ":" + path],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                committed = result.stdout
+                break
+        if committed is not None:
+            previous = _accuracy_summary(committed)["snapshot"]
             revision = previous.get("evaluated_revision")
             current = summary["snapshot"]["campaign"]
             if revision and revision["branch"] == branch:

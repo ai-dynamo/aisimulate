@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const workflow = readFileSync(new URL("../.github/workflows/e2e-accuracy.yml", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../.github/workflows/fpm-accuracy.yml", import.meta.url), "utf8");
 const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
@@ -33,6 +33,7 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
     listWorkflowRunArtifacts: "artifacts",
   };
   const context = vm.createContext({
+    fetch: async () => ({ok: true, json: async () => ({sha: "d".repeat(40)})}),
     require: createRequire(import.meta.url),
     context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
     process: { env: inputs },
@@ -53,6 +54,7 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
     } },
   });
   await vm.runInContext(`(async () => { ${source} })()`, context);
+  assert.equal(outputs.hf_revision, "d".repeat(40));
   return JSON.parse(outputs.matrix).include;
 }
 
@@ -85,11 +87,11 @@ test("schedule pins each release head, excludes feature branches, and isolates a
 });
 
 test("all paginated release branches are included and excessive matrices fail explicitly", async () => {
-  const branches = Array.from({ length: 101 }, (_, i) => ({ name: `release/${i}`, commit: { sha } }));
+  const branches = Array.from({ length: 101 }, (_, i) => ({ name: `release/1.0.${i}`, commit: { sha } }));
   const entries = await resolve({ branches });
   assert.equal(entries.length, 102);
-  assert.ok(entries.some(item => item.branch === "release/100"));
-  await assert.rejects(resolve({ branches: Array.from({ length: 256 }, (_, i) => ({ name: `release/${i}`, commit: { sha } })) }), /256-job limit/);
+  assert.ok(entries.some(item => item.branch === "release/1.0.100"));
+  await assert.rejects(resolve({ branches: Array.from({ length: 256 }, (_, i) => ({ name: `release/1.0.${i}`, commit: { sha } })) }), /256-job limit/);
 });
 
 test("invalid release commits and duplicate branch artifacts fail closed", async () => {
@@ -121,4 +123,11 @@ test("Pages accepts failed accuracy matrices while preserving other producer gat
       }
     }
   }
+});
+
+test("FPM excludes releases below 0.12.0 and compares versions numerically", async () => {
+  const branches = ["release/0.9.0", "release/0.11.9", "release/0.12.0", "release/0.100.0", "release/1.0.0", "release/0.12.0-rc1"].map(name => ({name, commit: {sha}}));
+  const result = await resolve({branches});
+  assert.deepEqual(new Set(result.map(item => item.branch)), new Set(["main", "release/0.12.0", "release/0.100.0", "release/1.0.0"]));
+  await assert.rejects(resolve({event: "workflow_dispatch", inputs: {EXPECTED_SHA: sha, EVALUATED_BRANCH: "release/0.11.9"}}), /full source SHA/);
 });

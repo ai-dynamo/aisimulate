@@ -1,0 +1,91 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+     SPDX-License-Identifier: Apache-2.0
+     Adapted from NVIDIA AISim FPM Gym overview. See README.md. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Current AISim forward-pass prediction accuracy by model and Hugging Face configuration.">
+  <title>FPM Gym · Accuracy overview</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="nav">
+      <a class="brand" href="index.html">
+        <span class="brand-mark" aria-hidden="true">F</span>
+        <div><div class="brand-name">FPM Gym</div><div class="brand-section">HF-backed evaluation</div></div>
+      </a>
+      <nav class="nav-tabs" aria-label="Dashboard">
+        <a class="nav-tab" href="../">AISimulate</a>
+        <a class="nav-tab active" href="index.html" aria-current="page">Overview</a>
+      </nav>
+      <div class="nav-status"><span class="status-dot" aria-hidden="true"></span><span id="nav-status-text" aria-live="polite">Loading current snapshot…</span></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="page-title">
+      <div>
+        <div class="eyebrow">Daily evaluation</div>
+        <h1 id="page-title">FPM accuracy overview</h1>
+        <p class="hero-copy">Compare current model configurations and FPM inputs and online regression side by side. Model rows summarize observation-level MAPE; expand or collapse them to inspect the exact GPU, framework, measurement, and prediction coverage.</p>
+      </div>
+      <div class="snapshot" id="snapshot" aria-live="polite">
+        <span class="snapshot-icon" aria-hidden="true">↗</span>
+        <span class="snapshot-label">Pinned evaluation</span>
+        <span class="snapshot-value">Loading…</span>
+      </div>
+    </section>
+
+    <div class="branch-control"><label for="branch">AISim branch</label><select id="branch" disabled><option>Loading…</option></select><span id="freshness" role="status"></span></div>
+
+    <section class="overview" aria-label="Current accuracy summary">
+      <div class="metric-tile"><div class="metric-label">Models</div><div class="metric-value" id="models-value">—</div><div class="metric-note">Current catalog entries</div></div>
+      <div class="metric-tile"><div class="metric-label">Configurations</div><div class="metric-value" id="configurations-value">—</div><div class="metric-note">Daily evaluations</div></div>
+      <div class="metric-tile"><div class="metric-label">Live measurement</div><div class="metric-value" id="measurement-value">—</div><div class="metric-note">Measurement-ready configurations</div></div>
+      <div class="metric-tile"><div class="metric-label">Evaluated</div><div class="metric-value" id="evaluated-value">—</div><div class="metric-note">Exact slices with predictor results</div></div>
+    </section>
+
+    <section class="overview-table-card" aria-labelledby="overview-table-title">
+      <div class="overview-table-heading">
+        <div>
+          <div class="table-kicker">Latest complete branch evaluation</div>
+          <h2 id="overview-table-title">MAPE by model</h2>
+          <p>Lower is better. Every metric retains successful predictions over eligible measured observations.</p>
+        </div>
+        <div class="overview-table-count" id="table-count" aria-live="polite"></div>
+      </div>
+      <div class="overview-table-scroll" role="region" tabindex="0" aria-label="Current model accuracy comparison">
+        <table class="overview-grid">
+          <colgroup>
+            <col class="overview-col-model"><col class="overview-col-gpu"><col class="overview-col-framework"><col class="overview-col-measurement">
+            <col class="overview-col-method"><col class="overview-col-method"><col class="overview-col-method">
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col"><button class="overview-sort active" type="button" data-sort="model">Model / configuration <span class="sort-mark">▲</span></button></th>
+              <th scope="col"><button class="overview-sort" type="button" data-sort="gpu">GPU <span class="sort-mark">↕</span></button></th>
+              <th scope="col"><button class="overview-sort" type="button" data-sort="framework">Framework <span class="sort-mark">↕</span></button></th>
+              <th scope="col"><button class="overview-sort" type="button" data-sort="measurements">Measurements <span class="sort-mark">↕</span></button></th>
+              <th scope="col" class="overview-method-heading fpm-based"><button class="overview-sort method-sort" type="button" data-sort="method:warmup"><span class="method-name">FPM warmup</span><span class="method-description">Warm predictor input</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
+              <th scope="col" class="overview-method-heading fpm-based"><button class="overview-sort method-sort" type="button" data-sort="method:nowarmup"><span class="method-name">FPM no warmup</span><span class="method-description">KV-off predictor input</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
+              <th scope="col" class="overview-method-heading regression"><button class="overview-sort method-sort" type="button" data-sort="method:regression"><span class="method-name">Regression</span><span class="method-description">Online fit</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
+            </tr>
+          </thead>
+          <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="status">Loading exported data…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="grid-legend">
+        <span><b>Model rows</b> observation-level micro-average across eligible measured observations</span>
+        <span><b>FPM variants</b> one warmup and one no-warmup result selected per slice by coverage, MAPE, then artifact ID</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>Data source: <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset" target="_blank" rel="noopener">nvidia/aisimulate-fpm-dataset</a> · Code: <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener">AISimulate</a></footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
