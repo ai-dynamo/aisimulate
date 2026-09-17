@@ -142,7 +142,8 @@ jobs:
         run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
       - name: Test public artifact and accuracy contracts
         run: |
-          python -m pip install pytest==8.4.2 -r scripts/fpm_accuracy/requirements.txt
+          python -m pip install pytest==8.4.2
+          python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
           python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/fpm_accuracy -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

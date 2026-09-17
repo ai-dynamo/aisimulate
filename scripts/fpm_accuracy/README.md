@@ -41,6 +41,9 @@ uv pip compile scripts/fpm_accuracy/requirements.in --generate-hashes \
   --output-file scripts/fpm_accuracy/requirements.txt
 ```
 
+Install test tools such as pytest separately from the hash-checked campaign
+requirements; they are not part of the daily evaluation environment.
+
 The selected AISim wheel and its runtime dependencies are installed separately
 because evaluated branches can declare different runtime requirements. The
 campaign checks the wheel hash and runs `pip check` after both installs.
