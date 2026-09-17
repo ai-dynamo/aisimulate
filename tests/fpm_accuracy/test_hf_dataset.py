@@ -1065,9 +1065,11 @@ def test_symlink_escape_is_rejected_even_when_content_hash_matches(tmp_path: Pat
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
+@pytest.mark.parametrize("shared", [False, True])
 def test_hub_cache_blob_symlinks_are_allowed_only_for_the_resolved_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    shared: bool,
 ) -> None:
     snapshot = tmp_path / "datasets--nvidia--aisimulate-fpm-dataset" / "snapshots" / REVISION
     content = f"{json.dumps(_fpm_payload())}\n".encode()
@@ -1079,10 +1081,20 @@ def test_hub_cache_blob_symlinks_are_allowed_only_for_the_resolved_snapshot(
     )
     blobs = snapshot.parent.parent / "blobs"
     blobs.mkdir()
+    shared_root = tmp_path / "blobs"
+    if shared:
+        shared_root.mkdir()
+        (shared_root / ".huggingface-shared-blobs").write_text("1\n")
     for source in tuple(path for path in snapshot.rglob("*") if path.is_file()):
         blob = blobs / hashlib.sha256(source.read_bytes()).hexdigest()
         if not blob.exists():
-            blob.write_bytes(source.read_bytes())
+            if shared:
+                target = shared_root / blob.name[:2] / blob.name
+                target.parent.mkdir(exist_ok=True)
+                target.write_bytes(source.read_bytes())
+                blob.symlink_to(os.path.relpath(target, blob.parent))
+            else:
+                blob.write_bytes(source.read_bytes())
         source.unlink()
         source.symlink_to(os.path.relpath(blob, source.parent))
 
@@ -1100,6 +1112,11 @@ def test_hub_cache_blob_symlinks_are_allowed_only_for_the_resolved_snapshot(
 
     assert dataset.revision == REVISION
     assert len(dataset.measurement_case(CONFIGURATION_PATH).observations) == 1
+    if shared:
+        # An unmarked sibling directory is not a Hub-owned shared store.
+        (shared_root / ".huggingface-shared-blobs").unlink()
+        with pytest.raises(DataError, match="escapes its pinned root"):
+            HfDataset.from_hub(revision="main")
 
 
 def test_hub_cache_snapshot_rejects_symlink_outside_its_own_blobs(

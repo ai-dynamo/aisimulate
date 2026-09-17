@@ -17,3 +17,8 @@ overview aggregates, without local reports, raw result exports, or history.
 Native AISim imports remain deferred in the adapted adapters so parser and fake
 predictor tests work without an installed native extension. The real campaign
 checks that the native SDK is installed before evaluating any case.
+
+Hub cache loading supports repository-local blobs and the marked cache-wide
+shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
+measurement and FPM bytes; arbitrary symlink targets outside these stores are
+rejected. Local dataset checkouts retain their strict root boundary.
