@@ -42,14 +42,15 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
-  # Manual runs build and stage only, gated by manual-release-approver.
-  # Dispatch from main so old release sources use the current workflow.
+  # Manual runs do the full nightly including publish, gated by
+  # manual-release-approver. Dispatch from main so old release sources use
+  # the current workflow.
   workflow_dispatch:
     inputs:
       commit_sha:
         description: >-
-          Full commit SHA to build and stage; must be on main or release/*.
-          Dispatch from main. Empty builds main at dispatch time. No public publish.
+          Full commit SHA to build, stage, and publish; must be on main or
+          release/*. Dispatch from main. Empty builds main at dispatch time.
         required: false
         default: ""
         type: string
@@ -847,7 +848,6 @@ jobs:
     # needed manual-approval job, which is skipped on scheduled runs.
     if: >-
       !cancelled() &&
-      github.event_name == 'schedule' &&
       needs.changes-guard.outputs.should-build == 'true' &&
       needs.build-artifacts.result == 'success'
     permissions:
@@ -869,15 +869,16 @@ jobs:
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
-    # Manual targets share the date-based version namespace, so they must
-    # never enter this public nightly publisher, even after approval.
+    # Approved manual runs publish too; they share the date-based version
+    # namespace with that night's cron, so a same-day cron publish of a
+    # different commit can collide at the registries.
     if: >-
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
       needs.fpe-support-matrix.result == 'success' &&
       needs.license-evidence.result == 'success' &&
-      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
-      (github.run_attempt == '1' ||
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
       (needs.manual-approval.result == 'success' &&
       needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
