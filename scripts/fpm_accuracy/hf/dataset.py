@@ -914,17 +914,30 @@ def _resolve_local_revision(root: Path, requested: str | None) -> str:
 
 
 def _hub_cache_blob_roots(root: Path, revision: str) -> tuple[Path, ...]:
-    """Allow only the immutable blob directory backing a Hub cache snapshot.
+    """Allow the Hub blob stores backing this exact cache snapshot.
 
     ``snapshot_download`` normally returns ``.../snapshots/<sha>`` where files
     are symlinks into the same repository cache's ``blobs`` directory. Local
-    dataset checkouts do not receive this exception.
+    Hub 1.32 can link those blobs into the cache-wide shared store. Local
+    dataset checkouts do not receive either exception; content hashes are
+    still verified independently of these storage locations.
     """
 
     if root.name != revision or root.parent.name != "snapshots":
         return ()
     blobs = root.parent.parent / "blobs"
-    return (blobs.resolve(),) if blobs.is_dir() else ()
+    roots = [blobs.resolve()] if blobs.is_dir() else []
+    shared = root.parents[2] / "blobs"
+    marker = shared / ".huggingface-shared-blobs"
+    if (
+        shared.is_dir()
+        and not shared.is_symlink()
+        and marker.is_file()
+        and not marker.is_symlink()
+        and marker.read_text() == "1\n"
+    ):
+        roots.append(shared.resolve())
+    return tuple(roots)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
