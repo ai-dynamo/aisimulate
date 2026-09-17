@@ -118,27 +118,26 @@ def _deployment(
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
-        root_kwargs = (
-            {}
-            if engine.systems_paths == ["default"]
-            else {"systems_paths": list(resolve_systems_paths(engine.systems_paths))}
-        )
         workers = (engine.workers.prefill, engine.workers.decode)
+        root_kwargs = {}
         for role, worker in zip(("prefill", "decode"), workers, strict=True):
+            paths = engine.systems_paths
+            if worker is not None and worker.timing.systems_paths is not None:
+                paths = worker.timing.systems_paths
+            root_kwargs[role] = {} if paths == ["default"] else {"systems_paths": list(resolve_systems_paths(paths))}
             if (
                 worker is not None
                 and worker.hardware is not None
-                and not load_system_spec(worker.hardware, **root_kwargs)
+                and not load_system_spec(worker.hardware, **root_kwargs[role])
             ):
                 raise ValueError(f"unknown workers.{role}.hardware {worker.hardware!r}: no system configuration found")
         if engine.backend_version is None and any(
-            worker is not None and worker.hardware is not None for worker in workers
+            worker is not None and (worker.hardware is not None or worker.timing.systems_paths is not None)
+            for worker in workers
         ):
             versions = {
-                worker.hardware or engine.hardware: resolve_backend_version(
-                    worker.hardware or engine.hardware, engine.backend, **root_kwargs
-                )
-                for worker in workers
+                role: resolve_backend_version(worker.hardware or engine.hardware, engine.backend, **root_kwargs[role])
+                for role, worker in zip(("prefill", "decode"), workers, strict=True)
                 if worker is not None
             }
             if len(set(versions.values())) != 1:

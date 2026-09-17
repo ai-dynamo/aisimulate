@@ -290,7 +290,14 @@ class EstimatorPolicyConfig(StrictModel):
                 and worker.timing.type != "default"
                 and any(
                     getattr(worker.timing, name) is not None
-                    for name in ("estimation_mode", "fallback_policy", "estimator_config")
+                    for name in (
+                        "estimation_mode",
+                        "fallback_policy",
+                        "estimator_config",
+                        "systems_paths",
+                        "database_mode",
+                        "transfer_policy",
+                    )
                 )
             ):
                 raise ValueError("estimator settings require default timing")

@@ -217,6 +217,12 @@ def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
         )
     with pytest.raises(ValueError, match="unknown estimator override"):
         SearchSpace(**common, role_estimator_controls={"agg": {"estimation_mod": "op_level"}})
+    with pytest.raises(ValueError, match="estimator settings require default timing"):
+        SearchSpace(
+            **common,
+            agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+            role_estimator_controls={"agg": {"estimation_mode": "fpm_regression"}},
+        )
 
 
 def test_raw_config_rejects_trailing_json():
@@ -225,3 +231,83 @@ def test_raw_config_rejects_trailing_json():
     payload = json.dumps(request(estimation_mode="fpm_regression").to_dict()) + " {}"
     with pytest.raises(ValueError, match="trailing characters"):
         aiconfigurator_core.RustForwardPassPerfModel.normalize_config(payload)
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [{}, {"agg_forward_model": "fpm"}, {"estimation_mode": "fpm_regression"}],
+)
+def test_saved_search_preserves_estimator_selection(selection):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    space = SearchSpace(model_name="Qwen/Qwen3-32B", hardware_sku="h200_sxm", **selection)
+    sample = {
+        "backend": "vllm",
+        "hardware_sku": "h200_sxm",
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "agg_block_size": 64,
+    }
+    expected = "fpm_interpolation" if "agg_forward_model" in selection else selection.get("estimation_mode", "auto")
+    for _ in range(2):
+        resolved = ForwardPassEstimatorResolver(space)._request(sample, "agg")
+        assert resolved.estimation_mode == expected
+        assert resolved.fallback_policy == "deny"
+        serialized = space.model_dump_json()
+        assert "agg_forward_model" not in json.loads(serialized)
+        space = SearchSpace.model_validate_json(serialized)
+    assert space.agg_forward_model == ("fpm" if expected == "fpm_interpolation" else "op_level")
+
+
+def test_mixed_timing_still_enforces_cold_regression_on_default_role():
+    from aisimulate.config.cli import CoreRecommendationConfig
+    from aisimulate.recommend import recommendation_to_sweeper
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+    )
+
+    public = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "model": "Qwen/Qwen3-32B",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "mode": "disaggregated",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {
+                        "timing": {
+                            "estimation_mode": "fpm_regression",
+                            "fallback_policy": "deny",
+                        }
+                    },
+                    "decode": {"timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1}},
+                },
+            },
+            "optimization": {
+                "target": "throughput",
+                "constraints": {"max_candidate_gpus": 4},
+            },
+        }
+    )
+    space = recommendation_to_sweeper(public).search_space
+    sample = {
+        "deployment_mode": "disagg",
+        "backend": "vllm",
+        "hardware_sku": "h200_sxm",
+        "prefill_tp": 2,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_moe_tp": 1,
+        "prefill_moe_ep": 1,
+        "prefill_block_size": 64,
+        "prefill_timing_model": space.prefill_timing_model,
+        "decode_timing_model": space.decode_timing_model,
+    }
+    with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
+        ForwardPassEstimatorResolver(space).resolve_candidate(sample)

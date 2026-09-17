@@ -209,12 +209,13 @@ def _runner_supports_parallel_config(
     )
 
 
-def _estimator_root_kwargs(search_space):
-    if search_space.systems_paths == ["default"]:
+def _estimator_root_kwargs(search_space, role):
+    paths = search_space.systems_paths_for(role)
+    if paths == ["default"]:
         return {}
     from .forward_pass_estimator import resolve_systems_paths
 
-    return {"systems_paths": list(resolve_systems_paths(search_space.systems_paths))}
+    return {"systems_paths": list(resolve_systems_paths(paths))}
 
 
 def _role_runtime(search_space, backend: str, role: str) -> tuple[int, int, float, int | None]:
@@ -255,7 +256,7 @@ def _heterogeneous_disagg_configs(
     backend_version = search_space.requested_backend_version(backend)
     if backend_version is None:
         role_versions = {
-            role: resolve_backend_version(hardware, backend, **_estimator_root_kwargs(search_space))
+            role: resolve_backend_version(hardware, backend, **_estimator_root_kwargs(search_space, role))
             for role, hardware in role_hardware.items()
         }
         if len(set(role_versions.values())) != 1:
@@ -279,7 +280,7 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
-                **_estimator_root_kwargs(search_space),
+                **_estimator_root_kwargs(search_space, role),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -586,7 +587,10 @@ def enumerate_branches(
             ):
                 continue
             try:
-                if deployment_mode == "disagg" and (ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")):
+                if deployment_mode == "disagg" and (
+                    ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")
+                    or ss.systems_paths_for("prefill") != ss.systems_paths_for("decode")
+                ):
                     legal = _heterogeneous_disagg_configs(
                         ss,
                         backend=backend,
@@ -603,7 +607,7 @@ def enumerate_branches(
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
-                        **_estimator_root_kwargs(ss),
+                        **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

@@ -261,6 +261,32 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert "trace_block_size" not in traffic
 
 
+def test_agentic_runner_reads_canonical_model_identity():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+        performance_model_metadata={"aggregated": {"provider": "aic", "config": {"model": "test-model"}}},
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=deployment,
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "agentic.jsonl",
+                "trace_format": "agentic_mooncake",
+            },
+        )
+    )
+    assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+
+
 def test_runner_rejects_agentic_execution_without_a_target_model():
     engine_args = _engine_args()
     engine_args.pop("aic_model_path")

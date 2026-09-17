@@ -58,7 +58,6 @@ class ForwardPassEstimatorResolver:
 
     def __init__(self, search_space: SearchSpace) -> None:
         self._search_space = search_space
-        self._systems_paths = resolve_systems_paths(search_space.systems_paths)
         self._resolved: dict[str, ForwardPassEstimatorSpec] = {}
 
     def _request(self, sample: dict[str, Any], role: str) -> ForwardPassPerfModelConfig:
@@ -73,10 +72,6 @@ class ForwardPassEstimatorResolver:
         if isinstance(transfer_policy, list):
             transfer_policy = tuple(transfer_policy)
         controls = self._search_space.role_estimator_controls.get(role, {})
-        legacy_field = f"{role}_forward_model"
-        mode = self._search_space.estimation_mode
-        if legacy_field in self._search_space.model_fields_set:
-            mode = "fpm_interpolation" if getattr(self._search_space, legacy_field) == "fpm" else "op_level"
         nextn = sample.get("aic_nextn")
         if nextn is None:
             nextn = self._search_space.aic_nextn
@@ -93,10 +88,10 @@ class ForwardPassEstimatorResolver:
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
             nextn=int(nextn or 0),
             kv_block_size=int(block_size),
-            estimation_mode=controls.get("estimation_mode", mode),
+            estimation_mode=controls.get("estimation_mode", self._search_space.estimation_mode),
             database_mode=controls.get("database_mode", self._search_space.database_mode),
             transfer_policy=controls.get("transfer_policy", transfer_policy),
-            systems_paths=tuple(controls.get("systems_paths", self._systems_paths)),
+            systems_paths=resolve_systems_paths(self._search_space.systems_paths_for(role)),
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
             estimator_config=controls.get("estimator_config", self._search_space.estimator_config),
         )
@@ -176,11 +171,13 @@ class ForwardPassEstimatorResolver:
         if sample["deployment_mode"] not in {"agg", "disagg"} or self._search_space.encoder is not None:
             return {}
         roles = ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
-        if any(sample.get(f"{role}_timing_model") is not None for role in roles):
-            return {}
-        resolved = {role: self._resolve(self._request(sample, role), role) for role in roles}
+        resolved = {
+            role: self._resolve(self._request(sample, role), role)
+            for role in roles
+            if sample.get(f"{role}_timing_model") is None
+        }
         versions = {spec.backend_version for spec in resolved.values()}
-        if len(versions) != 1:
+        if len(versions) > 1:
             raise ForwardPassEstimatorResolutionError(
                 f"Core resolved inconsistent backend versions across candidate roles: {sorted(versions)}"
             )

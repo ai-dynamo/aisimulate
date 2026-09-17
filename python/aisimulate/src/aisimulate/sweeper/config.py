@@ -524,7 +524,7 @@ class SearchSpace(BaseModel):
     prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
-    prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    prefill_forward_model: str = Field(default="op_level", exclude=True)
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -538,7 +538,7 @@ class SearchSpace(BaseModel):
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
-    decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    decode_forward_model: str = Field(default="op_level", exclude=True)
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -552,7 +552,7 @@ class SearchSpace(BaseModel):
     agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
-    agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    agg_forward_model: str = Field(default="op_level", exclude=True)
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -561,6 +561,29 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_estimator_selection(cls, value):
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        raw_controls = value.get("role_estimator_controls", {})
+        if not isinstance(raw_controls, dict) or any(
+            not isinstance(settings, dict) for settings in raw_controls.values()
+        ):
+            return value
+        controls = {role: dict(settings) for role, settings in raw_controls.items()}
+        for role in ("agg", "prefill", "decode"):
+            legacy = value.get(f"{role}_forward_model")
+            if legacy == "op_level" and value.get(f"{role}_timing_model") is not None:
+                continue
+            if isinstance(legacy, str) and legacy in {"op_level", "fpm"}:
+                controls.setdefault(role, {}).setdefault(
+                    "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
+                )
+        value["role_estimator_controls"] = controls
+        return value
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -589,6 +612,9 @@ class SearchSpace(BaseModel):
             value = getattr(self, field_name)
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
+        for role in ("agg", "prefill", "decode"):
+            mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
+            setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
         return self
 
     @model_validator(mode="after")
@@ -609,6 +635,9 @@ class SearchSpace(BaseModel):
         if role == "decode":
             return self.decode_hardware_sku or self.hardware_sku
         raise ValueError(f"unknown engine role {role!r}")
+
+    def systems_paths_for(self, role: str) -> list[str]:
+        return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
 
     @field_validator(
         "afd_tp_a_candidates",
@@ -714,6 +743,16 @@ class SearchSpace(BaseModel):
         for role, controls in self.role_estimator_controls.items():
             if role not in {"agg", "prefill", "decode"} or set(controls) - allowed:
                 raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
+            if controls and getattr(self, f"{role}_timing_model") is not None:
+                raise ValueError(f"{role} estimator settings require default timing")
+            if "systems_paths" in controls:
+                paths = controls["systems_paths"]
+                if (
+                    not isinstance(paths, list)
+                    or not paths
+                    or any(not isinstance(p, str) or not p.strip() for p in paths)
+                ):
+                    raise ValueError(f"{role} systems_paths must contain nonempty strings")
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None

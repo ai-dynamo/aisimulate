@@ -976,7 +976,14 @@ def _execution_target_model(
     if isinstance(metadata, Mapping):
         config = metadata.get("config")
         if isinstance(config, Mapping):
-            model = config.get("model_path")
+            model = config.get("model", config.get("model_path"))
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    timing = raw_engine_args.get("timing_model")
+    if isinstance(timing, Mapping) and timing.get("provider") == "aic":
+        config = timing.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model")
             if isinstance(model, str) and model.strip():
                 return model.strip()
     model = raw_engine_args.get("aic_model_path")

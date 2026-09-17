@@ -1190,3 +1190,61 @@ def test_new_default_selection_survives_serialization_without_becoming_legacy_op
     reloaded = CorePredictionConfig.model_validate(serialized)
     assert reloaded.engine.estimation_mode == "auto"
     assert reloaded.engine.workers.aggregated.timing.estimation_mode is None
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode):
+    from copy import deepcopy
+    from importlib.resources import files
+    from pathlib import Path
+
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.search_space import enumerate_branches
+
+    packaged = Path(str(files("aiconfigurator_core") / "systems"))
+    roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
+    workers = {}
+    for role in roles:
+        root = tmp_path / role
+        root.mkdir()
+        for entry in packaged.iterdir():
+            (root / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+        (root / "role_only_gpu.yaml").write_text((packaged / "h200_sxm.yaml").read_text())
+        workers[role] = {
+            "parallelism": {"tensor": 2},
+            "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
+            "timing": {"systems_paths": [str(root)]},
+        }
+        if mode == "disaggregated":
+            workers[role]["hardware"] = "role_only_gpu"
+    engine = {
+        "model": "Qwen/Qwen3-32B",
+        "hardware": "role_only_gpu" if mode == "aggregated" else "h200_sxm",
+        "backend": "vllm",
+        "mode": mode,
+        "context_length": 4096,
+        "workers": workers,
+    }
+    prediction = CorePredictionConfig.model_validate({"engine": engine})
+    deployment = prediction_to_replay_spec(prediction).backend_deployment
+    for role in roles:
+        args = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        assert args["timing_model"]["config"]["systems_paths"] == [str(tmp_path / role)]
+        assert args["timing_model"]["config"]["system"] == "role_only_gpu"
+    recommendation_engine = deepcopy(engine)
+    for worker in recommendation_engine["workers"].values():
+        worker.pop("parallelism")
+        worker["kv_cache"] = {"capacity": {"memory_fraction": 0.9}}
+    recommendation = CoreRecommendationConfig.model_validate(
+        {
+            "engine": recommendation_engine,
+            "optimization": {
+                "target": "throughput",
+                "constraints": {"max_candidate_gpus": 4},
+            },
+        }
+    )
+    smart = recommendation_to_sweeper(recommendation)
+    (branch,) = enumerate_branches(smart, max_seq_len=4096)
+    assert branch.parallel_configs
+    assert branch.deployment_mode == ("agg" if mode == "aggregated" else "disagg")
