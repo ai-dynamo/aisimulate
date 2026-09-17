@@ -161,6 +161,266 @@ def test_explicit_identity_and_pilot_context_override_config_hints(tmp_path, mon
     assert request.fpm_profile.context_length == 32768
 
 
+def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path, monkeypatch, capsys):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "new" / "request.yaml"
+    prompts = []
+    answers = iter(["", "save", "accept"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def respond(prompt):
+        prompts.append(prompt)
+        assert not output.parent.exists(), "setup wrote output before explicit acceptance"
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", respond)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert prompts == ["Review action (accept/edit/cancel): "] * 3
+    transcript = capsys.readouterr().out
+    assert "Review FPM profile before saving:" in transcript
+    assert "weights_bytes: 2147483648" in transcript
+    assert "source: user override" in transcript
+    assert "per rank" in transcript
+    assert "checkpoint-revision-123" in transcript
+    assert "h200_sxm" in transcript
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
+
+
+def test_guided_review_edits_file_values_and_provenance_then_replays_saved_profile(tmp_path, monkeypatch, capsys):
+    source, resources = _files(tmp_path)
+    original_overrides = resources.read_bytes()
+    output = tmp_path / "request.yaml"
+    note = "Synthetic replacement bounds for CLI validation; not measured."
+    prompts = _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "not_a_field",
+            "weights_bytes",
+            "many",
+            "0.1 B",
+            "-1",
+            "3 GiB",
+            "edit",
+            "weights_bytes",
+            "4 GiB",
+            "edit",
+            "kv_cache_dtype",
+            "auto",
+            "fp8",
+            "edit",
+            "max_num_tokens",
+            "16384",
+            "edit",
+            "provenance",
+            note,
+            "accept",
+        ],
+    )
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    request = SupportRequest.from_yaml(output)
+    deployment = request.profile_deployment()
+    assert deployment.resources.weights_bytes == 4 * 1024**3
+    assert deployment.kv_cache_dtype == "fp8"
+    assert deployment.resources.max_num_tokens == 16384
+    # Explicit bounds remain user declarations when their dependencies change.
+    assert deployment.resources.kv_bytes_per_token == _OVERRIDES["kv_bytes_per_token"]
+    assert deployment.resources.activations_bytes == _OVERRIDES["activations_bytes"]
+    provenance = json.loads(request.fpm_profile.provenance)["fields"]
+    assert provenance["weights_bytes"]["value"] == 4 * 1024**3
+    assert provenance["provenance"]["value"] == note
+    assert all("user override" in provenance[field]["source"] for field in ("weights_bytes", "kv_bytes_per_token"))
+    assert resources.read_bytes() == original_overrides
+    assert sum(prompt.startswith("weights_bytes") for prompt in prompts) == 5
+    transcript = capsys.readouterr().out
+    assert "Choose an editable field" in transcript
+    assert "whole number of bytes" in transcript
+    review = transcript.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "weights_bytes: 4294967296" in review
+    assert "kv_cache_dtype: fp8" in review
+    assert note in review
+    assert _OVERRIDES["provenance"] not in review
+
+    source.unlink()
+    resources.unlink()
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
+    assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
+
+
+def test_guided_review_recomputes_inferred_kv_and_activation_bounds(tmp_path, monkeypatch, capsys):
+    config = {
+        **_CONFIG,
+        "hidden_size": 4096,
+        "intermediate_size": 14336,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "vocab_size": 32000,
+    }
+    source, resources = _files(
+        tmp_path,
+        config=config,
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        ["edit", "kv_cache_dtype", "fp8", "edit", "max_num_tokens", "4096", "edit", "max_batch_size", "8", "accept"],
+    )
+
+    assert cli.main(_args(output, source, resources, tensor_parallel=4, concurrency=4) + ["--interactive"]) == 0
+
+    request = SupportRequest.from_yaml(output)
+    deployment = request.profile_deployment()
+    assert deployment.parallel_tuple == (4, 1, 1, 1, 1, 1)
+    assert deployment.resources.kv_bytes_per_token == 16384  # 2 K/V * 32 layers * 2 local heads * 128 * 1 byte
+    assert deployment.resources.activations_bytes == 167772160  # 2 bytes * 4096 tokens * 4096 width * 5
+    assert deployment.resources.max_num_tokens == 4096
+    assert deployment.resources.max_batch_size == 8
+    provenance = json.loads(request.fpm_profile.provenance)["fields"]
+    assert "exact linear tensor geometry" in provenance["kv_bytes_per_token"]["source"]
+    assert "estimate:" in provenance["activations_bytes"]["source"]
+    assert "max_num_tokens=4096" in provenance["activations_bytes"]["source"]
+    assert "max_batch_size=8" in provenance["activations_bytes"]["source"]
+    transcript = capsys.readouterr().out
+    assert "kv_bytes_per_token: 32768" in transcript
+    assert "activations_bytes: 335544320" in transcript
+    review = transcript.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "kv_bytes_per_token: 16384" in review
+    assert "activations_bytes: 167772160" in review
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("weights_bytes", str(2**53), "total non-KV resource bytes"),
+        ("architecture", "UnknownForCausalLM", "conflicts with the source config"),
+        ("num_experts", "4", "conflicts with the source config"),
+        ("context_length", "65536", "exceeds the source config context limit"),
+        ("context_length", "8192", "search.context_length exceeds"),
+    ],
+)
+def test_guided_review_rejects_inconsistent_edits_and_retains_complete_prior_request(
+    tmp_path, monkeypatch, capsys, field, value, error
+):
+    source, resources = _files(tmp_path)
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", field, value, "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert SupportRequest.from_yaml(output) == SupportRequest.from_yaml(baseline)
+    transcript = capsys.readouterr().out
+    assert "Edit rejected:" in transcript
+    assert error in transcript
+    assert "Previous profile values retained" in transcript
+
+
+def test_guided_review_collects_new_dependency_then_reviews_it_before_accepting(tmp_path, monkeypatch, capsys):
+    source, resources = _files(
+        tmp_path, overrides={name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    )
+    output = tmp_path / "new" / "request.yaml"
+    prompts = []
+    answers = iter(["edit", "fmha_quant_mode", "fp8", "2 GiB", "accept"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def respond(prompt):
+        assert not output.parent.exists(), "staged dependency must not write a partial request"
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", respond)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert len(prompts) == 5
+    assert prompts[3].startswith("activations_bytes")
+    assert prompts[-1] == "Review action (accept/edit/cancel): "
+    deployment = SupportRequest.from_yaml(output).profile_deployment()
+    assert deployment.fmha_quant_mode == "fp8"
+    assert deployment.resources.activations_bytes == 2 * 1024**3
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "fmha_quant_mode: fp8" in review
+    assert "activations_bytes: 2147483648 (source: user override" in review
+
+
+def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    overrides["weights_bytes"] = (
+        2**53 - 2 * 1024**3 - overrides["runtime_overhead_bytes"] - overrides["comm_overhead_bytes"]
+    )
+    source, resources = _files(tmp_path, overrides=overrides)
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "fmha_quant_mode", "fp8", "3 GiB", "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert SupportRequest.from_yaml(output) == SupportRequest.from_yaml(baseline)
+    assert "total non-KV resource bytes" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "answers",
+    [["cancel"], ["edit", "weights_bytes", "3 GiB", "cancel"]],
+    ids=["review", "after-edit"],
+)
+def test_guided_review_explicit_cancel_leaves_output_untouched(tmp_path, monkeypatch, existing, answers):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+    _terminal(monkeypatch, answers)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive", "--overwrite"]) == 130
+
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, EOFError])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "answers",
+    [[], ["edit"], ["edit", "weights_bytes"], ["edit", "fmha_quant_mode", "fp8"]],
+    ids=["review", "field", "value", "dependency"],
+)
+def test_guided_review_interruption_leaves_output_untouched(tmp_path, monkeypatch, interruption, existing, answers):
+    source, resources = _files(
+        tmp_path, overrides={name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    )
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+    _terminal(monkeypatch, [*answers, interruption()])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive", "--overwrite"]) == 130
+
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
 def test_scripted_identity_failure_lists_all_missing_identity_without_input(tmp_path, monkeypatch, capsys):
     _terminal(monkeypatch)
     source, _ = _files(tmp_path)
@@ -211,12 +471,12 @@ def test_guided_config_asks_only_unresolved_inputs_and_recovers_invalid_answers(
     overrides = {key: value for key, value in _OVERRIDES.items() if key != "fmha_quant_mode"}
     source, resources = _files(tmp_path, overrides=overrides)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["invalid-precision", "bfloat16"])
+    prompts = _terminal(monkeypatch, ["invalid-precision", "bfloat16", "accept"])
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
-    assert len(prompts) == 2
-    assert all("fmha_quant_mode" in prompt for prompt in prompts)
+    assert len(prompts) == 3
+    assert all("fmha_quant_mode" in prompt for prompt in prompts[:-1])
     assert SupportRequest.from_yaml(output).fpm_profile.deployments[0].fmha_quant_mode == "bfloat16"
     assert "invalid-precision" in capsys.readouterr().out
 
@@ -229,7 +489,7 @@ def test_guided_final_profile_identity_correction_preserves_resource_answers(
     overrides = {key: value for key, value in _OVERRIDES.items() if not missing_precision or key != "fmha_quant_mode"}
     source, resources = _files(tmp_path, overrides=overrides)
     output = tmp_path / "request.yaml"
-    answers = (["bfloat16"] if missing_precision else []) + [_IDENTITY[option]]
+    answers = (["bfloat16"] if missing_precision else []) + [_IDENTITY[option], "accept"]
     prompts = _terminal(monkeypatch, answers)
 
     assert cli.main(_args(output, source, resources, **{option: "unknown"}) + ["--interactive"]) == 0
@@ -237,7 +497,7 @@ def test_guided_final_profile_identity_correction_preserves_resource_answers(
     assert len(prompts) == len(answers)
     if missing_precision:
         assert "fmha_quant_mode" in prompts[0]
-    assert ("Pinned model revision" if option == "model_revision" else "Pinned vLLM version") in prompts[-1]
+    assert ("Pinned model revision" if option == "model_revision" else "Pinned vLLM version") in prompts[-2]
     request = SupportRequest.from_yaml(output)
     assert getattr(request.identity, option) == _IDENTITY[option]
     assert request.profile_deployment().fmha_quant_mode == "bfloat16"
@@ -333,11 +593,11 @@ def test_bundled_modelopt_string_cache_config_creates_complete_request(tmp_path,
 def test_guided_missing_identity_is_asked_before_profile_fields(tmp_path, monkeypatch):
     source, resources = _files(tmp_path)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["checkpoint-revision-123", "0.25.1", "h200_sxm", "8", "nvswitch"])
+    prompts = _terminal(monkeypatch, ["checkpoint-revision-123", "0.25.1", "h200_sxm", "8", "nvswitch", "accept"])
 
     assert cli.main(_args(output, source, resources, **dict.fromkeys(_IDENTITY)) + ["--interactive"]) == 0
 
-    assert len(prompts) == 5
+    assert len(prompts) == 6
     assert "Pinned model revision" in prompts[0]
     assert not any("Model name" in prompt or "Model kind" in prompt for prompt in prompts)
 
@@ -347,13 +607,13 @@ def test_guided_unknown_model_metadata_bounds_pilot_before_ordinary_prompts(tmp_
     del config["max_position_embeddings"]
     source, resources = _files(tmp_path, config=config)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["invalid", "2048", "-1", "0"])
+    prompts = _terminal(monkeypatch, ["invalid", "2048", "-1", "0", "accept"])
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
-    assert len(prompts) == 4
+    assert len(prompts) == 5
     assert all("context_length" in prompt for prompt in prompts[:2])
-    assert all("num_experts" in prompt for prompt in prompts[2:])
+    assert all("num_experts" in prompt for prompt in prompts[2:-1])
     request = SupportRequest.from_yaml(output)
     assert request.search.context_length == request.fpm_profile.context_length == 2048
     assert request.identity.model_kind == "dense"
@@ -371,11 +631,11 @@ def test_guided_unknown_model_metadata_bounds_pilot_before_ordinary_prompts(tmp_
 def test_guided_setup_can_correct_request_conflicts_with_config_metadata(tmp_path, monkeypatch, changes, answers):
     source, resources = _files(tmp_path)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, answers)
+    prompts = _terminal(monkeypatch, [*answers, "accept"])
 
     assert cli.main(_args(output, source, resources, **changes) + ["--interactive"]) == 0
 
-    assert len(prompts) == len(answers)
+    assert len(prompts) == len(answers) + 1
     request = SupportRequest.from_yaml(output)
     assert request.identity.model_kind == "dense"
     assert request.identity.model_revision == "checkpoint-revision-123"
@@ -392,6 +652,8 @@ def test_guided_precision_answers_resolve_supported_memory_without_redundant_pro
 
     def respond(prompt):
         prompts.append(prompt)
+        if prompt == "Review action (accept/edit/cancel): ":
+            return "accept"
         name = prompt.split(" ")[0]
         assert name in answers, f"unexpected prompt for a derived input: {prompt}"
         return answers[name]
@@ -400,7 +662,7 @@ def test_guided_precision_answers_resolve_supported_memory_without_redundant_pro
 
     assert cli.main(_args(output, source) + ["--interactive"]) == 0
 
-    assert len(prompts) == 3
+    assert len(prompts) == 4
     resources = SupportRequest.from_yaml(output).profile_deployment().resources
     assert resources.kv_bytes_per_token == 512
     assert resources.max_num_tokens == 8192
@@ -412,12 +674,12 @@ def test_guided_memory_accepts_exact_units_and_reprompts_invalid_quantities(tmp_
     overrides = {key: value for key, value in _OVERRIDES.items() if key != "weights_bytes"}
     source, resources = _files(tmp_path, config=config, overrides=overrides)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["many", "0.1 B", "-1", "2 GiB"])
+    prompts = _terminal(monkeypatch, ["many", "0.1 B", "-1", "2 GiB", "accept"])
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
-    assert len(prompts) == 4
-    assert all("weights_bytes" in prompt and "per rank" in prompt for prompt in prompts)
+    assert len(prompts) == 5
+    assert all("weights_bytes" in prompt and "per rank" in prompt for prompt in prompts[:-1])
     assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
     assert "whole number of bytes" in capsys.readouterr().out
 

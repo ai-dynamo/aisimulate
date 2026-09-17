@@ -24,6 +24,7 @@ from aisimulate.config.common import load_yaml
 from .config_profile import (
     FIELD_CHOICES,
     INTEGER_FIELDS,
+    OVERRIDE_FIELDS,
     ModelConfig,
     ProfileDraft,
     ProfileRequestError,
@@ -56,7 +57,11 @@ def add_support_parser(subparsers: Any) -> None:
             "One node and a small TP1 synthetic pilot are defaults; review the saved scope before collection."
         ),
     )
-    init.add_argument("--interactive", action="store_true", help="Guide setup with terminal prompts.")
+    init.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Guide setup with terminal prompts; review and accept config-based profiles before saving.",
+    )
     init.add_argument("--profile", choices=("onboarding",), help="Optional alias; all setup uses onboarding.")
     init.add_argument("--model")
     init.add_argument("--model-revision", help="Pinned model revision; moving labels such as main are unsupported.")
@@ -353,14 +358,7 @@ def _resource_answer(name: str, answer: str) -> str | int:
         raise ValueError("enter a valid integer") from exc
 
 
-def _prompt_profile_value(
-    config: ModelConfig,
-    request: SupportRequest | None,
-    overrides: dict[str, Any],
-    draft: ProfileDraft,
-    name: str,
-) -> tuple[dict[str, Any], ProfileDraft]:
-    print(f"{name}: {draft.missing[name]}")
+def _read_profile_value(name: str) -> dict[str, Any]:
     choices = f" ({', '.join(FIELD_CHOICES[name])})" if name in FIELD_CHOICES else ""
     if _memory_field(name):
         choices += " (per rank; integer bytes or units such as GiB/MiB)"
@@ -370,17 +368,87 @@ def _prompt_profile_value(
             print("A value is required.")
             continue
         try:
-            supplied = validate_overrides({name: _resource_answer(name, answer)})
+            return validate_overrides({name: _resource_answer(name, answer)})
         except ValueError as exc:
             print(f"{name}: {exc}")
+
+
+def _prompt_profile_value(
+    config: ModelConfig,
+    request: SupportRequest | None,
+    overrides: dict[str, Any],
+    draft: ProfileDraft,
+    name: str,
+) -> tuple[dict[str, Any], ProfileDraft]:
+    print(f"{name}: {draft.missing[name]}")
+    # Retain a valid answer if final profile validation asks for an identity
+    # correction. Other derivation failures cannot be repaired by repeating
+    # this answer, so let the caller report the actual error.
+    overrides.update(_read_profile_value(name))
+    updated = derive_profile(config, request, overrides)
+    print(f"  {name}: {updated.resolved[name]} (source: {updated.sources[name]})")
+    return overrides, updated
+
+
+def _review_config_profile(
+    config: ModelConfig,
+    request: SupportRequest,
+    overrides: dict[str, Any],
+    draft: ProfileDraft,
+) -> SupportRequest:
+    while True:
+        identity, workload = request.identity, request.workload
+        print("Review FPM profile before saving:")
+        print(
+            f"  Deployment: {identity.model} ({identity.model_kind}) @ {identity.model_revision}; "
+            f"{identity.framework} {identity.framework_version}; "
+            f"{identity.gpu_count} {identity.gpu} GPU(s) on {identity.node_count} node(s); {identity.interconnect}"
+        )
+        print(f"  Parallelism: {request.parallelism()}")
+        print(
+            f"  Pilot: {workload.input_tokens}/{workload.output_tokens} tokens, concurrency {workload.concurrency}, "
+            f"{workload.request_count} requests; context limit {request.search.context_length} tokens"
+        )
+        print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
+        print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")
+        for name, value in draft.resolved.items():
+            print(f"  {name}: {value} (source: {draft.sources[name]})")
+        if "provenance" not in draft.resolved:
+            print(
+                "  Provenance records the config SHA-256, deployment, values and sources; "
+                "edit provenance to add a note."
+            )
+        print("Nothing has been saved. Accept saves these values; edit changes a profile field. Ctrl-C cancels setup.")
+        while True:
+            action = input("Review action (accept/edit/cancel): ").strip().lower()
+            if action in ("accept", "edit", "cancel"):
+                break
+            print("Enter accept, edit, or cancel. Explicit acceptance is required to save.")
+        if action == "accept":
+            return request
+        if action == "cancel":
+            raise KeyboardInterrupt
+        print("Editable fields: " + ", ".join(sorted(OVERRIDE_FIELDS)))
+        while True:
+            name = input("Field to edit: ").strip()
+            if name in OVERRIDE_FIELDS:
+                break
+            print("Choose an editable field by its displayed name.")
+        # Derive from explicit inputs again so inferred dependents can change.
+        # Only publish the staged values after the entire request validates.
+        staged = {**overrides, **_read_profile_value(name)}
+        try:
+            updated = derive_profile(config, request, staged)
+            while updated.missing:
+                field = min(updated.missing, key=_memory_field)
+                staged, updated = _prompt_profile_value(config, request, staged, updated, field)
+            if updated.profile is None:
+                raise ValueError("model config did not produce a complete FPM profile")
+            validated = SupportRequest.model_validate({**request.model_dump(), "fpm_profile": updated.profile})
+        except ValueError as exc:
+            print(f"Edit rejected: {exc}. Previous profile values retained.")
             continue
-        # Retain a valid answer if final profile validation asks for an identity
-        # correction. Other derivation failures cannot be repaired by repeating
-        # this answer, so let the caller report the actual error.
-        overrides.update(supplied)
-        updated = derive_profile(config, request, overrides)
-        print(f"  {name}: {updated.resolved[name]} (source: {updated.sources[name]})")
-        return overrides, updated
+        overrides, draft, request = staged, updated, validated
 
 
 def _config_request(args: argparse.Namespace) -> SupportRequest:
@@ -457,12 +525,14 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
         if draft.profile is None:
             raise ValueError("model config did not produce a complete FPM profile")
         try:
-            return SupportRequest.model_validate({**request.model_dump(), "fpm_profile": draft.profile})
+            completed = SupportRequest.model_validate({**request.model_dump(), "fpm_profile": draft.profile})
         except ValidationError as exc:
             if not args.interactive:
                 raise
             _correct_option(args, exc)
             request = _validate_guided_request(args)
+            continue
+        return _review_config_profile(config, completed, overrides, draft) if args.interactive else completed
 
 
 def _init(args: argparse.Namespace) -> int:

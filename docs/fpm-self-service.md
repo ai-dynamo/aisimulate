@@ -64,7 +64,25 @@ aisimulate onboard init \
 
 Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before pilot options so the model's context limit can bound the pilot. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system, allocation, and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
 
-Profile memory quantities describe the largest requirement on any rank of the exact selected TP, DEP, or TEP worker. The prompt explains why each unresolved value needs input. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, runtime version, and deployment conflicts return to the corresponding option while retaining accepted resource answers. Incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
+Profile memory quantities describe the largest requirement on any rank of the exact selected TP, DEP, or TEP worker. The prompt explains why each unresolved value needs input. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, runtime version, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
+
+Once all required inputs are available, guided setup shows the complete profile, sources, and selected deployment for review. Choose `edit` to replace an estimate, a previous answer, or a value from `--resource-overrides`. Choose a field by name, enter its value, and review the updated profile. For example, these illustrative inputs replace the per-rank weight bound and record why:
+
+```text
+Review action (accept/edit/cancel): edit
+Field to edit: weights_bytes
+weights_bytes (per rank; integer bytes or units such as GiB/MiB): 70 GiB
+... updated profile and sources ...
+Review action (accept/edit/cancel): edit
+Field to edit: provenance
+provenance: User-declared bound; replace with the actual source of your estimate.
+... updated profile and sources ...
+Review action (accept/edit/cancel): accept
+```
+
+Changing an input recomputes dependent estimates: for example, changing `kv_cache_dtype` updates inferred `kv_bytes_per_token`, and changing `max_num_tokens` updates inferred activation bytes. Explicit values remain in place until you edit those fields themselves. If an edit makes a required estimate unavailable, setup asks for that value before returning to review. Invalid individual answers can be corrected; an edit that conflicts with the config or complete request is rejected with the reason, and the previous profile is retained. Model identity and topology remain the declared deployment.
+
+Only an explicit `accept` saves the reviewed request; Enter alone does not accept it. You can make repeated edits before accepting. Choose `cancel` at the review, or press Ctrl-C or send end-of-input at any prompt, to exit 130 without creating the output directory or replacing an existing request, including with `--overwrite`. This review step applies to `--model-config --interactive`; scripted setup is unchanged and never prompts.
 
 For automation, supply missing profile fields through a flat JSON or YAML file. Resource quantities in the file must be integer bytes. This example shows the shape for an explicitly declared BF16 decoder; its numbers are illustrative, not measured bounds for your model. Replace them with justified per-rank bounds and describe their source before planning:
 
