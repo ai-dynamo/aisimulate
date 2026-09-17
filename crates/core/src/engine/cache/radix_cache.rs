@@ -957,17 +957,18 @@ impl RadixCache {
             // Global input demand can execute on another worker. It intentionally ranks only
             // this worker's causally resident, unlocked leaves; it never creates or unlocks KV.
             let victim = if let Some(belady) = &self.belady {
-                belady
-                    .candidates
-                    .first()
-                    .map(|&(_, accessed, id)| (accessed, id))
+                let Some(&(_, accessed, id)) = belady.candidates.first() else {
+                    break;
+                };
+                self.remove_evictable_leaf(id);
+                Some((accessed, id))
             } else {
-                self.evictable_leaves.first().copied()
+                // LRU can select and remove directly, without a second keyed lookup.
+                self.evictable_leaves.pop_first()
             };
             let Some((last_access_time, victim_id)) = victim else {
                 break;
             };
-            self.remove_evictable_leaf(victim_id);
             debug_assert_eq!(
                 last_access_time, self.nodes[victim_id].last_access_time,
                 "eviction index timestamp drifted from radix node"
