@@ -104,6 +104,7 @@ struct HashCopies {
 /// State-only identity metadata does not widen token copies or reservations.
 #[derive(Default)]
 struct StateIndex {
+    slots_by_prefix: FxHashMap<SequenceHash, FxHashSet<usize>>,
     by_key: FxHashMap<(SequenceHash, usize), HashCopies>,
     by_copy: FxHashMap<BlockCopyId, (SequenceHash, usize)>,
 }
@@ -683,7 +684,17 @@ impl VllmBlockPool {
                     index.by_copy.insert(id, (prefix, slot)).is_none(),
                     "private copy retains a state key"
                 );
-                Self::index_copy(&mut index.by_key, (prefix, slot), id)
+                let result = Self::index_copy(&mut index.by_key, (prefix, slot), id);
+                if result.0 {
+                    assert!(
+                        index
+                            .slots_by_prefix
+                            .entry(prefix)
+                            .or_default()
+                            .insert(slot)
+                    );
+                }
+                result
             }
         };
         if became_redundant {
@@ -1032,7 +1043,18 @@ impl VllmBlockPool {
                     Some((prefix, slot)),
                     "state identity changed"
                 );
-                Self::remove_from_index(&mut index.by_key, (prefix, slot), id)
+                let removed = Self::remove_from_index(&mut index.by_key, (prefix, slot), id);
+                if removed {
+                    let slots = index
+                        .slots_by_prefix
+                        .get_mut(&prefix)
+                        .expect("state prefix index");
+                    assert!(slots.remove(&slot));
+                    if slots.is_empty() {
+                        index.slots_by_prefix.remove(&prefix);
+                    }
+                }
+                removed
             }
         };
         if !removed && self.belady.is_some() && !self.key_has_duplicates(hash) {
@@ -1210,9 +1232,10 @@ impl VllmBlockPool {
             .into_iter()
             .chain(self.state_index.iter().flat_map(|index| {
                 index
-                    .by_key
-                    .iter()
-                    .filter_map(|(&(prefix, _), copies)| (prefix == hash).then_some(copies))
+                    .slots_by_prefix
+                    .get(&hash)
+                    .into_iter()
+                    .flat_map(|slots| slots.iter().map(|&slot| &index.by_key[&(hash, slot)]))
             }));
         for copies in groups {
             for id in copies.iter() {
@@ -1428,6 +1451,15 @@ impl VllmBlockPool {
         }
 
         if let Some(index) = &self.state_index {
+            let mut keys = FxHashSet::default();
+            for (&prefix, slots) in &index.slots_by_prefix {
+                assert!(!slots.is_empty(), "empty state prefix index");
+                for &slot in slots {
+                    assert!(index.by_key.contains_key(&(prefix, slot)));
+                    keys.insert((prefix, slot));
+                }
+            }
+            assert_eq!(keys.len(), index.by_key.len());
             for (&id, &(prefix, slot)) in &index.by_copy {
                 assert!(indexed.contains(&id), "state identity is not indexed");
                 assert!(
@@ -1725,6 +1757,51 @@ mod tests {
         assert!(pool.key_hit(state).is_some());
         pool.cancel(pressure.reservation);
         pool.release(active);
+        pool.assert_lru_consistent();
+    }
+
+    #[test]
+    fn state_prefix_index_survives_duplicates_and_removes_last_slot() {
+        let mut pool = VllmBlockPool::new(4);
+        pool.set_belady_oracle(input_oracle(&[7, 8]));
+        let key = CacheKey::State { prefix: 7, slot: 0 };
+        let first = cached_key(&mut pool, key);
+        let second = cached_key(&mut pool, key);
+        let sibling = cached_key(&mut pool, CacheKey::State { prefix: 7, slot: 1 });
+        let other = cached_key(&mut pool, CacheKey::State { prefix: 8, slot: 0 });
+        pool.release(first);
+        pool.discard_inactive_state(first);
+        pool.assert_lru_consistent();
+        assert!(pool.key_hit(key).is_some());
+        pool.make_state_private(second);
+        pool.assert_lru_consistent();
+        assert_eq!(
+            pool.state_index.as_ref().unwrap().slots_by_prefix[&7].len(),
+            1
+        );
+        pool.release(sibling);
+        assert!(pool.discard_inactive_state(sibling));
+        pool.assert_lru_consistent();
+        assert!(
+            !pool
+                .state_index
+                .as_ref()
+                .unwrap()
+                .slots_by_prefix
+                .contains_key(&7)
+        );
+        // Republishing recreates the prefix entry without losing unrelated prefixes.
+        assert!(pool.cache_private_key(second, key));
+        pool.release(second);
+        pool.release(other);
+        pool.assert_lru_consistent();
+        let pressure = reserve(&mut pool, &[], 3);
+        assert!(pool.key_hit(key).is_some());
+        assert!(
+            pool.key_hit(CacheKey::State { prefix: 8, slot: 0 })
+                .is_none()
+        );
+        pool.cancel(pressure.reservation);
         pool.assert_lru_consistent();
     }
 
