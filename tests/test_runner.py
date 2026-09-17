@@ -531,7 +531,8 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
-def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rank_only_controls", [False, True])
+def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch, rank_only_controls):
     reserved_bytes = 14_559_947_612
     path = tmp_path / "prediction.yaml"
     path.write_text(
@@ -560,8 +561,27 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    import aiconfigurator_core
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    class Estimator:
+        def __init__(self, config):
+            self.config = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
     public = CorePredictionConfig.from_yaml(path)
     spec = prediction_to_replay_spec(public)
+    if rank_only_controls:
+        timing = spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        timing.pop("cuda_graph_reserved_bytes")
+        timing.pop("gpu_memory_utilization")
     runtime = RecordingRuntime()
 
     assert public.engine.workers.aggregated is not None

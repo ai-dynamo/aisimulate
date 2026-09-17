@@ -69,6 +69,16 @@ def materialize_aic_num_gpu_blocks(
                     "cuda_graph_reserved_bytes",
                 }
             }
+            for name in (
+                "gpu_memory_utilization",
+                "mem_fraction_static",
+                "free_gpu_memory_fraction",
+                "cuda_graph_reserved_bytes",
+            ):
+                if name in lowered:
+                    if name in memory_fields and memory_fields[name] != lowered[name]:
+                        raise ValueError(f"{name} conflicts with canonical timing configuration")
+                    memory_fields[name] = lowered[name]
             request = {key: value for key, value in authored.items() if key not in memory_fields}
             model = RustForwardPassPerfModel.best_available(request)
             try:
