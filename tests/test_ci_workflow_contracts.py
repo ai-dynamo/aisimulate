@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -1860,11 +1861,12 @@ def test_nightly_failed_compliance_cannot_stage(result):
 
 
 @pytest.mark.parametrize("attempt", ["1", "2"])
-def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
+def test_manual_nightly_requires_current_approval_to_publish(attempt):
     context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
     assert _nightly_condition("manual-approval", **context)
     assert not _nightly_condition("python-compliance", **context)
     assert not _nightly_condition("build-artifacts", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
     context.update(
         {
             "needs.manual-approval.result": "success",
@@ -1874,11 +1876,12 @@ def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
     assert _nightly_condition("build-artifacts", **context)
     assert _nightly_condition("python-compliance", **context)
     assert _nightly_condition("license-evidence", **context)
-    assert not _nightly_condition("fpe-support-matrix", **context)
-    assert not _nightly_condition("trigger-gitlab-security", **context)
+    assert _nightly_condition("fpe-support-matrix", **context)
+    assert _nightly_condition("trigger-gitlab-security", **context)
     context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
     assert not _nightly_condition("build-artifacts", **context)
     assert not _nightly_condition("python-compliance", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
 
 
 def test_nightly_compliance_requires_approval_dependency_and_respects_cancellation():
@@ -2347,7 +2350,7 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
 @pytest.mark.parametrize("failure", [None, "missing-token", "http-error"])
 def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure):
     # Interface verified against release-automation commit
-    # 1aaaeae1f4a29345085b68bb460d09ee47cc4bb0: .gitlab-ci.yml forwarding
+    # cdabacabb50e589c08b97b776b5c2f2644b5473e: .gitlab-ci.yml forwarding
     # and projects/aisimulate.yml. This is an independent request fixture,
     # not a copy of the external pipeline implementation.
     capture = tmp_path / "request.json"
@@ -2380,7 +2383,8 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
             "CURL_EXIT_CODE": "22" if failure == "http-error" else "0",
             "GITLAB_TRIGGER_TOKEN": "" if failure == "missing-token" else "fixture-token",
             "GITLAB_PIPELINE_URL": endpoint,
-            "WHEEL_VERSION": "0.12.0.dev20260917",
+            "WHEEL_VERSION": "0.12.0.dev202609170000001234",
+            "TOOLING_SHA": "b" * 40,
             "GH_RUN_ID": "123456",
             "GH_SHA": "a" * 40,
             "SLACK_THREAD_TS": "1234567890.123456",
@@ -2401,11 +2405,145 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
         "variables[PROJECT]": "aisimulate",
         "variables[PIPELINE_TYPE]": "security",
         "variables[RELEASE_TYPE]": "nightly",
-        "variables[NIGHTLY_TAG]": "nightly-20260917-aaaaaaa",
-        "variables[WHEEL_VERSION]": "0.12.0.dev20260917",
+        "variables[NIGHTLY_TAG]": "nightly-202609170000001234-aaaaaaa",
+        "variables[WHEEL_VERSION]": "0.12.0.dev202609170000001234",
         "variables[GITHUB_RUN_ID]": "123456",
         "variables[COMMIT_SHA]": "a" * 40,
+        "variables[AISIMULATE_TOOLING_SHA]": "b" * 40,
         "variables[SLACK_THREAD_TS]": "1234567890.123456",
         "variables[SLACK_CHANNEL_ID]": "fixture-channel",
         "variables[DRY_RUN]": "false",
     }
+
+
+@pytest.mark.parametrize("attempt", ["1", "2"])
+@pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
+def test_manual_publish_rejects_failed_dependencies(attempt, gate, result):
+    assert not _nightly_condition(
+        "trigger-gitlab-security",
+        **{
+            "github.event_name": "workflow_dispatch",
+            "github.run_attempt": attempt,
+            "needs.manual-approval.result": "success",
+            "needs.manual-approval.outputs.approved-attempt": attempt,
+            f"needs.{gate}.result": result,
+        },
+    )
+
+
+def test_manual_publish_rejects_wrong_ref_disabled_trigger_and_cancellation():
+    approved = {
+        "github.event_name": "workflow_dispatch",
+        "needs.manual-approval.result": "success",
+        "needs.manual-approval.outputs.approved-attempt": "1",
+    }
+    assert not _nightly_condition("trigger-gitlab-security", cancelled=True, **approved)
+    for override in ({"github.ref": "refs/heads/release/0.12.0"}, {"vars.GITLAB_SECURITY_TRIGGER_ENABLED": "false"}):
+        assert not _nightly_condition("trigger-gitlab-security", **{**approved, **override})
+
+
+def _nightly_version(created, number):
+    script = next(
+        step["with"]["script"]
+        for step in _workflow("nightly-ci.yml")["jobs"]["changes-guard"]["steps"]
+        if step.get("id") == "version"
+    )
+    program = """
+const run = JSON.parse(process.argv[1]);
+const output = {};
+const core = {setOutput: (key, value) => { output[key] = value; }};
+const github = {rest: {actions: {getWorkflowRun: async () => ({data: run})}}};
+const context = {repo: {owner: 'fixture', repo: 'fixture'}, runId: 123};
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+new AsyncFunction('github', 'context', 'core', process.argv[2])(github, context, core)
+  .then(() => console.log(JSON.stringify(output)))
+  .catch(error => { console.error(error.message); process.exitCode = 1; });
+"""
+    return subprocess.run(
+        [shutil.which("node"), "-e", program, json.dumps({"created_at": created, "run_number": number}), script],
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
+    from packaging.version import Version
+
+    versions = []
+    for date, number in [
+        ("2026-09-17T23:59:59Z", 1234),
+        ("2026-09-17T23:59:59Z", 1235),
+        ("2026-09-18T00:00:00Z", 1236),
+    ]:
+        result = _nightly_version(date, number)
+        assert result.returncode == 0, result.stderr
+        value = json.loads(result.stdout)
+        assert value["dev-date"] == date[:10].replace("-", "")
+        versions.append(value["dev-version"])
+        assert json.loads(_nightly_version(date, number).stdout) == value
+    assert versions == ["202609170000001234", "202609170000001235", "202609180000001236"]
+    assert Version("0.12.0.dev20260917") < Version("0.12.0.dev" + versions[0])
+    assert [Version("0.12.0.dev" + v) for v in versions] == sorted(Version("0.12.0.dev" + v) for v in versions)
+    for number in (0, -1, 10000000000, "invalid"):
+        assert _nightly_version("2026-09-17T00:00:00Z", number).returncode != 0
+
+
+@pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
+@pytest.mark.parametrize("base_version", ["0.12.0", "0.11.0"])
+def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (REPOSITORY_ROOT / name).read_text().replace('version = "0.12.0"', f'version = "{base_version}"')
+        )
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "source"],
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    stamp = [sys.executable, str(REPOSITORY_ROOT / "scripts/apply_dev_version.py"), suffix, str(tmp_path)]
+    subprocess.run(stamp, check=True, capture_output=True)
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob("*.toml")}
+    subprocess.run(stamp, check=True, capture_output=True)
+    assert before == {str(p): p.read_bytes() for p in tmp_path.rglob("*.toml")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/build_release_artifacts.py"),
+            "--root",
+            str(tmp_path),
+            "--check-only",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{base_version}{suffix}" in (tmp_path / "python/aisimulate/pyproject.toml").read_text()
+    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "crates/core/Cargo.toml").read_text()
+
+
+def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
+    workflow = _workflow("fpe-support-matrix.yml")
+    assert workflow["env"]["FPE_SOURCE_SHA"] == "${{ inputs.expected_sha }}"
+    assert workflow["env"]["FPE_TOOLING_SHA"] == "${{ github.sha }}"
+    for job in workflow["jobs"].values():
+        checkouts = [s["with"] for s in job["steps"] if "actions/checkout@" in s.get("uses", "")]
+        assert checkouts == [
+            {"ref": "${{ github.sha }}", "persist-credentials": "false"},
+            {"ref": "${{ inputs.expected_sha }}", "path": "release-source", "persist-credentials": "false"},
+        ]
+    for job, action in [
+        ("prepare-wheel", "record-wheel"),
+        ("discover-shards", "discover"),
+        ("generate", "probe"),
+        ("build-web-matrix", "package"),
+    ]:
+        assert f"scripts/run_release_fpe.py {action}" in _run_commands(workflow["jobs"][job])
+    nightly = _workflow("nightly-ci.yml")["jobs"]
+    assert nightly["fpe-support-matrix"]["with"]["source_branch"] == "${{ needs.changes-guard.outputs.target-ref }}"
+    assert nightly["build-artifacts"]["env"]["DEV_DATE"] == "${{ needs.changes-guard.outputs.dev-version }}"
+    assert "release-tooling/scripts/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
+    assert "release-tooling/scripts/build_release_artifacts.py --root ." in _run_commands(nightly["build-artifacts"])

@@ -120,7 +120,7 @@ Manual dispatches and site-change triggers are listed below.
 | --- | --- | --- |
 | [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen and ready-for-review; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Scheduled runs build, qualify, and stage nightly artifacts, skipping unchanged `main`; manual runs build and stage an approved source SHA |
+| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Builds, stages, qualifies, and hands off artifacts for publication; skips unchanged scheduled `main` and requires approval for manual sources |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
@@ -320,8 +320,11 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
-`main` with the last successful scheduled nightly. The build stamps a date-based dev
-version, uses pinned build tooling, and records checksums and provenance.
+`main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
+by its zero-padded ten-digit workflow run number, for example
+`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+retries retain the same version, and later dates sort after earlier dates. Builds
+use pinned tooling and record checksums and provenance.
 
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
@@ -342,7 +345,7 @@ Two kinds of validation then run:
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
   and console commands are checked using the downloaded wheel.
-- **FPE Support Matrix (scheduled runs):** the amd64 nightly wheel is reused and checked against
+- **FPE Support Matrix (scheduled and approved manual runs):** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
@@ -363,7 +366,7 @@ as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
 
 The GitLab request contract was checked against release-automation revision
-`1aaaeae1f4a29345085b68bb460d09ee47cc4bb0`, specifically the root
+`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
 `.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
 The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
 request selects `ref=main` and forwards these fields:
@@ -372,9 +375,10 @@ request selects `ref=main` and forwards these fields:
 | --- | --- |
 | `PROJECT` | `aisimulate` |
 | `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
-| `NIGHTLY_TAG` | `nightly-YYYYMMDD-<first-seven-commit-characters>` |
+| `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
 | `WHEEL_VERSION` | Exact stamped wheel version |
 | `GITHUB_RUN_ID` / `COMMIT_SHA` | Producing GitHub run and full source commit |
+| `AISIMULATE_TOOLING_SHA` | Trusted workflow commit providing the version stamper |
 | `SLACK_THREAD_TS` / `SLACK_CHANNEL_ID` | Notification thread and channel, optionally empty |
 | `DRY_RUN` | `false` |
 
@@ -403,7 +407,7 @@ trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
 
-To build and stage a specific commit, dispatch from `main` and supply a full
+To build, stage, qualify, and publish a specific commit, dispatch from `main` and supply a full
 40-character SHA reachable from `main` or a `release/*` branch:
 
 ```bash
@@ -418,11 +422,18 @@ checksums, source provenance, and license evidence. Staging paths include the
 unique run ID, and manual runs neither block the scheduled concurrency group nor
 count toward its unchanged-source guard.
 
-Manual dispatches do not run FPE qualification or trigger the GitLab public
-publisher. Their date-based package versions can match another build, so use
-the exact run's `nightly-dist-<arch>` artifacts and checksums; these builds are
-staging evidence, not a public or FPE-qualified nightly. Scheduled runs retain
-the full FPE and public-publication gates above.
+Approved manual dispatches run FPE qualification and may trigger the GitLab
+public publisher under the same successful-build, license, and FPE gates as the
+cron. The selected source supplies the package and model inventory; trusted
+workflow tooling supplies version stamping, the artifact contract, and FPE
+probes, including for older release sources. Qualification records source and
+tooling commits separately and uses the exact staged wheel. The GitLab crate
+publisher uses that same pinned version stamper and unique numeric suffix.
+
+The GitLab consumer must support `AISIMULATE_TOOLING_SHA` and the 18-digit
+nightly suffix before this producer is enabled. Successful GitHub staging or
+handoff alone does not establish that the asynchronous GitLab public publication
+completed; inspect its wheel and crate publish jobs.
 
 ### E2E accuracy campaigns
 

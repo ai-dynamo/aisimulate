@@ -50,8 +50,8 @@ def revision(root: Path) -> str:
 
 
 def identity(source: Path, source_sha: str, tooling_sha: str, branch: str) -> dict:
-    if not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._-]*", branch):
-        raise ValueError("expected a release/<version> branch")
+    if branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._-]*", branch):
+        raise ValueError("expected main or a release/<version> branch")
     for label, root, expected in [("source", source, source_sha), ("tooling", ROOT, tooling_sha)]:
         if not re.fullmatch(r"[0-9a-f]{40}", expected) or revision(root) != expected:
             raise ValueError(f"{label} checkout differs from its pinned commit")
@@ -176,7 +176,7 @@ def main() -> None:
         args.source_root,
         os.environ["FPE_SOURCE_SHA"],
         os.environ["FPE_TOOLING_SHA"],
-        os.environ["FPE_BRANCH"],
+        os.environ["FPE_BRANCH"].removeprefix("refs/heads/"),
     )
     wheel, wheel_sha = wheel_identity(args.wheel_dir)
     receipt = {**expected, "wheel_sha256": wheel_sha}
