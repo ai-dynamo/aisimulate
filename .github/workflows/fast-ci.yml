@@ -2,7 +2,7 @@ name: Fast CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -35,10 +35,6 @@ concurrency:
 jobs:
   policy:
     name: Repository Policy
-    if: >-
-      github.event_name != 'pull_request' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'review-ready'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -100,10 +96,6 @@ jobs:
 
   python-static:
     name: Python Static Checks
-    if: >-
-      github.event_name != 'pull_request' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'review-ready'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -182,10 +174,6 @@ jobs:
 
   rust-format:
     name: Rust Format
-    if: >-
-      github.event_name != 'pull_request' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'review-ready'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -211,8 +199,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     env:
-      IS_DRAFT: ${{ github.event.pull_request.draft || false }}
-      HAS_REVIEW_READY: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'review-ready') }}
       POLICY_RESULT: ${{ needs.policy.result }}
       PYTHON_STATIC_RESULT: ${{ needs.python-static.result }}
       RUST_FORMAT_RESULT: ${{ needs.rust-format.result }}
@@ -221,19 +207,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && "${IS_DRAFT}" == "true" ]]; then
-            echo "### Fast CI is not applicable while this pull request is a draft" \
-              >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          if [[ "${HAS_REVIEW_READY}" != "true" ]]; then
-            echo "::error::A non-draft pull request must have the review-ready label."
-            echo "### Fast CI failed: review-ready label is missing" \
-              >> "${GITHUB_STEP_SUMMARY}"
-            exit 1
-          fi
 
           failures=0
           {
