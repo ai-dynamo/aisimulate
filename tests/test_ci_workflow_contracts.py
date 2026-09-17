@@ -28,6 +28,7 @@ import yaml
 
 from scripts import build_manylinux_wheel as manylinux_builder
 from scripts import check_python_licenses as python_licenses
+from scripts import select_forward_perf as forward_perf
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
@@ -36,6 +37,230 @@ from scripts.select_full_ci import COMPONENTS, select_components
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
+
+
+def test_forward_perf_selects_before_allocating_the_benchmark_runner():
+    workflow = _workflow("performance.yml")
+    assert workflow["on"]["push"] == {"branches": ["pull-request/*"]}
+    assert set(workflow["on"]) == {"push", "workflow_dispatch"}
+    selector = workflow["jobs"]["select"]
+    compare = workflow["jobs"]["compare"]
+    assert selector["runs-on"] == "ubuntu-latest"
+    assert "python scripts/select_forward_perf.py" in _run_commands(selector)
+    assert compare["needs"] == "select"
+    assert compare["if"] == "needs.select.outputs.run_comparison == 'true'"
+    assert set(selector["outputs"]) == {
+        "number",
+        "head_sha",
+        "base_ref",
+        "run_comparison",
+    }
+    checkout = next(step for step in compare["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ needs.select.outputs.head_sha }}"
+    assert "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" in _run_commands(compare)
+
+
+def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_comparison():
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")
+    assert "validate_head_controller=true" in revisions["run"]
+    assert "validate_head_controller=false" in revisions["run"]
+    base = next(step for step in steps if step.get("name") == "Run paired benchmark")
+    head = next(step for step in steps if step.get("name") == "Validate PR benchmark controller")
+    assert "!cancelled()" in head["if"]
+    assert "steps.build.outcome == 'success'" in head["if"]
+    assert "steps.revisions.outputs.validate_head_controller == 'true'" in head["if"]
+    assert next(step for step in steps if step.get("id") == "build")["name"] == "Build and install both revisions"
+    expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
+    expected = expected.replace(
+        "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+        "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+    )
+    expected = expected.replace('--output-dir "${RESULTS_DIR}"', '--output-dir "${RESULTS_DIR}/head-controller"')
+    assert head["run"] == expected
+    publish = next(step for step in steps if step.get("name") == "Publish PR controller validation")
+    assert publish["if"].startswith("always()")
+    assert "head-controller/summary.md" in publish["run"]
+    assert "head-controller/annotations.txt" in publish["run"]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("python/aisimulate/tools/forward_perf_gate/cases.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/measurement.py", True),
+        ("python/aisimulate/tools/prediction_regression_gate/grid.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/README.md", False),
+    ],
+)
+def test_forward_perf_controller_change_detection(tmp_path, path, expected):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split("git worktree prune", 1)[0]
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "base", "base\n")
+    (tmp_path / path).parent.mkdir(parents=True)
+    head = _commit_file(tmp_path, path, "changed\n")
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-euc", detection],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": "python/aisimulate/tools/forward_perf_gate",
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=True,
+    )
+    assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
+    assert forward_perf.matches_path(path) is expected
+
+
+def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
+    pull = {
+        "head": {"sha": "a" * 40},
+        "base": {"sha": "b" * 40, "ref": "main"},
+        "changed_files": sum(map(len, pages)) if count is None else count,
+    }
+    calls = []
+
+    def api(endpoint):
+        calls.append(endpoint)
+        if "/files?" in endpoint:
+            return pages
+        if "/git/ref/" in endpoint:
+            return [{"object": {"sha": canonical}}]
+        return [after if after is not None and calls.count(endpoint) > 1 else pull]
+
+    return api, calls
+
+
+@pytest.mark.parametrize(
+    ("pages", "count", "expected"),
+    [
+        ([[{"filename": "crates/core/src/python.rs"}]], None, "true"),
+        ([[{"filename": "docs/ci.md"}]], None, "false"),
+        ([[{"filename": "python/aisimulate/tools/forward_perf_gate/README.md"}]], None, "false"),
+        # Full PR files still include the code change after a later docs-only push.
+        (
+            [[{"filename": "docs/ci.md"}], [{"filename": "crates/core/src/python.rs"}]],
+            None,
+            "true",
+        ),
+        (
+            [
+                [
+                    {
+                        "filename": "archive/old.py",
+                        "previous_filename": "python/aisimulate/src/aiconfigurator_core/foo.py",
+                    }
+                ]
+            ],
+            None,
+            "true",
+        ),
+        ([[]], 0, "true"),
+        ([[{"filename": "docs/ci.md"}]], 2, "true"),
+        ([[]], 3001, "true"),
+    ],
+)
+def test_forward_perf_uses_complete_pr_files(pages, count, expected):
+    api, calls = _forward_api(pages, count=count)
+    # Selection intentionally has no dependency on push.commits or push.before.
+    result = forward_perf.select_comparison("owner/repo", "push", "refs/heads/pull-request/236", "a" * 40, api=api)
+    assert result["run_comparison"] == expected
+    assert result["head_sha"] == "a" * 40
+    assert result["number"] == "236"
+    assert result["base_ref"] == "main"
+    assert calls[0] == calls[-1] == "repos/owner/repo/pulls/236"
+    assert any("/files?per_page=100" in call for call in calls) is (count != 3001)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("scripts/select_forward_perf.py", True),
+        ("Cargo.toml.bak", False),
+        ("crates/core/src/engine/nested/predict.rs", True),
+        ("crates/core/src/engine-other/predict.rs", False),
+        ("python/aisimulate/src/aiconfigurator_core/example.py", True),
+        ("python/aisimulate/src/aiconfigurator_core/unrelated/example.py", False),
+        ("python/aisimulate/src/aiconfigurator_core/systems/h100_sxm.yaml", True),
+        (
+            "python/aisimulate/src/aiconfigurator_core/systems/unrelated/nested.yaml",
+            False,
+        ),
+    ],
+)
+def test_forward_perf_path_matching_preserves_directory_boundaries(path, expected):
+    assert forward_perf.matches_path(path) is expected
+
+
+def test_forward_perf_manual_dispatch_forces_comparison_of_the_trusted_copy():
+    api, calls = _forward_api([[{"filename": "docs/ci.md"}]])
+    result = forward_perf.select_comparison(
+        "owner/repo", "workflow_dispatch", "refs/heads/main", "c" * 40, "236", api=api
+    )
+    assert result["run_comparison"] == "true"
+    assert result["head_sha"] == "a" * 40
+    assert not any("/files?" in call for call in calls)
+
+
+@pytest.mark.parametrize("change", ["head", "base_sha", "base_ref", "stale_push", "stale_manual"])
+def test_forward_perf_rejects_changed_or_stale_revisions(change):
+    after = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}}
+    if change == "head":
+        after["head"]["sha"] = "d" * 40
+    elif change == "base_sha":
+        after["base"]["sha"] = "d" * 40
+    elif change == "base_ref":
+        after["base"]["ref"] = "release/test"
+    api, _ = _forward_api(
+        [[{"filename": "docs/ci.md"}]],
+        after=after,
+        canonical="d" * 40 if change == "stale_manual" else "a" * 40,
+    )
+    with pytest.raises(ValueError, match="does not match|head or base changed"):
+        forward_perf.select_comparison(
+            "owner/repo",
+            "workflow_dispatch" if change == "stale_manual" else "push",
+            "refs/heads/pull-request/236",
+            "d" * 40 if change == "stale_push" else "a" * 40,
+            "236",
+            api=api,
+        )
+
+
+@pytest.mark.parametrize("fail_api", [False, True])
+def test_forward_perf_cli_reports_skip_or_api_failure(monkeypatch, tmp_path, fail_api):
+    api, _ = _forward_api([[{"filename": "docs/ci.md"}]])
+
+    def run(command, **kwargs):
+        assert command[:4] == ["gh", "api", "--paginate", "--slurp"]
+        assert kwargs["check"] is True
+        if fail_api and "/files?" in command[-1]:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout=json.dumps(api(command[-1])))
+
+    monkeypatch.setattr(forward_perf.subprocess, "run", run)
+    for name, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/pull-request/236",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert forward_perf.main() == int(fail_api)
+    if fail_api:
+        assert not (tmp_path / "output").exists()
+        assert not (tmp_path / "summary").exists()
+    else:
+        assert "run_comparison=false" in (tmp_path / "output").read_text()
+        assert "**SKIPPED**" in (tmp_path / "summary").read_text()
 
 
 def _fast_run(**overrides):

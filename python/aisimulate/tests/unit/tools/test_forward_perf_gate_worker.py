@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import runpy
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,13 +42,57 @@ def _request() -> dict:
 
 def test_matrix_contains_unique_grid_points() -> None:
     expanded = cases.expand_cases()
-    expected_context = len(cases.MODELS) * len(cases.DATABASE_MODES) * len(grid.PREFILL_POINTS)
-    expected_generation = len(cases.MODELS) * len(cases.DATABASE_MODES) * len(grid.DECODE_POINTS)
-    assert len(expanded) == expected_context + expected_generation
+    assert len(expanded) == 64
     assert len({case["case_id"] for case in expanded}) == len(expanded)
-    assert sum(case["phase"] == "context" for case in expanded) == expected_context
-    assert sum(case["phase"] == "generation" for case in expanded) == expected_generation
+    assert sum(case["phase"] == "context" for case in expanded) == 31
+    assert sum(case["phase"] == "generation" for case in expanded) == 33
     assert {case["database_mode"] for case in expanded} == {"SILICON", "EMPIRICAL"}
+    assert all(case["database_mode"] == "SILICON" for case in expanded[36:])
+    # Freeze the original 36 requests, including their IDs, values, and order.
+    legacy = json.dumps(expanded[:36], sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(legacy).hexdigest() == "17b8247fc587711a5e7b00b9cb3dba86e093b9e210e8272112eb33ddea39eca2"
+
+
+def test_additional_profiles_preserve_original_cache_groups() -> None:
+    expanded = cases.expand_cases()
+    original_groups = {worker._group_key(case) for case in expanded[:36]}
+    additional_groups = {worker._group_key(case) for case in expanded[36:]}
+    assert original_groups.isdisjoint(additional_groups)
+    assert len(additional_groups) == 9
+    for case in expanded[36:]:
+        assert case["system_name"] in case["model_id"]
+        assert f"{case['backend_name']}-{case['backend_version']}" in case["model_id"]
+        assert f"-tp{case['tp_size']}-pp{case['pp_size']}-adp{case['attention_dp_size']}" in case["model_id"]
+        assert f"-mtp{case['moe_tp_size']}-ep{case['moe_ep_size']}" in case["model_id"]
+    assert [case["prefix"] for case in expanded if case["prefix"]] == [4096, 7168, 4096, 7168]
+    dp_cases = [case for case in expanded if case["attention_dp_size"] == 8]
+    assert {case["model_path"] for case in dp_cases} == {"deepseek-ai/DeepSeek-V3.2"}
+    assert [(case["batch_size"], case["isl"], case["tp_size"], case["moe_ep_size"]) for case in dp_cases] == [
+        (32, 1024, 1, 8),
+        (8, 32768, 1, 8),
+    ]
+    sglang_cases = [case for case in expanded if case["backend_name"] == "sglang"]
+    assert len(sglang_cases) == 2
+    assert {case["model_path"] for case in sglang_cases} == {"Qwen/Qwen3.5-397B-A17B"}
+
+
+def test_workflow_filters_cover_matrix_dependencies() -> None:
+    repo_root = Path(__file__).resolve().parents[5]
+    matches_path = runpy.run_path(str(repo_root / "scripts/select_forward_perf.py"))["matches_path"]
+    dependencies = set()
+    for case in cases.expand_cases():
+        root = "python/aisimulate/src/aiconfigurator_core"
+        model_config = f"{root}/model_configs/{case['model_path'].replace('/', '--')}_config.json"
+        assert (repo_root / model_config).is_file()
+        dependencies.add(model_config)
+        dependencies.add(f"{root}/systems/data/{case['system_name']}/gemm/{case['backend_name']}/data.parquet")
+    assert all(matches_path(path) for path in dependencies)
+    for unrelated in (
+        "docs/cli/user-guide.md",
+        "python/aisimulate/src/aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+        "python/aisimulate/src/aiconfigurator_core/systems/data/a100_sxm/gemm/vllm/data.parquet",
+    ):
+        assert not matches_path(unrelated)
 
 
 def test_case_hash_is_stable_across_key_order() -> None:
@@ -76,9 +122,9 @@ def test_batch_request_validation_requires_unique_cases() -> None:
         "revision": "abc123",
         "warmup": 10,
         "iterations": 100,
-        "cases": expanded[:2],
+        "cases": expanded,
     }
-    assert worker.validate_batch_request(request)[0] == expanded[:2]
+    assert worker.validate_batch_request(request)[0] == expanded
 
     with pytest.raises(ValueError, match="non-empty array"):
         worker.validate_batch_request({**request, "cases": []})
@@ -162,6 +208,59 @@ def test_batch_request_groups_setup_work_and_preserves_result_order(
         [expanded[18]["case_id"]],
     ]
     assert [result["case_id"] for result in response["results"]] == [case["case_id"] for case in selected]
+
+
+@pytest.mark.parametrize("failure", [None, "setup", "priming"])
+def test_batch_evicts_outgoing_database_on_configuration_changes(monkeypatch: pytest.MonkeyPatch, failure) -> None:
+    database_keys = [
+        ("b200_sxm", "vllm", "0.24.0"),
+        ("b200_sxm", "vllm", "0.24.0"),
+        ("h100_sxm", "vllm", "0.24.0"),
+        ("b200_sxm", "vllm", "0.24.0"),
+        ("b200_sxm", "sglang", "0.5.14"),
+    ]
+    selected = [
+        {
+            **cases.expand_cases()[0],
+            "case_id": str(index),
+            "model_id": str(index),
+            "system_name": system,
+            "backend_name": backend,
+            "backend_version": version,
+        }
+        for index, (system, backend, version) in enumerate(database_keys)
+    ]
+    resident = set()
+    evictions = []
+
+    def unload(*key):
+        evictions.append(key)
+        resident.discard(key)
+
+    def setup(case, **kwargs):
+        assert not resident, "a previous group's database is still loaded"
+        key = (case.system_name, case.backend_name, case.backend_version)
+        resident.add(key)
+        if failure == "setup" and case.system_name == "h100_sxm":
+            raise PerfDataNotAvailableError("setup failed after loading")
+        runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=8)
+        return 1.0, case, runtime
+
+    def phase_call(session, runtime, **kwargs):
+        if failure == "priming" and session.system_name == "h100_sxm" and runtime.batch_size == 2:
+            raise PerfDataNotAvailableError("priming failed")
+        return lambda: 1.0
+
+    monkeypatch.setattr(measurement.perf_database, "unload_database", unload)
+    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
+    monkeypatch.setattr(worker, "measure_session_setup_ms", setup)
+    monkeypatch.setattr(worker, "phase_call", phase_call)
+    monkeypatch.setattr(worker, "measure_cold_and_warm", lambda *args, **kwargs: (1.0, 10.0, [5.0], {}))
+    results = worker._run_cases(selected, warmup=0, iterations=1, revision="abc123")
+    assert [result["status"] for result in results] == ["OK", "OK", "DATA_MISS" if failure else "OK", "OK", "OK"]
+    a, _, b, _, c = database_keys
+    assert evictions == [a, a, a, b, b, a, a, c]
+    assert resident == {c}
 
 
 def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
@@ -295,18 +394,22 @@ def test_cold_is_unseen_query_after_steady_state_setup(monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize(
-    ("phase", "points", "expected_osl"),
-    [("context", grid.PREFILL_POINTS, 8), ("generation", grid.DECODE_POINTS, 256)],
+    ("phase", "expected_osl"),
+    [("context", 8), ("generation", 256)],
 )
 def test_phase_priming_query_is_outside_the_measured_matrix(
-    monkeypatch: pytest.MonkeyPatch, phase: str, points: list[tuple[int, int]], expected_osl: int
+    monkeypatch: pytest.MonkeyPatch, phase: str, expected_osl: int
 ) -> None:
     monkeypatch.setattr(grid, "CTX_OSL", 16)
     monkeypatch.setattr(grid, "GEN_OSL", 512)
     runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=8, prefix=128)
     prime = measurement.priming_runtime_config(runtime, phase=phase)
     assert (prime.batch_size, prime.isl, prime.osl, prime.prefix) == (2, 2048, expected_osl, 0)
-    assert (prime.batch_size, prime.isl) not in points
+    assert all(
+        (prime.batch_size, prime.isl) != (case["batch_size"], case["isl"])
+        for case in cases.expand_cases()
+        if case["phase"] == phase
+    )
 
 
 def test_cache_reset_uses_public_database_eviction(monkeypatch: pytest.MonkeyPatch) -> None:
