@@ -10,7 +10,9 @@ See the root THIRD_PARTY_NOTICES.md and LICENSE.
 HF manifest/protocol loaders, rank-aware measurement types, FPM staging, and
 worker-isolated regression adapters retain upstream behavior. Imports were
 renamed to `fpm_accuracy`; the op-based adapter and experimental registry were
-removed. Unsupported measurement protocols remain visible as unsupported
+removed. Unused presentation metadata and its conversion helpers are omitted;
+the worker schema and MoE mapping required for evaluation are retained.
+Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
 overview aggregates, without local reports, raw result exports, or history.
 
