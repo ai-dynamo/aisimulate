@@ -1857,6 +1857,45 @@ def test_nightly_failed_compliance_cannot_stage(result):
     assert not _nightly_condition("build-artifacts", **{"needs.python-compliance.result": result})
 
 
+@pytest.mark.parametrize("attempt", ["1", "2"])
+def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
+    context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
+    assert _nightly_condition("manual-approval", **context)
+    assert not _nightly_condition("build-artifacts", **context)
+    context.update(
+        {
+            "needs.manual-approval.result": "success",
+            "needs.manual-approval.outputs.approved-attempt": attempt,
+        }
+    )
+    assert _nightly_condition("build-artifacts", **context)
+    assert _nightly_condition("license-evidence", **context)
+    assert not _nightly_condition("fpe-support-matrix", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
+    context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
+    assert not _nightly_condition("build-artifacts", **context)
+
+
+def test_manual_nightly_checks_selected_source_with_current_license_tooling():
+    workflow = _workflow("nightly-ci.yml")
+    jobs = workflow["jobs"]
+    target = "${{ needs.changes-guard.outputs.target-sha }}"
+    compliance = jobs["python-compliance"]
+    checkouts = [s["with"] for s in compliance["steps"] if "actions/checkout@" in s.get("uses", "")]
+    assert checkouts == [
+        {"ref": "${{ github.sha }}", "persist-credentials": "false"},
+        {"ref": target, "path": "source", "persist-credentials": "false"},
+    ]
+    assert "--pyproject source/python/aisimulate/pyproject.toml" in _run_commands(compliance)
+    build = jobs["build-artifacts"]
+    checkout = next(s for s in build["steps"] if "actions/checkout@" in s.get("uses", ""))
+    assert checkout["with"]["ref"] == target
+    provenance = next(s for s in build["steps"] if "GH_SHA" in s.get("env", {}))
+    assert provenance["env"]["GH_SHA"] == target
+    assert jobs["fpe-support-matrix"]["with"]["expected_sha"] == target
+    assert workflow["concurrency"]["group"] == "nightly-ci-${{ github.event_name }}"
+
+
 def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_deploy_secrets():
     jobs = _workflow("nightly-ci.yml")["jobs"]
     compliance = jobs["python-compliance"]
@@ -2032,10 +2071,17 @@ def test_python_compliance_workflows_use_the_same_policy():
 
 
 @pytest.mark.parametrize("license_result", [0, 1])
-def test_python_license_gate_checks_target_environment_before_export(tmp_path, monkeypatch, capsys, license_result):
+@pytest.mark.parametrize("manifest_selection", ["default", "explicit_cli"])
+def test_python_license_gate_checks_target_environment_before_export(
+    tmp_path, monkeypatch, capsys, license_result, manifest_selection
+):
     manifest = tmp_path / "pyproject.toml"
     manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisimulate-core==1.0"]\n')
-    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    # A historical source needs only its manifest; the policy/tool lives in
+    # the workflow checkout. A missing default detects accidental fallback.
+    monkeypatch.setattr(
+        python_licenses, "PYPROJECT", manifest if manifest_selection == "default" else tmp_path / "missing"
+    )
     python = "/fixture/venv/bin/python"
     inventory = tmp_path / "inventory" / "licenses.csv"
     csv_output = "Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n"
@@ -2059,7 +2105,23 @@ def test_python_license_gate_checks_target_environment_before_export(tmp_path, m
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(python_licenses.subprocess, "run", run)
-    assert python_licenses.check_licenses(python, inventory) == license_result
+    if manifest_selection == "default":
+        assert python_licenses.check_licenses(python, inventory) == license_result
+    else:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "check_python_licenses.py",
+                "--python",
+                python,
+                "--inventory",
+                str(inventory),
+                "--pyproject",
+                str(manifest),
+            ],
+        )
+        assert python_licenses.main() == license_result
     if license_result:
         assert len(calls) == 2
         assert not inventory.exists()

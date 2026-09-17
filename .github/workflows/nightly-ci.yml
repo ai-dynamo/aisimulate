@@ -42,13 +42,14 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
-  # Manual runs gate on the manual-release-approver reviewers.
+  # Manual runs build and stage only, gated by manual-release-approver.
+  # Dispatch from main so old release sources use the current workflow.
   workflow_dispatch:
     inputs:
       commit_sha:
         description: >-
-          Full commit SHA to build; must be on main or a release/* branch.
-          Empty builds the tip of the branch the run is started from.
+          Full commit SHA to build and stage; must be on main or release/*.
+          Dispatch from main. Empty builds main at dispatch time. No public publish.
         required: false
         default: ""
         type: string
@@ -78,8 +79,7 @@ jobs:
       target-sha: ${{ steps.target.outputs.sha }}
     steps:
       # Runs with no secrets and no environment. Every manual target —
-      # including the dispatched ref's own tip — must lie on main or a
-      # release/* branch.
+      # including main's own tip — must lie on main or a release/* branch.
       - name: Resolve and validate the target commit
         id: target
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
@@ -89,6 +89,10 @@ jobs:
           script: |
             if (context.eventName === 'schedule') {
               core.setOutput('sha', context.sha);
+              return;
+            }
+            if (context.ref !== 'refs/heads/main') {
+              core.setFailed('Dispatch from main; use commit_sha to select release source');
               return;
             }
             const requested = (process.env.REQUESTED_SHA || '').trim() || context.sha;
@@ -115,7 +119,9 @@ jobs:
                   return;
                 }
               } catch (error) {
-                // Commit unknown to this branch; try the next one.
+                // A missing comparison may mean the commit is unknown;
+                // authentication, rate-limit, and server failures are fatal.
+                if (error.status !== 404) throw error;
               }
             }
             core.setFailed('commit_sha is not on main or any release/* branch');
@@ -201,9 +207,16 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
+      # Keep the license policy/tooling at the workflow revision. Older
+      # release sources need only their package manifest, not this helper.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.changes-guard.outputs.target-sha }}
+          path: source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -214,6 +227,7 @@ jobs:
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
           python scripts/check_python_licenses.py \
+            --pyproject source/python/aisimulate/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
             --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-3.12.csv"
       - name: Preserve the dependency inventory as data
@@ -805,7 +819,10 @@ jobs:
   # Refresh strict-native op-level FPE coverage at the exact nightly source
   # SHA and with the same amd64 wheel verified against Artifactory.
   # The GitLab publish trigger below requires this to succeed, and a failed
-  # refresh fails the run, so consumers never advance to it.
+  # refresh fails the scheduled run, so consumers never advance to it.
+  # Manual dispatch is build/stage-only; older release sources can lack this
+  # qualification harness. Release qualification has its own current harness
+  # in release-nightly-ci.yml and does not certify these manually staged wheels.
   fpe-support-matrix:
     name: FPE Support Matrix (main)
     needs: [changes-guard, build-artifacts]
@@ -813,6 +830,7 @@ jobs:
     # needed manual-approval job, which is skipped on scheduled runs.
     if: >-
       !cancelled() &&
+      github.event_name == 'schedule' &&
       needs.changes-guard.outputs.should-build == 'true' &&
       needs.build-artifacts.result == 'success'
     permissions:
@@ -834,15 +852,15 @@ jobs:
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
+    # Manual targets share the date-based version namespace, so they must
+    # never enter this public nightly publisher, even after approval.
     if: >-
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
       needs.fpe-support-matrix.result == 'success' &&
       needs.license-evidence.result == 'success' &&
-      (github.ref == 'refs/heads/main' ||
-      startsWith(github.ref, 'refs/heads/release/')) &&
-      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
-      github.run_attempt == '1') ||
+      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+      (github.run_attempt == '1' ||
       (needs.manual-approval.result == 'success' &&
       needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
