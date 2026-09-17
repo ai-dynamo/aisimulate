@@ -1,7 +1,7 @@
 # GB300 vLLM 0.25.0 collection
 
-- Published: **17 tables / 420,175 measured rows** for the PR #219 table scope.
-- All **350,380 retained cases** were attempted: **339,630 passed / 10,750 failed / 0 unattempted**. A case can produce multiple rows; failed aggregate tasks can retain successful partial rows.
+- Published: **17 tables / 420,226 measured rows** for the PR #219 table scope.
+- All **350,380 retained cases** were attempted: **339,681 passed / 10,699 failed / 0 unattempted**. A case can produce multiple rows; failed aggregate tasks can retain successful partial rows.
 - Failures remain explicit. This is not complete operator support or a whole-model accuracy qualification. Smoke measurements are excluded.
 - Full case plans, checkpoint IDs, error logs, and prior retry evidence are retained in `vllm-0.25.0-failures.json.gz`; the adjacent JSON report records source hashes and measurement jobs.
 
@@ -34,7 +34,7 @@
 | `mla_context_module_perf.parquet` | 13,059 |
 | `mla_generation_module_perf.parquet` | 11,400 |
 | `moe_perf.parquet` | 73,002 |
-| `msa_context_module_perf.parquet` | 14,123 |
+| `msa_context_module_perf.parquet` | 14,174 |
 
 ## Failed cases
 
@@ -49,7 +49,7 @@
 | `gemm-fp8_block-01` | 285 | `437144` |
 | `gemm-fp8_block-02` | 270 | `437145` |
 | `gemm-fp8_block-03` | 270 | `437146` |
-| `msa_context_module` | 3,445 | `437323` |
+| `msa_context_module` | 3,394 | `439769` |
 | `moe` | 366 | `437705` |
 
 - Production measurements are split across AGA (non-block GEMM and attention/helper families) and JHB (FP8-block GEMM, MoE, and MSA). Both use NVIDIA GB300, PCI device 0x31C210DE, 284,208 MiB, and 1,400 W maximum board power.
@@ -59,7 +59,8 @@
 - MoE fresh-worker retry recovered 21 tasks. Successful original measurements were preserved; partial rows of retried failed tasks were remeasured, with all prior physical keys retained. Remaining failures are recorded by case rather than treated as universal hardware limitations.
 - GDN retains four CUDA grid-y limit failures. All six DSV4 tables, MHC, encoder attention, and MLA BMM completed without failed cases.
 - Two early generation jobs exceeded the AF_UNIX path-length limit before measurements; replacement jobs used short temporary paths.
-- MSA first pass: 14,123 passed / 3,445 failed. Fresh-worker retry 439769 is still running; this checkpoint publishes the finalized first-pass table and does not claim the retry is complete. Its recovered cases will be added after validation.
+- MSA fresh-worker retry recovered 51 cases: 14,174 passed / 3,394 failed. Original successful rows are unchanged. Persistent failures include CSR head-ratio restrictions, Triton compilation errors, CUDA failures, and worker crashes.
+- MSA retry 439769 stalled at 3,442/3,445 retry tasks. Three workers held GPU memory but stayed at 0% utilization in futex waits, with only 14–18 seconds CPU time over 9–18 minutes process age. After SIGTERM had no effect, only these verified job-owned workers were sent SIGKILL. The unchanged collector recorded their active cases as failed and finalized with exit code zero. Process/GPU observations, signals, and timestamps are embedded in the report and failure archive; no checkpoint or staging data were edited.
 
 ## Validation and limits
 

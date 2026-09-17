@@ -1415,7 +1415,7 @@
       ]
     },
     {
-      "job_id": 437323,
+      "job_id": 439769,
       "cluster": "oci-jhb-slurm-1",
       "id": "msa_context_module",
       "op": "msa_context_module",
@@ -1424,8 +1424,8 @@
       "expected": 17568,
       "stock_raw_case_count_before_filters": 17568,
       "stock_capability_drops": "[]",
-      "done": 14123,
-      "failed": 3445,
+      "done": 14174,
+      "failed": 3394,
       "failed_ids_missing_from_summary": 0,
       "failed_ids_evidenced_by_diagnostic_retry": 0,
       "unattempted": 0,
@@ -1475,8 +1475,53 @@
       },
       "driver_version": "580.159.03",
       "measurement_job_ids": [
-        437323
-      ]
+        437323,
+        439769
+      ],
+      "remeasured_partial_rows": {
+        "msa_context_module_perf.parquet": 0
+      },
+      "resume_source_job_id": 437323,
+      "recovered_cases": 51,
+      "worker_intervention": {
+        "job_id": 439769,
+        "observed_at_utc": "2026-09-17T09:49:57.918276+00:00",
+        "action": "SIGTERM only the three verified GPU workers of this job; keep the stock parent running to record failed active tasks and finalize.",
+        "reason": "Collector stalled at 3442/3445 after a SIGSEGV. Three GPU workers remained in futex_wait_queue with 0% GPU utilization and only 14-18 seconds CPU time over 9-18 minutes process age.",
+        "gpu_processes": "3410987, GPU-ed4124be-1077-a75f-e253-cf8f668eb239, 26160 MiB\n3388781, GPU-2724e705-5494-0a65-6a24-6fd08a7f567f, 26288 MiB\n3389110, GPU-c077f6cc-563a-efa1-b9d7-39a9d93d9ba4, 26812 MiB\n",
+        "process_table": "    PID    PPID STAT     ELAPSED     TIME WCHAN                    COMMAND\n3388781 3234114 SLl        19:07 00:00:18 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n3389110 3234114 SLl        19:04 00:00:18 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n3410987 3234114 SLl        09:43 00:00:14 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n",
+        "gpu_state": "0, 0 %, 26173 MiB\n1, 0 %, 3 MiB\n2, 0 %, 26301 MiB\n3, 0 %, 26825 MiB\n",
+        "workers": {
+          "3388781": {
+            "command": "/tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork ",
+            "cgroup": "0::/system.slice/slurmstepd.scope/job_439769/step_0/user/task_0\n",
+            "status": "Name:\tpython\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t3388781\nNgid:\t0\nPid:\t3388781\nPPid:\t3234114\nTracerPid:\t0\nUid:\t141787\t141787\t141787\t141787\nGid:\t30\t30\t30\t30\nFDSize:\t256\nGroups:\t30 1625 1626 1636 1646 1655 1661 1666 1685 1692 1693 1720 2005 2151 2255 11578 20338 20359 20360 20367 20383 20384 20402 20404 20405 20406 20407 20409 20410 20411 20427 20602 20637 20640 20842 20885 20928 20970 20977 20978 21017 21018 21019 21096 21219 21252 21312 21323 21327 21392 21397 21413 21484 21495 21502 \nNStgid:\t3388781\nNSpid:\t3388781\nNSpgid:\t3234113\nNSsid:\t3233258\nKthread:\t0\nVmPeak:\t69261120 kB\nVmSize:\t69260864 kB\nVmLck:\t      64 kB\nVmPin:\t       0 kB\nVmHWM:\t 2306112 kB\nVmRSS:\t 2306112 kB\nRssAnon:\t 1371776 kB\nRssFile:\t  705216 kB\nRssShmem:\t  229120 kB\nVmData:\t 8497792 kB\nVmStk:\t     192 kB\nVmExe:\t    5888 kB\nVmLib:\t 3189824 kB\nVmPTE:\t    2048 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffff\nThreads:\t42\nSigQ:\t1/974380\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004423\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t0000,00000000,00000000,00000000,ffffffff\nCpus_allowed_list:\t0-31\nMems_allowed:\t00000000,00000003\nMems_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t225114\nnonvoluntary_ctxt_switches:\t208\n"
+          },
+          "3389110": {
+            "command": "/tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork ",
+            "cgroup": "0::/system.slice/slurmstepd.scope/job_439769/step_0/user/task_0\n",
+            "status": "Name:\tpython\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t3389110\nNgid:\t0\nPid:\t3389110\nPPid:\t3234114\nTracerPid:\t0\nUid:\t141787\t141787\t141787\t141787\nGid:\t30\t30\t30\t30\nFDSize:\t256\nGroups:\t30 1625 1626 1636 1646 1655 1661 1666 1685 1692 1693 1720 2005 2151 2255 11578 20338 20359 20360 20367 20383 20384 20402 20404 20405 20406 20407 20409 20410 20411 20427 20602 20637 20640 20842 20885 20928 20970 20977 20978 21017 21018 21019 21096 21219 21252 21312 21323 21327 21392 21397 21413 21484 21495 21502 \nNStgid:\t3389110\nNSpid:\t3389110\nNSpgid:\t3234113\nNSsid:\t3233258\nKthread:\t0\nVmPeak:\t69785344 kB\nVmSize:\t69785088 kB\nVmLck:\t      64 kB\nVmPin:\t       0 kB\nVmHWM:\t 3059840 kB\nVmRSS:\t 3059840 kB\nRssAnon:\t 2125504 kB\nRssFile:\t  705216 kB\nRssShmem:\t  229120 kB\nVmData:\t 8497728 kB\nVmStk:\t     192 kB\nVmExe:\t    5888 kB\nVmLib:\t 3189824 kB\nVmPTE:\t    2240 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffff\nThreads:\t42\nSigQ:\t1/974380\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004423\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t0000,00000000,00000000,00000000,ffffffff\nCpus_allowed_list:\t0-31\nMems_allowed:\t00000000,00000003\nMems_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t224394\nnonvoluntary_ctxt_switches:\t206\n"
+          },
+          "3410987": {
+            "command": "/tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork ",
+            "cgroup": "0::/system.slice/slurmstepd.scope/job_439769/step_0/user/task_0\n",
+            "status": "Name:\tpython\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t3410987\nNgid:\t0\nPid:\t3410987\nPPid:\t3234114\nTracerPid:\t0\nUid:\t141787\t141787\t141787\t141787\nGid:\t30\t30\t30\t30\nFDSize:\t256\nGroups:\t30 1625 1626 1636 1646 1655 1661 1666 1685 1692 1693 1720 2005 2151 2255 11578 20338 20359 20360 20367 20383 20384 20402 20404 20405 20406 20407 20409 20410 20411 20427 20602 20637 20640 20842 20885 20928 20970 20977 20978 21017 21018 21019 21096 21219 21252 21312 21323 21327 21392 21397 21413 21484 21495 21502 \nNStgid:\t3410987\nNSpid:\t3410987\nNSpgid:\t3234113\nNSsid:\t3233258\nKthread:\t0\nVmPeak:\t69326528 kB\nVmSize:\t69326272 kB\nVmLck:\t      64 kB\nVmPin:\t       0 kB\nVmHWM:\t 3091648 kB\nVmRSS:\t 3091648 kB\nRssAnon:\t 2157184 kB\nRssFile:\t  705344 kB\nRssShmem:\t  229120 kB\nVmData:\t 8497792 kB\nVmStk:\t     192 kB\nVmExe:\t    5888 kB\nVmLib:\t 3189824 kB\nVmPTE:\t    2240 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffff\nThreads:\t42\nSigQ:\t1/974380\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004423\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t0000,00000000,00000000,00000000,ffffffff\nCpus_allowed_list:\t0-31\nMems_allowed:\t00000000,00000003\nMems_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t107387\nnonvoluntary_ctxt_switches:\t200\n"
+          }
+        },
+        "collector_log_tail_before": "odule:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3409/3445 [43:36<00:08,  4.44it/s, errors=3361]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3409/3445 [43:37<00:08,  4.44it/s, errors=3363]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3411/3445 [43:37<00:07,  4.31it/s, errors=3363]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3411/3445 [43:37<00:07,  4.31it/s, errors=3365]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3413/3445 [43:37<00:07,  4.22it/s, errors=3365]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3413/3445 [43:38<00:07,  4.22it/s, errors=3366]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3415/3445 [43:38<00:07,  4.06it/s, errors=3366]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3415/3445 [43:38<00:07,  4.06it/s, errors=3369]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3417/3445 [43:38<00:06,  4.04it/s, errors=3369]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3417/3445 [43:39<00:06,  4.04it/s, errors=3370]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3418/3445 [43:39<00:07,  3.44it/s, errors=3370]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3418/3445 [43:39<00:07,  3.44it/s, errors=3372]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3420/3445 [43:39<00:06,  3.60it/s, errors=3372]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3420/3445 [43:40<00:06,  3.60it/s, errors=3374]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3423/3445 [43:40<00:05,  4.22it/s, errors=3374]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3423/3445 [43:40<00:05,  4.22it/s, errors=3377]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3425/3445 [43:40<00:04,  4.16it/s, errors=3377]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3425/3445 [43:41<00:04,  4.16it/s, errors=3378]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3426/3445 [43:41<00:05,  3.52it/s, errors=3378]\rvllm.msa_context_module:  99%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3426/3445 [43:41<00:05,  3.52it/s, errors=3380]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3428/3445 [43:41<00:04,  3.66it/s, errors=3380]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3428/3445 [43:42<00:04,  3.66it/s, errors=3382]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3430/3445 [43:42<00:04,  3.67it/s, errors=3382]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3430/3445 [43:42<00:04,  3.67it/s, errors=3384]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3432/3445 [43:42<00:03,  3.77it/s, errors=3384]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3432/3445 [43:43<00:03,  3.77it/s, errors=3386]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3434/3445 [43:43<00:02,  3.84it/s, errors=3386]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3434/3445 [43:43<00:02,  3.84it/s, errors=3388]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3436/3445 [43:43<00:02,  3.88it/s, errors=3388]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3436/3445 [43:44<00:02,  3.88it/s, errors=3389]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3438/3445 [43:44<00:01,  3.83it/s, errors=3389]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3438/3445 [43:44<00:01,  3.83it/s, errors=3391]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3439/3445 [43:44<00:01,  3.29it/s, errors=3391]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3439/3445 [43:45<00:01,  3.29it/s, errors=3393]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3441/3445 [43:45<00:01,  3.50it/s, errors=3393]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3441/3445 [43:45<00:01,  3.50it/s, errors=3394]\rvllm.msa_context_module: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 3442/3445 [43:45<00:00,  3.05it/s, errors=3394][2026-09-17 02:46:48,742] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:47:04,250] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:47:19,759] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:47:35,267] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:47:50,777] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:48:06,285] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:48:21,792] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:48:37,302] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:48:52,810] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:49:08,318] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:49:23,825] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:49:39,332] [WARNING] [root] Progress stalled at 3442/3445\n[2026-09-17 02:49:54,839] [WARNING] [root] Progress stalled at 3442/3445\n",
+        "signals_sent_at_utc": "2026-09-17T09:49:58.045276+00:00",
+        "escalation": {
+          "reason": "SIGTERM did not exit these workers; unchanged futex waits, 0% GPU utilization, and no collector progress persisted.",
+          "signal": "SIGKILL",
+          "workers": [
+            3388781,
+            3389110,
+            3410987
+          ],
+          "at_utc": "2026-09-17T09:51:40.253070+00:00",
+          "process_table": "    PID    PPID STAT     ELAPSED     TIME WCHAN                    COMMAND\n3388781 3234114 SLl        20:49 00:00:18 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n3389110 3234114 SLl        20:46 00:00:18 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n3410987 3234114 SLl        11:25 00:00:15 futex_wait_queue         /tmp/aic244-gb300-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=49, pipe_handle=61) --multiprocessing-fork\n"
+        }
+      }
     },
     {
       "job_id": 437705,
@@ -2113,25 +2158,40 @@
     },
     "msa_context_module_perf.parquet": {
       "path": "gb300/msa/vllm/0.25.0/msa_context_module_perf.parquet",
-      "rows": 14123,
-      "sha256": "297ed2a67718f248a346d662e6fda0e633b5e6cebb0ed2b30bb146a3ce9b9173",
+      "rows": 14174,
+      "sha256": "6609e6f089aec7394c09a727a319fd3194dca64ac81adf949ae1ce962e819743",
       "sources": [
         {
-          "job_id": 437323,
+          "job_id": 439769,
           "measurement_job_ids": [
-            437323
+            437323,
+            439769
           ],
           "id": "msa_context_module",
-          "source_sha256": "ed4c9c40ed14735d7989aef131496e469776a7880005a75e3f88fcda1dc1d9e4",
-          "source_rows": 14123,
-          "failed_cases": 3445,
+          "source_sha256": "f3ab0187761891aa4b75ed49d83a5ea66cae03f97218849edebb2f7a600be411",
+          "source_rows": 14174,
+          "failed_cases": 3394,
           "original_metadata": {
-            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
-            "collector_hash": "sha256:31c1c4310a284442a8275ef4c55c51eb54ff9ba934f18f3ceb9e2b5d002f2623",
-            "case_plan_hash": "sha256:a887b4c5331833a3ac788bdfa89e15d536beaa52bb4794a0fd27e94d05a17e47",
-            "collected_at": "2026-09-17",
-            "rows": 14123,
-            "status": "complete"
+            "rows": 14174,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:31c1c4310a284442a8275ef4c55c51eb54ff9ba934f18f3ceb9e2b5d002f2623",
+                "case_plan_hash": "sha256:a887b4c5331833a3ac788bdfa89e15d536beaa52bb4794a0fd27e94d05a17e47",
+                "collected_at": "2026-09-17",
+                "rows": 14123,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:31c1c4310a284442a8275ef4c55c51eb54ff9ba934f18f3ceb9e2b5d002f2623",
+                "case_plan_hash": "sha256:f9f4ea0aa7d4344a312c351ea0a4b2120590e0563571c7d442583c273efc972b",
+                "collected_at": "2026-09-17",
+                "rows": 51,
+                "status": "complete"
+              }
+            ]
           }
         }
       ],
@@ -2139,12 +2199,12 @@
     }
   },
   "total_tables": 17,
-  "total_rows": 420175,
+  "total_rows": 420226,
   "runtime_source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40",
   "case_totals": {
     "expected": 350380,
-    "done": 339630,
-    "failed": 10750,
+    "done": 339681,
+    "failed": 10699,
     "unattempted": 0
   }
 }
