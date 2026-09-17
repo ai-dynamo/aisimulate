@@ -20,6 +20,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -1933,7 +1934,7 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=()):
+def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -1951,13 +1952,18 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
             }
         )
     )
-    prior_csv = io.StringIO()
-    writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
-    writer.writeheader()
-    writer.writerows(prior or [])
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as zipped:
-        zipped.writestr("deps.csv", prior_csv.getvalue())
+
+    def archived(rows):
+        prior_csv = io.StringIO()
+        writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
+        writer.writeheader()
+        writer.writerows(rows or [])
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("deps.csv", prior_csv.getvalue())
+        return archive.getvalue()
+
+    archives = {"https://fixture/archive": archived(prior), "https://fixture/manual-archive": archived(manual_prior)}
 
     responses = []
 
@@ -1966,15 +1972,21 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
         if lookup_error is not None:
             raise lookup_error
         if "/runs?" in request.full_url:
-            payload = (
-                {"workflow_runs": [{"id": 1, "artifacts_url": "https://fixture/artifacts"}]}
-                if prior
-                else {"workflow_runs": []}
-            )
+            query = parse_qs(urlsplit(request.full_url).query)
+            runs = [{"id": 1, "artifacts_url": "https://fixture/artifacts"}] if prior else []
+            if manual_prior and query.get("event") != ["schedule"]:
+                # A newer successful dispatch shares the main workflow ref,
+                # but its selected release source has unrelated dependencies.
+                runs.insert(0, {"id": 3, "artifacts_url": "https://fixture/manual-artifacts"})
+            payload = {"workflow_runs": runs}
         elif request.full_url == "https://fixture/artifacts":
             payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
-        elif request.full_url == "https://fixture/archive":
-            response = io.BytesIO(archive.getvalue())
+        elif request.full_url == "https://fixture/manual-artifacts":
+            payload = {
+                "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/manual-archive"}]
+            }
+        elif request.full_url in archives:
+            response = io.BytesIO(archives[request.full_url])
             responses.append(response)
             return response
         else:
@@ -2017,6 +2029,14 @@ def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(
         "0.2.17",
         "MIT",
     )
+
+
+def test_nightly_license_baseline_ignores_newer_manual_staging(tmp_path):
+    crates = [("0.2.17", "MIT")]
+    scheduled, _ = _nightly_license_report(tmp_path, crates)
+    manual = [{**row, "version": "99.0.0"} for row in scheduled]
+    _, difference = _nightly_license_report(tmp_path, crates, scheduled, manual_prior=manual)
+    assert difference == []
 
 
 @pytest.mark.parametrize("lookup_error", [None, OSError("baseline API unavailable")])

@@ -759,7 +759,7 @@ jobs:
                   return urllib.request.urlopen(req, timeout=30)
               with get(
                   f"https://api.github.com/repos/{repo}/actions/workflows/"
-                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10") as response:
+                  "nightly-ci.yml/runs?branch=main&event=schedule&status=success&per_page=10") as response:
                   runs = json.load(response)
               for run in runs.get("workflow_runs", []):
                   if str(run["id"]) == current:
