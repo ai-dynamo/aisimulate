@@ -874,6 +874,16 @@ impl WorkloadDriver {
         &mut self,
         now_ms: f64,
     ) -> Result<Option<AgenticPreparationTransition>> {
+        self.finish_agentic_preparation_with(now_ms, || Ok(()))
+    }
+
+    /// Validate the boundary before resetting native measurement state, then
+    /// commit the phase transition only if that reset succeeded.
+    pub(crate) fn finish_agentic_preparation_with(
+        &mut self,
+        now_ms: f64,
+        reset_measurements: impl FnOnce() -> Result<()>,
+    ) -> Result<Option<AgenticPreparationTransition>> {
         let Some(preparation) = &self.agentic_preparation else {
             return Ok(None);
         };
@@ -888,7 +898,7 @@ impl WorkloadDriver {
             bail!("agentic preparation boundary precedes runtime feedback");
         }
         if transition == AgenticPreparationTransition::OpenProfile {
-            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
                 unreachable!()
             };
             // Validate every addition before changing any scheduler state.
@@ -908,6 +918,12 @@ impl WorkloadDriver {
             {
                 bail!("agentic profile activation overflows saved snapshot timing");
             }
+        }
+        reset_measurements()?;
+        if transition == AgenticPreparationTransition::OpenProfile {
+            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+                unreachable!()
+            };
             for at in &mut state.ready_after_ms {
                 *at += now_ms;
             }

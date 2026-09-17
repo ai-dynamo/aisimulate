@@ -491,6 +491,15 @@ impl TimingModel for AicTimingModel {
         }
         self.evidence.lock().ok().map(|evidence| evidence.clone())
     }
+
+    fn reset_evidence(&self) -> Result<()> {
+        *self
+            .evidence
+            .lock()
+            .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))? =
+            TimingEvidenceSummary::default();
+        Ok(())
+    }
 }
 
 fn checked_u32(value: usize, name: &str) -> Result<u32> {
@@ -2443,6 +2452,47 @@ mod tests {
                 2
             )
         });
+    }
+
+    #[test]
+    fn aic_measurement_reset_clears_phase_provenance_without_clearing_shape_cache() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
+        let timing = timing_model(
+            Python::with_gil(|py| engine.clone_ref(py).into_any()),
+            false,
+        );
+        timing.predict_prefill_ms(2, 128, 0).unwrap();
+        timing.predict_decode_ms(2, 258, 128, 1024).unwrap();
+        let before = timing.evidence_summary().unwrap();
+        assert_eq!(before.prefill.source, Some(TimingEvidenceSource::Mixed));
+        assert!(replay_power_stats(&before).unwrap().coverage() < 1.0);
+
+        timing.reset_evidence().unwrap();
+        assert_eq!(
+            timing.evidence_summary(),
+            Some(TimingEvidenceSummary::default())
+        );
+        timing.predict_decode_ms(2, 258, 128, 1024).unwrap();
+        let after = timing.evidence_summary().unwrap();
+        assert_eq!(after.prefill, TimingPhaseEvidence::default());
+        assert_eq!(after.decode, before.decode);
+        assert_eq!(replay_power_stats(&after).unwrap().coverage(), 1.0);
+        assert_eq!(replay_power_stats(&after).unwrap().power_w(), Some(400.0));
+        Python::with_gil(|py| {
+            assert_eq!(
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            );
+        });
+        timing.reset_evidence().unwrap();
+        assert_eq!(
+            timing.evidence_summary(),
+            Some(TimingEvidenceSummary::default())
+        );
     }
 
     #[test]

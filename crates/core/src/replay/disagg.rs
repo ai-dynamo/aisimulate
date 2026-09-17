@@ -2711,9 +2711,12 @@ where
         {
             return Ok(false);
         }
-        let Some(transition) = self
-            .admission
-            .finish_agentic_preparation(self.now_ms, &self.collector)?
+        let Some(transition) =
+            self.admission
+                .finish_agentic_preparation(self.now_ms, &self.collector, || {
+                    self.prefill_engine.reset_timing_evidence()?;
+                    self.decode_engine.reset_timing_evidence()
+                })?
         else {
             return Ok(false);
         };

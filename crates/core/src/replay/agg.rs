@@ -990,9 +990,11 @@ where
         if !self.admission.is_agentic_preparing() || !self.engine.is_drained() {
             return Ok(false);
         }
-        let Some(transition) = self
-            .admission
-            .finish_agentic_preparation(self.now_ms, &self.collector)?
+        let Some(transition) =
+            self.admission
+                .finish_agentic_preparation(self.now_ms, &self.collector, || {
+                    self.engine.reset_timing_evidence()
+                })?
         else {
             return Ok(false);
         };
@@ -1529,6 +1531,22 @@ mod agentic_warmup_tests {
         prefill_ms: f64,
         offload: bool,
     ) -> Runtime {
+        runtime_with_factory(
+            backend,
+            blocks,
+            prefill_ms,
+            offload,
+            ReplayEngineFactory::new(),
+        )
+    }
+
+    fn runtime_with_factory(
+        backend: Backend,
+        blocks: usize,
+        prefill_ms: f64,
+        offload: bool,
+        factory: ReplayEngineFactory,
+    ) -> Runtime {
         let row = |id: &str, start, input_length, hashes| AgenticMooncakeRow {
             request_id: id.into(),
             play_id: "play".into(),
@@ -1590,7 +1608,7 @@ mod agentic_warmup_tests {
             },
             ..Default::default()
         };
-        let factory = ReplayEngineFactory::new()
+        let factory = factory
             .role_factory(&config, WorkerStage::Aggregated, false)
             .unwrap();
         Runtime::new_composed(
@@ -1602,6 +1620,186 @@ mod agentic_warmup_tests {
         )
         .unwrap()
         .with_per_request_records(true)
+    }
+
+    #[derive(Default)]
+    struct EpochTiming {
+        evidence: Mutex<crate::engine::TimingEvidenceSummary>,
+        resets: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::engine::TimingModel for EpochTiming {
+        fn predict_prefill_ms(
+            &self,
+            _batch: usize,
+            input: usize,
+            _prefix: usize,
+        ) -> anyhow::Result<f64> {
+            use crate::engine::{
+                TimingEvidenceSource, TimingOperationEvidence, TimingPhaseEvidence,
+            };
+            self.evidence.lock().unwrap().prefill.try_accumulate(
+                TimingPhaseEvidence::try_from_operations(vec![TimingOperationEvidence::new(
+                    format!("input-{input}"),
+                    10.0,
+                    Some(input as f64 * 10.0),
+                    TimingEvidenceSource::Silicon,
+                )?])?,
+            )?;
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            _batch: usize,
+            _active: usize,
+            _context: usize,
+            _total: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+
+        fn evidence_summary(&self) -> Option<crate::engine::TimingEvidenceSummary> {
+            Some(self.evidence.lock().unwrap().clone())
+        }
+
+        fn reset_evidence(&self) -> anyhow::Result<()> {
+            *self.evidence.lock().unwrap() = Default::default();
+            self.resets
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct UnsupportedEvidenceReset;
+
+    impl crate::engine::TimingModel for UnsupportedEvidenceReset {
+        fn predict_prefill_ms(
+            &self,
+            _batch: usize,
+            _input: usize,
+            _prefix: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            _batch: usize,
+            _active: usize,
+            _context: usize,
+            _total: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+
+        fn evidence_summary(&self) -> Option<crate::engine::TimingEvidenceSummary> {
+            Some(Default::default())
+        }
+    }
+
+    #[test]
+    fn warmup_power_epoch_contains_only_profile_predictions() {
+        use crate::engine::TimingModel;
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let timing = Arc::new(EpochTiming::default());
+            let (collector, _) = runtime_with_factory(
+                backend,
+                64,
+                10.0,
+                false,
+                ReplayEngineFactory::with_timing_model(timing.clone()),
+            )
+            .run()
+            .unwrap();
+            let report = collector.finish();
+            assert_eq!(report.request_counts.completed_requests, 1);
+            assert_eq!(report.agentic_phases.unwrap().requests.len(), 11);
+            assert_eq!(timing.resets.load(std::sync::atomic::Ordering::Relaxed), 1);
+            let summary = timing.evidence_summary().unwrap();
+            assert_eq!(summary.prefill.latency_ms, 10.0);
+            assert_eq!(summary.prefill.energy_wms, Some(1920.0));
+            assert_eq!(summary.prefill.operations.len(), 1);
+            assert_eq!(summary.prefill.operations[0].name, "input-192");
+        }
+    }
+
+    #[test]
+    fn failed_power_reset_does_not_open_or_shift_profile() {
+        let mut replay = runtime_with_factory(
+            Backend::Vllm,
+            64,
+            10.0,
+            false,
+            ReplayEngineFactory::with_timing_model(Arc::new(UnsupportedEvidenceReset)),
+        )
+        .with_max_sim_time_ms(Some(80.0));
+        let error = loop {
+            match replay.step() {
+                Ok(ReplayStepOutcome::Settled { .. }) => {}
+                Err(error) => break error,
+                other => panic!("preparation unexpectedly completed: {other:?}"),
+            }
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not support resetting its measurement epoch")
+        );
+        assert!(replay.admission.is_agentic_preparing());
+        assert!(replay.engine.is_drained());
+        assert!(!replay.profile_observers_started);
+        assert_eq!(replay.max_sim_time_ms, Some(80.0));
+        let evidence = replay.admission.agentic_phase_evidence().unwrap();
+        assert_eq!(evidence.profile_start_ms, None);
+        assert!(
+            evidence
+                .requests
+                .iter()
+                .all(|request| request.quiescent_at_ms.is_some())
+        );
+        assert!(replay.collector.contains_request(evidence.requests[0].uuid));
+        assert!(replay.finish_agentic_preparation().is_err());
+        assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), evidence);
+    }
+
+    #[test]
+    fn aborted_preparation_clears_accumulated_power_evidence() {
+        use crate::engine::TimingModel;
+        let timing = Arc::new(EpochTiming::default());
+        let mut replay = runtime_with_factory(
+            Backend::Vllm,
+            64,
+            10.0,
+            false,
+            ReplayEngineFactory::with_timing_model(timing.clone()),
+        );
+        // Finish the first primer and let the next preparation request enter
+        // the native engine before cancellation aborts the preparation phase.
+        loop {
+            replay.step().unwrap();
+            if replay.admission.agentic_phase_evidence().unwrap().requests[0]
+                .quiescent_at_ms
+                .is_some()
+            {
+                break;
+            }
+        }
+        assert!(timing.evidence_summary().unwrap().prefill.latency_ms > 0.0);
+        let uuid = *replay.requests.keys().next().unwrap();
+        assert_eq!(
+            replay.cancel_dynamic(uuid).unwrap(),
+            Some(ReplayTerminalStatus::Canceled)
+        );
+        let (collector, _) = replay.run().unwrap();
+        let report = collector.finish();
+        assert_eq!(
+            report.agentic_phases.unwrap().phase,
+            AgenticReplayPhase::Aborted
+        );
+        assert_eq!(report.request_counts.num_requests, 0);
+        assert_eq!(timing.evidence_summary(), Some(Default::default()));
+        assert_eq!(timing.resets.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     struct Samples(Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>);

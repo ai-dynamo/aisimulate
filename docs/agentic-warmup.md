@@ -90,7 +90,9 @@ the absolute runtime clock. Profile `runtime_evidence` excludes preparation
 records and restarts its ordinal/digest scope at the barrier; its event
 timestamps retain the absolute runtime clock for correlation with artifacts.
 G3 counters cover the profile time window while residency gauges describe the
-preserved cache at the end of that window. `wall_time_ms` remains the host
+preserved cache at the end of that window. Power and energy diagnostics include
+only profile predictions; preparation resets their totals and provenance while
+retaining timing-provider caches. `wall_time_ms` remains the host
 execution time for the complete run, including preparation; it is not the
 simulated profile duration. Scaling policy tick values retain their absolute
 runtime-clock contract, and the first tick runs no earlier than the barrier.

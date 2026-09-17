@@ -174,6 +174,10 @@ pub struct ReplayRoleFactory {
 }
 
 impl ReplayRoleFactory {
+    pub(crate) fn reset_timing_evidence(&self) -> anyhow::Result<()> {
+        self.factory.reset_timing_evidence()
+    }
+
     #[doc(hidden)]
     pub fn build(&self, worker_id: usize) -> ReplayResult<Engine> {
         if self.g3_config.is_some() && self.g3_tier.is_none() {

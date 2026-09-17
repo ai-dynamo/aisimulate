@@ -545,6 +545,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         &mut self,
         now_ms: f64,
         collector: &crate::replay::TraceCollector,
+        reset_measurements: impl FnOnce() -> Result<()>,
     ) -> Result<Option<AgenticPreparationTransition>> {
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(None);
@@ -557,7 +558,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 driver.record_preparation_admission(uuid, at_ms, reused_tokens)?;
             }
         }
-        driver.finish_agentic_preparation(now_ms)
+        driver.finish_agentic_preparation_with(now_ms, reset_measurements)
     }
 
     pub(crate) fn is_drained(&self) -> bool {
