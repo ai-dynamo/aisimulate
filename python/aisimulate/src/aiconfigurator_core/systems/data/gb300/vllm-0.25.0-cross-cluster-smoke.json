@@ -1,0 +1,108 @@
+{
+  "status": "gpu_and_framework_identity_matched_driver_patch_differs",
+  "runtime": {
+    "vllm": "0.25.0",
+    "source_commit": "gdd10e03f9",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "devices": [
+      {
+        "name": "NVIDIA GB300",
+        "sm": [
+          10,
+          3
+        ]
+      },
+      {
+        "name": "NVIDIA GB300",
+        "sm": [
+          10,
+          3
+        ]
+      },
+      {
+        "name": "NVIDIA GB300",
+        "sm": [
+          10,
+          3
+        ]
+      },
+      {
+        "name": "NVIDIA GB300",
+        "sm": [
+          10,
+          3
+        ]
+      }
+    ],
+    "packages": {
+      "numpy": "2.2.6",
+      "pyarrow": "25.0.1",
+      "pandas": "2.3.2",
+      "flashinfer-python": "0.6.13"
+    },
+    "slurm_gpu_frequency_request": "high",
+    "hard_lock_verified": false
+  },
+  "hardware": [
+    {
+      "name": "NVIDIA GB300",
+      " pci.device_id": " 0x31C210DE",
+      " memory.total [MiB]": " 284208 MiB",
+      " power.max_limit [W]": " 1400.00 W"
+    },
+    {
+      "name": "NVIDIA GB300",
+      " pci.device_id": " 0x31C210DE",
+      " memory.total [MiB]": " 284208 MiB",
+      " power.max_limit [W]": " 1400.00 W"
+    },
+    {
+      "name": "NVIDIA GB300",
+      " pci.device_id": " 0x31C210DE",
+      " memory.total [MiB]": " 284208 MiB",
+      " power.max_limit [W]": " 1400.00 W"
+    },
+    {
+      "name": "NVIDIA GB300",
+      " pci.device_id": " 0x31C210DE",
+      " memory.total [MiB]": " 284208 MiB",
+      " power.max_limit [W]": " 1400.00 W"
+    }
+  ],
+  "jobs": {
+    "aga": 771271,
+    "jhb": 437052
+  },
+  "latency_ratios_jhb_over_aga": {
+    "gemm-bfloat16": {
+      "cases": 8,
+      "median": 0.9975442469821951,
+      "min": 0.9602649221599834,
+      "max": 1.0033530140843394
+    },
+    "gemm-fp8": {
+      "cases": 8,
+      "median": 1.0000183581602256,
+      "min": 0.9464574544249141,
+      "max": 1.0021937000097754
+    },
+    "gemm-fp8_block": {
+      "cases": 8,
+      "median": 0.9774086133193574,
+      "min": 0.8348214872076849,
+      "max": 1.0205547590695625
+    },
+    "gemm-nvfp4": {
+      "cases": 8,
+      "median": 0.9997170089247036,
+      "min": 0.7687276746627797,
+      "max": 1.0263157766386548
+    }
+  },
+  "notes": "Smoke-only comparison; production case groups are disjoint. GPU hardware and framework packages match, but the driver patch differs. Clock frequency is requested, not hard locked. Eight cases per dtype do not establish full workload equivalence.",
+  "driver_versions": {
+    "aga": "580.167.08",
+    "jhb": "580.159.03"
+  }
+}

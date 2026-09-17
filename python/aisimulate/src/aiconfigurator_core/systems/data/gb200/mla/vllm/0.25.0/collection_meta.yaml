@@ -9,23 +9,23 @@ runtime:
   image: vllm/vllm-openai
   image_digest: sha256:2f726db9babd627fb59addaed2038577fc767108680901271b069d91759d1286
 tables:
-  context_attention_perf:
-    rows: 52836
+  mla_context_module_perf:
+    rows: 13059
     status: complete
     collections:
     - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
-      collector_hash: sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0
-      case_plan_hash: sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507
+      collector_hash: sha256:113fa413702792e5aa95bf4ee7c12f5da9b4410e97fe1be13054acc088a6b7fb
+      case_plan_hash: sha256:5b1dd5428859b6622f336dbc519f3c5dadc310525ee9c11d72a17557f91c8b39
       collected_at: '2026-09-17'
-      rows: 52836
+      rows: 13059
       status: complete
-  generation_attention_perf:
-    rows: 65408
+  mla_generation_module_perf:
+    rows: 11400
     status: complete
     collections:
     - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
-      collector_hash: sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0
-      case_plan_hash: sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc
+      collector_hash: sha256:113fa413702792e5aa95bf4ee7c12f5da9b4410e97fe1be13054acc088a6b7fb
+      case_plan_hash: sha256:3473224f524c629652b2a402f358af23f7f8a1cc2660955225ad5572182ae33e
       collected_at: '2026-09-17'
-      rows: 65408
+      rows: 11400
       status: complete
