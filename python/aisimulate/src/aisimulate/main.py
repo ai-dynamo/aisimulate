@@ -15,7 +15,6 @@ from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
 from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
-from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
@@ -28,12 +27,11 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, energy_diagnostics, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
-    write_fpm_coverage,
     write_prediction_report,
     write_recommendation_csv,
     write_recommendation_result,
@@ -47,6 +45,7 @@ from .output_adapter import (
     write_output_adapters,
 )
 from .power import normalize_power_summary
+from .predict import PredictionExecutionError, run_prediction
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -112,63 +111,32 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
         raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    adapter_specs = _compile_prediction_adapters(
-        adapter_raw,
-        adapters,
-        stack=args.stack,
-        context=_prediction_adapter_context(config),
-    )
-    spec = prediction_to_replay_spec(
-        config,
-        adapter_specs=adapter_specs,
-        execution_mode="online" if args.online else "offline",
-    )
-    factory.capabilities().require_compatible(spec)
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    runner = factory.create(0)
+    # run_prediction owns compile -> replay -> summarize; the supervision marks
+    # bracket it, and the guarded factory enforces resource limits (its
+    # ResourceLimitError propagates unwrapped for the main() handler).
     mark_execution_ready()
     try:
-        try:
-            report = runner.run(
-                spec,
-                output_requirements=ReplayOutputRequirements(
-                    include_raw_report=not epd,
-                    capture_per_request=args.capture_per_request,
-                    capture_memory_diagnostics="memory" in args.detail,
-                    capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
-                ),
-            )
-        except BaseException as exc:
-            coverage = getattr(exc, "fpm_query_coverage", None)
-            if isinstance(coverage, str):
-                coverage = json.loads(coverage)
-            if isinstance(coverage, dict):
-                write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(exc)})
-            if isinstance(exc, (KeyboardInterrupt, ResourceLimitError)) or not isinstance(exc, Exception):
-                raise
-            raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
+        result = run_prediction(
+            config,
+            adapter_configs=adapter_raw,
+            stack=args.stack,
+            runner_factory=factory,
+            providers=adapters,
+            execution_mode="online" if args.online else "offline",
+            output_requirements=ReplayOutputRequirements(
+                include_raw_report=not epd,
+                capture_per_request=args.capture_per_request,
+                capture_memory_diagnostics="memory" in args.detail,
+                capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
+            ),
+        )
     finally:
         mark_shutdown()
-        runner.close()
         mark_execution_ready()
-    native = report.metadata.get("native_report")
-    if not isinstance(native, dict):
-        native = {"summary": dict(report.metrics)}
-    if epd:
-        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
-        if "memory_diagnostics" in native["metadata"]:
-            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
-        # JSON stdout, like prediction.json, must identify the approximation.
-        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
-    if isinstance(native.get("fpm_query_coverage"), dict):
-        write_fpm_coverage(root, native["fpm_query_coverage"])
-    summary = prediction_summary(native)
-    summary.update(normalize_power_summary(report.metrics))
-    if "summary" in native:
-        native = {**native, "summary": summary}
-    else:
-        native = {**native, **summary}
+    spec = result.replay_spec
+    summary = result.summary
+    native = result.native
     power_diagnostics = None
     if args.diagnostics == "power":
         power_diagnostics = energy_diagnostics(native)
@@ -199,7 +167,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    phases = report.metadata.get("agentic_phases")
+    phases = result.report.metadata.get("agentic_phases")
     if isinstance(phases, dict) and phases.get("phase") == "aborted":
         sys.stderr.write(
             f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
@@ -361,7 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as output_error:
             sys.stderr.write(f"could not save resource plan: {output_error}\n")
         return 3
-    except _CliExecutionError as exc:
+    except PredictionExecutionError as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
         return 1
     except Exception as exc:
