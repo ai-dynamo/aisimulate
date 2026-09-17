@@ -6,11 +6,13 @@ from dataclasses import replace
 
 import pytest
 from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
-from fpm_accuracy.exceptions import DependencyError
+from fpm_accuracy.exceptions import ConfigurationError, DependencyError
 from fpm_accuracy.models import aic_predictors
+from fpm_accuracy.models.aic_config import map_worker_config_to_aic
 from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction
 from fpm_accuracy.models.worker_regression import infer_worker_roles, regression_buckets
 from fpm_accuracy.types.forward_pass import ForwardPassIteration, RequestMetrics
+from fpm_accuracy.types.worker_config import WorkerConfig
 from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload
 
 
@@ -122,6 +124,77 @@ def test_predictor_failures_remain_in_denominator(case):
     assert metric["error_count"] == metric["measured_count"] == 12
     assert metric["mape_pct"] is None
     assert "unsupported model" not in json.dumps(result)
+
+
+def test_missing_worker_stores_are_logged_before_scoring(case, capsys):
+    instances = []
+
+    class MissingStore(Predictor):
+        def diagnostics(self):
+            return {"regression_stores": [{"workload_kind": "unexpected"}]}
+
+    def factory(method, context):
+        predictor = MissingStore(method, context, []) if method == "regression" else Predictor(method, context, [])
+        instances.append(predictor)
+        return predictor
+
+    result = evaluate_case(case, factory=factory)
+    metric = result["results"]["regression"]["metrics"]["all"]
+    assert metric["error_count"] == metric["measured_count"] == 12
+    assert result["results"]["regression"]["status"] == "predictor_error"
+    assert all(predictor.closed for predictor in instances)
+    assert "missing ['pure_decode']; available: ['unexpected']" in capsys.readouterr().out
+    assert "unexpected" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("source", ["schema", "embedded", "override"])
+@pytest.mark.parametrize(
+    "field,precision",
+    [
+        ("weight_dtype", "weights"),
+        ("moe_dtype", "experts"),
+        ("activation_dtype", "activations"),
+        ("kv_cache_dtype", "kv_cache"),
+    ],
+)
+def test_worker_precision_never_silently_falls_back(case, source, field, precision):
+    record = case.configuration.worker_config_record
+    payload = record.config.model_dump()
+    overrides = None
+    if source == "schema":
+        payload["aic_engine_config"] = None
+        payload["precision"][precision] = "unrecognized-precision"
+    elif source == "embedded":
+        payload["aic_engine_config"][field] = "unrecognized-precision"
+    else:
+        overrides = {field: "unrecognized-precision"}
+    record = replace(record, config=WorkerConfig.model_validate(payload))
+    with pytest.raises(ConfigurationError, match="unsupported AISim dtype"):
+        map_worker_config_to_aic(record, overrides)
+
+
+def test_known_precision_aliases_and_absence_are_preserved(case):
+    result = map_worker_config_to_aic(
+        case.configuration.worker_config_record,
+        {
+            "weight_dtype": "BF16",
+            "moe_dtype": "w4a16_mxfp4",
+            "activation_dtype": None,
+            "kv_cache_dtype": "fp16",
+        },
+    )
+    assert result["weight_dtype"] == "bfloat16"
+    assert result["moe_dtype"] == "w4a16_mxfp4"
+    assert result["activation_dtype"] is None
+    assert result["kv_cache_dtype"] == "float16"
+
+
+@pytest.mark.parametrize("alias", ["fp8_e4m3", "fp8_e5m2"])
+def test_recorded_fp8_cache_aliases_only_apply_to_kv(case, alias):
+    record = case.configuration.worker_config_record
+    assert map_worker_config_to_aic(record, {"kv_cache_dtype": alias})["kv_cache_dtype"] == "fp8"
+    with pytest.raises(ConfigurationError, match="unsupported AISim dtype"):
+        map_worker_config_to_aic(record, {"weight_dtype": alias})
 
 
 def test_legacy_regression_is_unavailable_without_changing_measurement_membership(case, monkeypatch):

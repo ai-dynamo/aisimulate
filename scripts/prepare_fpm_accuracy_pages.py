@@ -123,6 +123,11 @@ def prepare(repo: Path, output: Path):
                     attempts[number] = attempt, api_items(endpoint + "/jobs", "jobs")
                 attempt, jobs = attempts[number]
                 summary = validate_artifact(archive, attempt, artifact["name"], jobs)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {404, 410}:
+                    raise
+                print(f"Ignoring unavailable FPM artifact {artifact['id']}: HTTP {exc.code}")
+                continue
             except (ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
                 print(f"Ignoring invalid FPM artifact {artifact['id']}: {exc}")
                 continue

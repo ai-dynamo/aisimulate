@@ -486,6 +486,69 @@ def test_canonical_single_rank_iteration_is_directly_evaluable(tmp_path: Path) -
     assert case.observations[0].actual_ms == pytest.approx(7.0)
 
 
+def test_mixed_canonical_groupings_share_millisecond_chronology(tmp_path):
+    listener = _listener_iteration()
+    listener["expected_dp_ranks"] = [0]
+    listener["rank_measurements"] = listener["rank_measurements"][:1]
+    listener["max_rank_wall_time"] = 0.01
+    listener["grouping"]["clock_correction"]["groups"] = listener["grouping"]["clock_correction"]["groups"][:1]
+    rows = []
+    for timestamp in (1000002, 1000000):
+        rank = _fpm_payload(counter=timestamp)
+        rank["observed_at_unix_ms"] = timestamp
+        rows.append(
+            {
+                "version": 1,
+                "source_kind": "rank_event_stream",
+                "iteration_id": str(timestamp),
+                "producer": {"component": "instrumented-scheduler"},
+                "grouping": {"method": "single_rank", "authority": "producer", "key": str(timestamp)},
+                "expected_dp_ranks": [0],
+                "complete": True,
+                "max_rank_wall_time": 0.01,
+                "rank_measurements": [rank],
+            }
+        )
+    rows.insert(1, listener)
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-measurement-v1",
+        include_fpm=False,
+        files=[("truth", "truth.jsonl", "\n".join(map(json.dumps, rows)).encode())],
+    )
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert case.ordering is OrderingKind.CHRONOLOGICAL
+    assert [item.iteration.ranks[0].counter_id for item in case.observations] == [1000000, 11, 1000002]
+
+
+@pytest.mark.parametrize("field", ["moe_ep", "moe_tp"])
+@pytest.mark.parametrize("value", [None, "bad", "2", True, 1.5, 0, -1])
+def test_invalid_manifest_moe_parallelism_fails_with_data_error(tmp_path, field, value):
+    dataset = _build_dataset(tmp_path, protocol_id="forward-pass-measurement-v1", files=[])
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest[field] = value
+    _write_json(path, manifest)
+    with pytest.raises(DataError, match=field):
+        dataset.configurations()
+
+
+def test_missing_moe_parallelism_defaults_match_fpm_identity(tmp_path):
+    content = json.dumps(_fpm_payload()).encode()
+    dataset = _build_dataset(
+        tmp_path, protocol_id="forward-pass-measurement-v1", files=[("truth", "truth.jsonl", content)]
+    )
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    del manifest["moe_ep"], manifest["moe_tp"]
+    _write_json(path, manifest)
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    engine = case.configuration.worker_config_record.config.aic_engine_config
+    assert engine["moe_ep_size"] == engine["moe_tp_size"] == 1
+    assert case.status is CaseStatus.READY
+    assert len(case.fpm_artifacts) == len(case.observations) == 1
+
+
 def test_incomplete_canonical_iteration_is_retained_as_unavailable_evidence(tmp_path: Path) -> None:
     content = f"{json.dumps(_listener_iteration(complete=False))}\n".encode()
     dataset = _build_dataset(
@@ -1329,12 +1392,12 @@ def test_empty_override_is_rejected(tmp_path: Path) -> None:
         f"version: 1\noverrides:\n  - configuration_path: {CONFIGURATION_PATH}\n",
         encoding="utf-8",
     )
+    _build_dataset(
+        tmp_path / "dataset",
+        protocol_id="forward-pass-measurement-v1",
+        files=[],
+    )
     with pytest.raises(ConfigurationError, match="at least one binding or correction"):
-        _build_dataset(
-            tmp_path / "dataset",
-            protocol_id="forward-pass-measurement-v1",
-            files=[],
-        )
         HfDataset.from_local(tmp_path / "dataset", revision=REVISION, overrides_path=override)
 
 

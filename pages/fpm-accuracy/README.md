@@ -53,6 +53,8 @@ Failed branches cannot replace prior valid results or block another successful
 branch. Incomplete campaigns do not publish; high MAPE does not fail a campaign
 or block release staging. A missing/expired history shows “No completed
 evaluation” when no retained qualified artifact remains.
+Artifacts deleted or expired after listing (HTTP 404/410) are skipped so earlier
+valid results can still publish. Authentication and service errors remain fatal.
 
 Pages serves the JSON alongside the reviewed main-branch HTML/CSS/JS. Browsers
 never need GitHub credentials or direct access to Actions artifacts. PR previews
@@ -64,7 +66,8 @@ directory so that both assets are available.
 ## Local checks and smoke evaluation
 
 ```bash
-python -m pip install pytest -r scripts/fpm_accuracy/requirements.txt
+python -m pip install pytest
+python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
 python -m pytest -c /dev/null -o cache_dir=.cache/pytest tests/fpm_accuracy
 python scripts/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000

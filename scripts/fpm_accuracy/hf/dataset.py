@@ -949,7 +949,9 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _worker_config_record(configuration_id: str, manifest: Mapping[str, Any]) -> WorkerConfigRecord:
-    model_kind = "moe" if int(manifest.get("moe_ep", 1)) > 1 or int(manifest.get("moe_tp", 1)) > 1 else None
+    moe_ep = _required_positive_int(manifest, "moe_ep", configuration_id) if "moe_ep" in manifest else 1
+    moe_tp = _required_positive_int(manifest, "moe_tp", configuration_id) if "moe_tp" in manifest else 1
+    model_kind = "moe" if moe_ep > 1 or moe_tp > 1 else None
     engine = {
         "schema_version": 1,
         "model_name": manifest.get("model_id"),
@@ -959,8 +961,8 @@ def _worker_config_record(configuration_id: str, manifest: Mapping[str, Any]) ->
         "tp_size": manifest.get("tp"),
         "pp_size": manifest.get("pp"),
         "attention_dp_size": manifest.get("dp"),
-        "moe_tp_size": manifest.get("moe_tp"),
-        "moe_ep_size": manifest.get("moe_ep"),
+        "moe_tp_size": moe_tp,
+        "moe_ep_size": moe_ep,
         "cp_size": manifest.get("cp"),
         "weight_dtype": manifest.get("weight_quantization"),
         "kv_cache_dtype": manifest.get("kv_cache_dtype"),

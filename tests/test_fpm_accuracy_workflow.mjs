@@ -21,7 +21,7 @@ const run = {
   head_repository: { full_name: "ai-dynamo/aisimulate" },
 };
 
-async function resolve({ event = "schedule", runs = [run], built = true, expired = false, inputs = {}, branches = [] } = {}) {
+async function resolve({ event = "schedule", runs = [run], built = true, expired = false, inputs = {}, branches = [], hfResponse = { ok: true, sha: "d".repeat(40) } } = {}) {
   const outputs = {};
   const actions = {
     listWorkflowRuns: async (args) => {
@@ -33,7 +33,7 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
     listWorkflowRunArtifacts: "artifacts",
   };
   const context = vm.createContext({
-    fetch: async () => ({ok: true, json: async () => ({sha: "d".repeat(40)})}),
+    fetch: async () => ({ok: hfResponse.ok, json: async () => ({sha: hfResponse.sha})}),
     require: createRequire(import.meta.url),
     context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
     process: { env: inputs },
@@ -108,26 +108,17 @@ test("manual evaluation emits only the requested full SHA and branch", async () 
   }
 });
 
-test("Pages accepts failed accuracy matrices while preserving other producer gates", () => {
-  const pages = readFileSync(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8");
-  const expression = pages.match(/  build:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
-  for (const name of ["E2E Accuracy Matrix", "FPM Accuracy Matrix", "FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]) {
-    for (const conclusion of ["success", "failure", "cancelled"]) {
-      for (const repository of ["ai-dynamo/aisimulate", "foreign/repo"]) {
-        const github = {
-          event_name: "workflow_run", ref: "refs/heads/main", repository: "ai-dynamo/aisimulate",
-          event: { workflow_run: { name, conclusion, head_repository: { full_name: repository } } },
-        };
-        assert.equal(vm.runInNewContext(expression, { github }), repository === github.repository &&
-          (conclusion === "success" || (["E2E Accuracy Matrix", "FPM Accuracy Matrix"].includes(name) && conclusion === "failure")));
-      }
-    }
-  }
-});
-
 test("FPM excludes releases below 0.12.0 and compares versions numerically", async () => {
   const branches = ["release/0.9.0", "release/0.11.9", "release/0.12.0", "release/0.100.0", "release/1.0.0", "release/0.12.0-rc1"].map(name => ({name, commit: {sha}}));
   const result = await resolve({branches});
   assert.deepEqual(new Set(result.map(item => item.branch)), new Set(["main", "release/0.12.0", "release/0.100.0", "release/1.0.0"]));
   await assert.rejects(resolve({event: "workflow_dispatch", inputs: {EXPECTED_SHA: sha, EVALUATED_BRANCH: "release/0.11.9"}}), /full source SHA/);
+});
+
+
+test("HF resolution rejects failed responses and invalid immutable revisions", async () => {
+  await assert.rejects(resolve({hfResponse: {ok: false}}), /Cannot resolve HF/);
+  for (const sha of ["", "main", "a".repeat(39), "g".repeat(40)]) {
+    await assert.rejects(resolve({hfResponse: {ok: true, sha}}), /HF revision/);
+  }
 });

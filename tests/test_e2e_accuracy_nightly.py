@@ -657,7 +657,7 @@ def test_same_commit_publication_compares_completion_times(
     monkeypatch.setattr(publish, "ancestor", lambda *args: True)
     monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "")
     monkeypatch.setattr(
-        publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(previous))
+        publish, "committed_accuracy", lambda *args: (json.dumps(previous), "pages/e2e-accuracy/summary.json")
     )
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
@@ -722,12 +722,53 @@ def publication_api(monkeypatch, run, snapshots, *, jobs=None, earlier=None):
     monkeypatch.setattr(publish, "api", lambda path, **kwargs: responses[path])
     monkeypatch.setattr(publish, "ancestor", lambda *args: True)
     monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "release/0.12.0\n")
-    monkeypatch.setattr(publish.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(publish, "committed_accuracy", lambda *args: None)
     return responses
 
 
 def prepared_snapshots(tmp_path):
     return {s["snapshot"]["campaign"]["branch"]: s for p in tmp_path.glob("*.json") if (s := json.loads(p.read_text()))}
+
+
+@pytest.mark.parametrize("missing_ref", [False, True])
+def test_committed_summary_distinguishes_absent_path_from_broken_ref(artifact, tmp_path, monkeypatch, missing_ref):
+    summary, run = artifact
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "--signoff",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    if not missing_ref:
+        subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+    real_check_output = subprocess.check_output
+    real_committed_accuracy = publish.committed_accuracy
+    publication_api(monkeypatch, run, [summary])
+    monkeypatch.setattr(publish.subprocess, "check_output", real_check_output)
+    monkeypatch.setattr(publish, "committed_accuracy", real_committed_accuracy)
+    output = tmp_path / "prepared"
+    if missing_ref:
+        with pytest.raises(pages.PagesBuildError, match="cannot read accuracy branch evidence"):
+            publish.prepare(repo, output)
+        assert not list(output.glob("*.json"))
+    else:
+        publish.prepare(repo, output)
+        assert prepared_snapshots(output) == {"main": summary}
 
 
 def test_one_run_publishes_main_and_release_independently(artifact, tmp_path, monkeypatch):
@@ -777,13 +818,9 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     previous = deepcopy(summary)
     previous["snapshot"]["aisimulate_completed_at"] = previous_time
     monkeypatch.setattr(
-        publish.subprocess,
-        "run",
-        lambda args, **kwargs: (
-            SimpleNamespace(returncode=0, stdout=json.dumps(previous))
-            if args[-1].startswith("origin/main:")
-            else SimpleNamespace(returncode=1)
-        ),
+        publish,
+        "committed_accuracy",
+        lambda repo, ref: ((json.dumps(previous), "pages/e2e-accuracy/summary.json") if ref == "origin/main" else None),
     )
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)

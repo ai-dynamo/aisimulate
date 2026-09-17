@@ -15,6 +15,8 @@ Prose documentation remains in docs. The Rust design HTML remains at
 `crates/core/perfmodel/docs/design_doc.html` and is not deployed.
 Older release branches still store E2E snapshots under the original docs path;
 the publisher reads both locations without copying release HTML or JavaScript.
+Missing snapshot paths are allowed; unreadable Git refs or objects fail the
+publication check instead of bypassing the prior-snapshot comparison.
 
 FPE qualification uploads the `fpe-nightly-web` data bundle produced by
 `scripts/run_release_fpe.py`. Pages combines its qualified data with the HTML

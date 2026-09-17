@@ -20,9 +20,9 @@ from datetime import datetime
 from pathlib import Path
 
 if __package__:
-    from .build_pages_site import _accuracy_summary
+    from .build_pages_site import _accuracy_summary, committed_accuracy
 else:
-    from build_pages_site import _accuracy_summary
+    from build_pages_site import _accuracy_summary, committed_accuracy
 
 REPO = "ai-dynamo/aisimulate"
 WORKFLOW = ".github/workflows/e2e-accuracy.yml"
@@ -463,18 +463,9 @@ def prepare(repo: Path, output: Path) -> None:
         raise ValueError("accuracy output must be empty")
     written = 0
     for branch, summary in selected.items():
-        committed = None
-        for path in ("pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"):
-            result = subprocess.run(
-                ["git", "-C", str(repo), "show", "origin/" + branch + ":" + path],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                committed = result.stdout
-                break
+        committed = committed_accuracy(repo, "origin/" + branch)
         if committed is not None:
-            previous = _accuracy_summary(committed)["snapshot"]
+            previous = _accuracy_summary(committed[0])["snapshot"]
             revision = previous.get("evaluated_revision")
             current = summary["snapshot"]["campaign"]
             if revision and revision["branch"] == branch:

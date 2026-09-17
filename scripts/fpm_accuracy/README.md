@@ -24,3 +24,23 @@ Hub cache loading supports repository-local blobs and the marked cache-wide
 shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
 measurement and FPM bytes; arbitrary symlink targets outside these stores are
 rejected. Local dataset checkouts retain their strict root boundary.
+
+Listener window and single-rank chronology keys use milliseconds so mixed
+streams preserve predict → score → tune ordering. Missing MoE parallelism
+defaults to one; malformed values and unknown recorded precisions fail closed.
+Worker regression verifies required store names before scoring and reports
+contract mismatches in Actions logs while retaining measurement coverage.
+
+`requirements.in` declares evaluator dependencies. `requirements.txt` locks
+their transitive dependencies and distribution hashes for Python 3.12; CI
+installs it with `--require-hashes`. Regenerate with:
+
+```bash
+uv pip compile scripts/fpm_accuracy/requirements.in --generate-hashes \
+  --python-version 3.12 --universal \
+  --output-file scripts/fpm_accuracy/requirements.txt
+```
+
+The selected AISim wheel and its runtime dependencies are installed separately
+because evaluated branches can declare different runtime requirements. The
+campaign checks the wheel hash and runs `pip check` after both installs.
