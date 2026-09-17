@@ -513,6 +513,34 @@ def test_model_config_requires_a_local_json_mapping(tmp_path, monkeypatch, conte
     assert not output.parent.exists()
 
 
+@pytest.mark.parametrize("cache_type", [[], {}, True, 8, 1.5])
+@pytest.mark.parametrize("existing", [False, True])
+def test_real_cli_rejects_malformed_cache_type_without_writing_request(tmp_path, cache_type, existing):
+    config = {**_CONFIG, "quantization_config": {"kv_cache_scheme": {"num_bits": 8, "type": cache_type}}}
+    source, resources = _files(tmp_path, config=config)
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "aisimulate", *_args(output, source, resources), "--overwrite"],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "quantization_config.kv_cache_scheme.type" in result.stderr
+    assert "Traceback" not in result.stderr
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
 @pytest.mark.parametrize(
     "options,expected",
     [

@@ -204,6 +204,34 @@ def test_dynamic_kv_scales_need_explicit_accounting(tmp_path):
     assert "scales" in draft.missing["kv_bytes_per_token"]
 
 
+@pytest.mark.parametrize("cache_type", [[], {}, True, 8, 1.5, "", "\x00"])
+def test_malformed_kv_cache_type_is_rejected_at_config_load(tmp_path, cache_type):
+    with pytest.raises(ValueError, match=r"quantization_config\.kv_cache_scheme\.type"):
+        _config(tmp_path, quantization_config={"kv_cache_scheme": {"num_bits": 8, "type": cache_type}})
+
+
+@pytest.mark.parametrize(
+    "scheme,dtype",
+    [
+        ("FP8", "fp8"),
+        ({"num_bits": 8, "type": "float"}, "fp8"),
+        ({"num_bits": 8, "type": "int"}, "int8"),
+        ({"num_bits": 8, "type": None}, None),
+        ({"num_bits": 8}, None),
+        ({"num_bits": 8, "type": "unknown"}, None),
+    ],
+)
+def test_kv_cache_type_preserves_known_precision_and_unresolved_metadata(tmp_path, scheme, dtype):
+    config = _config(tmp_path, quantization_config={"kv_cache_scheme": scheme})
+    draft = derive_profile(config, _request())
+    if dtype is None:
+        assert "kv_cache_dtype" not in draft.resolved
+        assert "kv_cache_dtype" in draft.missing
+    else:
+        assert draft.resolved["kv_cache_dtype"] == dtype
+        assert draft.resolved["kv_bytes_per_token"] == 32
+
+
 def test_weight_quantization_does_not_select_runtime_attention_or_kv_dtype(tmp_path):
     config = _config(tmp_path, quantization_config={"quant_method": "fp8", "weight_block_size": [128, 128]})
     draft = derive_profile(config, _request())

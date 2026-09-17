@@ -247,6 +247,8 @@ def _validate_quantization(raw: Mapping[str, Any]) -> None:
             if "num_bits" in tensor:
                 _integer(tensor["num_bits"], f"quantization_config.config_groups.{group_name}.{key}.num_bits")
     scheme = _kv_cache_scheme(quant)
+    if scheme.get("type") is not None:
+        _text(scheme["type"], "quantization_config.kv_cache_scheme.type")
     if "num_bits" in scheme:
         _integer(scheme["num_bits"], "quantization_config.kv_cache_scheme.num_bits")
     if "dynamic" in scheme and type(scheme["dynamic"]) is not bool:
