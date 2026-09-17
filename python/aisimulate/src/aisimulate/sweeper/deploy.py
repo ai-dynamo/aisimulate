@@ -37,6 +37,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
             else "op_level"
         ),
     }
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     return {"provider": "aic", "config": config}
 
 
@@ -84,6 +86,8 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     forward_model = sample.get(f"{role}_forward_model")
     if forward_model is not None and forward_model != "op_level":
         payload["aic_forward_model"] = str(forward_model)
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        payload["aic_fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     startup = sample.get(f"{role}_startup_time")
     if startup is None:
         startup = sample.get("startup_time")
@@ -104,6 +108,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             "aic_moe_ep_size",
             "aic_nextn",
             "aic_forward_model",
+            "aic_fpm_parquet_path",
         ):
             payload.pop(name, None)
     host_offload = sample.get(f"{role}_native_host_offload")

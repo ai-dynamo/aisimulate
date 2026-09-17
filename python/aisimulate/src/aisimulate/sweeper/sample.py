@@ -32,6 +32,7 @@ _AGG_PINNED = (
     "agg_num_gpu_blocks",
     "agg_timing_model",
     "agg_forward_model",
+    "agg_fpm_parquet_path",
     "agg_startup_time",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
@@ -44,6 +45,7 @@ _PREFILL_PINNED = (
     "prefill_num_gpu_blocks",
     "prefill_timing_model",
     "prefill_forward_model",
+    "prefill_fpm_parquet_path",
     "prefill_startup_time",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
@@ -56,6 +58,7 @@ _DECODE_PINNED = (
     "decode_num_gpu_blocks",
     "decode_timing_model",
     "decode_forward_model",
+    "decode_fpm_parquet_path",
     "decode_startup_time",
 )
 

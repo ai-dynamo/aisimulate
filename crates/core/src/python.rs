@@ -256,6 +256,10 @@ impl AicTimingModel {
         );
         config.resolved_memory_fraction()?;
 
+        crate::config::validate_fpm_parquet_path(
+            config.fpm_parquet_path.as_deref().map(std::path::Path::new),
+            config.forward_model.as_deref() == Some("fpm"),
+        )?;
         let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
@@ -1280,6 +1284,17 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn aic_timing_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let mut config = aic_config();
+            config.fpm_parquet_path = Some(path.into());
+            config.forward_model = Some(model.into());
+            let err = AicTimingModel::build(config).err().expect("invalid path");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
     }
 
     #[test]

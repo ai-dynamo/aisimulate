@@ -1286,6 +1286,7 @@ mod builder_tests {
             "system_name": "system",
             "backend": "vllm",
             "backend_version": "0.25.1",
+            "forward_model": "fpm",
             "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
             "kv_block_size": null,
             "tp_size": 4,
@@ -1303,7 +1304,7 @@ mod builder_tests {
         }))
         .expect("deserialize engine config");
 
-        let request = engine_build_request(&config, None);
+        let request = engine_build_request(&config, None).unwrap();
 
         assert_eq!(request.database_mode.as_deref(), Some("EMPIRICAL"));
         assert_eq!(request.shared_layer, Some(true));
@@ -1316,6 +1317,19 @@ mod builder_tests {
             request.fpm_parquet_path.as_deref(),
             Some("/artifacts/reviewed-fpm.parquet")
         );
+    }
+
+    #[test]
+    fn builder_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+                .forward_model(model)
+                .fpm_parquet_path(path)
+                .build();
+            assert!(
+                matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path"))
+            );
+        }
     }
 
     #[test]
@@ -1345,6 +1359,10 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    crate::config::validate_fpm_parquet_path(
+        request.fpm_parquet_path.as_deref().map(Path::new),
+        request.forward_model.as_deref() == Some("fpm"),
+    )?;
     if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
         return Err(AicError::InvalidEngineConfig(
             "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
@@ -1420,16 +1438,19 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
-    compile_engine_from_request(engine_build_request(config, systems_path))
+    compile_engine_from_request(engine_build_request(config, systems_path)?)
 }
 
-fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> EngineBuildRequest {
+fn engine_build_request(
+    config: &EngineConfig,
+    systems_path: Option<&str>,
+) -> Result<EngineBuildRequest, AicError> {
     let nextn = config
         .speculative
         .as_ref()
         .and_then(|s| s.nextn)
         .unwrap_or(0);
-    EngineBuildRequest {
+    Ok(EngineBuildRequest {
         model_path: config.model_name.clone(),
         system: config.system_name.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -1454,15 +1475,16 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
-        fpm_parquet_path: config
-            .fpm_parquet_path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
+        fpm_parquet_path: crate::config::validate_fpm_parquet_path(
+            config.fpm_parquet_path.as_deref(),
+            config.forward_model.as_deref() == Some("fpm"),
+        )?
+        .map(str::to_owned),
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
-    }
+    })
 }
 
 /// `DataType` → `GEMMQuantMode` enum name. `None` (auto-infer) for DataTypes
@@ -1845,6 +1867,32 @@ mod tests {
             transfer_policy: None,
             extra: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn native_model_rejects_invalid_fpm_paths() {
+        for path in ["", "/missing/fpm.parquet"] {
+            let mut config = fixture_engine_config();
+            config.fpm_parquet_path = Some(path.into());
+            let result = crate::ForwardPassPerfModel::from_native(config, Default::default());
+            assert!(
+                matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path"))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_model_rejects_non_utf8_fpm_path() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut config = fixture_engine_config();
+        config.forward_model = Some("fpm".into());
+        config.fpm_parquet_path =
+            Some(std::ffi::OsString::from_vec(b"/data/invalid-\xff.parquet".to_vec()).into());
+        let result = crate::ForwardPassPerfModel::from_native(config, Default::default());
+        assert!(
+            matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path must be valid UTF-8"))
+        );
     }
 
     /// Build bincoded `EngineSpec` bytes from hand-built op lists. The lists

@@ -18,17 +18,24 @@ import hashlib
 import json
 import os
 import shutil
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import yaml
 
 from aiconfigurator.sdk import common, models
 from aiconfigurator.sdk import config as sdk_config
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.operations import FPMForwardOp
 from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
 from aiconfigurator_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
+from aisimulate.compiler import prediction_to_replay_spec
+from aisimulate.config import CorePredictionConfig
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper.replay import ReplayOutputRequirements
 
 pytestmark = pytest.mark.unit
 
@@ -457,3 +464,76 @@ class TestFPMStaticAndMixed:
         )
         assert per_op["fpm_forward_decode"] == pytest.approx(7.0)
         assert total == pytest.approx(7.0)
+
+
+@pytest.mark.parametrize(
+    "forward_model,path", [(None, "/missing/fpm.parquet"), ("op_level", "/missing/fpm.parquet"), ("fpm", "")]
+)
+@pytest.mark.parametrize("compile_fn", [compile_engine, EngineHandle.compile])
+def test_compile_rejects_invalid_external_fpm_path(compile_fn, forward_model, path):
+    with pytest.raises(ValueError, match="fpm_parquet_path"):
+        compile_fn(
+            "Qwen/Qwen3-0.6B",
+            SYSTEM,
+            BACKEND,
+            backend_version=VERSION,
+            forward_model=forward_model,
+            fpm_parquet_path=path,
+        )
+
+
+def test_external_fpm_pair_drives_yaml_replay_without_backend_data(tmp_path, monkeypatch):
+    # Synthetic exact anchors: one 512-token prefill costs 22 ms, and the
+    # decode anchors around that prompt cost 6 ms. No SOL/op data exists.
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", systems_root / f"{SYSTEM}.yaml")
+    monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(systems_root))
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    model = models.get_model("Qwen/Qwen3-0.6B", _model_config(forward_model="fpm"), BACKEND)
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    rows = [
+        _row("prefill", 1, 512, 0, 22.0, model_path=model.model_path, identity=identity),
+        *[_row("decode", 1, 0, kv, 6.0, model_path=model.model_path, identity=identity) for kv in (511, 512, 513)],
+    ]
+    parquet = Path(_write_pair(str(tmp_path / "external"), rows))
+    external = parquet.with_name("reviewed-fpm.parquet")
+    parquet.rename(external)
+    parquet.with_suffix(".metadata.json").rename(external.with_suffix(".metadata.json"))
+    config = CorePredictionConfig.model_validate(
+        yaml.safe_load(f"""
+engine:
+  model: Qwen/Qwen3-0.6B
+  hardware: {SYSTEM}
+  backend: {BACKEND}
+  backend_version: {VERSION}
+  context_length: 1024
+  workers:
+    aggregated:
+      kv_cache:
+        prefix_caching: false
+        capacity: {{type: fixed, blocks: 128}}
+      timing:
+        type: default
+        forward_model: fpm
+        fpm_parquet_path: {external}
+traffic:
+  source: {{type: synthetic, input_tokens: 512, output_tokens: 2}}
+  load: {{type: concurrency, concurrency: 1}}
+  stop: {{requests: 1}}
+""")
+    )
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            prediction_to_replay_spec(config),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        )
+    )
+    assert not (systems_root / "data").exists()
+    assert report.metrics["completed_requests"] == 1
+    record = report.metadata["native_report"]["per_request"][0]
+    # Replay emits the first token after prefill plus the first decode step.
+    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0 + 6.0)
+    assert record["last_token_ms"] - record["first_token_ms"] == pytest.approx(6.0)

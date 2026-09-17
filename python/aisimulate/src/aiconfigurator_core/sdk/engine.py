@@ -411,6 +411,11 @@ def compile_engine(
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
     """
+    if fpm_parquet_path is not None:
+        if not fpm_parquet_path:
+            raise ValueError("fpm_parquet_path cannot be empty")
+        if forward_model != "fpm":
+            raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1

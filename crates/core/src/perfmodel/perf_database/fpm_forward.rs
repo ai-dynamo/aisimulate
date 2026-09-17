@@ -8,8 +8,8 @@
 //! collector pair
 //!
 //! ```text
-//! <configured path>.parquet
-//! <configured path>.metadata.json
+//! /data/reviewed-fpm.parquet
+//! /data/reviewed-fpm.metadata.json
 //! ```
 //!
 //! The parquet may be supplied outside the AISimulate repository and is

@@ -469,7 +469,10 @@ impl PerfDatabase {
         // the known legacy backend names). `data_root` stays the legacy path
         // either way — each table's `resolver.sources_for` call resolves the
         // actual per-file location (legacy or family) independently.
+        // External FPM cells do not need op data. This allowance is separate
+        // from estimate-only tolerance, so external tables remain memoized.
         if !tolerate_missing_data
+            && fpm_parquet_path.is_none()
             && !data_root.is_dir()
             && !has_family_backend_version(&system_data_root, backend, version)
         {
@@ -1021,7 +1024,7 @@ mod tests {
             "0.25.1",
             false,
             false,
-            true,
+            false,
             Some(&parquet),
         )
         .expect("external FPM should load without in-repository perf data");

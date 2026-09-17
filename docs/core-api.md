@@ -163,6 +163,15 @@ model = RustForwardPassPerfModel.from_native(config)
 ```
 
 In this example the sidecar is `/data/reviewed-fpm.metadata.json`.
+Empty or non-UTF-8 paths and paths configured on an op-level engine are rejected.
+Covered FPM cells need only the system YAML and this external pair; no backend
+version data directory is required. Engines using the same pair share its parsed
+tables. Missing or invalid artifacts fail when queried.
+
+Prediction and recommendation YAML accept `fpm_parquet_path` under each worker's
+`timing` alongside `type: default` and `forward_model: fpm`. Recommendation keeps
+the path for each role through search, execution, and emitted candidate YAML;
+prefill and decode may use different pairs.
 
 `EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
 `SOL` for native forward-pass construction. The Python dictionary form uses
