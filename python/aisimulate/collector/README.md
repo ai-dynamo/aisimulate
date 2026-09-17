@@ -28,6 +28,9 @@ so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
 BF16 inputs to the collector do not determine the kernel's compute precision.
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
+The [2026-09-17 MLA collection report](sglang/mla-precision-20260917.md)
+records the B200/B300/H200 measurements, runtime evidence, and remaining
+H200 predictor-mapping gap.
 
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.

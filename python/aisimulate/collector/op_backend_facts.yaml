@@ -145,9 +145,9 @@ ops:
     axes: [op_name, kv_cache_dtype, mla_dtype]
     facts:
       - {framework: "sglang", version: "0.5.14", system: "b200_sxm", op_name: "mla_context", kv_cache_dtype: "bfloat16", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
-      - {framework: "sglang", version: "0.5.14", system: "b200_sxm", op_name: "mla_context", kv_cache_dtype: "fp8", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
+      - {framework: "sglang", version: "0.5.14", system: "b200_sxm", op_name: "mla_context", kv_cache_dtype: "fp8", mla_dtype: "fp8", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
       - {framework: "sglang", version: "0.5.14", system: "b300_sxm", op_name: "mla_context", kv_cache_dtype: "bfloat16", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
-      - {framework: "sglang", version: "0.5.14", system: "b300_sxm", op_name: "mla_context", kv_cache_dtype: "fp8", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
+      - {framework: "sglang", version: "0.5.14", system: "b300_sxm", op_name: "mla_context", kv_cache_dtype: "fp8", mla_dtype: "fp8", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
       - {framework: "sglang", version: "0.5.14", system: "gb200", op_name: "mla_context", kv_cache_dtype: "bfloat16", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
       - {framework: "sglang", version: "0.5.14", system: "gb200", op_name: "mla_context", kv_cache_dtype: "fp8", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
       - {framework: "sglang", version: "0.5.14", system: "gb300", op_name: "mla_context", kv_cache_dtype: "bfloat16", mla_dtype: "bfloat16", backends: ["trtllm_mla"], kernel_sources: ["trtllm_mla"]}
