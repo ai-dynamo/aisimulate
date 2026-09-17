@@ -2170,7 +2170,12 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
 
 
 @pytest.mark.parametrize(
-    "source_ref,event", [("refs/heads/main", "schedule"), ("refs/heads/release/0.12.0", "workflow_dispatch")]
+    "source_ref,event",
+    [
+        ("refs/heads/main", "schedule"),
+        ("refs/heads/main", "workflow_dispatch"),
+        ("refs/heads/release/0.12.0", "workflow_dispatch"),
+    ],
 )
 def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event):
     directory = tmp_path / "accuracy-wheel"
@@ -2236,6 +2241,11 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         return subprocess.run(["bash", "-e", "-c", consumer], cwd=tmp_path, env=env, capture_output=True, text=True)
 
     result = verify()
+    if event == "workflow_dispatch":
+        # Manual staging is not a scheduled, qualified nightly producer.
+        assert result.returncode != 0
+        assert "nightly wheel provenance mismatch" in result.stderr
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     wheel.write_bytes(b"tampered wheel")
     assert verify().returncode != 0
