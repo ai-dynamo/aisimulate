@@ -118,7 +118,7 @@ Manual dispatches and site-change triggers are listed below.
 
 | Workflow | When it runs | Role |
 | --- | --- | --- |
-| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
+| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen and ready-for-review; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
 | [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Scheduled runs build, qualify, and stage nightly artifacts, skipping unchanged `main`; manual runs build and stage an approved source SHA |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
@@ -144,8 +144,9 @@ The [review contract](../REVIEW.md#risk-tiered-review-and-ci) defines review
 depth and merge policy. The root [CodeRabbit configuration](../.coderabbit.yaml)
 configures automated review separately from GitHub Actions.
 
-1. Mark the PR non-draft and apply `review-ready`. Fast CI and CodeRabbit run
-   in parallel. The label admits work for review; it is not an approval.
+1. Open or update the PR to run Fast CI automatically, including while it is a
+   draft. Mark the PR non-draft for automatic CodeRabbit review, subject to its
+   configured title and label exclusions. No `review-ready` label is needed.
 2. Complete the reviews required for the risk level on the current commit:
    CodeRabbit for all tiers, plus Codex for medium/high risk.
 3. A maintainer admits Full CI after the required initial reviews complete with
@@ -172,12 +173,12 @@ Fast CI has three substantive jobs, followed by an aggregate result:
 | Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
 | Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
 | Rust Format | `cargo fmt --all -- --check` |
-| Fast CI Success | Requires the three jobs to succeed for an admitted PR, branch push, or manual run |
+| Fast CI Success | Requires the three jobs to succeed for every PR, branch push, or manual run |
 
-Draft PRs skip substantive work and report Fast CI as not applicable. A
-non-draft PR missing `review-ready` fails the aggregate. The exact Ruff paths
-are listed in [the workflow](../.github/workflows/fast-ci.yml); this is not a
-claim that every migrated source file is linted.
+Draft and non-draft PRs run the same Fast CI checks without a label requirement.
+The aggregate fails if any required job fails, is canceled, or is skipped.
+The exact Ruff paths are listed in [the workflow](../.github/workflows/fast-ci.yml);
+this is not a claim that every migrated source file is linted.
 
 Every standalone run publishes `Fast CI Success`. Full CI contains only a
 lightweight **Require Fast CI** job, which reads the standalone run and verifies
@@ -450,7 +451,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 | What you see | Meaning and next check |
 | --- | --- |
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
-| `Fast CI Success` failed with no substantive jobs | Check that the PR is non-draft and has `review-ready` |
+| `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
