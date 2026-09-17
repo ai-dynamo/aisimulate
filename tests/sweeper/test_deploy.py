@@ -13,7 +13,6 @@ from aisimulate.sweeper.parallel_enum import (
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
 from aisimulate.sweeper.sample import unroll_sample
 
 BACKEND_VERSION = "1.3.0rc10"

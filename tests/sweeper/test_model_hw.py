@@ -59,7 +59,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
     monkeypatch.setattr(
         mh_mod.perf_database,
         "load_system_spec",
-        lambda hardware, systems_paths=None: {
+        lambda hardware: {
             "gpu": {"mem_capacity": 80},
             "node": {"num_gpus_per_node": 8},
         },

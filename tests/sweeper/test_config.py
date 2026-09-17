@@ -10,8 +10,6 @@ from aisimulate.config import CoreRecommendationConfig
 from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.sweeper import OptimizationTarget, SmartSearchConfig
 from aisimulate.sweeper.config import (
-    DatabaseMode,
-    ForwardModel,
     OptimizationGoal,
     SearchSpace,
     SLATarget,
@@ -135,10 +133,6 @@ def test_defaults_are_backend_only():
     assert config.adapters == {}
     assert config.goal.target is OptimizationTarget.THROUGHPUT
     assert config.sweep.parallel_evals == 16
-    assert config.search_space.database_mode is DatabaseMode.SILICON
-    assert config.search_space.transfer_policy is None
-    assert config.search_space.forward_model is ForwardModel.OP_LEVEL
-    assert config.search_space.systems_paths == ["default"]
     dumped = config.search_space.model_dump()
     assert not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
 
@@ -172,55 +166,6 @@ def test_role_hardware_requires_disagg_mode():
                 prefill_hardware_sku="gb200",
             )
         )
-
-
-def test_forward_pass_estimator_request_controls_preserve_policy_for_resolution():
-    search = SearchSpace(
-        **_search_space(
-            backend=["vllm"],
-            backend_version=" 0.11.0 ",
-            database_mode="hybrid",
-            transfer_policy="balanced,xop",
-            forward_model="FPM",
-            systems_paths="default, /tmp/custom-systems",
-        )
-    )
-
-    assert search.requested_backend_version("vllm") == "0.11.0"
-    assert search.database_mode is DatabaseMode.HYBRID
-    assert search.transfer_policy == "balanced,xop"
-    assert search.forward_model is ForwardModel.FPM
-    assert search.systems_paths == ["default", "/tmp/custom-systems"]
-
-
-def test_backend_version_mapping_pins_backends_independently():
-    search = SearchSpace(
-        **_search_space(
-            backend=["vllm", "sglang"],
-            backend_version={"vllm": "0.11.0"},
-        )
-    )
-
-    assert search.requested_backend_version("vllm") == "0.11.0"
-    assert search.requested_backend_version("sglang") is None
-
-
-@pytest.mark.parametrize(
-    ("overrides", "message"),
-    [
-        (
-            {"backend": ["vllm", "sglang"], "backend_version": "0.11.0"},
-            "mapping",
-        ),
-        ({"backend_version": {"sglang": "0.5.6"}}, "unconfigured"),
-        ({"forward_model": "formula"}, "forward_model"),
-        ({"engine_step_backend": "rust"}, "engine_step_backend"),
-        ({"systems_paths": []}, "systems_paths"),
-    ],
-)
-def test_invalid_forward_pass_estimator_controls_fail_in_schema(overrides, message):
-    with pytest.raises(ValidationError, match=message):
-        SearchSpace(**_search_space(**overrides))
 
 
 def test_extra_fields_are_forbidden_at_each_boundary():
