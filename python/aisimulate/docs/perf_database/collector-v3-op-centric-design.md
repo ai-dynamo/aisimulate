@@ -332,6 +332,9 @@ With shared-layer reuse enabled, explicit 0.24.0 requests load retained primary
 rows first and fill missing keys from 0.25.0 graph-timed measurements.
 Newer versions are never selected implicitly. With reuse disabled, the removed
 FP8-block measurements remain unavailable.
+The six-GPU regression test checks every retained primary key and every
+0.25.0 FP8-block donor key against the native loaded table, including exact
+latency preservation.
 
 ### 6.3 Channel 2 — declared reuse (`reuse.yaml`, same backend, any direction)
 

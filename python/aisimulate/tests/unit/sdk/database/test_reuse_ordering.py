@@ -877,7 +877,9 @@ def test_corrected_024_gemm_uses_declared_025_measurements(system):
     loaded = fetch_table_view(db, "_gemm_data")
     sources = db.data_provenance["gemm_perf.parquet"]
     assert [(s["version"], s["channel"]) for s in sources[:2]] == [("0.24.0", "primary"), ("0.25.0", "declared_reuse")]
-    samples = [next(r for r in old if r["gemm_dtype"] == dtype) for dtype in sorted({r["gemm_dtype"] for r in old})]
-    for row in samples + [next(r for r in fresh if r["gemm_dtype"] == "fp8_block")]:
-        mode = common.GEMMQuantMode[row["gemm_dtype"]]
-        assert loaded[mode][row["m"]][row["n"]][row["k"]]["latency"] == pytest.approx(row["latency"])
+    expected = {
+        (common.GEMMQuantMode[row["gemm_dtype"]], row["m"], row["n"], row["k"]): row["latency"]
+        for row in old + [row for row in fresh if row["gemm_dtype"] == "fp8_block"]
+    }
+    actual = {(mode, m, n, k): loaded[mode][m][n][k]["latency"] for mode, m, n, k in expected}
+    assert actual == expected
