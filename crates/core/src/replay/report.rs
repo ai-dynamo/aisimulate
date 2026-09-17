@@ -27,6 +27,13 @@ pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
+    /// Versioned forecast contract, present only for a lookahead eviction policy.
+    pub kv_eviction_assumption: Option<&'static str>,
+    /// Prefill tokens in completed, committed forward passes, including
+    /// recomputation. This is measured from native pass metrics, not inferred
+    /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
+    pub committed_prefill_tokens: u64,
     pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
@@ -390,6 +397,11 @@ impl Serialize for ReplayReport {
             power.validate().map_err(serde::ser::Error::custom)?;
         }
         let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
+        if let Some(assumption) = self.kv_eviction_assumption {
+            map.serialize_entry("kv_eviction_assumption", assumption)?;
+        }
+        map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
         if let Some(g3) = &self.g3_offload {
             map.serialize_entry("g3_offload", g3)?;
         }
@@ -929,6 +941,7 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
+    committed_prefill_tokens: u64,
     requests: FxHashMap<Uuid, TraceRequestStats>,
     /// Simulated timestamp at which this reporting epoch began. Request
     /// timestamps remain absolute; aggregate rates use elapsed epoch time.
@@ -1050,6 +1063,13 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    /// Call once per native pass completion, independently of sampled FPM
+    /// telemetry. Repeated admissions and preemption make reuse-derived work
+    /// estimates incorrect; only the committed pass describes executed work.
+    pub(crate) fn on_completed_prefill_work(&mut self, tokens: u64) {
+        self.committed_prefill_tokens += tokens;
+    }
+
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
     }
@@ -1729,6 +1749,9 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
+            kv_eviction_assumption: None,
+            committed_prefill_tokens: self.committed_prefill_tokens,
             g3_offload: self.g3_offload,
             request_counts: TraceRequestCounts {
                 num_requests: request_count,

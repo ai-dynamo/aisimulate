@@ -16,6 +16,10 @@ Prose documentation remains in docs. The Rust design HTML remains at
 Older release branches still store E2E snapshots under the original docs path;
 the publisher reads both locations without copying release HTML or JavaScript.
 
+FPE qualification uploads the `fpe-nightly-web` data bundle produced by
+`scripts/run_release_fpe.py`. Pages combines its qualified data with the HTML
+and assets in `pages/fpe-support-matrix/`.
+
 Build an empty output directory and serve it locally:
 
 ```bash
