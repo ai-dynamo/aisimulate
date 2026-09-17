@@ -35,7 +35,7 @@ use aisimulate_core::replay::{
     DynamicPlacementPlugin, ReplayEngineConfig, ReplayEngineFactory, ReplayTerminalStatus,
     SlaThresholds, WorkerStage, WorkerTopology,
 };
-use aisimulate_placement_abi::{PlacementLimitsV1, WorkerCapacityV1};
+use aisimulate_placement_abi::{MAX_BATCH_MUTATIONS_V1, PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -97,12 +97,13 @@ pub struct DynamicPlacementLimits {
 
 impl Default for DynamicPlacementLimits {
     fn default() -> Self {
-        // The neutral adapter calls the V1 provider once per replay mutation,
-        // so a one-record result bound is enough for the built-in composition.
+        // Direct batch submission crosses the placement ABI as one atomic
+        // mutation batch, so the default must admit the ABI's full bounded
+        // operation rather than silently disabling batches larger than one.
         Self {
-            max_mutations: 1,
-            max_admission_results: 1,
-            max_released: 1,
+            max_mutations: MAX_BATCH_MUTATIONS_V1,
+            max_admission_results: MAX_BATCH_MUTATIONS_V1,
+            max_released: MAX_BATCH_MUTATIONS_V1,
             max_diagnostic_bytes: 0,
         }
     }
@@ -286,8 +287,16 @@ fn catch_status(operation: impl FnOnce() -> StatusV1, handle: ReplayHandleV1) ->
     }
 }
 
+fn ffi_slice_len_is_valid<T>(len: u64) -> bool {
+    let Ok(len) = usize::try_from(len) else {
+        return false;
+    };
+    let element_size = std::mem::size_of::<T>();
+    element_size == 0 || len <= isize::MAX as usize / element_size
+}
+
 unsafe fn borrowed_tokens(slice: U32SliceV1) -> Result<&'static [u32], StatusV1> {
-    if slice.len > usize::MAX as u64
+    if !ffi_slice_len_is_valid::<u32>(slice.len)
         || (slice.data.is_null() && slice.len != 0)
         || (!slice.data.is_null() && !slice.data.is_aligned())
     {
@@ -387,7 +396,7 @@ unsafe fn create_impl(
         *handle = ReplayHandleV1(std::ptr::null_mut());
         *error = ByteSliceV1::EMPTY;
     }
-    if request.provider_payload.len > usize::MAX as u64
+    if !ffi_slice_len_is_valid::<u8>(request.provider_payload.len)
         || (request.provider_payload.data.is_null() && request.provider_payload.len != 0)
     {
         return StatusV1::INVALID_ARGUMENT;
@@ -588,8 +597,7 @@ unsafe fn register_hash_buffer_impl(
 ) -> StatusV1 {
     if buffer_id.is_null()
         || hash_ids.len == 0
-        || hash_ids.len > usize::MAX as u64
-        || hash_ids.len > isize::MAX as u64 / std::mem::size_of::<u32>() as u64
+        || !ffi_slice_len_is_valid::<u32>(hash_ids.len)
         || hash_ids.data.is_null()
         || !hash_ids.data.is_aligned()
     {
@@ -787,26 +795,36 @@ unsafe extern "C" fn submit_compact(
     }
 }
 
-unsafe extern "C" fn submit_batch(
+unsafe fn submit_batch_impl(
     handle: ReplayHandleV1,
     requests: DirectRequestSliceV1,
     request_ids: RequestIdMutSliceV1,
 ) -> StatusV1 {
-    if requests.len > usize::MAX as u64
+    if !ffi_slice_len_is_valid::<DirectRequestV1>(requests.len)
         || request_ids.len != requests.len
-        || request_ids.len > usize::MAX as u64
+        || !ffi_slice_len_is_valid::<RequestIdV1>(request_ids.len)
         || (requests.data.is_null() && requests.len != 0)
         || (request_ids.data.is_null() && request_ids.len != 0)
+        || (!requests.data.is_null() && !requests.data.is_aligned())
+        || (!request_ids.data.is_null() && !request_ids.data.is_aligned())
     {
         return StatusV1::INVALID_ARGUMENT;
     }
+    let output = if request_ids.len == 0 {
+        &mut []
+    } else {
+        // Safety: the output slice passed all raw-slice size, null, and
+        // alignment checks and is writable for this call.
+        unsafe { std::slice::from_raw_parts_mut(request_ids.data, request_ids.len as usize) }
+    };
+    output.fill([0; 16]);
     let requests = if requests.len == 0 {
         &[]
     } else {
         // Safety: non-empty input batch is valid for this FFI call.
         unsafe { std::slice::from_raw_parts(requests.data, requests.len as usize) }
     };
-    let converted = match requests
+    let mut converted = match requests
         .iter()
         .map(|request| {
             // Safety: each record's borrowed fields are valid for this call.
@@ -817,26 +835,49 @@ unsafe extern "C" fn submit_batch(
         Ok(requests) => requests,
         Err(status) => return status,
     };
-    let output = if request_ids.len == 0 {
-        &mut []
-    } else {
-        // Safety: caller supplies a writable output batch matching input size.
-        unsafe { std::slice::from_raw_parts_mut(request_ids.data, request_ids.len as usize) }
-    };
+    for request in &mut converted {
+        request.uuid.get_or_insert_with(Uuid::new_v4);
+    }
     let replay = match unsafe { backend_mut(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
-    for (request, output) in converted.into_iter().zip(output.iter_mut()) {
-        match replay.engine.submit(request) {
-            Ok(uuid) => *output = *uuid.as_bytes(),
-            Err(error) => {
-                replay.last_error = error.to_string();
-                return StatusV1::REJECTED;
+    match replay.engine.submit_batch(converted) {
+        Ok(uuids) => {
+            if uuids.len() != output.len() {
+                replay.last_error = format!(
+                    "atomic batch returned {} request IDs for {} requests",
+                    uuids.len(),
+                    output.len()
+                );
+                return StatusV1::INTERNAL;
+            }
+            for (uuid, output) in uuids.into_iter().zip(output) {
+                *output = *uuid.as_bytes();
+            }
+            StatusV1::OK
+        }
+        Err(error) => {
+            let poisoned = error.is_poisoned();
+            replay.last_error = error.to_string();
+            if poisoned {
+                StatusV1::INTERNAL
+            } else {
+                StatusV1::REJECTED
             }
         }
     }
-    StatusV1::OK
+}
+
+unsafe extern "C" fn submit_batch(
+    handle: ReplayHandleV1,
+    requests: DirectRequestSliceV1,
+    request_ids: RequestIdMutSliceV1,
+) -> StatusV1 {
+    catch_status(
+        || unsafe { submit_batch_impl(handle, requests, request_ids) },
+        handle,
+    )
 }
 
 unsafe extern "C" fn cancel(
@@ -894,8 +935,9 @@ unsafe extern "C" fn cancel_batch(
     events: *mut EngineEventSliceV1,
 ) -> StatusV1 {
     if events.is_null()
-        || request_ids.len > usize::MAX as u64
+        || !ffi_slice_len_is_valid::<RequestIdV1>(request_ids.len)
         || (request_ids.data.is_null() && request_ids.len != 0)
+        || (!request_ids.data.is_null() && !request_ids.data.is_aligned())
     {
         return StatusV1::INVALID_ARGUMENT;
     }
@@ -1095,7 +1137,7 @@ unsafe extern "C" fn release_bytes(bytes: ByteSliceV1) {
     if bytes.data.is_null() {
         return;
     }
-    if bytes.len > usize::MAX as u64 {
+    if !ffi_slice_len_is_valid::<u8>(bytes.len) {
         return;
     }
     // Safety: every non-empty output byte slice is allocated by
@@ -1111,7 +1153,7 @@ unsafe extern "C" fn release_events(events: EngineEventSliceV1) {
     if events.data.is_null() {
         return;
     }
-    if events.len > usize::MAX as u64 {
+    if !ffi_slice_len_is_valid::<EngineEventV1>(events.len) || !events.data.is_aligned() {
         return;
     }
     // Safety: `step` allocates exact-length boxed slices and transfers one
@@ -1124,7 +1166,10 @@ unsafe extern "C" fn release_events(events: EngineEventSliceV1) {
     }
 }
 unsafe extern "C" fn release_request_facts(facts: RequestFactSliceV1) {
-    if facts.data.is_null() || facts.len > usize::MAX as u64 {
+    if facts.data.is_null()
+        || !ffi_slice_len_is_valid::<RequestFactV1>(facts.len)
+        || !facts.data.is_aligned()
+    {
         return;
     }
     // Safety: `step` allocates exact-length boxed slices and transfers one
@@ -1291,6 +1336,338 @@ pub extern "C" fn aiperf_steppable_plugin_v1() -> *const PluginDescriptorV1 {
 mod tests {
     use super::*;
     use aisimulate_core::replay::ReplayRoleConfig;
+    use aisimulate_placement_abi::{
+        AdmissionDecisionV1, ByteSliceV1 as PlacementByteSliceV1, KvEventSliceV1,
+        PlacementBatchResultV1, PlacementCacheSampleV1, PlacementDiagnosticSliceV1,
+        PlacementHandleV1, PlacementMutationKindV1, PlacementMutationSliceV1,
+        PlacementResultSliceV1, PlacementResultV1, PlacementSliceV1, PlacementV1,
+        PluginVTableV1 as PlacementVTableV1, StatusV1 as PlacementStatusV1,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn ffi_slice_lengths_accept_the_exact_isize_byte_boundary() {
+        fn assert_boundary<T>() {
+            let maximum = isize::MAX as u64 / std::mem::size_of::<T>() as u64;
+            assert!(ffi_slice_len_is_valid::<T>(maximum));
+            assert!(!ffi_slice_len_is_valid::<T>(maximum + 1));
+        }
+
+        assert_boundary::<u32>();
+        assert_boundary::<DirectRequestV1>();
+        assert_boundary::<RequestIdV1>();
+    }
+
+    unsafe extern "C" fn atomic_batch_fixture_apply(
+        _handle: PlacementHandleV1,
+        batch: PlacementMutationSliceV1,
+        result: *mut PlacementBatchResultV1,
+    ) -> PlacementStatusV1 {
+        if batch.data.is_null() || batch.len == 0 || result.is_null() {
+            return PlacementStatusV1::INVALID_ARGUMENT;
+        }
+        if batch.len == 2 {
+            // The provider committed the first stateful placement before the
+            // second rejected. AISimulate must expose this as poison, without
+            // committing either request to replay accounting.
+            unsafe {
+                *result = PlacementBatchResultV1 {
+                    struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
+                    flags: 0,
+                    applied_mutations: 1,
+                    pending_count: 0,
+                    admission_results: PlacementResultSliceV1 {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                    released: PlacementSliceV1 {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                    diagnostics: PlacementDiagnosticSliceV1 {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                };
+            }
+            return PlacementStatusV1::REJECTED;
+        }
+        if batch.len != 1 {
+            return PlacementStatusV1::INVALID_ARGUMENT;
+        }
+        // Safety: the checked one-record batch is borrowed for this callback.
+        let mutation = unsafe { &*batch.data };
+        let admissions = if mutation.kind == PlacementMutationKindV1::ADMIT {
+            // Safety: the kind selects the admission union arm.
+            let admission = unsafe { mutation.payload.admission };
+            vec![PlacementResultV1 {
+                request_id: admission.request_id,
+                decision: AdmissionDecisionV1::IMMEDIATE,
+                reserved: [0; 4],
+                placement: PlacementV1 {
+                    request_id: admission.request_id,
+                    worker_id: 0,
+                    scheduler_id: 0,
+                    reported_overlap_tokens: 0,
+                    cache_sample: PlacementCacheSampleV1 {
+                        flags: 0,
+                        overlap_blocks: 0,
+                        best_available_overlap_blocks: 0,
+                        isl_blocks: 0,
+                    },
+                    placement_replica_id: 0,
+                    reserved: 0,
+                },
+            }]
+            .into_boxed_slice()
+        } else {
+            Vec::new().into_boxed_slice()
+        };
+        let admission_results = PlacementResultSliceV1 {
+            data: admissions.as_ptr(),
+            len: admissions.len() as u64,
+        };
+        std::mem::forget(admissions);
+        unsafe {
+            *result = PlacementBatchResultV1 {
+                struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
+                flags: 0,
+                applied_mutations: 1,
+                pending_count: 0,
+                admission_results,
+                released: PlacementSliceV1 {
+                    data: std::ptr::null(),
+                    len: 0,
+                },
+                diagnostics: PlacementDiagnosticSliceV1 {
+                    data: std::ptr::null(),
+                    len: 0,
+                },
+            };
+        }
+        PlacementStatusV1::OK
+    }
+
+    unsafe extern "C" fn atomic_batch_fixture_kv(
+        _handle: PlacementHandleV1,
+        events: KvEventSliceV1,
+        _now_ms: f64,
+        result: *mut PlacementBatchResultV1,
+    ) -> PlacementStatusV1 {
+        if result.is_null() {
+            return PlacementStatusV1::INVALID_ARGUMENT;
+        }
+        unsafe {
+            *result = PlacementBatchResultV1 {
+                struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
+                flags: 0,
+                applied_mutations: events.len,
+                pending_count: 0,
+                admission_results: PlacementResultSliceV1 {
+                    data: std::ptr::null(),
+                    len: 0,
+                },
+                released: PlacementSliceV1 {
+                    data: std::ptr::null(),
+                    len: 0,
+                },
+                diagnostics: PlacementDiagnosticSliceV1 {
+                    data: std::ptr::null(),
+                    len: 0,
+                },
+            };
+        }
+        PlacementStatusV1::OK
+    }
+
+    unsafe extern "C" fn atomic_batch_fixture_release(result: PlacementBatchResultV1) {
+        if !result.admission_results.data.is_null() {
+            unsafe {
+                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                    result.admission_results.data.cast_mut(),
+                    result.admission_results.len as usize,
+                )));
+            }
+        }
+    }
+
+    unsafe extern "C" fn atomic_batch_fixture_release_bytes(_bytes: PlacementByteSliceV1) {}
+
+    unsafe extern "C" fn atomic_batch_fixture_last_error(
+        _handle: PlacementHandleV1,
+        error: *mut PlacementByteSliceV1,
+    ) -> PlacementStatusV1 {
+        if error.is_null() {
+            return PlacementStatusV1::INVALID_ARGUMENT;
+        }
+        unsafe { *error = PlacementByteSliceV1::EMPTY };
+        PlacementStatusV1::OK
+    }
+
+    unsafe extern "C" fn atomic_batch_fixture_destroy(_handle: PlacementHandleV1) {}
+
+    static ATOMIC_BATCH_FIXTURE_VTABLE: PlacementVTableV1 = PlacementVTableV1 {
+        struct_size: std::mem::size_of::<PlacementVTableV1>() as u32,
+        flags: 0,
+        create: None,
+        apply_batch: Some(atomic_batch_fixture_apply),
+        release_results: Some(atomic_batch_fixture_release),
+        release_bytes: Some(atomic_batch_fixture_release_bytes),
+        last_error: Some(atomic_batch_fixture_last_error),
+        destroy: Some(atomic_batch_fixture_destroy),
+        apply_kv_events: Some(atomic_batch_fixture_kv),
+    };
+
+    unsafe extern "C" fn count_release(context: *mut std::ffi::c_void, _id: HashBufferIdV1) {
+        unsafe { &*context.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn exported_batch_poison_stops_a_partial_placement_after_a_compact_lease() {
+        let factory = ReplayEngineFactory::new();
+        let engine = SteppableAgg::<
+            DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+            DynamicKvEventObservation,
+            DynamicPlacementMetadata,
+        >::with_placement(
+            ReplayEngineConfig::default(),
+            &factory,
+            1,
+            |_dp_size, _topology| {
+                let policy = unsafe {
+                    aisimulate_core::replay::DynamicPlacementPolicy::from_test_vtable(
+                        ATOMIC_BATCH_FIXTURE_VTABLE,
+                        PlacementLimitsV1 {
+                            max_mutations: 2,
+                            max_admission_results: 2,
+                            max_released: 2,
+                            max_diagnostic_bytes: 0,
+                        },
+                    )
+                };
+                Ok(Box::new(policy))
+            },
+        )
+        .expect("fixture replay builds");
+        let releases = AtomicUsize::new(0);
+        let replay = Box::new(BackendReplay {
+            engine: Box::new(engine),
+            last_error: String::new(),
+            lease_callbacks: Some(HashBufferLeaseCallbacksV1 {
+                struct_size: std::mem::size_of::<HashBufferLeaseCallbacksV1>() as u32,
+                flags: 0,
+                context: (&raw const releases).cast_mut().cast(),
+                release_hash_buffer: Some(count_release),
+            }),
+            hash_buffers: HashMap::new(),
+            next_hash_buffer_id: 1,
+        });
+        let handle = ReplayHandleV1(Box::into_raw(replay).cast());
+
+        let hashes = [11_u32, 12];
+        let mut buffer_id = HashBufferIdV1::INVALID;
+        assert_eq!(
+            unsafe {
+                register_hash_buffer(
+                    handle,
+                    U32SliceV1 {
+                        data: hashes.as_ptr(),
+                        len: hashes.len() as u64,
+                    },
+                    &raw mut buffer_id,
+                )
+            },
+            StatusV1::OK
+        );
+        let mut compact_id = [0; 16];
+        assert_eq!(
+            unsafe {
+                submit_compact_hash_buffer_range(
+                    handle,
+                    CompactRequestV1 {
+                        struct_size: std::mem::size_of::<CompactRequestV1>() as u32,
+                        flags: 0,
+                        input_token_count: 8,
+                        trace_block_size: 4,
+                        reserved: 0,
+                        hash_ids: U32SliceV1::EMPTY,
+                        request: DirectRequestV1 {
+                            struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+                            flags: REQUEST_FLAG_UUID,
+                            tokens: U32SliceV1::EMPTY,
+                            output_token_ids: U32SliceV1::EMPTY,
+                            max_output_tokens: 1,
+                            uuid: [41; 16],
+                            dp_rank: 0,
+                            preferred_dp_rank: 0,
+                            preferred_prefill_dp_rank: 0,
+                            arrival_timestamp_ms: 0.0,
+                            priority: 0,
+                            strict_priority: 0,
+                            policy_class: ByteSliceV1::EMPTY,
+                            replay_context: aiperf_steppable_abi::ReplayContextV1::EMPTY,
+                        },
+                    },
+                    HashBufferRangeV1 {
+                        buffer_id,
+                        offset: 0,
+                        len: 2,
+                    },
+                    &raw mut compact_id,
+                )
+            },
+            StatusV1::OK
+        );
+
+        let tokens = [1_u32];
+        let request = |uuid| DirectRequestV1 {
+            struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+            flags: REQUEST_FLAG_UUID,
+            tokens: U32SliceV1 {
+                data: tokens.as_ptr(),
+                len: 1,
+            },
+            output_token_ids: U32SliceV1::EMPTY,
+            max_output_tokens: 1,
+            uuid,
+            dp_rank: 0,
+            preferred_dp_rank: 0,
+            preferred_prefill_dp_rank: 0,
+            arrival_timestamp_ms: 0.0,
+            priority: 0,
+            strict_priority: 0,
+            policy_class: ByteSliceV1::EMPTY,
+            replay_context: aiperf_steppable_abi::ReplayContextV1::EMPTY,
+        };
+        let requests = [request([50; 16]), request([51; 16])];
+        let mut request_ids = [[99; 16]; 2];
+        assert_eq!(
+            unsafe {
+                submit_batch(
+                    handle,
+                    DirectRequestSliceV1 {
+                        data: requests.as_ptr(),
+                        len: 2,
+                    },
+                    RequestIdMutSliceV1 {
+                        data: request_ids.as_mut_ptr(),
+                        len: 2,
+                    },
+                )
+            },
+            StatusV1::INTERNAL
+        );
+        assert_eq!(request_ids, [[0; 16]; 2]);
+        let replay = unsafe { backend_mut(handle) }.expect("handle remains owned by test");
+        assert_eq!(
+            replay.engine.in_flight(),
+            1,
+            "only the compact request is live"
+        );
+
+        unsafe { destroy(handle) };
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn compact_lease_range_ffi_entry_contains_an_injected_panic() {

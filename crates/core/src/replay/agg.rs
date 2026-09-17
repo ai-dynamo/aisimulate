@@ -4,8 +4,8 @@
 use super::artifact::{ReplayArtifactRequest, ReplayArtifactSink};
 pub(super) use super::components::ReplayMode;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
-    PlacementPolicy, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementBatchError,
+    PlacementBatchRequest, PlacementDecision, PlacementPolicy, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -366,8 +366,6 @@ where
         session_id: Option<String>,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
-        let input_length = request.input_length();
-        let output_length = request.metadata().effective_max_output_tokens();
         request.metadata_mut().uuid = Some(uuid);
         if matches!(self.admission.mode(), ReplayMode::Concurrency { .. }) {
             request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
@@ -376,6 +374,18 @@ where
         let effects = self
             .placement
             .place(&request, metadata, session_id, self.now_ms)?;
+        let rank_identity = self.validate_placement_decision(uuid, &effects.decision)?;
+        self.commit_placed_request(request, arrival_time_ms, effects.decision, rank_identity)?;
+        self.dispatch_placements(effects.released)?;
+        Ok(uuid)
+    }
+
+    /// Resolve every provider-owned reference before replay accounting starts.
+    fn validate_placement_decision(
+        &self,
+        uuid: Uuid,
+        decision: &PlacementDecision,
+    ) -> anyhow::Result<Option<(usize, u32)>> {
         // Resolve everything that can still fail on the placement policy's
         // behalf BEFORE any accounting lands. The request-id mismatch check was
         // already hoisted above `on_arrival`/`traffic.on_arrival` for exactly
@@ -387,7 +397,7 @@ where
         // `traffic.on_arrival()` and `record_placement`'s hit-rate sample had
         // all already landed, leaving a half-admitted request behind on an
         // error the caller is expected to survive.
-        let rank_identity = match &effects.decision {
+        match decision {
             PlacementDecision::Immediate(placement) => {
                 if placement.request_id != uuid {
                     bail!(
@@ -395,7 +405,7 @@ where
                         placement.request_id
                     );
                 }
-                Some(
+                Ok(Some(
                     self.engine
                         .rank_identity(placement.scheduler_id)
                         .ok_or_else(|| {
@@ -404,17 +414,33 @@ where
                                 placement.scheduler_id
                             )
                         })?,
-                )
+                ))
             }
-            PlacementDecision::Queued => None,
-        };
+            PlacementDecision::Queued => Ok(None),
+        }
+    }
+
+    /// Commit one already-placed request without invoking placement again.
+    fn commit_placed_request(
+        &mut self,
+        request: ReplayRequestPayload,
+        arrival_time_ms: f64,
+        decision: PlacementDecision,
+        rank_identity: Option<(usize, u32)>,
+    ) -> anyhow::Result<()> {
+        let uuid = request
+            .metadata()
+            .uuid
+            .expect("placement validation requires a request UUID");
+        let input_length = request.input_length();
+        let output_length = request.metadata().effective_max_output_tokens();
         self.collector
             .on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
         self.traffic.on_arrival();
-        match (effects.decision, rank_identity) {
+        match (decision, rank_identity) {
             (PlacementDecision::Immediate(placement), Some((logical_worker_id, dp_rank))) => {
                 self.record_placement(placement);
                 self.collector.on_route_immediate(
@@ -455,8 +481,7 @@ where
                 bail!("offline replay lost the resolved scheduler identity for {uuid}")
             }
         }
-        self.dispatch_placements(effects.released)?;
-        Ok(uuid)
+        Ok(())
     }
 
     /// Return true once no request work remains. Lingering worker/control tick
@@ -1801,18 +1826,89 @@ where
         Ok(uuid)
     }
 
-    /// Preflight the provider-owned, recoverable placement validation for an
-    /// externally atomic batch. This is intentionally read-only: the ABI
-    /// caller needs every request rejected before the first placement, engine,
-    /// collector, or traffic mutation. Dynamic submits are only driven at
-    /// steppable boundaries, so after this validation the remaining admission
-    /// path has no externally supplied fallible inputs.
-    pub(crate) fn preflight_dynamic_batch(&self, requests: &[DirectRequest]) -> anyhow::Result<()> {
-        for request in requests {
-            self.placement
-                .preflight_batch_request(&ReplayRequestPayload::materialized(request.clone()))?;
+    /// Atomically place and admit one owned materialized batch.
+    ///
+    /// The only prompt ownership transfer is the conversion into replay
+    /// payloads below. Placement borrows those payloads for its explicit batch
+    /// transaction; commit then moves them into the engine or queued state.
+    pub(crate) fn submit_dynamic_batch(
+        &mut self,
+        requests: Vec<DirectRequest>,
+    ) -> std::result::Result<Vec<Uuid>, PlacementBatchError> {
+        let arrival_time_ms = self.now_ms;
+        let concurrency_mode = matches!(self.admission.mode(), ReplayMode::Concurrency { .. });
+        let mut requests = requests
+            .into_iter()
+            .map(ReplayRequestPayload::materialized)
+            .collect::<Vec<_>>();
+        if concurrency_mode {
+            for request in &mut requests {
+                request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
+            }
         }
-        Ok(())
+
+        let placement_requests = requests
+            .iter()
+            .map(|request| PlacementBatchRequest {
+                request,
+                metadata: Metadata::from_hashes(None),
+                session_id: None,
+            })
+            .collect();
+        let effects = self
+            .placement
+            .place_batch(placement_requests, self.now_ms)?;
+        if effects.decisions.len() != requests.len() {
+            return Err(PlacementBatchError::poisoned(anyhow::anyhow!(
+                "placement batch returned {} decisions for {} requests",
+                effects.decisions.len(),
+                requests.len()
+            )));
+        }
+
+        let mut rank_identities = Vec::with_capacity(requests.len());
+        for (request, decision) in requests.iter().zip(&effects.decisions) {
+            let uuid = request.metadata().uuid.ok_or_else(|| {
+                PlacementBatchError::poisoned(anyhow::anyhow!(
+                    "placement batch request is missing a UUID after placement"
+                ))
+            })?;
+            rank_identities.push(
+                self.validate_placement_decision(uuid, decision)
+                    .map_err(PlacementBatchError::poisoned)?,
+            );
+        }
+        for placement in &effects.released {
+            self.engine
+                .rank_identity(placement.scheduler_id)
+                .ok_or_else(|| {
+                    PlacementBatchError::poisoned(anyhow::anyhow!(
+                        "offline replay placement references unknown scheduler {}",
+                        placement.scheduler_id
+                    ))
+                })?;
+        }
+
+        let mut accepted = Vec::with_capacity(requests.len());
+        for ((request, decision), rank_identity) in requests
+            .into_iter()
+            .zip(effects.decisions)
+            .zip(rank_identities)
+        {
+            let uuid = request
+                .metadata()
+                .uuid
+                .expect("batch placement UUID was validated above");
+            self.commit_placed_request(request, arrival_time_ms, decision, rank_identity)
+                .map_err(PlacementBatchError::poisoned)?;
+            accepted.push(uuid);
+        }
+        self.dispatch_placements(effects.released)
+            .map_err(PlacementBatchError::poisoned)?;
+        if self.defer_drive && !accepted.is_empty() {
+            self.drive_pending = true;
+        }
+        Ok(accepted)
     }
 
     /// Admit a trace-compiled request without retaining a materialized prompt.

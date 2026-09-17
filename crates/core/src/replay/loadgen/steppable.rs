@@ -46,7 +46,7 @@ use crate::replay::components::{
 };
 use crate::replay::core::NoEngineEvents;
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
-use crate::replay::core::{PlacementPolicy, WorkerTopology};
+use crate::replay::core::{PlacementBatchError, PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleFactory};
 use crate::replay::loadgen::types::CompactHashIds;
@@ -110,6 +110,13 @@ pub struct StepOutcome {
     /// Per-request events emitted during this step, tokens first.
     pub events: Vec<EngineEvent>,
 }
+
+/// Error from an atomic direct-request batch submission.
+///
+/// A normal rejection leaves the replay unchanged and retryable. A poisoned
+/// error means a provider/internal fault may have mutated hidden state; the
+/// replay rejects every later fallible operation and must be destroyed.
+pub type BatchSubmissionError = PlacementBatchError;
 
 /// A full-prompt request in the compact representation emitted by the legacy
 /// trace compiler. `hash_ids` contains one canonical identity per trace block;
@@ -225,8 +232,13 @@ pub trait SteppableReplay {
     /// borrow provider-owned storage, while this transaction owns only the
     /// already-materialized requests supplied by its caller. Implementations
     /// must either accept every request or leave the replay unchanged.
-    fn submit_batch(&mut self, _requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
-        anyhow::bail!("this steppable replay does not support atomic direct batch submission")
+    fn submit_batch(
+        &mut self,
+        _requests: Vec<DirectRequest>,
+    ) -> Result<Vec<Uuid>, BatchSubmissionError> {
+        Err(BatchSubmissionError::unchanged(anyhow::anyhow!(
+            "this steppable replay does not support atomic direct batch submission"
+        )))
     }
 
     /// Admit a compact full-prompt trace at the current simulated time.
@@ -359,6 +371,7 @@ pub struct SteppableAgg<
     runtime: AggRuntimeImpl<P, O, M>,
     live: LiveRequests,
     engine_block_size: usize,
+    poisoned: Option<String>,
 }
 
 /// The aggregated role factory both constructors below build identically,
@@ -447,6 +460,7 @@ where
             runtime,
             live: LiveRequests::default(),
             engine_block_size,
+            poisoned: None,
         })
     }
 }
@@ -499,7 +513,22 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
             runtime,
             live: LiveRequests::default(),
             engine_block_size,
+            poisoned: None,
         })
+    }
+}
+
+impl<P, O, M> SteppableAgg<P, O, M>
+where
+    O: ReplayEngineObservation,
+    M: ReplayAdmissionMetadata,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = M, Observation = O::Batch>,
+{
+    fn ensure_healthy(&self) -> anyhow::Result<()> {
+        if let Some(error) = &self.poisoned {
+            anyhow::bail!("steppable replay is poisoned after atomic batch failure: {error}");
+        }
+        Ok(())
     }
 }
 
@@ -514,6 +543,10 @@ where
     }
 
     fn advance_now_ms(&mut self, now_ms: f64) {
+        if let Some(error) = &self.poisoned {
+            tracing::error!(%error, "steppable replay ignored a clock advance after poison");
+            return;
+        }
         if !now_ms.is_finite() {
             // Not the sanctioned monotonic no-op: the contract admits a time
             // at or before the current one, which NaN and +-inf are not.
@@ -534,6 +567,7 @@ where
     }
 
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        self.ensure_healthy()?;
         if let Some(uuid) = request.uuid
             && self.live.contains(uuid)
         {
@@ -549,7 +583,13 @@ where
         Ok(uuid)
     }
 
-    fn submit_batch(&mut self, requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
+    fn submit_batch(
+        &mut self,
+        requests: Vec<DirectRequest>,
+    ) -> Result<Vec<Uuid>, BatchSubmissionError> {
+        if let Err(error) = self.ensure_healthy() {
+            return Err(BatchSubmissionError::poisoned(error));
+        }
         // This seam admits requests only between externally-driven steps. No
         // worker pass can run while this method is evaluating, so all
         // externally-rejectable direct-request conflicts are decided before
@@ -557,34 +597,39 @@ where
         // crossing this boundary; nevertheless reject a missing UUID here so
         // the all-or-nothing contract does not depend on that ABI detail.
         let mut batch_ids = HashSet::with_capacity(requests.len());
-        for request in requests {
-            let uuid = request
-                .uuid
-                .ok_or_else(|| anyhow::anyhow!("atomic direct batch request is missing a UUID"))?;
+        for request in &requests {
+            let uuid = request.uuid.ok_or_else(|| {
+                BatchSubmissionError::unchanged(anyhow::anyhow!(
+                    "atomic direct batch request is missing a UUID"
+                ))
+            })?;
             if !batch_ids.insert(uuid)
                 || self.live.contains(uuid)
                 || self.runtime.collector().contains_request(uuid)
             {
-                anyhow::bail!("steppable replay request {uuid} is already retained");
+                return Err(BatchSubmissionError::unchanged(anyhow::anyhow!(
+                    "steppable replay request {uuid} is already retained"
+                )));
             }
         }
 
-        self.runtime.preflight_dynamic_batch(requests)?;
-
-        // `submit_dynamic` is the single admission path. The precondition
-        // above excludes its externally-recoverable duplicate-ID rejection;
-        // a remaining error is an internal replay invariant failure, which is
-        // not safe to conceal behind a partial ABI result.
-        let mut accepted = Vec::with_capacity(requests.len());
-        for request in requests {
-            let uuid = self.runtime.submit_dynamic(request.clone())?;
-            self.live.insert(uuid, None);
-            accepted.push(uuid);
+        let accepted = match self.runtime.submit_dynamic_batch(requests) {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                if error.is_poisoned() {
+                    self.poisoned = Some(error.to_string());
+                }
+                return Err(error);
+            }
+        };
+        for uuid in &accepted {
+            self.live.insert(*uuid, None);
         }
         Ok(accepted)
     }
 
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        self.ensure_healthy()?;
         if let Some(uuid) = request.request.uuid
             && self.live.contains(uuid)
         {
@@ -604,6 +649,7 @@ where
     }
 
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
+        self.ensure_healthy()?;
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
             self.runtime.discard_step_terminal(uuid);
@@ -613,6 +659,7 @@ where
     }
 
     fn step_until(&mut self, until_ms: f64) -> anyhow::Result<StepOutcome> {
+        self.ensure_healthy()?;
         let end_ms = self.runtime.step_dynamic_until(until_ms)?;
         let tokens = self.runtime.take_step_tokens();
         let mut events = tokens
@@ -627,6 +674,9 @@ where
     }
 
     fn next_event_ms(&mut self) -> Option<f64> {
+        if self.poisoned.is_some() {
+            return None;
+        }
         self.runtime.next_timestamp()
     }
 
@@ -661,6 +711,7 @@ where
     }
 
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
+        self.ensure_healthy()?;
         self.runtime.take_report_dynamic(wall_ms)
     }
 }
@@ -704,7 +755,10 @@ impl SteppableReplay for SteppableEngine {
         self.inner.submit(request)
     }
 
-    fn submit_batch(&mut self, requests: &[DirectRequest]) -> anyhow::Result<Vec<Uuid>> {
+    fn submit_batch(
+        &mut self,
+        requests: Vec<DirectRequest>,
+    ) -> Result<Vec<Uuid>, BatchSubmissionError> {
         self.inner.submit_batch(requests)
     }
 
@@ -1036,7 +1090,10 @@ mod tests {
 
     use super::*;
     use crate::replay::components::NoReplayMetadata;
-    use crate::replay::core::{EngineEventBatch, Placement, PlacementEffects};
+    use crate::replay::core::{
+        EngineEventBatch, Placement, PlacementBatchEffects, PlacementBatchError,
+        PlacementBatchRequest, PlacementDecision, PlacementEffects,
+    };
 
     fn request(uuid: u128, input_length: usize, max_output_tokens: usize) -> DirectRequest {
         DirectRequest {
@@ -1114,6 +1171,20 @@ mod tests {
             anyhow::ensure!(self.is_settled, "placed before the topology settled");
             self.calls.borrow_mut().places += 1;
             self.inner.place(request, metadata, session_id, now_ms)
+        }
+
+        fn place_batch(
+            &mut self,
+            requests: Vec<PlacementBatchRequest<'_, ReplayRequestPayload, Self::Metadata>>,
+            now_ms: f64,
+        ) -> Result<PlacementBatchEffects, PlacementBatchError> {
+            if !self.is_settled {
+                return Err(PlacementBatchError::unchanged(anyhow::anyhow!(
+                    "placed before the topology settled"
+                )));
+            }
+            self.calls.borrow_mut().places += requests.len();
+            self.inner.place_batch(requests, now_ms)
         }
 
         fn observe(&mut self, observation: Events, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
@@ -1776,7 +1847,7 @@ mod tests {
         let mut engine = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
 
         let error = engine
-            .submit_batch(&[request(20, 128, 16), request(20, 128, 16)])
+            .submit_batch(vec![request(20, 128, 16), request(20, 128, 16)])
             .unwrap_err();
 
         assert!(error.to_string().contains("already retained"), "{error}");
@@ -1785,6 +1856,155 @@ mod tests {
         assert_eq!(
             engine.submit(request(20, 128, 16)).unwrap(),
             Uuid::from_u128(20)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct RejectsSecondPlacement {
+        placements: usize,
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for RejectsSecondPlacement {
+        type Metadata = NoReplayMetadata;
+        type Observation = ();
+
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _metadata: Self::Metadata,
+            _session_id: Option<String>,
+            _now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            self.placements += 1;
+            anyhow::ensure!(self.placements != 2, "second placement rejected");
+            Ok(PlacementEffects {
+                decision: PlacementDecision::Immediate(Placement {
+                    request_id: request.metadata().uuid.expect("test request has UUID"),
+                    scheduler_id: 0,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                    placement_replica_id: None,
+                }),
+                released: Vec::new(),
+            })
+        }
+
+        fn place_batch(
+            &mut self,
+            requests: Vec<PlacementBatchRequest<'_, ReplayRequestPayload, Self::Metadata>>,
+            now_ms: f64,
+        ) -> Result<PlacementBatchEffects, PlacementBatchError> {
+            let mut staged = self.clone();
+            let mut decisions = Vec::with_capacity(requests.len());
+            let mut released = Vec::new();
+            for request in requests {
+                let effects = staged
+                    .place(
+                        request.request,
+                        request.metadata,
+                        request.session_id,
+                        now_ms,
+                    )
+                    .map_err(PlacementBatchError::unchanged)?;
+                decisions.push(effects.decision);
+                released.extend(effects.released);
+            }
+            *self = staged;
+            Ok(PlacementBatchEffects {
+                decisions,
+                released,
+            })
+        }
+
+        fn observe(
+            &mut self,
+            _observation: Self::Observation,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn cancel_pending(&mut self, _request_id: Uuid) -> bool {
+            false
+        }
+
+        fn request_terminal(
+            &mut self,
+            _request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn prefill_completed(
+            &mut self,
+            _request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn pending_count(&self) -> usize {
+            0
+        }
+
+        fn worker_ready(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_draining(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_removed(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn stateful_batch_rejection_does_not_commit_the_successful_prefix() {
+        let mut engine = SteppableAgg::<
+            DynPlacement<NoEngineEvents, NoReplayMetadata>,
+            NoEngineEvents,
+            NoReplayMetadata,
+        >::with_placement(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            |_dp_size, _topology| {
+                Ok(Box::new(RejectsSecondPlacement::default())
+                    as DynPlacement<NoEngineEvents, NoReplayMetadata>)
+            },
+        )
+        .expect("engine builds");
+
+        let error = engine
+            .submit_batch(vec![request(30, 128, 1), request(31, 128, 1)])
+            .expect_err("second stateful placement rejects the whole batch");
+
+        assert!(!error.is_poisoned(), "staged rejection keeps replay usable");
+        assert_eq!(engine.in_flight(), 0);
+        assert_eq!(
+            engine
+                .submit(request(32, 128, 1))
+                .expect("the live placement state did not commit the first call"),
+            Uuid::from_u128(32)
         );
     }
 

@@ -120,8 +120,9 @@ pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObse
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
-    Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    Placement, PlacementBatchEffects, PlacementBatchError, PlacementBatchRequest,
+    PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy, RequestIdentity,
+    WorkerTopology,
 };
 pub use dynamic_placement::{
     DynamicKvEventObservation, DynamicPlacementConfig, DynamicPlacementMetadata,

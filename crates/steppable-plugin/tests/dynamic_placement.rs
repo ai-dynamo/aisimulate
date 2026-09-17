@@ -69,43 +69,45 @@ unsafe extern "C" fn apply_batch(
     batch: PlacementMutationSliceV1,
     result: *mut PlacementBatchResultV1,
 ) -> StatusV1 {
-    if batch.len != 1 || batch.data.is_null() || result.is_null() {
+    if batch.len == 0 || batch.data.is_null() || result.is_null() {
         return StatusV1::INVALID_ARGUMENT;
     }
-    // Safety: one non-null mutation was checked above.
-    let mutation = unsafe { *batch.data };
+    // Safety: a non-empty batch was checked above and is borrowed for this call.
+    let mutations = unsafe { std::slice::from_raw_parts(batch.data, batch.len as usize) };
     let mut fixture = FIXTURE.lock().expect("fixture lock");
     fixture.admissions.clear();
-    if mutation.kind == PlacementMutationKindV1::ADMIT {
-        // Safety: the mutation kind selects the admission union member.
-        let admission = unsafe { mutation.payload.admission };
-        fixture.admitted = Some(admission.request_id);
-        fixture.admissions.push(PlacementResultV1 {
-            request_id: admission.request_id,
-            decision: AdmissionDecisionV1::IMMEDIATE,
-            reserved: [0; 4],
-            placement: PlacementV1 {
+    for mutation in mutations {
+        if mutation.kind == PlacementMutationKindV1::ADMIT {
+            // Safety: the mutation kind selects the admission union member.
+            let admission = unsafe { mutation.payload.admission };
+            fixture.admitted = Some(admission.request_id);
+            fixture.admissions.push(PlacementResultV1 {
                 request_id: admission.request_id,
-                worker_id: 0,
-                scheduler_id: 0,
-                reported_overlap_tokens: 0,
-                cache_sample: PlacementCacheSampleV1 {
-                    flags: 0,
-                    overlap_blocks: 0,
-                    best_available_overlap_blocks: 0,
-                    isl_blocks: 0,
+                decision: AdmissionDecisionV1::IMMEDIATE,
+                reserved: [0; 4],
+                placement: PlacementV1 {
+                    request_id: admission.request_id,
+                    worker_id: 0,
+                    scheduler_id: 0,
+                    reported_overlap_tokens: 0,
+                    cache_sample: PlacementCacheSampleV1 {
+                        flags: 0,
+                        overlap_blocks: 0,
+                        best_available_overlap_blocks: 0,
+                        isl_blocks: 0,
+                    },
+                    placement_replica_id: 0,
+                    reserved: 0,
                 },
-                placement_replica_id: 0,
-                reserved: 0,
-            },
-        });
+            });
+        }
     }
     // Safety: the checked non-null output has one complete result written.
     unsafe {
         *result = PlacementBatchResultV1 {
             struct_size: std::mem::size_of::<PlacementBatchResultV1>() as u32,
             flags: 0,
-            applied_mutations: 1,
+            applied_mutations: batch.len,
             pending_count: 0,
             admission_results: PlacementResultSliceV1 {
                 data: fixture.admissions.as_ptr(),
@@ -122,6 +124,26 @@ unsafe extern "C" fn apply_batch(
         };
     }
     StatusV1::OK
+}
+
+unsafe extern "C" fn apply_batch_with_partial_failure(
+    handle: PlacementHandleV1,
+    batch: PlacementMutationSliceV1,
+    result: *mut PlacementBatchResultV1,
+) -> StatusV1 {
+    if batch.len == 1 {
+        return unsafe { apply_batch(handle, batch, result) };
+    }
+    if batch.len != 2 || batch.data.is_null() || result.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    // Model a provider that commits the first stateful placement and rejects
+    // the second because the first changed its state.
+    unsafe {
+        (*result).applied_mutations = 1;
+        (*result).pending_count = 0;
+    }
+    StatusV1::REJECTED
 }
 
 unsafe extern "C" fn apply_prefill_batch(
@@ -192,6 +214,11 @@ static DECODE_FIXTURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
     ..FIXTURE_VTABLE
 };
 
+static PARTIAL_FAILURE_VTABLE: PluginVTableV1 = PluginVTableV1 {
+    apply_batch: Some(apply_batch_with_partial_failure),
+    ..FIXTURE_VTABLE
+};
+
 #[test]
 fn aggregated_steppable_uses_the_dynamic_placement_abi_fixture() {
     let _test_lock = TEST_LOCK.lock().expect("test lock");
@@ -238,6 +265,119 @@ fn aggregated_steppable_uses_the_dynamic_placement_abi_fixture() {
     assert_eq!(
         FIXTURE.lock().expect("fixture lock").admitted,
         Some(request_id.into_bytes())
+    );
+}
+
+#[test]
+fn dynamic_placement_batch_commits_through_one_provider_transaction() {
+    let _test_lock = TEST_LOCK.lock().expect("test lock");
+    *FIXTURE.lock().expect("fixture lock") = Fixture::default();
+    let factory = ReplayEngineFactory::new();
+    let mut replay = SteppableAgg::<
+        DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+        DynamicKvEventObservation,
+        DynamicPlacementMetadata,
+    >::with_placement(
+        ReplayEngineConfig::default(),
+        &factory,
+        1,
+        |_dp_size, _topology| {
+            let policy = unsafe {
+                DynamicPlacementPolicy::from_test_vtable(
+                    FIXTURE_VTABLE,
+                    PlacementLimitsV1 {
+                        max_mutations: 2,
+                        max_admission_results: 2,
+                        max_released: 2,
+                        max_diagnostic_bytes: 0,
+                    },
+                )
+            };
+            Ok(Box::new(policy))
+        },
+    )
+    .expect("dynamic placement fixture builds the aggregate replay");
+
+    let accepted = replay
+        .submit_batch(vec![
+            DirectRequest {
+                uuid: Some(Uuid::from_u128(20)),
+                tokens: vec![1, 2, 3],
+                max_output_tokens: 1,
+                ..Default::default()
+            },
+            DirectRequest {
+                uuid: Some(Uuid::from_u128(21)),
+                tokens: vec![4, 5, 6],
+                max_output_tokens: 1,
+                ..Default::default()
+            },
+        ])
+        .expect("provider accepts the complete transaction");
+
+    assert_eq!(accepted, vec![Uuid::from_u128(20), Uuid::from_u128(21)]);
+    assert_eq!(replay.in_flight(), 2);
+}
+
+#[test]
+fn dynamic_placement_partial_batch_failure_poison_stops_the_replay() {
+    let _test_lock = TEST_LOCK.lock().expect("test lock");
+    let factory = ReplayEngineFactory::new();
+    let mut replay = SteppableAgg::<
+        DynPlacement<DynamicKvEventObservation, DynamicPlacementMetadata>,
+        DynamicKvEventObservation,
+        DynamicPlacementMetadata,
+    >::with_placement(
+        ReplayEngineConfig::default(),
+        &factory,
+        1,
+        |_dp_size, _topology| {
+            let policy = unsafe {
+                DynamicPlacementPolicy::from_test_vtable(
+                    PARTIAL_FAILURE_VTABLE,
+                    PlacementLimitsV1 {
+                        max_mutations: 2,
+                        max_admission_results: 2,
+                        max_released: 2,
+                        max_diagnostic_bytes: 0,
+                    },
+                )
+            };
+            Ok(Box::new(policy))
+        },
+    )
+    .expect("dynamic placement fixture builds the aggregate replay");
+
+    let error = replay
+        .submit_batch(vec![
+            DirectRequest {
+                uuid: Some(Uuid::from_u128(30)),
+                tokens: vec![1],
+                max_output_tokens: 1,
+                ..Default::default()
+            },
+            DirectRequest {
+                uuid: Some(Uuid::from_u128(31)),
+                tokens: vec![2],
+                max_output_tokens: 1,
+                ..Default::default()
+            },
+        ])
+        .expect_err("provider reports a committed prefix");
+
+    assert!(error.is_poisoned());
+    assert_eq!(replay.in_flight(), 0);
+    assert!(
+        replay
+            .submit(DirectRequest {
+                uuid: Some(Uuid::from_u128(32)),
+                tokens: vec![3],
+                max_output_tokens: 1,
+                ..Default::default()
+            })
+            .expect_err("poisoned replay rejects later use")
+            .to_string()
+            .contains("poisoned")
     );
 }
 

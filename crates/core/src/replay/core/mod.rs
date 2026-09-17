@@ -6,7 +6,10 @@
 //! Runtime adapters and concrete policies live one level up so this directory
 //! can later become a standalone crate without deployment-specific APIs.
 
-use anyhow::Result;
+use std::error::Error;
+use std::fmt;
+
+use anyhow::{Result, anyhow};
 use uuid::Uuid;
 
 use crate::replay::ReplayTerminalStatus;
@@ -87,6 +90,73 @@ pub struct PlacementEffects {
     pub released: Vec<Placement>,
 }
 
+/// One request borrowed by an explicit placement batch transaction.
+///
+/// Metadata and session ownership move into the transaction. The request
+/// payload itself stays in the replay until the placement policy has accepted
+/// the complete batch, avoiding a prompt clone at the validation boundary.
+pub struct PlacementBatchRequest<'a, Request, Metadata> {
+    pub request: &'a Request,
+    pub metadata: Metadata,
+    pub session_id: Option<String>,
+}
+
+/// Placement effects returned only after a complete batch transaction commits.
+pub struct PlacementBatchEffects {
+    pub decisions: Vec<PlacementDecision>,
+    pub released: Vec<Placement>,
+}
+
+/// Failure from an explicit placement batch transaction.
+///
+/// `poisoned` distinguishes an ordinary rejection that left placement state
+/// unchanged from a provider/internal fault that may have committed a prefix.
+/// Callers must fail-stop the replay after the latter.
+#[derive(Debug)]
+pub struct PlacementBatchError {
+    error: anyhow::Error,
+    poisoned: bool,
+}
+
+impl PlacementBatchError {
+    pub fn unchanged(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            poisoned: false,
+        }
+    }
+
+    pub fn poisoned(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            poisoned: true,
+        }
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    pub fn map_error(self, map: impl FnOnce(anyhow::Error) -> anyhow::Error) -> Self {
+        Self {
+            error: map(self.error),
+            poisoned: self.poisoned,
+        }
+    }
+}
+
+impl fmt::Display for PlacementBatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl Error for PlacementBatchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.error.source()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerTopology {
     pub worker_id: usize,
@@ -104,12 +174,22 @@ pub trait PlacementPolicy<Request> {
         session_id: Option<String>,
         now_ms: f64,
     ) -> Result<PlacementEffects>;
-    /// Validate a request for an all-or-nothing external admission batch
-    /// without mutating placement state. The default has no provider-specific
-    /// constraints; stateful providers override it for every recoverable
-    /// validation error their `place` path can surface before admission.
-    fn preflight_batch_request(&self, _request: &Request) -> Result<()> {
-        Ok(())
+
+    /// Place an externally atomic batch.
+    ///
+    /// Returning an unchanged error guarantees no placement mutation. A
+    /// poisoned error reports that a provider or invariant fault may have
+    /// committed a prefix and the enclosing replay must not be used again.
+    /// There is deliberately no sequential default: only policies with a real
+    /// transaction implementation support this operation.
+    fn place_batch(
+        &mut self,
+        _requests: Vec<PlacementBatchRequest<'_, Request, Self::Metadata>>,
+        _now_ms: f64,
+    ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
+        Err(PlacementBatchError::unchanged(anyhow!(
+            "placement policy does not support atomic batch admission"
+        )))
     }
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
@@ -125,10 +205,9 @@ pub trait PlacementPolicy<Request> {
 /// Forwarding impl so a boxed policy is itself a [`PlacementPolicy`], letting
 /// a policy constructed outside this crate be injected as
 /// `Box<dyn PlacementPolicy<Request>>`. `?Sized` admits `T = dyn
-/// PlacementPolicy<Request>`. No method has a default body today, so an
-/// unforwarded future default-bodied method would silently skip the inner
-/// policy's override rather than fail to compile -- keep every method
-/// forwarded here.
+/// PlacementPolicy<Request>`. In particular, an unforwarded default-bodied
+/// method would silently skip the inner policy's override rather than fail to
+/// compile -- keep every method forwarded here.
 impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for Box<T> {
     type Metadata = T::Metadata;
     type Observation = T::Observation;
@@ -142,8 +221,12 @@ impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for
     ) -> Result<PlacementEffects> {
         (**self).place(request, metadata, session_id, now_ms)
     }
-    fn preflight_batch_request(&self, request: &Request) -> Result<()> {
-        (**self).preflight_batch_request(request)
+    fn place_batch(
+        &mut self,
+        requests: Vec<PlacementBatchRequest<'_, Request, Self::Metadata>>,
+        now_ms: f64,
+    ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
+        (**self).place_batch(requests, now_ms)
     }
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>> {
         (**self).observe(observation, now_ms)

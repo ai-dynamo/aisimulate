@@ -18,7 +18,10 @@ use crate::replay::components::{
     AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
-use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
+use crate::replay::core::{
+    NoEngineEvents, PlacementBatchEffects, PlacementBatchError, PlacementBatchRequest,
+    PlacementPolicy, WorkerTopology,
+};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::error::{
@@ -103,6 +106,16 @@ where
         self.0
             .place(request, metadata, session_id, now_ms)
             .map_err(placement_boundary)
+    }
+
+    fn place_batch(
+        &mut self,
+        requests: Vec<PlacementBatchRequest<'_, Request, Self::Metadata>>,
+        now_ms: f64,
+    ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
+        self.0
+            .place_batch(requests, now_ms)
+            .map_err(|error| error.map_error(placement_boundary))
     }
 
     fn observe(

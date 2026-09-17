@@ -31,8 +31,8 @@ use uuid::Uuid;
 
 use super::components::{ReplayAdmissionMetadata, ReplayEngineObservation};
 use super::core::{
-    EngineEventBatch, Placement, PlacementCacheSample, PlacementDecision, PlacementEffects,
-    PlacementPolicy, WorkerTopology,
+    EngineEventBatch, Placement, PlacementBatchEffects, PlacementBatchError, PlacementBatchRequest,
+    PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy, WorkerTopology,
 };
 use super::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
 use crate::engine::{KvEvent, KvEventData};
@@ -632,6 +632,200 @@ impl PlacementPolicy<ReplayRequestPayload> for DynamicPlacementPolicy {
         Ok(PlacementEffects {
             decision,
             released: result.released,
+        })
+    }
+
+    fn place_batch(
+        &mut self,
+        requests: Vec<PlacementBatchRequest<'_, ReplayRequestPayload, DynamicPlacementMetadata>>,
+        now_ms: f64,
+    ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
+        let prepare = || -> Result<(Vec<Option<Vec<u8>>>, Vec<PlacementMutationV1>)> {
+            ensure!(
+                now_ms.is_finite(),
+                "dynamic placement mutation time must be finite"
+            );
+            ensure!(
+                now_ms >= self.last_now_ms,
+                "dynamic placement mutation time {now_ms} precedes the previous time {}",
+                self.last_now_ms
+            );
+            ensure!(
+                requests.len() <= self.limits.max_mutations as usize
+                    && requests.len() <= self.limits.max_admission_results as usize,
+                "dynamic placement batch has {} admissions beyond negotiated bounds",
+                requests.len()
+            );
+
+            let metadata_bytes = requests
+                .iter()
+                .map(|request| {
+                    ensure!(
+                        request.session_id.is_none(),
+                        "dynamic placement V1 cannot encode a session ID until its admission flag is defined"
+                    );
+                    let metadata = request
+                        .request
+                        .metadata()
+                        .replay_context
+                        .as_ref()
+                        .map(serde_json::to_vec)
+                        .transpose()
+                        .context("serializing dynamic placement admission metadata")?;
+                    if let Some(metadata) = &metadata {
+                        ensure!(
+                            metadata.len() <= MAX_ADMISSION_METADATA_BYTES_V1 as usize,
+                            "dynamic placement admission metadata exceeds the ABI limit of {} bytes",
+                            MAX_ADMISSION_METADATA_BYTES_V1
+                        );
+                    }
+                    Ok(metadata)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let mutations = requests
+                .iter()
+                .zip(&metadata_bytes)
+                .map(|(request, metadata_bytes)| {
+                    let request_id = request
+                        .request
+                        .metadata()
+                        .uuid
+                        .ok_or_else(|| anyhow!("dynamic placement requires a request UUID"))?;
+                    let prompt_identity = admission_prompt_identity(
+                        request.request,
+                        request.metadata.replay_hashes.as_ref(),
+                    )?;
+                    let admission_metadata = metadata_bytes
+                        .as_deref()
+                        .map(|metadata_bytes| PlacementMetadataV1 {
+                            format: AdmissionMetadataFormatV1::JSON_UTF8,
+                            flags: 0,
+                            bytes: bytes(metadata_bytes),
+                        })
+                        .unwrap_or(PlacementMetadataV1::EMPTY);
+                    Ok(PlacementMutationV1 {
+                        struct_size: std::mem::size_of::<PlacementMutationV1>() as u32,
+                        kind: PlacementMutationKindV1::ADMIT,
+                        flags: 0,
+                        sequence: 0,
+                        now_ms,
+                        payload: PlacementMutationPayloadV1 {
+                            admission: PlacementAdmissionV1 {
+                                request_id: request_id.into_bytes(),
+                                flags: 0,
+                                priority: request.request.metadata().priority,
+                                prompt_tokens: request.request.input_length() as u64,
+                                max_output_tokens: request
+                                    .request
+                                    .metadata()
+                                    .effective_max_output_tokens()
+                                    as u64,
+                                prompt_identity,
+                                metadata: admission_metadata,
+                                session_id: ByteSliceV1::EMPTY,
+                            },
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok((metadata_bytes, mutations))
+        };
+        let (_metadata_bytes, mutations) = prepare().map_err(PlacementBatchError::unchanged)?;
+        if mutations.is_empty() {
+            return Ok(PlacementBatchEffects {
+                decisions: Vec::new(),
+                released: Vec::new(),
+            });
+        }
+
+        let batch = PlacementMutationSliceV1 {
+            data: mutations.as_ptr(),
+            len: mutations.len() as u64,
+        };
+        let mut result = empty_batch_result();
+        // Safety: every mutation and nested request/metadata slice remains
+        // live for this synchronous call, and `result` is initialized host
+        // storage. The provider owns atomicity or reports a committed prefix.
+        let status = unsafe {
+            required_apply_batch(&self.instance.vtable)(self.instance.handle, batch, &mut result)
+        };
+        if status != StatusV1::OK {
+            let error = match self.instance.last_error() {
+                Ok(error) => anyhow!(
+                    "placement plugin apply_batch failed with status {}{}",
+                    status.0,
+                    error_suffix(error.as_deref())
+                ),
+                Err(error) => error.context(format!(
+                    "placement plugin apply_batch failed with status {} and last_error failed",
+                    status.0
+                )),
+            };
+            return Err(if result.applied_mutations == 0 {
+                PlacementBatchError::unchanged(error)
+            } else {
+                PlacementBatchError::poisoned(error)
+            });
+        }
+
+        let result_guard = BatchResultGuard {
+            vtable: self.instance.vtable,
+            result,
+        };
+        let decoded = (|| -> Result<(usize, Vec<PlacementDecision>, Vec<Placement>)> {
+            result_guard.validate(self.limits)?;
+            ensure!(
+                result_guard.result.applied_mutations == mutations.len() as u64,
+                "placement plugin committed {} of {} requested mutations",
+                result_guard.result.applied_mutations,
+                mutations.len()
+            );
+            let pending_count = usize::try_from(result_guard.result.pending_count)
+                .context("placement plugin pending count does not fit this host")?;
+            let admissions =
+                unsafe { copy_admissions(result_guard.result.admission_results, self.limits)? };
+            ensure!(
+                admissions.len() == requests.len(),
+                "placement plugin returned {} admission results for {} admissions",
+                admissions.len(),
+                requests.len()
+            );
+            let decisions = requests
+                .iter()
+                .zip(admissions)
+                .map(|(request, admission)| {
+                    let request_id = request
+                        .request
+                        .metadata()
+                        .uuid
+                        .expect("prepared batch request has UUID");
+                    ensure!(
+                        admission.request_id == request_id,
+                        "placement plugin returned an admission result for a different request"
+                    );
+                    match admission.decision {
+                        AdmissionDecisionV1::IMMEDIATE => {
+                            Ok(PlacementDecision::Immediate(admission.placement))
+                        }
+                        AdmissionDecisionV1::QUEUED => Ok(PlacementDecision::Queued),
+                        value => bail!(
+                            "placement plugin returned unsupported admission decision {}",
+                            value.0
+                        ),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let released = unsafe { copy_placements(result_guard.result.released, self.limits)? };
+            Ok((pending_count, decisions, released))
+        })()
+        .map_err(PlacementBatchError::poisoned)?;
+
+        self.pending_count = decoded.0;
+        self.last_now_ms = now_ms;
+        Ok(PlacementBatchEffects {
+            decisions: decoded.1,
+            released: decoded.2,
         })
     }
 

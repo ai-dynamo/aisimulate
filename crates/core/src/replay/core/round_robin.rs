@@ -9,11 +9,11 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use super::{
-    EngineEventBatch, Placement, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    EngineEventBatch, Placement, PlacementBatchEffects, PlacementBatchError, PlacementBatchRequest,
+    PlacementDecision, PlacementEffects, PlacementPolicy, RequestIdentity, WorkerTopology,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AggregatedRoundRobin {
     next_worker: usize,
     next_rank_by_worker: FxHashMap<usize, u32>,
@@ -39,6 +39,16 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
+            events: PhantomData,
+        }
+    }
+}
+
+impl<Events: EngineEventBatch> Clone for AggregatedRoundRobinPlacement<Events> {
+    fn clone(&self) -> Self {
+        Self {
+            counter: self.counter.clone(),
+            workers: self.workers.clone(),
             events: PhantomData,
         }
     }
@@ -82,6 +92,33 @@ where
                 placement_replica_id: None,
             }),
             released: Vec::new(),
+        })
+    }
+
+    fn place_batch(
+        &mut self,
+        requests: Vec<PlacementBatchRequest<'_, Request, Self::Metadata>>,
+        now_ms: f64,
+    ) -> std::result::Result<PlacementBatchEffects, PlacementBatchError> {
+        let mut staged = self.clone();
+        let mut decisions = Vec::with_capacity(requests.len());
+        let mut released = Vec::new();
+        for request in requests {
+            let effects = staged
+                .place(
+                    request.request,
+                    request.metadata,
+                    request.session_id,
+                    now_ms,
+                )
+                .map_err(PlacementBatchError::unchanged)?;
+            decisions.push(effects.decision);
+            released.extend(effects.released);
+        }
+        *self = staged;
+        Ok(PlacementBatchEffects {
+            decisions,
+            released,
         })
     }
 
