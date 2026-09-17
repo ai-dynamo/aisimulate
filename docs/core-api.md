@@ -307,13 +307,25 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   keep the crate and wheel versions aligned at the coordinated minor release.
 - Publication is blocked by [the release gate](../.github/release-gates.json)
   until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Nightly CI runs
-  `scripts/check_release_migrations.py` before artifact staging and the downstream
-  publish trigger. Manual releases must run the same check. Clear the pending
-  entry in a reviewed change only after the migration evidence is available.
+  merged, and its Planner/wheel smoke validated against this API. Scheduled
+  nightly CI runs `scripts/check_release_migrations.py` before staging and the
+  downstream publish trigger. Approved manual dispatch may stage a selected
+  main/release commit for validation; it cannot trigger public publication.
+  Manual releases must run the same migration check. Clear the pending entry in
+  a reviewed change only after the migration evidence is available.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.
+
+The standalone AIC 0.12 compatibility distributions form a separate package
+lineage: `aiconfigurator` pins `aiconfigurator-core==0.12.0`, and that core builds
+its own native binding. They do not depend on the AISimulate wheel or crate.
+Their retained binding declarations are not downstream callers of this API.
+The [replacement installation](../README.md#upgrade-from-standalone-aiconfigurator)
+removes both old distributions and installs AISimulate's complete migrated
+application and core. Namespace compatibility does not preserve the removed
+constructor signatures; direct SDK callers must perform the source migration
+above. Release gates track consumers of the new artifacts, such as Dynamo.
 
 ## CI contract
 

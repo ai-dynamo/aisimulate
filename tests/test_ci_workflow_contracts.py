@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib.metadata
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -35,7 +37,7 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
-def test_release_migration_gate_blocks_staging_until_reviewed_clearance(tmp_path):
+def test_release_migration_gate_blocks_scheduled_publication_until_reviewed_clearance(tmp_path):
     from scripts.check_release_migrations import GATES, require_completed_migrations
 
     with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
@@ -54,7 +56,10 @@ def test_release_migration_gate_blocks_staging_until_reviewed_clearance(tmp_path
     jobs = _workflow("nightly-ci.yml")["jobs"]
     guard = jobs["changes-guard"]
     index = next(i for i, step in enumerate(guard["steps"]) if "check_release_migrations.py" in step.get("run", ""))
+    assert next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "target") < index
     assert index < next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "decide")
+    assert guard["steps"][index]["if"] == "github.event_name == 'schedule'"
+    assert "github.event_name == 'schedule'" in jobs["trigger-gitlab-security"]["if"]
     assert "changes-guard" in jobs["build-artifacts"]["needs"]
     assert "needs.changes-guard.outputs.should-build == 'true'" in jobs["build-artifacts"]["if"]
 
@@ -1799,7 +1804,7 @@ def test_release_artifact_handoffs_cannot_mix_versions():
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
 
 
-def _nightly_condition(job: str, **overrides) -> bool:
+def _nightly_condition(job: str, *, cancelled: bool = False, **overrides) -> bool:
     """Evaluate the checked-in predicate with explicit Actions context values."""
     values = {
         "github.event_name": "schedule",
@@ -1817,11 +1822,27 @@ def _nightly_condition(job: str, **overrides) -> bool:
     }
     expression = _workflow("nightly-ci.yml")["jobs"][job]["if"]
     expression = re.sub(r"(?:github|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
-    expression = expression.replace("!cancelled()", "True").replace("&&", " and ").replace("||", " or ")
+    expression = expression.replace("!cancelled()", repr(not cancelled)).replace("&&", " and ").replace("||", " or ")
     return eval(expression, {"__builtins__": {}})
 
 
-@pytest.mark.parametrize("job", ["build-artifacts", "trigger-gitlab-security"])
+@pytest.mark.parametrize("job", ["license-evidence", "fpe-support-matrix"])
+def test_nightly_validation_survives_skipped_approval_but_requires_successful_inputs(job):
+    configuration = _workflow("nightly-ci.yml")["jobs"][job]
+    # A status function overrides Actions' implicit success(), which would
+    # otherwise reject the skipped approval ancestor of a scheduled first run.
+    assert "!cancelled()" in configuration["if"]
+    assert _nightly_condition(job)
+    assert not _nightly_condition(job, cancelled=True)
+    for dependency in configuration["needs"]:
+        if dependency == "changes-guard":
+            assert not _nightly_condition(job, **{"needs.changes-guard.outputs.should-build": "false"})
+            continue
+        for result in ("failure", "skipped", "cancelled"):
+            assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
+
+
+@pytest.mark.parametrize("job", ["python-compliance", "build-artifacts", "trigger-gitlab-security"])
 def test_nightly_retries_require_approval_from_the_current_attempt(job):
     assert _nightly_condition(job)
     for attempt in ("2", "3"):
@@ -1851,7 +1872,7 @@ def test_nightly_retries_require_approval_from_the_current_attempt(job):
             "needs.manual-approval.result": "success",
             "needs.manual-approval.outputs.approved-attempt": "1",
         },
-    ) == (job == "build-artifacts")
+    ) == (job in {"python-compliance", "build-artifacts"})
 
 
 @pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
@@ -1863,6 +1884,58 @@ def test_nightly_failed_validation_cannot_publish(gate, result):
 @pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
 def test_nightly_failed_compliance_cannot_stage(result):
     assert not _nightly_condition("build-artifacts", **{"needs.python-compliance.result": result})
+
+
+@pytest.mark.parametrize("attempt", ["1", "2"])
+def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
+    context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
+    assert _nightly_condition("manual-approval", **context)
+    assert not _nightly_condition("python-compliance", **context)
+    assert not _nightly_condition("build-artifacts", **context)
+    context.update(
+        {
+            "needs.manual-approval.result": "success",
+            "needs.manual-approval.outputs.approved-attempt": attempt,
+        }
+    )
+    assert _nightly_condition("build-artifacts", **context)
+    assert _nightly_condition("python-compliance", **context)
+    assert _nightly_condition("license-evidence", **context)
+    assert not _nightly_condition("fpe-support-matrix", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
+    context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
+    assert not _nightly_condition("build-artifacts", **context)
+    assert not _nightly_condition("python-compliance", **context)
+
+
+def test_nightly_compliance_requires_approval_dependency_and_respects_cancellation():
+    compliance = _workflow("nightly-ci.yml")["jobs"]["python-compliance"]
+    assert set(compliance["needs"]) == {"changes-guard", "manual-approval"}
+    assert "!cancelled()" in compliance["if"]
+    assert not _nightly_condition("python-compliance", cancelled=True)
+    assert not _nightly_condition("python-compliance", **{"needs.changes-guard.outputs.should-build": "false"})
+
+
+def test_manual_nightly_checks_selected_source_with_current_license_tooling():
+    workflow = _workflow("nightly-ci.yml")
+    jobs = workflow["jobs"]
+    target = "${{ needs.changes-guard.outputs.target-sha }}"
+    compliance = jobs["python-compliance"]
+    checkouts = [s["with"] for s in compliance["steps"] if "actions/checkout@" in s.get("uses", "")]
+    assert checkouts == [
+        {"ref": "${{ github.sha }}", "persist-credentials": "false"},
+        {"ref": target, "path": "source", "persist-credentials": "false"},
+    ]
+    assert "--pyproject source/python/aisimulate/pyproject.toml" in _run_commands(compliance)
+    build = jobs["build-artifacts"]
+    checkout = next(s for s in build["steps"] if "actions/checkout@" in s.get("uses", ""))
+    assert checkout["with"]["ref"] == target
+    provenance = next(s for s in build["steps"] if "GH_SHA" in s.get("env", {}))
+    assert provenance["env"]["GH_SHA"] == target
+    assert provenance["env"]["GH_REF"] == "${{ needs.changes-guard.outputs.target-ref }}"
+    assert jobs["changes-guard"]["outputs"]["target-ref"] == "${{ steps.target.outputs.ref }}"
+    assert jobs["fpe-support-matrix"]["with"]["expected_sha"] == target
+    assert workflow["concurrency"]["group"] == "nightly-ci-${{ github.event_name }}"
 
 
 def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_deploy_secrets():
@@ -1899,7 +1972,7 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
+def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -1909,38 +1982,56 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
     (tmp_path / "cargo-metadata.json").write_text(
         json.dumps(
             {
+                "workspace_members": list(workspace_members),
                 "packages": [
                     {"id": f"getrandom@{version}", "name": "getrandom", "version": version, "license": spdx}
                     for version, spdx in crates
-                ]
+                ],
             }
         )
     )
-    prior_csv = io.StringIO()
-    writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
-    writer.writeheader()
-    writer.writerows(prior or [])
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as zipped:
-        zipped.writestr("deps.csv", prior_csv.getvalue())
+
+    def archived(rows):
+        prior_csv = io.StringIO()
+        writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
+        writer.writeheader()
+        writer.writerows(rows or [])
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("deps.csv", prior_csv.getvalue())
+        return archive.getvalue()
+
+    archives = {"https://fixture/archive": archived(prior), "https://fixture/manual-archive": archived(manual_prior)}
+
+    responses = []
 
     def urlopen(request, timeout):
         assert timeout == 30
         if lookup_error is not None:
             raise lookup_error
         if "/runs?" in request.full_url:
-            payload = (
-                {"workflow_runs": [{"id": 1, "artifacts_url": "https://fixture/artifacts"}]}
-                if prior
-                else {"workflow_runs": []}
-            )
+            query = parse_qs(urlsplit(request.full_url).query)
+            runs = [{"id": 1, "artifacts_url": "https://fixture/artifacts"}] if prior else []
+            if manual_prior and query.get("event") != ["schedule"]:
+                # A newer successful dispatch shares the main workflow ref,
+                # but its selected release source has unrelated dependencies.
+                runs.insert(0, {"id": 3, "artifacts_url": "https://fixture/manual-artifacts"})
+            payload = {"workflow_runs": runs}
         elif request.full_url == "https://fixture/artifacts":
             payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
-        elif request.full_url == "https://fixture/archive":
-            return io.BytesIO(archive.getvalue())
+        elif request.full_url == "https://fixture/manual-artifacts":
+            payload = {
+                "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/manual-archive"}]
+            }
+        elif request.full_url in archives:
+            response = io.BytesIO(archives[request.full_url])
+            responses.append(response)
+            return response
         else:
             raise AssertionError(request.full_url)
-        return io.BytesIO(json.dumps(payload).encode())
+        response = io.BytesIO(json.dumps(payload).encode())
+        responses.append(response)
+        return response
 
     step = next(
         s
@@ -1954,6 +2045,7 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None):
         patch("urllib.request.urlopen", side_effect=urlopen),
     ):
         exec(compile(source, "nightly-ci-evidence", "exec"), {})
+    assert all(response.closed for response in responses)
     with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
         return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
 
@@ -1977,12 +2069,30 @@ def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(
     )
 
 
+def test_nightly_license_baseline_ignores_newer_manual_staging(tmp_path):
+    crates = [("0.2.17", "MIT")]
+    scheduled, _ = _nightly_license_report(tmp_path, crates)
+    manual = [{**row, "version": "99.0.0"} for row in scheduled]
+    _, difference = _nightly_license_report(tmp_path, crates, scheduled, manual_prior=manual)
+    assert difference == []
+
+
 @pytest.mark.parametrize("lookup_error", [None, OSError("baseline API unavailable")])
 def test_nightly_license_baseline_warns_only_on_lookup_failure(tmp_path, capsys, lookup_error):
     inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=lookup_error)
     assert len(inventory) == len(difference) == 2
     assert all(row["change"] == "added" for row in difference)
     assert ("::warning::prior-artifact lookup failed" in capsys.readouterr().out) == (lookup_error is not None)
+
+
+def test_nightly_license_inventory_excludes_workspace_packages(tmp_path):
+    rows, _ = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], workspace_members=["getrandom@0.2.17"])
+    assert all(row["dependency_type"] != "crate" for row in rows)
+
+
+def test_nightly_license_inventory_rejects_conflicting_metadata(tmp_path):
+    with pytest.raises(SystemExit, match="conflicting license metadata"):
+        _nightly_license_report(tmp_path, [("0.2.17", "MIT"), ("0.2.17", "GPL-3.0-only")])
 
 
 @pytest.mark.parametrize(
@@ -2039,11 +2149,58 @@ def test_python_compliance_workflows_use_the_same_policy():
         assert "--allow-only" not in commands
 
 
+def test_nightly_license_matrix_covers_the_smoked_python_versions():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    compliance = jobs["python-compliance"]
+    matrix = compliance["strategy"]["matrix"]
+    assert set(matrix["python-version"]) == set(jobs["build-artifacts"]["env"]["PYTHON_SERIES_LIST"].split())
+    assert set(matrix["arch"]) == {entry["arch"] for entry in jobs["build-artifacts"]["strategy"]["matrix"]["include"]}
+    setup = next(step for step in compliance["steps"] if "setup-python@" in step.get("uses", ""))
+    assert setup["with"]["python-version"] == "${{ matrix.python-version }}"
+    upload = next(step for step in compliance["steps"] if "upload-artifact@" in step.get("uses", ""))
+    assert upload["with"]["name"] == "nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}"
+
+
+@pytest.mark.parametrize("spdx,allowed", [("MIT", True), ("GPL-3.0-only", False)])
+def test_real_pip_licenses_enforces_the_policy(tmp_path, spdx, allowed):
+    assert importlib.metadata.version("pip-licenses") == "5.5.5"
+    metadata = tmp_path / "license_policy_fixture-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: license-policy-fixture\nVersion: 1.0\nLicense: {spdx}\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "piplicenses",
+            "--with-system",
+            "--packages",
+            "license-policy-fixture",
+            "--allow-only",
+            python_licenses.ALLOWED_LICENSES,
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) == allowed, result.stdout + result.stderr
+    assert "license-policy-fixture" in result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("license_result", [0, 1])
-def test_python_license_gate_checks_target_environment_before_export(tmp_path, monkeypatch, capsys, license_result):
+@pytest.mark.parametrize("manifest_selection", ["default", "explicit_cli"])
+def test_python_license_gate_checks_target_environment_before_export(
+    tmp_path, monkeypatch, capsys, license_result, manifest_selection
+):
     manifest = tmp_path / "pyproject.toml"
     manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisimulate-core==1.0"]\n')
-    monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
+    # A historical source needs only its manifest; the policy/tool lives in
+    # the workflow checkout. A missing default detects accidental fallback.
+    monkeypatch.setattr(
+        python_licenses, "PYPROJECT", manifest if manifest_selection == "default" else tmp_path / "missing"
+    )
     python = "/fixture/venv/bin/python"
     inventory = tmp_path / "inventory" / "licenses.csv"
     csv_output = "Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n"
@@ -2067,7 +2224,23 @@ def test_python_license_gate_checks_target_environment_before_export(tmp_path, m
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(python_licenses.subprocess, "run", run)
-    assert python_licenses.check_licenses(python, inventory) == license_result
+    if manifest_selection == "default":
+        assert python_licenses.check_licenses(python, inventory) == license_result
+    else:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "check_python_licenses.py",
+                "--python",
+                python,
+                "--inventory",
+                str(inventory),
+                "--pyproject",
+                str(manifest),
+            ],
+        )
+        assert python_licenses.main() == license_result
     if license_result:
         assert len(calls) == 2
         assert not inventory.exists()
@@ -2113,7 +2286,15 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
     assert download["with"]["name"] == artifact
 
 
-def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
+@pytest.mark.parametrize(
+    "source_ref,event",
+    [
+        ("refs/heads/main", "schedule"),
+        ("refs/heads/main", "workflow_dispatch"),
+        ("refs/heads/release/0.12.0", "workflow_dispatch"),
+    ],
+)
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event):
     directory = tmp_path / "accuracy-wheel"
     directory.mkdir()
     wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
@@ -2140,11 +2321,11 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
         "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
         "GH_REPOSITORY": "ai-dynamo/aisimulate",
         "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
-        "GH_REF": "refs/heads/main",
+        "GH_REF": source_ref,
         "GH_SHA": "a" * 40,
         "GH_RUN_ID": "123",
         "GH_RUN_ATTEMPT": "1",
-        "GH_EVENT_NAME": "schedule",
+        "GH_EVENT_NAME": event,
         "GH_SERVER_URL": "https://github.com",
         "RUST_TOOLCHAIN": "1.98.0",
         "UV_VERSION": "0.12.6",
@@ -2161,6 +2342,10 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
     result = subprocess.run(["bash", "-e", "-c", producer], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     provenance = json.loads((directory / "provenance.json").read_text())
+    assert provenance["ref"] == source_ref
+    assert provenance["commit"] == env["GH_SHA"]
+    assert provenance["event"] == event
+    assert provenance["workflow_ref"].endswith("@refs/heads/main")
     assert provenance["version"] == "0.12.0.dev20260917"
     assert provenance["artifacts"][wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
     consumer = next(
@@ -2173,9 +2358,81 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
         return subprocess.run(["bash", "-e", "-c", consumer], cwd=tmp_path, env=env, capture_output=True, text=True)
 
     result = verify()
+    if event == "workflow_dispatch":
+        # Manual staging is not a scheduled, qualified nightly producer.
+        assert result.returncode != 0
+        assert "nightly wheel provenance mismatch" in result.stderr
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     wheel.write_bytes(b"tampered wheel")
     assert verify().returncode != 0
     wheel.write_bytes(b"fixture wheel")
     env["EXPECTED_SHA"] = "c" * 40
     assert verify().returncode != 0
+
+
+@pytest.mark.parametrize("failure", [None, "missing-token", "http-error"])
+def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure):
+    # Interface verified against release-automation commit
+    # 1aaaeae1f4a29345085b68bb460d09ee47cc4bb0: .gitlab-ci.yml forwarding
+    # and projects/aisimulate.yml. This is an independent request fixture,
+    # not a copy of the external pipeline implementation.
+    capture = tmp_path / "request.json"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['CAPTURE_REQUEST']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.exit(int(os.environ['CURL_EXIT_CODE']))\n"
+    )
+    curl.chmod(0o755)
+    step = next(
+        step
+        for step in _workflow("nightly-ci.yml")["jobs"]["trigger-gitlab-security"]["steps"]
+        if step.get("name") == "Trigger internal security scan"
+    )
+    endpoint = "https://gitlab.invalid/api/v4/projects/123/trigger/pipeline"
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CAPTURE_REQUEST": str(capture),
+            "CURL_EXIT_CODE": "22" if failure == "http-error" else "0",
+            "GITLAB_TRIGGER_TOKEN": "" if failure == "missing-token" else "fixture-token",
+            "GITLAB_PIPELINE_URL": endpoint,
+            "WHEEL_VERSION": "0.12.0.dev20260917",
+            "GH_RUN_ID": "123456",
+            "GH_SHA": "a" * 40,
+            "SLACK_THREAD_TS": "1234567890.123456",
+            "SLACK_CHANNEL_ID": "fixture-channel",
+        },
+    )
+    assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
+    if failure == "missing-token":
+        assert not capture.exists()
+        return
+    args = json.loads(capture.read_text())
+    assert args[-1] == endpoint
+    assert "--fail" in args
+    fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-F")
+    assert fields == {
+        "token": "fixture-token",
+        "ref": "main",
+        "variables[PROJECT]": "aisimulate",
+        "variables[PIPELINE_TYPE]": "security",
+        "variables[RELEASE_TYPE]": "nightly",
+        "variables[NIGHTLY_TAG]": "nightly-20260917-aaaaaaa",
+        "variables[WHEEL_VERSION]": "0.12.0.dev20260917",
+        "variables[GITHUB_RUN_ID]": "123456",
+        "variables[COMMIT_SHA]": "a" * 40,
+        "variables[SLACK_THREAD_TS]": "1234567890.123456",
+        "variables[SLACK_CHANNEL_ID]": "fixture-channel",
+        "variables[DRY_RUN]": "false",
+    }
