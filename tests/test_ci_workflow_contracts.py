@@ -1902,6 +1902,8 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
     with zipfile.ZipFile(archive, "w") as zipped:
         zipped.writestr("deps.csv", prior_csv.getvalue())
 
+    responses = []
+
     def urlopen(request, timeout):
         assert timeout == 30
         if lookup_error is not None:
@@ -1915,10 +1917,14 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
         elif request.full_url == "https://fixture/artifacts":
             payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
         elif request.full_url == "https://fixture/archive":
-            return io.BytesIO(archive.getvalue())
+            response = io.BytesIO(archive.getvalue())
+            responses.append(response)
+            return response
         else:
             raise AssertionError(request.full_url)
-        return io.BytesIO(json.dumps(payload).encode())
+        response = io.BytesIO(json.dumps(payload).encode())
+        responses.append(response)
+        return response
 
     step = next(
         s
@@ -1932,6 +1938,7 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
         patch("urllib.request.urlopen", side_effect=urlopen),
     ):
         exec(compile(source, "nightly-ci-evidence", "exec"), {})
+    assert all(response.closed for response in responses)
     with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
         return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
 

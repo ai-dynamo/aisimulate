@@ -96,7 +96,7 @@ jobs:
           python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py tests/test_release_fpe.py -q \
             -p no:cacheprovider \
             --override-ini="addopts=" \
-            --override-ini="filterwarnings="
+            --override-ini="filterwarnings=error"
 
   python-static:
     name: Python Static Checks

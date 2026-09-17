@@ -645,7 +645,8 @@ jobs:
                                    "version": r["Version"], "spdx_license": r["License"]})
           if not rows:
               raise SystemExit("missing Python dependency inventories")
-          meta = json.load(open(f"{outdir}/cargo-metadata.json"))
+          with open(f"{outdir}/cargo-metadata.json") as f:
+              meta = json.load(f)
           workspace = set(meta.get("workspace_members") or [])
           for p in meta["packages"]:
               if p.get("id") in workspace:
@@ -678,23 +679,26 @@ jobs:
                       "Authorization": f"Bearer {token}",
                       "Accept": "application/vnd.github+json"})
                   return urllib.request.urlopen(req, timeout=30)
-              runs = json.load(get(
+              with get(
                   f"https://api.github.com/repos/{repo}/actions/workflows/"
-                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10"))
+                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10") as response:
+                  runs = json.load(response)
               for run in runs.get("workflow_runs", []):
                   if str(run["id"]) == current:
                       continue
-                  arts = json.load(get(run["artifacts_url"]))
+                  with get(run["artifacts_url"]) as response:
+                      arts = json.load(response)
                   for a in arts.get("artifacts", []):
                       if "license" not in a["name"] or a.get("expired"):
                           continue
-                      data = get(a["archive_download_url"]).read()
+                      with get(a["archive_download_url"]) as response:
+                          data = response.read()
                       with zipfile.ZipFile(io.BytesIO(data)) as zf:
                           for n in zf.namelist():
                               if os.path.basename(n) == "deps.csv":
-                                  reader = csv.DictReader(
-                                      io.TextIOWrapper(zf.open(n)))
-                                  return {identity(r): r for r in reader}
+                                  with io.TextIOWrapper(zf.open(n)) as stream:
+                                      reader = csv.DictReader(stream)
+                                      return {identity(r): r for r in reader}
               return None
 
           try:
