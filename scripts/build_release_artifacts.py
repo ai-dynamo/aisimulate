@@ -166,7 +166,7 @@ def main() -> None:
     global ROOT, VERSION, EXPECTED_PYTHON_PROJECTS, EXPECTED_CRATE
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, help="Release source checkout")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
@@ -183,7 +183,8 @@ def main() -> None:
 
     py_version, crate_version = check_manifests()
     if not args.check_only:
-        build(args.output_dir.resolve(), py_version, crate_version)
+        output_dir = args.output_dir if args.output_dir is not None else ROOT / "dist"
+        build(output_dir.resolve(), py_version, crate_version)
 
 
 if __name__ == "__main__":
