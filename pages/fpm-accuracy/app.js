@@ -51,7 +51,7 @@
   }
 
   function cells(rows) {
-    return METHODS.map((method) => {
+    return ["regression", "warmup", "nowarmup"].map((method) => {
       const metric = aggregate(rows, method);
       const value = metric.mape === null ? "—" : `${metric.mape.toFixed(2)}%`;
       const tone = metric.mape === null ? "missing" : "";
