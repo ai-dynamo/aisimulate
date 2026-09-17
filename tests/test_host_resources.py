@@ -406,3 +406,14 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1
     assert plan["estimate"]["estimated_peak_bytes"] is None
+
+
+def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch):
+    trace = tmp_path / "oversized.jsonl"
+    with trace.open("wb") as stream:
+        stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
+    monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
+    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
+    assert "before metadata parsing" in plan["estimate"]["reason"]

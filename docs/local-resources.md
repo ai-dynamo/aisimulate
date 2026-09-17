@@ -122,8 +122,10 @@ An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
 Supported JSON and JSONL traces are inspected as a stream, including scalar
 token lengths, hash expansion and cumulative delta/tool turns. Inspection does
-not load complete documents or token arrays and has no total-file or record-size
-cutoff. Unknown allocation models can run one candidate at a time under runtime
+not load complete documents or token arrays. There is no fixed file or record
+size cutoff: the conservative storage estimate is checked against live headroom
+before parsing, since a streaming parser still holds individual scalar strings.
+Unknown allocation models can run one candidate at a time under runtime
 supervision when baseline headroom exists; this is explicitly an unqualified
 estimate. Known lower bounds still reject impossible workloads before allocation.
 The low-level Runner protocol itself remains an execution primitive.

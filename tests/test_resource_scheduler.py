@@ -146,3 +146,42 @@ def test_worker_initialization_is_bounded_without_a_replay_timeout():
     )
     assert isinstance(results[0], InterruptedEvaluation)
     assert results[0].reason == "worker initialization timed out"
+
+
+def test_readiness_counts_actual_workers_when_the_pool_reuses_one(monkeypatch):
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+
+    elapsed = [0.0]
+    finished = Future()
+    finished.set_result({"id": 0})
+    remaining = Future()
+
+    class Pool:
+        def __init__(self, **kwargs):
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            return finished if spec["id"] == 0 else remaining
+
+    def advance(futures, **kwargs):
+        # Both jobs use one ready worker. The second runs longer than the
+        # initialization deadline but remains inside its replay timeout.
+        elapsed[0] += 0.2
+        if elapsed[0] > 0.6 and not remaining.done():
+            remaining.set_result({"id": 1})
+        return {future for future in futures if future.done()}, set()
+
+    factory = _BudgetFactory()
+    factory.policy = ResourceConfig(initialization_timeout_seconds=0.1)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "wait", advance)
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
+    specs = [{"id": i, "cost": 1} for i in range(2)]
+    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=2))
+    assert results == {0: {"id": 0}, 1: {"id": 1}}

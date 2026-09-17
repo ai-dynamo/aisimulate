@@ -242,7 +242,9 @@ def workload_bounds(config: Any) -> dict[str, Any]:
     }
 
 
-def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstimate:
+def _estimate_trace(
+    workload: Mapping[str, Any], *, stack: str, inspection_budget_bytes: int | None = None
+) -> ResourceEstimate:
     """Stream JSON/JSONL metadata without materializing request or token arrays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
@@ -285,8 +287,19 @@ def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstim
                     return unqualified("trace symlinks have no stable resource identity")
                 if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
                     continue
-                # Parse events rather than loading a document or an entire JSONL
-                # record. Metadata memory depends on nesting, not trace length.
+                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
+                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
+                    return ResourceEstimate(
+                        "trace-json-metadata-v1",
+                        None,
+                        0,
+                        0,
+                        storage_estimate,
+                        "trace storage estimate exceeds live headroom before metadata parsing",
+                    )
+                # Stream documents and arrays. A parser scalar still occupies
+                # memory, so reject oversized storage estimates before reading.
+                # Runtime supervision also covers files growing after stat().
                 maps: list[bool] = []
                 with path.open("rb") as stream:
                     for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
@@ -332,9 +345,15 @@ def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstim
     )
 
 
-def estimate_workload(workload: Mapping[str, Any], *, stack: str, concurrency: int | None = None) -> ResourceEstimate:
+def estimate_workload(
+    workload: Mapping[str, Any],
+    *,
+    stack: str,
+    concurrency: int | None = None,
+    inspection_budget_bytes: int | None = None,
+) -> ResourceEstimate:
     if workload.get("trace_paths") or workload.get("trace_path"):
-        return _estimate_trace(workload, stack=stack)
+        return _estimate_trace(workload, stack=stack, inspection_budget_bytes=inspection_budget_bytes)
     load = concurrency or workload.get("concurrency") or workload.get("request_rate")
     count = workload.get("request_count")
     if count is None:
@@ -377,11 +396,18 @@ def build_plan(
     policy = policy or _POLICY.get() or ResourceConfig()
     host = host or discover_host()
     budget = resolve_budget(policy, host)
+    free = max(
+        0,
+        min(
+            budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"],
+            host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
+        ),
+    )
     estimator = getattr(factory, "estimate_host_resources", None)
     estimate = (
         estimator(workload, concurrency=concurrency)
         if callable(estimator)
-        else estimate_workload(workload, stack=stack, concurrency=concurrency)
+        else estimate_workload(workload, stack=stack, concurrency=concurrency, inspection_budget_bytes=free)
     )
     if not isinstance(estimate, ResourceEstimate) or type(estimate.api_version) is not int or estimate.api_version != 1:
         raise ResourceLimitError("runner returned an incompatible host resource estimate")
@@ -392,13 +418,6 @@ def build_plan(
         raise ResourceLimitError("runner returned an invalid host resource estimate")
     if peak is not None and (type(peak) is not int or peak <= 0 or peak < estimate.lower_bound_bytes):
         raise ResourceLimitError("runner returned an invalid host resource estimate")
-    free = max(
-        0,
-        min(
-            budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"],
-            host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
-        ),
-    )
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
     if (
         peak is None

@@ -78,7 +78,9 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
             deadline = started + timeout if timeout else None
             while active:
                 if not initialized:
-                    initialized = len(list(Path(ready.name).iterdir())) == len(wave)
+                    worker_pids = {str(pid) for pid in (getattr(pool, "_processes", None) or {})}
+                    ready_pids = {path.name for path in Path(ready.name).iterdir()}
+                    initialized = bool(worker_pids) and worker_pids <= ready_pids
                     if initialized:
                         mark_execution_ready()
                     elif time.monotonic() - started >= initialization_timeout:
