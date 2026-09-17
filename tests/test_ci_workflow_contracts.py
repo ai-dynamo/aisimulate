@@ -1892,6 +1892,8 @@ def test_manual_nightly_checks_selected_source_with_current_license_tooling():
     assert checkout["with"]["ref"] == target
     provenance = next(s for s in build["steps"] if "GH_SHA" in s.get("env", {}))
     assert provenance["env"]["GH_SHA"] == target
+    assert provenance["env"]["GH_REF"] == "${{ needs.changes-guard.outputs.target-ref }}"
+    assert jobs["changes-guard"]["outputs"]["target-ref"] == "${{ steps.target.outputs.ref }}"
     assert jobs["fpe-support-matrix"]["with"]["expected_sha"] == target
     assert workflow["concurrency"]["group"] == "nightly-ci-${{ github.event_name }}"
 
@@ -2167,7 +2169,10 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
     assert download["with"]["name"] == artifact
 
 
-def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
+@pytest.mark.parametrize(
+    "source_ref,event", [("refs/heads/main", "schedule"), ("refs/heads/release/0.12.0", "workflow_dispatch")]
+)
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event):
     directory = tmp_path / "accuracy-wheel"
     directory.mkdir()
     wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
@@ -2194,11 +2199,11 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
         "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
         "GH_REPOSITORY": "ai-dynamo/aisimulate",
         "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
-        "GH_REF": "refs/heads/main",
+        "GH_REF": source_ref,
         "GH_SHA": "a" * 40,
         "GH_RUN_ID": "123",
         "GH_RUN_ATTEMPT": "1",
-        "GH_EVENT_NAME": "schedule",
+        "GH_EVENT_NAME": event,
         "GH_SERVER_URL": "https://github.com",
         "RUST_TOOLCHAIN": "1.98.0",
         "UV_VERSION": "0.12.6",
@@ -2215,6 +2220,10 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path):
     result = subprocess.run(["bash", "-e", "-c", producer], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     provenance = json.loads((directory / "provenance.json").read_text())
+    assert provenance["ref"] == source_ref
+    assert provenance["commit"] == env["GH_SHA"]
+    assert provenance["event"] == event
+    assert provenance["workflow_ref"].endswith("@refs/heads/main")
     assert provenance["version"] == "0.12.0.dev20260917"
     assert provenance["artifacts"][wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
     consumer = next(

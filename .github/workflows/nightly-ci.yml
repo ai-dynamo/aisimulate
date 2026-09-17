@@ -77,6 +77,7 @@ jobs:
       should-build: ${{ steps.decide.outputs.should-build }}
       dev-date: ${{ steps.version.outputs.dev-date }}
       target-sha: ${{ steps.target.outputs.sha }}
+      target-ref: ${{ steps.target.outputs.ref }}
     steps:
       # Runs with no secrets and no environment. Every manual target —
       # including main's own tip — must lie on main or a release/* branch.
@@ -89,6 +90,7 @@ jobs:
           script: |
             if (context.eventName === 'schedule') {
               core.setOutput('sha', context.sha);
+              core.setOutput('ref', context.ref);
               return;
             }
             if (context.ref !== 'refs/heads/main') {
@@ -116,6 +118,7 @@ jobs:
                     `${commit.commit.committer.date} ` +
                     `"${commit.commit.message.split('\n')[0]}"`);
                   core.setOutput('sha', requested);
+                  core.setOutput('ref', `refs/heads/${branch}`);
                   return;
                 }
               } catch (error) {
@@ -448,7 +451,7 @@ jobs:
           MATRIX_RUNNER: ${{ matrix.runner }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_WORKFLOW_REF: ${{ github.workflow_ref }}
-          GH_REF: ${{ github.ref }}
+          GH_REF: ${{ needs.changes-guard.outputs.target-ref }}
           GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_RUN_ATTEMPT: ${{ github.run_attempt }}

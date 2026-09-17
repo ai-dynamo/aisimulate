@@ -46,14 +46,14 @@ async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/ma
 
 test("nightly dispatch pins main or release ancestors while cron uses its own SHA", async () => {
   const scheduled = await nightlyTarget({ event: "schedule", requested: "invalid" });
-  assert.deepEqual(scheduled.outputs, { sha });
+  assert.deepEqual(scheduled.outputs, { sha, ref: "refs/heads/main" });
   assert.equal(scheduled.lookups, 0);
   for (const requested of [sha, "", ` ${sha} `]) {
-    assert.deepEqual((await nightlyTarget({ requested })).outputs, { sha });
+    assert.deepEqual((await nightlyTarget({ requested })).outputs, { sha, ref: "refs/heads/main" });
   }
   for (const status of ["ahead", "identical"]) {
     const release = await nightlyTarget({ statuses: { "release/0.12.0": status } });
-    assert.deepEqual(release.outputs, { sha });
+    assert.deepEqual(release.outputs, { sha, ref: "refs/heads/release/0.12.0" });
     assert.deepEqual(release.compared, ["main", "release/0.12.0"]);
   }
 });
