@@ -96,6 +96,7 @@ OPERATIONS_DEF_INVENTORY = {
             "AFDTransfer.get_weights",
             "AFDTransfer.num_f_nodes",
             "AFDTransfer.query",
+            "AFDTransfer.span_gpus",
             "_afd_send_prob",
             "_engine_comm_query",
         }

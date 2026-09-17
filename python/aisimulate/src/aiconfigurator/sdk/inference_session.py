@@ -1293,6 +1293,17 @@ class AFDInferenceSession:
             topk=topk,
             comm_quant_mode=comm_quant,
         )
+        # GPUs the A and F pools occupy together. Only the cross-pool P2P
+        # legs get it: on a super-node fabric (NVL72-class) a pool pair that
+        # fits one scale-up domain is priced on NVLink, one that exceeds
+        # num_gpus_per_rack on the scale-out fabric. The F-side AG/RS are
+        # intra-node and a_combine is a local HBM reduce, so neither can
+        # cross a rack and neither takes a span.
+        #
+        # ``f_moe_tp_size`` is the mirror case: only the F-node collectives
+        # take it, because it gates whether a token-dimension TP group exists
+        # at all. The cross-pool transfers move tokens regardless.
+        span_gpus = cfg.n_a_nodes * cfg.effective_a_gpus_per_node + cfg.n_f_nodes * cfg.effective_f_gpus_per_node
         # F-side collectives (f_ag / f_rs) price on the F pool's comm quant mode;
         # the a2f / f2a transfers and the A-side combine stay on the A pool's.
         f_shared = {**shared, "comm_quant_mode": f_comm_quant}
@@ -1301,6 +1312,7 @@ class AFDInferenceSession:
                 name="afd_a2f_transfer",
                 scale_factor=1.0,
                 direction="a2f",
+                span_gpus=span_gpus,
                 comm_overhead_factor=cfg.comm_overhead_factor,
                 **shared,
             ),
@@ -1308,6 +1320,7 @@ class AFDInferenceSession:
                 name="afd_f2a_transfer",
                 scale_factor=1.0,
                 direction="f2a",
+                span_gpus=span_gpus,
                 comm_overhead_factor=cfg.comm_overhead_factor,
                 **shared,
             ),

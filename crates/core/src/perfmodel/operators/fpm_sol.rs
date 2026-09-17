@@ -879,6 +879,7 @@ mod tests {
             pp_size: 2,
             hidden_size: 6144,
             seq_split: 1,
+            span_gpus: None,
         };
         approx(
             p2p_sol(&p2p, &s, 8192.0),

@@ -871,6 +871,7 @@ pub(crate) mod energy_test_fixtures {
                 p2p_latency: 2e-6,
                 num_gpus_per_rack: None,
                 inter_rack_bw: None,
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         }
