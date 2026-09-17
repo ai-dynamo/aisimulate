@@ -19,6 +19,9 @@ import pkg_resources
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
+from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.registry_types import PerfFile
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
@@ -28,10 +31,6 @@ from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_parallel
-
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.registry_types import PerfFile
 
 # The standalone collector has no scheduler to initialize DP state.
 sglang.srt.layers.dp_attention._ATTN_DP_SIZE = 1
@@ -76,6 +75,19 @@ def _select_default_mla_backend() -> str:
         # is_sm100_supported and never fires on SM89/SM120.
         return "triton"
     raise ValueError(f"No SGLang 0.5.14 MLA backend mapping for SM{sm_version}")
+
+
+def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
+    # SGLang v0.5.14 (4289f36ef960fad8268a6b94935686e792a81432):
+    # trtllm_mla_backend.py:687-692 quantizes prefill Q/K/V to FP8 when
+    # self.data_type (the KV dtype) is FP8. Decode quantizes Q likewise.
+    # BF16 input tensors therefore do not imply BF16 kernel compute.
+    # Hopper's absorbed MLA has head_dim=576: flashattention_backend.py:
+    # 861-872 excludes it from FP8 Q casting and :1175-1181 casts KV to Q's
+    # BF16 dtype. Triton also uses BF16 compute.
+    if backend == "trtllm_mla" and kv_cache_dtype == torch.float8_e4m3fn:
+        return "fp8"
+    return "bfloat16"
 
 
 class MockModelConfig:
@@ -603,7 +615,7 @@ def run_mla(
     if not log_perf(
         item_list=[
             {
-                "mla_dtype": "bfloat16",
+                "mla_dtype": _mla_compute_dtype(selected_backend, kv_cache_dtype),
                 "kv_cache_dtype": str_type,
                 "num_heads": local_num_heads,
                 "batch_size": batch_size,

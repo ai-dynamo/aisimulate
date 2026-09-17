@@ -20,6 +20,15 @@ platform alignment ledger, a local campaign record kept outside the repo
 campaign workspace).
 
 # Preparation
+
+SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
+On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
+so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
+576-dimensional FA3 path uses BF16 compute, including when KV storage is FP8.
+BF16 inputs to the collector do not determine the kernel's compute precision.
+Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
+correct label; do not copy their timings into a second precision key.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash
