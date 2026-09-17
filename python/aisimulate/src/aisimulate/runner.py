@@ -414,7 +414,7 @@ class EngineReplayRunner:
         try:
             report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
         except MemoryError as error:
-            # Resource-aware installations classify a native report limit as host
+            # Resource-aware installations classify a report storage failure as host
             # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
             try:
                 from .resources import ResourceLimitError

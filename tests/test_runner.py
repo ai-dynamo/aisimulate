@@ -1225,7 +1225,7 @@ def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
 
     class LimitedRuntime:
         def run_replay_json(self, payload):
-            raise MemoryError("report storage limit")
+            raise MemoryError("report storage: No space left on device")
 
-    with pytest.raises(HostResourceError, match="report storage limit"):
+    with pytest.raises(HostResourceError, match="report storage: No space left on device"):
         EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())

@@ -928,14 +928,6 @@ impl TraceCollector {
         self.retire_completed().map_err(|error| {
             crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
         })?;
-        if self.batch_reporting
-            && self.bounded_summary.is_none()
-            && self.requests.len() >= bounded::MAX_RETAINED_REQUESTS
-        {
-            return Err(crate::replay::ReplayError::ResourceLimited(
-                "detailed replay reporting exceeds the 100000 retained-request limit; use summary output or a smaller explicit workload".into()
-            ).into());
-        }
         self.on_arrival(uuid, at_ms, input, output);
         Ok(())
     }
@@ -1976,23 +1968,65 @@ mod tests {
     }
 
     #[test]
-    fn detailed_batch_reporting_refuses_an_oversized_list() {
+    fn detailed_batch_reporting_preserves_records_past_the_previous_cap() {
         let mut collector = TraceCollector::default();
         collector.set_capture_per_request(true);
         collector.begin_batch_reporting();
-        for index in 0..bounded::MAX_RETAINED_REQUESTS {
-            collector
-                .try_on_arrival(Uuid::from_u128(index as u128), 0.0, 1, 1)
-                .unwrap();
+        let request_count = 100_001;
+        // Reverse arrival insertion also checks that the existing output
+        // ordering is preserved, rather than switching to completion order.
+        for index in (0..request_count).rev() {
+            let uuid = Uuid::from_u128(index as u128);
+            collector.try_on_arrival(uuid, index as f64, 1, 1).unwrap();
+            collector.on_admit(uuid, index as f64, 0);
+            collector.on_token(uuid, index as f64 + 1.0);
+            collector.on_terminal(uuid, index as f64 + 1.0, ReplayTerminalStatus::Completed);
         }
-        let error = collector
-            .try_on_arrival(Uuid::from_u128(999999), 0.0, 1, 1)
-            .unwrap_err();
-        assert!(matches!(
-            crate::replay::error::runtime_error(error),
-            crate::replay::ReplayError::ResourceLimited(_)
-        ));
-        assert_eq!(collector.requests.len(), bounded::MAX_RETAINED_REQUESTS);
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, request_count);
+        assert_eq!(report.request_counts.completed_requests, request_count);
+        assert_eq!(report.request_counts.total_output_tokens, request_count);
+        assert_eq!(report.per_request.len(), request_count);
+        for (index, record) in report.per_request.iter().enumerate() {
+            assert_eq!(record.uuid, Uuid::from_u128(index as u128).to_string());
+            assert_eq!(record.arrival_time_ms, index as f64);
+            assert_eq!(record.output_length, 1);
+            assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+        }
+    }
+
+    #[rstest::rstest]
+    fn completed_record_retirement_preserves_live_requests_and_step_queries(
+        #[values(false, true)] batch_reporting: bool,
+    ) {
+        let mut collector = TraceCollector::default();
+        if batch_reporting {
+            collector.begin_batch_reporting();
+        }
+        let [completed, active, next] = [1, 2, 3].map(Uuid::from_u128);
+        for uuid in [completed, active] {
+            collector.try_on_arrival(uuid, 0.0, 1, 1).unwrap();
+            collector.on_admit(uuid, 1.0, 0);
+        }
+        collector.on_token(completed, 2.0);
+        collector.on_terminal(completed, 2.0, ReplayTerminalStatus::Completed);
+        // Completion callbacks can still read this request's finished stats.
+        assert_eq!(collector.actual_output_length(completed), Some(1));
+        collector.try_on_arrival(next, 3.0, 1, 1).unwrap();
+        assert_eq!(collector.contains_request(completed), !batch_reporting);
+        assert!(collector.contains_request(active));
+        assert!(collector.contains_request(next));
+        collector.on_admit(next, 3.0, 0);
+        for uuid in [active, next] {
+            collector.on_token(uuid, 4.0);
+            collector.on_terminal(uuid, 4.0, ReplayTerminalStatus::Completed);
+        }
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 3);
+        assert_eq!(report.request_counts.completed_requests, 3);
+        assert_eq!(report.request_counts.total_output_tokens, 3);
     }
 
     #[test]

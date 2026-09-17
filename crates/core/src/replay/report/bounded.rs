@@ -7,12 +7,10 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 use super::*;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
+// This is a storage transition, not a limit on the workload or sample count.
 const MEMORY_SAMPLES: usize = 4096;
-// Four distributions together consume at most 1 GiB of temporary disk space.
-const MAX_SAMPLES: usize = (256 * 1024 * 1024) / 8;
-pub(super) const MAX_RETAINED_REQUESTS: usize = 100_000;
 
 #[derive(Debug, Default)]
 struct Samples {
@@ -23,11 +21,6 @@ struct Samples {
 
 impl Samples {
     fn push(&mut self, value: f64) -> Result<()> {
-        if self.count == MAX_SAMPLES {
-            bail!(
-                "resource_limited: exact report samples exceed the 1 GiB temporary-storage limit"
-            );
-        }
         if self.disk.is_none() && self.memory.len() == MEMORY_SAMPLES {
             let mut file =
                 BufWriter::new(tempfile::tempfile().context("create exact report sample file")?);
@@ -289,18 +282,30 @@ mod tests {
     }
 
     #[test]
-    fn sample_limit_refuses_before_writing() {
+    fn sample_spool_grows_past_the_previous_storage_cap() {
+        // A sparse file reaches the old boundary without allocating 256 MiB
+        // in this test. Verify both the existing tail and the appended sample.
+        let previous_sample_cap = (256 * 1024 * 1024) / 8;
+        let previous_bytes = (previous_sample_cap * 8) as u64;
+        let mut file = tempfile::tempfile().unwrap();
+        file.set_len(previous_bytes).unwrap();
+        file.seek(SeekFrom::Start(previous_bytes - 8)).unwrap();
+        file.write_all(&17.0_f64.to_le_bytes()).unwrap();
         let mut samples = Samples {
-            count: MAX_SAMPLES,
+            disk: Some(BufWriter::new(file)),
+            count: previous_sample_cap,
             ..Default::default()
         };
-        assert!(
-            samples
-                .push(1.0)
-                .unwrap_err()
-                .to_string()
-                .contains("resource_limited")
-        );
+        samples.push(23.0).unwrap();
+        assert_eq!(samples.count, previous_sample_cap + 1);
         assert!(samples.memory.is_empty());
+        let mut file = samples.disk.unwrap().into_inner().unwrap();
+        assert_eq!(file.metadata().unwrap().len(), previous_bytes + 8);
+        file.seek(SeekFrom::Start(previous_bytes - 8)).unwrap();
+        for expected in [17.0, 23.0] {
+            let mut bytes = [0; 8];
+            file.read_exact(&mut bytes).unwrap();
+            assert_eq!(f64::from_le_bytes(bytes), expected);
+        }
     }
 }

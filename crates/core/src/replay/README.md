@@ -472,14 +472,18 @@ deviation accumulation can differ at roundoff because completion order replaces
 request-ID order. Existing ITL and per-user throughput sketches retain their
 existing 0.1% relative quantile error; this change introduces no new sketch.
 
-The four exact sample files together have a 1 GiB limit. Filesystem errors and
-that limit stop the replay with a `resource_limited` error, without returning a
-partial report. Temporary files close on success, failure, or process exit.
-Detailed batch output retains its existing list API and refuses request 100001
-before adding its report record. Select summary output or explicitly reduce the
-workload when that limit is reached. These are reporting limits, not a total host
-memory guarantee: engine state, input traces, trajectory metadata, and other
-capture options must also fit the execution budget.
+The 4096-sample threshold only changes where values are stored; it never drops
+samples or stops the replay. Temporary storage grows with the workload, without
+an application-imposed byte or sample cap. Actual filesystem failures stop the
+replay with a `resource_limited` error, without returning a partial report.
+Only the replay's own anonymous temporary files are closed on success, failure,
+or process exit; no existing user files are deleted.
+
+Detailed batch output retains its complete, ordered list API without a request
+cap. It continues retaining the records needed to satisfy that API. This change
+does not introduce a streaming-output API, reduce the requested workload, or
+impose host-resource budgets. Engine state, input traces, detailed records,
+trajectory metadata, and other capture options still require host memory.
 
 Steppable SDK engines preserve completed-request queries until their reporting
 epoch is drained; this batch optimization does not change that API contract.
