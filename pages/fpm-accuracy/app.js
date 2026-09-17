@@ -16,6 +16,19 @@
   let catalog, summary, request = 0;
   let sort = { key: "model", direction: 1 };
 
+  const themeToggle = document.getElementById("theme-toggle");
+  function updateThemeControl() {
+    const dark = document.documentElement.dataset.theme !== "light";
+    themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  }
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("sm-theme", next); } catch (_) { /* Storage may be disabled. */ }
+    updateThemeControl();
+  });
+  updateThemeControl();
+
   async function load(path) {
     const response = await fetch(path, { cache: "no-cache" });
     if (!response.ok) throw new Error(`Data request failed (${response.status})`);
@@ -41,7 +54,7 @@
     return METHODS.map((method) => {
       const metric = aggregate(rows, method);
       const value = metric.mape === null ? "—" : `${metric.mape.toFixed(2)}%`;
-      const tone = metric.mape === null ? "missing" : metric.mape <= 10 ? "good" : metric.mape <= 25 ? "warn" : "bad";
+      const tone = metric.mape === null ? "missing" : "";
       let note = metric.measured ? `${integer(metric.predicted)}/${integer(metric.measured)} predicted · ${(100 * metric.predicted / metric.measured).toFixed(1)}% coverage` : "Unavailable";
       if (metric.errors) note += ` · ${integer(metric.errors)} errors`;
       if (metric.tuning) note += ` · ${integer(metric.tuning)} tuning errors`;
@@ -76,11 +89,11 @@
     const models = groups();
     body.innerHTML = models.map((group) => {
       const expanded = !collapsed.has(group.model);
-      const model = `<tr class="overview-model-row"><th scope="rowgroup"><button class="overview-model-button" data-model="${escape(group.model)}" aria-expanded="${expanded}"><span class="overview-chevron" aria-hidden="true">›</span><span>${escape(group.model)}</span><span class="overview-model-count">${group.rows.length}</span></button></th><td>${escape(group.gpu)}</td><td>${escape(group.framework)}</td><td class="overview-measurement-cell"><strong>${integer(group.measurements)}</strong><span>observations</span></td>${cells(group.rows)}</tr>`;
+      const model = `<tr class="overview-model-row model-row"><th scope="rowgroup"><button class="overview-model-button" data-model="${escape(group.model)}" aria-expanded="${expanded}"><span class="overview-chevron" aria-hidden="true">›</span><span>${escape(group.model)}</span><span class="overview-model-count">${group.rows.length}</span></button></th><td>${escape(group.gpu)}</td><td>${escape(group.framework)}</td><td class="overview-measurement-cell"><strong>${integer(group.measurements)}</strong><span>observations</span></td>${cells(group.rows)}</tr>`;
       return model + [...group.rows].sort((a, b) => [a.gpu, a.framework, a.framework_version, a.parallelism].join().localeCompare([b.gpu, b.framework, b.framework_version, b.parallelism].join())).map((row) => {
         const measurement = row.status === "ready" ? `${integer(row.measurement_count)} observations` : row.status.replaceAll("_", " ");
         const skipped = row.skipped_count ? `<span>${integer(row.skipped_count)} excluded</span>` : "";
-        return `<tr class="overview-config-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(row.worker_role)}</span><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "Configuration ↗")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
+        return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(row.worker_role)}</span><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "Configuration ↗")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
       }).join("");
     }).join("");
     body.querySelectorAll("[data-model]").forEach((button) => button.addEventListener("click", () => {
@@ -94,13 +107,12 @@
       const active = button.dataset.sort === sort.key;
       button.classList.toggle("active", active);
       button.closest("th").setAttribute("aria-sort", active ? (sort.direction === 1 ? "ascending" : "descending") : "none");
-      button.querySelector(".sort-mark").textContent = active ? (sort.direction === 1 ? "▲" : "▼") : "↕";
     });
   }
 
   function clear(message) {
     summary = null;
-    body.innerHTML = `<tr><td colspan="7" class="status">${escape(message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="empty-cell">${escape(message)}</td></tr>`;
     ["models", "configurations", "measurement", "evaluated"].forEach((key) => { document.getElementById(`${key}-value`).textContent = "—"; });
     document.querySelector(".snapshot-value").textContent = message;
     document.getElementById("table-count").textContent = "";

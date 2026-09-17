@@ -7,6 +7,9 @@ compares forward-pass predictions with measurements from the public
 ## What is published
 
 - Only Overview: expandable model/configuration rows and sortable metrics.
+- The E2E accuracy page's compact AISimulate header, branch selector, summary
+  cards, table, and evidence panels. Light/dark mode shares the `sm-theme`
+  preference across the accuracy pages.
 - FPM warmup, FPM no warmup (KV-off input), and online Regression.
 - MAPE over successful predictions, with predicted/measured counts, coverage,
   prediction errors, and regression tuning errors. Cold-start misses count
@@ -48,6 +51,9 @@ evaluation” when no retained qualified artifact remains.
 Pages serves the JSON alongside the reviewed main-branch HTML/CSS/JS. Browsers
 never need GitHub credentials or direct access to Actions artifacts. PR previews
 use the unavailable state; browser tests use clearly synthetic fixtures.
+FPM loads `../e2e-accuracy/styles.css` for the shared page styles and keeps only
+FPM table details in its own stylesheet. Serve the built site or the `pages/`
+directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
@@ -75,10 +81,11 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 
 ## Source attribution
 
-The overview markup, styles, and behavior were adapted from NVIDIA
+The overview structure and behavior were adapted from NVIDIA
 [AISim FPM Gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/dashboard),
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a three-column
-public overview, qualified branch snapshots, and public-only provenance.
+public overview, qualified branch snapshots, and public-only provenance. The
+visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. See the root
 THIRD_PARTY_NOTICES.md and LICENSE. Plotly and other tabs are not included.

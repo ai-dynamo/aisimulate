@@ -31,6 +31,7 @@ async def check():
     with tempfile.TemporaryDirectory() as directory:
         site = Path(directory)
         shutil.copytree(ROOT / "pages/fpm-accuracy", site / "fpm-accuracy")
+        shutil.copytree(ROOT / "pages/e2e-accuracy", site / "e2e-accuracy")
         data = json.loads((ROOT / "tests/fpm_accuracy/fixtures/summary.json").read_text())
         entries = []
         for branch in ("main", "release/0.12.0"):
@@ -53,11 +54,23 @@ async def check():
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
-                page = await browser.new_page(viewport={"width": 1600, "height": 1050})
+                page = await browser.new_page(viewport={"width": 1600, "height": 1050}, color_scheme="light")
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 url = f"http://127.0.0.1:{server.server_port}/fpm-accuracy/"
                 await page.goto(url + "?branch=main")
+                await expect(page.locator(".overview-model-row")).to_have_count(2)
+                await expect(page.locator("html")).to_have_attribute("data-theme", "light")
+                await page.get_by_role("button", name="Switch to dark theme").click()
+                await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                await page.reload()
+                await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                # Navigation between the accuracy pages preserves the shared preference.
+                await page.goto(url.replace("fpm-accuracy/", "e2e-accuracy/"))
+                await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                await page.get_by_role("button", name="Switch to light theme").click()
+                await page.goto(url + "?branch=main")
+                await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
                 await expect(page.locator("#freshness")).to_contain_text("Stale result")
                 await expect(page.locator("thead th")).to_have_count(7)
@@ -101,9 +114,22 @@ async def check():
                 await page.unroute_all(behavior="wait")
                 if screenshot := os.environ.get("FPM_SCREENSHOT"):
                     await page.screenshot(path=screenshot, full_page=True)
+                await page.get_by_role("button", name="Switch to dark theme").click()
+                if screenshot:
+                    await page.screenshot(
+                        path=str(Path(screenshot).with_stem(Path(screenshot).stem + "-dark")), full_page=True
+                    )
                 await page.set_viewport_size({"width": 390, "height": 844})
                 await expect(page.locator("#branch")).to_be_visible()
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                await page.get_by_role("button", name="Switch to light theme").focus()
+                await page.keyboard.press("Enter")
+                await expect(page.locator("html")).to_have_attribute("data-theme", "light")
+                assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                if screenshot:
+                    await page.screenshot(
+                        path=str(Path(screenshot).with_stem(Path(screenshot).stem + "-mobile")), full_page=True
+                    )
                 assert not errors, errors
                 await browser.close()
         finally:

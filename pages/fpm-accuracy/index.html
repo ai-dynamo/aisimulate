@@ -1,91 +1,141 @@
 <!doctype html>
-<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-     SPDX-License-Identifier: Apache-2.0
-     Adapted from NVIDIA AISim FPM Gym overview. See README.md. -->
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Current AISim forward-pass prediction accuracy by model and Hugging Face configuration.">
-  <title>FPM Gym · Accuracy overview</title>
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <header class="app-header">
-    <div class="nav">
-      <a class="brand" href="index.html">
-        <span class="brand-mark" aria-hidden="true">F</span>
-        <div><div class="brand-name">FPM Gym</div><div class="brand-section">HF-backed evaluation</div></div>
-      </a>
-      <nav class="nav-tabs" aria-label="Dashboard">
-        <a class="nav-tab" href="../">AISimulate</a>
-        <a class="nav-tab active" href="index.html" aria-current="page">Overview</a>
-      </nav>
-      <div class="nav-status"><span class="status-dot" aria-hidden="true"></span><span id="nav-status-text" aria-live="polite">Loading current snapshot…</span></div>
-    </div>
-  </header>
-
-  <main>
-    <section class="hero" aria-labelledby="page-title">
-      <div>
-        <div class="eyebrow">Daily evaluation</div>
-        <h1 id="page-title">FPM accuracy overview</h1>
-        <p class="hero-copy">Compare current model configurations and FPM inputs and online regression side by side. Model rows summarize observation-level MAPE; expand or collapse them to inspect the exact GPU, framework, measurement, and prediction coverage.</p>
-      </div>
-      <div class="snapshot" id="snapshot" aria-live="polite">
-        <span class="snapshot-icon" aria-hidden="true">↗</span>
-        <span class="snapshot-label">Pinned evaluation</span>
-        <span class="snapshot-value">Loading…</span>
-      </div>
-    </section>
-
-    <div class="branch-control"><label for="branch">AISim branch</label><select id="branch" disabled><option>Loading…</option></select><span id="freshness" role="status"></span></div>
-
-    <section class="overview" aria-label="Current accuracy summary">
-      <div class="metric-tile"><div class="metric-label">Models</div><div class="metric-value" id="models-value">—</div><div class="metric-note">Current catalog entries</div></div>
-      <div class="metric-tile"><div class="metric-label">Configurations</div><div class="metric-value" id="configurations-value">—</div><div class="metric-note">Daily evaluations</div></div>
-      <div class="metric-tile"><div class="metric-label">Live measurement</div><div class="metric-value" id="measurement-value">—</div><div class="metric-note">Measurement-ready configurations</div></div>
-      <div class="metric-tile"><div class="metric-label">Evaluated</div><div class="metric-value" id="evaluated-value">—</div><div class="metric-note">Exact slices with predictor results</div></div>
-    </section>
-
-    <section class="overview-table-card" aria-labelledby="overview-table-title">
-      <div class="overview-table-heading">
-        <div>
-          <div class="table-kicker">Latest complete branch evaluation</div>
-          <h2 id="overview-table-title">MAPE by model</h2>
-          <p>Lower is better. Every metric retains successful predictions over eligible measured observations.</p>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Daily AISimulate forward-pass prediction accuracy against pinned Hugging Face measurements."
+    />
+    <title>AISimulate - FPM Accuracy Overview</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisimulate-accuracy-theme");
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme =
+          savedTheme === "light" || savedTheme === "dark"
+            ? savedTheme
+            : prefersDark
+              ? "dark"
+              : "light";
+        localStorage.setItem("sm-theme", document.documentElement.dataset.theme);
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="top-header">
+      <div class="shell top-header-inner">
+        <div class="brand">
+          <a href="../" aria-label="AISimulate documentation home">
+            <img class="brand-logo" src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" />
+          </a>
+          <h1 id="page-title"><a href="../">AISimulate</a>
+            <span class="page-name">- FPM Accuracy Overview</span>
+          </h1>
         </div>
-        <div class="overview-table-count" id="table-count" aria-live="polite"></div>
+        <div class="header-controls">
+          <label class="branch-control" for="branch">Branch:
+            <select id="branch" disabled><option>Loading…</option></select>
+          </label>
+          <nav class="source-nav" aria-label="Source links">
+            <a class="github-link" href="https://github.com/ai-dynamo/aisimulate" aria-label="View on GitHub" title="View on GitHub">
+              <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+            </a>
+            <button
+              class="theme-toggle"
+              id="theme-toggle"
+              type="button"
+              aria-label="Switch to light theme"
+              title="Switch theme"
+            >
+              <svg class="theme-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2m0 18v2M1 12h2m18 0h2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+              </svg>
+              <svg class="theme-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            </button>
+          </nav>
+        </div>
       </div>
-      <div class="overview-table-scroll" role="region" tabindex="0" aria-label="Current model accuracy comparison">
-        <table class="overview-grid">
-          <colgroup>
-            <col class="overview-col-model"><col class="overview-col-gpu"><col class="overview-col-framework"><col class="overview-col-measurement">
-            <col class="overview-col-method"><col class="overview-col-method"><col class="overview-col-method">
-          </colgroup>
-          <thead>
-            <tr>
-              <th scope="col"><button class="overview-sort active" type="button" data-sort="model">Model / configuration <span class="sort-mark">▲</span></button></th>
-              <th scope="col"><button class="overview-sort" type="button" data-sort="gpu">GPU <span class="sort-mark">↕</span></button></th>
-              <th scope="col"><button class="overview-sort" type="button" data-sort="framework">Framework <span class="sort-mark">↕</span></button></th>
-              <th scope="col"><button class="overview-sort" type="button" data-sort="measurements">Measurements <span class="sort-mark">↕</span></button></th>
-              <th scope="col" class="overview-method-heading fpm-based"><button class="overview-sort method-sort" type="button" data-sort="method:warmup"><span class="method-name">FPM warmup</span><span class="method-description">Warm predictor input</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
-              <th scope="col" class="overview-method-heading fpm-based"><button class="overview-sort method-sort" type="button" data-sort="method:nowarmup"><span class="method-name">FPM no warmup</span><span class="method-description">KV-off predictor input</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
-              <th scope="col" class="overview-method-heading regression"><button class="overview-sort method-sort" type="button" data-sort="method:regression"><span class="method-name">Regression</span><span class="method-description">Online fit</span><span class="method-metric">Overall MAPE <span class="sort-mark">↕</span></span></button></th>
-            </tr>
-          </thead>
-          <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="status">Loading exported data…</td></tr></tbody>
-        </table>
-      </div>
-      <div class="grid-legend">
-        <span><b>Model rows</b> observation-level micro-average across eligible measured observations</span>
-        <span><b>FPM variants</b> one warmup and one no-warmup result selected per slice by coverage, MAPE, then artifact ID</span>
+    </header>
+
+    <section class="scope-bar" aria-label="Evaluation scope">
+      <div class="shell heading-controls">
+        <span id="nav-status-text" class="scope-control" aria-live="polite">Loading evaluation…</span>
+        <div class="snapshot-links">
+          <span>Daily evaluation · 10:47 UTC</span>
+          <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset">Measurement source</a>
+        </div>
       </div>
     </section>
-  </main>
 
-  <footer>Data source: <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset" target="_blank" rel="noopener">nvidia/aisimulate-fpm-dataset</a> · Code: <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener">AISimulate</a></footer>
+    <main class="shell dashboard">
+      <section class="migration-context" aria-label="Forward-pass comparison">
+        <p><strong>Compare FPM and online regression against measured forward-pass latency.</strong>
+          Check MAPE alongside prediction coverage. Expand a model to inspect its GPU, framework,
+          and configuration evidence.</p>
+      </section>
+      <p class="branch-status" id="freshness" role="status">Loading branch evidence…</p>
+      <p class="identity-line snapshot-value" aria-live="polite">Loading snapshot identity…</p>
 
-  <script src="app.js"></script>
-</body>
+      <section class="summary-grid fpm-summary" aria-label="Snapshot summary">
+        <article class="summary-card"><div class="summary-label">Models</div><div class="summary-value" id="models-value">—</div></article>
+        <article class="summary-card"><div class="summary-label">Configurations</div><div class="summary-value" id="configurations-value">—</div></article>
+        <article class="summary-card"><div class="summary-label">Measurement-ready configurations</div><div class="summary-value" id="measurement-value">—</div></article>
+        <article class="summary-card"><div class="summary-label">Evaluated configurations</div><div class="summary-value accent" id="evaluated-value">—</div></article>
+      </section>
+
+      <section class="matrix-panel" aria-labelledby="matrix-heading">
+        <h2 id="matrix-heading">MAPE vs silicon — successful forward-pass predictions <span id="table-count"></span></h2>
+        <div class="table-scroll" role="region" tabindex="0" aria-label="FPM accuracy matrix">
+          <table>
+            <caption class="sr-only">Accuracy grouped by model and configuration. Activate a column heading to sort model groups. Expand a model to inspect configurations.</caption>
+            <thead><tr>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="model">Model / configuration <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="gpu">GPU <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="framework">Framework <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="measurements">Measurements <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:warmup">FPM warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:nowarmup">FPM no warmup MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:regression">Regression MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+            </tr></thead>
+            <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="loading-cell">Loading accuracy matrix…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="public-notes" aria-label="Scope and provenance">
+        <details open>
+          <summary>Public evidence scope</summary>
+          <div class="notes-grid">
+            <article>
+              <h2>Read accuracy and coverage together</h2>
+              <p>MAPE is averaged over successful predictions, weighted by observation count.
+                Cold starts, missing inputs, unsupported predictors, and prediction errors remain
+                visible in coverage. These results apply to the measured configurations in this snapshot.</p>
+            </article>
+            <article>
+              <h2>Reproducible comparison</h2>
+              <p>Each FPM variant uses the same measurements. Warmup and no-warmup inputs are selected
+                separately by coverage, MAPE, then artifact ID. Regression predicts and scores before
+                tuning. Configuration and measurement links point to the evaluated HF revision.</p>
+            </article>
+          </div>
+        </details>
+      </section>
+    </main>
+    <script src="./app.js" defer></script>
+  </body>
 </html>
