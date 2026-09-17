@@ -13,13 +13,30 @@ const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
 const nightlyWorkflow = readFileSync(new URL("../.github/workflows/nightly-ci.yml", import.meta.url), "utf8");
-function nightlyScript(id) {
-  const step = nightlyWorkflow.split(`        id: ${id}\n`)[1];
+function nightlyScript(id, workflow = nightlyWorkflow) {
+  const step = workflow.split(`        id: ${id}\n`)[1]?.split(/\n      - /)[0];
   assert.ok(step, `missing nightly step ${id}`);
   const script = step.match(/          script: \|\n((?:(?:            .*)?\n)+)/);
   assert.ok(script, `missing script for nightly step ${id}`);
   return script[1];
 }
+
+test("nightly script lookup rejects missing IDs", () => {
+  assert.throws(() => nightlyScript("unknown-step"), /missing nightly step unknown-step/);
+});
+
+test("nightly script lookup cannot borrow a later step's script", () => {
+  const fixture = `      - name: Missing script
+        id: missing
+        run: echo fixture
+      - name: Different step
+        id: different
+        with:
+          script: |
+            throw new Error('wrong step');
+`;
+  assert.throws(() => nightlyScript("missing", fixture), /missing script for nightly step missing/);
+});
 
 async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/main", requested = sha,
   branches = ["main", "release/0.12.0", "feature/test"], statuses = { main: "ahead" }, apiError } = {}) {
