@@ -96,6 +96,9 @@ struct FlatHoldIndex {
 }
 
 impl FlatHoldIndex {
+    // Small tables do not amortize tree construction and recursive traversal.
+    const LINEAR_SCAN_MAX_LEAVES: usize = 16;
+
     fn build(node: &Node) -> Self {
         fn visit(
             node: &Node,
@@ -145,7 +148,9 @@ impl FlatHoldIndex {
             leaves: leaves.into_boxed_slice(),
             kd_tree: None,
         };
-        index.kd_tree = KdTree::build(&index);
+        if index.len() > Self::LINEAR_SCAN_MAX_LEAVES {
+            index.kd_tree = KdTree::build(&index);
+        }
         index
     }
 
@@ -831,7 +836,11 @@ fn hold_anchor_weights_prepared(
     }
 
     let mut best = HoldCandidates::new(m);
-    if let Some(tree) = index.kd_tree.as_ref().filter(|tree| tree.can_query(&q_log)) {
+    if let Some(tree) = index
+        .kd_tree
+        .as_ref()
+        .filter(|tree| m < index.len() && tree.can_query(&q_log))
+    {
         tree.search(index, &q_log, &mut best);
     } else {
         for leaf_idx in 0..index.len() {
@@ -2282,8 +2291,11 @@ mod tests {
                 }
             }
         }
+        // A farther leaf keeps this fixture above the small-table cutoff.
+        tied.insert(&[16, 16, 16, 16], 64.0);
         let tied_cfg = OpInterpConfig::grid(&["a", "b", "c", "d"], &sol);
         let tied_index = FlatHoldIndex::build(&tied);
+        assert!(tied_index.kd_tree.is_some());
         let anchors =
             hold_anchor_weights_prepared(&tied_cfg, &tied_index, &[2.0, 2.0, 2.0, 2.0], 4).unwrap();
         let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
@@ -2329,7 +2341,7 @@ mod tests {
                     table.insert_value(path, LeafValue::with_power(latency, latency + 17.0));
                     return;
                 }
-                for coord in [1, 2, 4, 8] {
+                for coord in [1, 2, 4, 8, 16] {
                     // Leave some regular-grid corners absent. All leaves still
                     // have the same dimensions, so the exact index remains valid.
                     if path.first() == Some(&8) && coord == 8 {
@@ -2383,6 +2395,61 @@ mod tests {
                 for (indexed_anchor, linear_anchor) in indexed_anchors.iter().zip(&linear_anchors) {
                     assert_same_anchor(indexed_anchor, linear_anchor);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn small_holds_match_exhaustive_at_index_cutoff() {
+        let sol = |c: &[f64]| 1.0 + c.iter().sum::<f64>();
+        let query = [64.0, 2.0];
+        let q_log: Vec<f64> = query.iter().map(|v| f64::log2(*v)).collect();
+        for leaves in [12, 13, 16, 17] {
+            let mut node = Node::branch();
+            for x in 1..=leaves {
+                node.insert_value(
+                    &[x, 1],
+                    LeafValue::with_power(f64::from(x), 100.0 + f64::from(x)),
+                );
+            }
+            let prepared = PreparedGrid::new(node.clone());
+            let index = prepared
+                .hold_index
+                .get_or_init(|| FlatHoldIndex::build(prepared.node()));
+            assert_eq!(index.kd_tree.is_some(), leaves > 16);
+            let linear = PreparedGrid::new(node);
+            let mut linear_index = FlatHoldIndex::build(linear.node());
+            linear_index.kd_tree = None;
+            assert!(linear.hold_index.set(linear_index).is_ok());
+
+            // The latter widths fill or exceed the complete candidate set.
+            for width in [4, leaves as usize - 8, leaves as usize] {
+                let mut cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+                cfg.resolver = Resolver::Grid {
+                    k_tail: 1,
+                    nn_leaves: width,
+                };
+                let actual = hold_anchor_weights_prepared(&cfg, index, &query, width).unwrap();
+                let expected =
+                    hold_anchor_weights_exhaustive(&cfg, index, &query, width, &q_log).unwrap();
+                assert_eq!(actual.len(), expected.len());
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.coords, b.coords);
+                    for (x, y) in [
+                        (a.latency, b.latency),
+                        (a.power, b.power),
+                        (a.sol, b.sol),
+                        (a.weight, b.weight),
+                    ] {
+                        assert_eq!(x.to_bits(), y.to_bits());
+                    }
+                }
+                let a = prepared.query_value(&cfg, &query).unwrap();
+                let b = linear.query_value(&cfg, &query).unwrap();
+                assert_eq!(
+                    [a.latency.to_bits(), a.power.to_bits(), a.energy.to_bits()],
+                    [b.latency.to_bits(), b.power.to_bits(), b.energy.to_bits()]
+                );
             }
         }
     }
