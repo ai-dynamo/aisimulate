@@ -139,13 +139,15 @@ commits. The selector checks current and previous filenames, validates the PR
 head and base, and reports an explicit skip for unrelated changes. API failures
 or changed revisions fail selection; empty, incomplete, or oversized file lists
 run the benchmark conservatively. Manual dispatch forces a comparison after the
-same revision checks.
+same revision checks: the trusted copy must match the current PR head.
 
-If the PR changes the performance benchmark harness, the benchmark job also
-runs the PR's controller against the same base and head installations. This
-validates new matrix cases before merge and reports them separately, alongside
-the normal comparison made with the base controller. It reuses the built
+If the PR changes the performance gate's Python files or the shared prediction
+grid, the benchmark job also runs the PR's controller against the same base and
+head installations. This validates new matrix cases before merge and reports
+them separately, alongside the normal comparison made with the base controller. It reuses the built
 packages and requires no additional runner or manual dispatch.
+Gate documentation-only changes do not select a benchmark or an additional
+controller run.
 
 Ownership checks, prediction performance, E2E accuracy, and Pages run independently
 of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.

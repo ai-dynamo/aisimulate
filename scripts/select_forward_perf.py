@@ -41,7 +41,7 @@ PATH_PATTERNS = (
     "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**",
     "python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/**",
     "python/aisimulate/src/aiconfigurator_core/systems/data/h100_sxm/**",
-    "python/aisimulate/tools/forward_perf_gate/**",
+    "python/aisimulate/tools/forward_perf_gate/*.py",
     "python/aisimulate/tools/prediction_regression_gate/grid.py",
 )
 

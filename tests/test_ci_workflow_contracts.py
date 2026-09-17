@@ -61,7 +61,6 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
 def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_comparison():
     steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
     revisions = next(step for step in steps if step.get("id") == "revisions")
-    assert 'git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- "${gate_path}"' in revisions["run"]
     assert "validate_head_controller=true" in revisions["run"]
     assert "validate_head_controller=false" in revisions["run"]
     base = next(step for step in steps if step.get("name") == "Run paired benchmark")
@@ -81,6 +80,40 @@ def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_com
     assert publish["if"].startswith("always()")
     assert "head-controller/summary.md" in publish["run"]
     assert "head-controller/annotations.txt" in publish["run"]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("python/aisimulate/tools/forward_perf_gate/cases.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/measurement.py", True),
+        ("python/aisimulate/tools/prediction_regression_gate/grid.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/README.md", False),
+    ],
+)
+def test_forward_perf_controller_change_detection(tmp_path, path, expected):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split("git worktree prune", 1)[0]
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "base", "base\n")
+    (tmp_path / path).parent.mkdir(parents=True)
+    head = _commit_file(tmp_path, path, "changed\n")
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-euc", detection],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": "python/aisimulate/tools/forward_perf_gate",
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=True,
+    )
+    assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
+    assert forward_perf.matches_path(path) is expected
 
 
 def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
@@ -107,6 +140,7 @@ def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     [
         ([[{"filename": "crates/core/src/python.rs"}]], None, "true"),
         ([[{"filename": "docs/ci.md"}]], None, "false"),
+        ([[{"filename": "python/aisimulate/tools/forward_perf_gate/README.md"}]], None, "false"),
         # Full PR files still include the code change after a later docs-only push.
         (
             [[{"filename": "docs/ci.md"}], [{"filename": "crates/core/src/python.rs"}]],

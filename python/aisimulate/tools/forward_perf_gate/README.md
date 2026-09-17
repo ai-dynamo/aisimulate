@@ -9,7 +9,9 @@ The workflow starts on every trusted `pull-request/*` push. A small
 GitHub-hosted selection job checks the complete PR change set against
 `scripts/select_forward_perf.py` before starting the benchmark runner. This
 also works when the bot creates a branch with an empty push commit list.
-Unrelated PRs produce an explicit skip. Manual dispatch still forces a comparison.
+Unrelated PRs, including gate documentation-only changes, produce an explicit skip.
+Manual dispatch forces a comparison only when the trusted copy matches the current
+PR head; an older trusted copy fails selection instead of benchmarking an older revision.
 
 Each revision runs the matrix in one process for the availability pass and one
 new process for each measured round. Within that process, cases are grouped by
@@ -34,8 +36,10 @@ priming failure is skipped under the normal data-miss rules. Other priming
 failures remain invalid and block the comparison.
 
 The harness treats `clear_caches()` as the complete cache-isolation contract.
-It calls the public database eviction interface once per model/database-mode
-group and does not know about or manage individual SDK caches.
+It calls the public database eviction interface before each model/database-mode
+group. When the system, backend, or version changes, it also evicts the outgoing
+database before preparing the next group, including after setup or priming failures.
+It does not know about or manage individual SDK caches.
 
 The worker uses a versioned JSON protocol so each Git revision can adapt its
 own internal SDK interface. It accepts either one `case` or an ordered `cases`
@@ -76,9 +80,11 @@ SGLang is pinned to 0.5.14 because 0.5.16 lacks the B200 custom-all-reduce
 data required when shared-layer reuse is disabled.
 
 Context OSL is 8, generation OSL is 256, and stride is 32. New profile labels
-include the system, backend/version, and parallel layout. Prefix profiles are
-separate from the original profiles so their cases do not change the original
-worker cache-preparation groups. The worker loads pinned raw data versions.
+include the system, backend/version, and parallel layout to keep report cells
+separate. Worker groups already include those configuration fields. The prefix
+suffix separates otherwise equal configurations from the original profiles so
+their cases do not change the original cache-preparation groups. The worker
+loads pinned raw data versions.
 
 Before rollout, validate all 64 cases against two separate installations of
 the same revision for three five-round comparisons. Require no missing data
@@ -88,9 +94,9 @@ additional benchmark minutes blocks rollout; do not remove cases or change
 thresholds to hide a blocker.
 
 The normal CI comparison uses the base revision's controller and matrix.
-When a PR changes the benchmark harness, the same job also runs the PR's
-controller against the already-built base and head installations. This validates
-new cases in CI before merge, with separate results under `head-controller/`
+When a PR changes the gate's Python files or the shared prediction grid, the same
+job also runs the PR's controller against the already-built base and head
+installations. This validates new cases in CI before merge, with separate results under `head-controller/`
 in the artifact and a separate summary. Both runs use the same measurement
 method and retain their own regression checks. After merge, the expanded matrix
 becomes the normal comparison when a PR's merge base includes it.

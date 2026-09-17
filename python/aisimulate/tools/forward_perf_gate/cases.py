@@ -32,10 +32,13 @@ MODELS = (
     },
 )
 
+DEEPSEEK_V3_2 = {"model_id": "deepseek-v3.2", "model_path": "deepseek-ai/DeepSeek-V3.2"}
+QWEN3_5 = {"model_id": "qwen3.5-397b-a17b", "model_path": "Qwen/Qwen3.5-397B-A17B"}
+
 ADDITIONAL_MODELS = (
-    {"model_id": "deepseek-v3.2", "model_path": "deepseek-ai/DeepSeek-V3.2"},
+    DEEPSEEK_V3_2,
     {"model_id": "deepseek-v4-flash", "model_path": "deepseek-ai/DeepSeek-V4-Flash"},
-    {"model_id": "qwen3.5-397b-a17b", "model_path": "Qwen/Qwen3.5-397B-A17B"},
+    QWEN3_5,
     {"model_id": "gpt-oss-120b", "model_path": "openai/gpt-oss-120b"},
     {
         "model_id": "nemotron-3-super-120b-fp8",
@@ -68,7 +71,8 @@ def _silicon_cases(model: dict, points: tuple[tuple[str, int, int, int], ...]) -
         "moe_ep_size": 8,
         **model,
     }
-    # model_id also separates report cells and worker cache-preparation groups.
+    # Profile labels separate report cells. The worker also groups by explicit
+    # configuration fields; the prefix suffix separates otherwise equal groups.
     profile["model_id"] = (
         f"{profile['model_id']}-{profile['system_name']}-{profile['backend_name']}-{profile['backend_version']}"
         f"-tp{profile['tp_size']}-pp{profile['pp_size']}-adp{profile['attention_dp_size']}"
@@ -120,10 +124,10 @@ def expand_cases() -> list[dict]:
         result.extend(_silicon_cases(model, ADDITIONAL_MODEL_POINTS))
     for model in MODELS:
         result.extend(_silicon_cases({**model, "model_id": f"{model['model_id']}-prefix"}, PREFIX_POINTS))
-    result.extend(_silicon_cases({**ADDITIONAL_MODELS[0], "tp_size": 1, "attention_dp_size": 8}, ATTENTION_DP_POINTS))
+    result.extend(_silicon_cases({**DEEPSEEK_V3_2, "tp_size": 1, "attention_dp_size": 8}, ATTENTION_DP_POINTS))
     result.extend(
         _silicon_cases(
-            {**ADDITIONAL_MODELS[2], "backend_name": "sglang", "backend_version": "0.5.14"},
+            {**QWEN3_5, "backend_name": "sglang", "backend_version": "0.5.14"},
             SGLANG_POINTS,
         )
     )

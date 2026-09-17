@@ -148,7 +148,9 @@ jobs:
             exit 0
           fi
 
-          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- "${gate_path}")"
+          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
+            ":(glob)${gate_path}/*.py" \
+            "python/aisimulate/tools/prediction_regression_gate/grid.py")"
           if [[ -n "${controller_changes}" ]]; then
             echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
           else
