@@ -62,10 +62,16 @@ artifacts and their compatible AISimulate wheel:
 ```bash
 # Example for Dynamo 1.5.0 RC9; change this to your installed build's revision.
 DYNAMO_REF=ffd7c1a90eb403c0d43911690c5c9b8457acd826
-python3 -m pip install -r \
+python3 -m pip install "grpcio-tools<=1.76.0" -r \
   "https://raw.githubusercontent.com/ai-dynamo/dynamo/${DYNAMO_REF}/container/deps/requirements.planner.txt"
 python3 -m pip check
 ```
+
+The `grpcio-tools` cap matches RC9's
+[common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
+It keeps the tooling compatible with Planner's `protobuf==6.33.6` pin.
+When selecting another Dynamo revision, check its common requirements and
+update this cap together with `DYNAMO_REF`.
 
 For release candidates, use the exact release artifacts; a package version
 alone may not identify the RC build. Alternatively, use the matching
