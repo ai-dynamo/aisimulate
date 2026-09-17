@@ -533,12 +533,12 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 10.640523235003155,
+          "latency_ms": 0.8412160153190296,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 11.92615516980489,
+          "latency_ms": 0.9480213150382042,
           "source": "silicon"
         },
         "context_router_gemm": {
@@ -600,12 +600,12 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 16.94336028893789,
+          "latency_ms": 0.5525440114239852,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 16.582271695137024,
+          "latency_ms": 0.5651093249519665,
           "source": "silicon"
         },
         "generation_router_gemm": {
@@ -664,12 +664,12 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 12.246901353200276,
+          "latency_ms": 1.4360852589209876,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 11.719487468401592,
+          "latency_ms": 1.8361920466025672,
           "source": "silicon"
         },
         "context_router_gemm": {
@@ -731,12 +731,12 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 59.742209593455,
+          "latency_ms": 3.770922740300496,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 57.26617844899495,
+          "latency_ms": 3.727274715900421,
           "source": "silicon"
         },
         "generation_router_gemm": {
@@ -795,12 +795,12 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 10.640523235003155,
+          "latency_ms": 0.8412160153190296,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 11.92615516980489,
+          "latency_ms": 0.9480213150382042,
           "source": "silicon"
         },
         "context_router_gemm": {
@@ -862,12 +862,12 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 16.94336028893789,
+          "latency_ms": 0.5525440114239852,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 16.582271695137024,
+          "latency_ms": 0.5651093249519665,
           "source": "silicon"
         },
         "generation_router_gemm": {
@@ -1178,15 +1178,15 @@
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
