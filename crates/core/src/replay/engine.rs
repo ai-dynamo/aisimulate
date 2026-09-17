@@ -10,8 +10,11 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use crate::engine::belady::BeladyOracle;
 use crate::engine::generalized::EngineIdentity;
-use crate::engine::{Backend, Engine, EngineConfig, EngineFactory, TimingModel, WorkerType};
+use crate::engine::{
+    Backend, Engine, EngineConfig, EngineFactory, KvEvictionPolicy, TimingModel, WorkerType,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,6 +43,11 @@ fn default_tensor_parallel_size() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReplayEngineConfig {
+    /// Belady ranks worker-local victims by global future input demand. It does
+    /// not forecast routing, output reuse, later chunks, or recomputation, and
+    /// therefore promises neither worker-local optimality nor higher throughput.
+    /// Lookahead changes eviction priority only; execution remains causal.
+    pub kv_eviction_policy: KvEvictionPolicy,
     #[serde(default = "default_dp_size")]
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
@@ -58,6 +66,7 @@ pub struct ReplayEngineConfig {
 impl Default for ReplayEngineConfig {
     fn default() -> Self {
         Self {
+            kv_eviction_policy: KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
@@ -134,6 +143,23 @@ impl ReplayEngineConfig {
     }
 
     pub(crate) fn validate_topology(&self, topology: &ReplayTopology) -> ReplayResult<()> {
+        if self.kv_eviction_policy == KvEvictionPolicy::Belady {
+            if !matches!(topology, ReplayTopology::Aggregated { .. }) || self.dp_size != 1 {
+                return Err(ReplayError::InvalidSpec(
+                    "belady requires aggregated replay with dp_size=1 per worker".into(),
+                ));
+            }
+            if self.rank.native_host_offload.is_some() || self.rank.g3_offload.is_some() {
+                return Err(ReplayError::InvalidSpec(
+                    "belady does not support native_host_offload or g3_offload".into(),
+                ));
+            }
+            if !self.rank.enable_prefix_caching {
+                return Err(ReplayError::InvalidSpec(
+                    "belady requires enable_prefix_caching=true".into(),
+                ));
+            }
+        }
         match topology {
             ReplayTopology::Aggregated { .. } => {
                 if self.rank.native_host_offload.is_some() && self.dp_size != 1 {
@@ -164,6 +190,7 @@ impl ReplayEngineConfig {
 #[derive(Clone)]
 pub struct ReplayRoleFactory {
     factory: EngineFactory,
+    needs_belady_oracle: bool,
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
     backend: Backend,
@@ -174,8 +201,20 @@ pub struct ReplayRoleFactory {
 }
 
 impl ReplayRoleFactory {
+    pub(crate) fn with_belady_oracle(mut self, oracle: BeladyOracle) -> Self {
+        self.factory = self.factory.with_belady_oracle(oracle);
+        self.needs_belady_oracle = false;
+        self
+    }
+
     #[doc(hidden)]
     pub fn build(&self, worker_id: usize) -> ReplayResult<Engine> {
+        if self.needs_belady_oracle {
+            return Err(ReplayError::InvalidSpec(
+                "belady requires a prepared input forecast; construct workers through Replayer"
+                    .into(),
+            ));
+        }
         if self.g3_config.is_some() && self.g3_tier.is_none() {
             return Err(ReplayError::InvalidSpec(
                 "g3_offload requires a Replay deployment registry".into(),
@@ -307,6 +346,7 @@ impl ReplayEngineFactory {
         .map_err(engine_error)?;
         Ok(ReplayRoleFactory {
             factory,
+            needs_belady_oracle: config.kv_eviction_policy == KvEvictionPolicy::Belady,
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
             backend,
@@ -434,4 +474,76 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+#[cfg(test)]
+mod belady_tests {
+    use super::*;
+
+    #[test]
+    fn belady_direct_role_factory_cannot_silently_build_an_lru_engine() {
+        let config = ReplayEngineConfig {
+            kv_eviction_policy: KvEvictionPolicy::Belady,
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let error = match factory.build(0) {
+            Ok(_) => panic!("Belady must not construct a worker without its input forecast"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("through Replayer"));
+        assert!(
+            factory
+                .with_belady_oracle(BeladyOracle::new(Vec::new()).unwrap())
+                .build(0)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn belady_accepts_fixed_multiple_workers_but_rejects_unsupported_cache_topologies() {
+        let mut config = ReplayEngineConfig {
+            kv_eviction_policy: KvEvictionPolicy::Belady,
+            ..Default::default()
+        };
+        assert!(
+            config
+                .validate_topology(&ReplayTopology::aggregated(4))
+                .is_ok()
+        );
+        config.dp_size = 2;
+        assert!(
+            config
+                .validate_topology(&ReplayTopology::aggregated(4))
+                .is_err()
+        );
+        config.dp_size = 1;
+        config.rank.enable_prefix_caching = false;
+        assert!(
+            config
+                .validate_topology(&ReplayTopology::aggregated(1))
+                .is_err()
+        );
+        config.rank.enable_prefix_caching = true;
+        config.rank.native_host_offload = Some(crate::engine::NativeHostOffloadConfig::new(8));
+        assert!(
+            config
+                .validate_topology(&ReplayTopology::aggregated(1))
+                .is_err()
+        );
+        config.rank.native_host_offload = None;
+        config.rank.g3_offload = Some(
+            serde_json::from_value(serde_json::json!({
+                "scope": "worker_local", "num_g3_blocks": 8
+            }))
+            .unwrap(),
+        );
+        assert!(
+            config
+                .validate_topology(&ReplayTopology::aggregated(1))
+                .is_err()
+        );
+    }
 }

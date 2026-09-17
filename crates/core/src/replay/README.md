@@ -15,6 +15,40 @@ For operator-facing CLI documentation, see
 This README covers the virtual clock, event queue, logical workers, and the
 placement/scaling boundary used by Dynamo adapters.
 
+## Best-effort Belady eviction
+
+Set `engine.kv_eviction_policy` to `"belady"` in the native replay descriptor to
+evict pages whose next input demand is farthest away. LRU remains the default;
+there is no Cargo gate or new CLI wiring. Supported runs are open-loop, complete
+input traces on fixed aggregated SGLang, vLLM, or TRT-LLM workers, with prefix
+caching and one attention-DP rank per worker. Closed-loop/generated/agentic or
+delta inputs, scaling, disaggregation, and host/G3 offload are rejected.
+
+The forecast counts complete input prefix blocks in global trace order. It does
+not predict which worker will use them or forecast output blocks; native output
+caching still works when a later input matches. Demand retires at the request's
+first committed prefill or terminal removal, never merely because time passes.
+Later chunks and preemption retries do not recreate demand. These are intentional
+assumptions: adding execution-dependent refinement would change the model.
+
+The oracle supplies eviction rankings only. The engine preserves causal arrivals,
+execution, and cache ownership. SGLang evicts unlocked leaf tails; vLLM/TRT evicts
+inactive copies, preferring duplicates before the last useful copy. Multiworker
+forecasts may retain data needed elsewhere, so optimal reuse is not guaranteed.
+Reports label the assumption `global_input_trace_order_v1`; compare
+`first_admission_prefix_cache_reused_ratio` and `committed_prefill_tokens` on
+completed runs, alongside serving throughput and latency.
+
+Mooncake validation used a Llama-3.1-8B/H200 timing profile and 4,096 cache blocks
+of 64 tokens, after smoke sweeps confirmed eviction losses and the load knee.
+All full-trace comparisons completed 23,608 requests and 4,299,817 output tokens.
+Loaded 1/2/4-worker **simulated** throughput gains were 2.01–2.11% for vLLM and
+0.39–0.77% for SGLang, with less prefill work; TRT-LLM gained 3.01% on 1,000 requests.
+Arrival-limited throughput stayed unchanged. A SGLang smoke case lost 0.165%
+despite better reuse because attention batch/context costs increased; maximum
+TTFT also worsened in one full run. Better reuse does not guarantee faster serving
+or better tails. Local simulator wall time rose about 3.4%/7.2% for vLLM/SGLang.
+
 ## Where It Sits
 
 The public entrypoint is `Replayer<C>`, where `C: ReplayComposition` supplies
