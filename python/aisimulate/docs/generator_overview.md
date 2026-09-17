@@ -93,7 +93,7 @@ You can use the generator in two ways: AIConfigurator CLI or standalone (code/CL
     --save-dir ./results
   ```
   Notes:
-  - Use `--deployment-target` to choose the orchestration platform: `dynamo-j2` (default, typed Dynamo manifests), `dynamo-python` (Python config modifiers), `llm-d-helm`/`llm-d-kustomize`, or `fpm` (a reusable resource workload plus `fpm_env.sh` and `run.sh`).
+  - Use `--deployment-target` to choose the orchestration platform: `dynamo-j2` (default, typed Dynamo manifests), `dynamo-python` (Python config modifiers), `llm-d-helm`/`llm-d-kustomize`, `fpm` (a reusable resource workload plus `fpm_env.sh` and `run.sh`), or `slurm` (Dynamo service and benchmark jobs).
   - For Dynamo deployments: Use `--generator-dynamo-version 0.7.1` to select the Dynamo release. This affects both the generated backend config version and the default K8s image tag. If not provided, defaults to `1.0.0`.
   - For llm-d deployments: Container image versions are specified via `LlmdConfig.vllm_image` or `LlmdConfig.sglang_image` (defaults to `latest` tags).
   - If `--generated-config-version` is provided, it overrides the generated backend version for any deployment target.
@@ -207,7 +207,7 @@ generator mapping fails closed rather than producing an artifact that contradict
   - **llm-d**: Helm values (`llm-d-values.yaml`) for the llm-d-modelservice chart with model artifacts, parallelism, and container configurations.
   - **FPM V1**: exactly `k8s_deploy.yaml`, `fpm_env.sh`, and `run.sh`; see [FPM V1 Target](#fpm-v1-target).
 - Benchmark helpers (non-FPM targets):
-  - `bench_run.sh` and `k8s_bench.yaml` are generated alongside normal deployment artifacts for running `aiperf` benchmarks. The FPM target emits neither helper.
+  - Kubernetes targets generate `bench_run.sh` and `k8s_bench.yaml` for running `aiperf` benchmarks. Slurm generates `bench_run.sh` and `benchmark.sbatch`; the FPM target emits neither helper.
   - `concurrency_array` is built from a base list (`1 2 8 16 32 64 128`) plus `BenchConfig.estimated_concurrency` and its +/-5% neighbors when the estimate is available.
 - EPD rows are fail-closed: rows recommending a dedicated encode pool (`(e)workers > 0`, from `enable_epd`) skip all generator artifacts with a warning — the bridge does not map the encode pool into a deployment topology yet, and LM-only configs would contradict the recommendation. Performance tables and CSVs still contain these rows.
 
@@ -312,3 +312,149 @@ Note: The validator currently supports Dynamo deployments only (`--deployment-ta
 - TRT-LLM: loads `tensorrt_llm.llmapi.llm_args.TorchLlmArgs` and validates keys against the runtime schema.
 - vLLM: loads `vllm.engine.arg_utils.EngineArgs` and parses CLI args to build an engine config.
 - SGLang: loads `sglang.srt.server_args.ServerArgs` and parses CLI args found in the generated Kubernetes manifest.
+
+### Slurm target
+
+`--deployment-target slurm` generates a self-contained Dynamo deployment bundle
+for a Slurm cluster with Pyxis/Enroot. It supports vLLM, SGLang and TRT-LLM in
+aggregated or disaggregated P/D mode, including multiple worker replicas on one
+NVIDIA GPU node. The sum of all workers' resolved GPU counts must fit
+`NodeConfig.num_gpus_per_node`. Multinode workers, dedicated encode pools and
+Dynamo Planner are rejected rather than silently changing the topology.
+
+The bundle contains:
+
+- `deploy.sbatch`: load the model, verify inference, then keep the Dynamo service
+  running until cancelled or its time limit.
+- `benchmark.sbatch`: start the same service, wait for every worker and the model
+  endpoint, run a chat smoke request, run AIPerf, and stop all owned processes.
+- `submit.sh`: validate with `sbatch --test-only`, submit once and save `job.id`.
+- `environment.sh`: Pyxis image and mounts; cluster paths never become package defaults.
+- `deployment.json` and `slurm_runtime.py`: resolved launch commands and a standard-library
+  supervisor for discovery services, worker GPU placement, readiness and cleanup.
+- `bench_run.sh`: the existing shared AIPerf benchmark template, using a local
+  service endpoint instead of Kubernetes DNS.
+- TRT-LLM role engine YAML files when applicable.
+
+The container must contain the matching Dynamo/backend release, `etcd` and
+`nats-server`; benchmark jobs also require `aiperf` on PATH. The generated bundle
+is mounted at `/work`. Mount the complete model cache root read-only when a
+checkpoint snapshot contains symlinks to sibling blobs. Every worker receives a
+slice of Slurm's actual `CUDA_VISIBLE_DEVICES`, including nonzero IDs or GPU UUIDs.
+Each job starts its own etcd/NATS with separate ports and data directories.
+Model discovery can precede frontend route registration. Readiness therefore
+requires a successful inference request, retrying temporary HTTP 404/503 responses
+within the startup deadline; other request errors fail the job.
+
+Cluster validation covers Qwen3-8B on B200 with Dynamo 1.2.1, vLLM 0.20.1 and
+AIPerf 0.8.0: aggregated TP=2, P/D with one GPU per role, and persistent serving
+followed by cancellation. DeepSeek V4 Flash and GLM 5.2 NVFP4 were also generated
+through `aiconfigurator cli generate` and validated on four B200 GPUs each with
+Dynamo 1.3.0, vLLM 0.25.1 and AIPerf 0.8.0: aggregated TP=4, real inference
+readiness, and 56 error-free benchmark requests per model at concurrency 1/2/4.
+SGLang and TRT-LLM have artifact-generation coverage; their Slurm runtime execution
+has not yet been validated.
+
+Example unified generator input (`slurm.yaml`):
+
+```yaml
+ServiceConfig:
+  model_path: /models/Qwen3-8B
+  served_model_name: qwen3
+  port: 8000
+DynConfig:
+  mode: agg
+NodeConfig:
+  num_gpus_per_node: 8
+WorkerConfig:
+  agg_workers: 1
+Workers:
+  agg:
+    tensor_parallel_size: 2
+    max_batch_size: 16
+    max_seq_len: 4096
+SlaConfig:
+  isl: 512
+  osl: 128
+SlurmConfig:
+  account: YOUR_ACCOUNT
+  partition: batch
+  job_name: qwen3
+  time: "01:00:00"
+  cpus_per_task: 32
+  memory: 256G
+  container_image: /shared/images/dynamo-vllm.sqsh
+  container_mounts:
+    - /shared/models/Qwen3-8B:/models/Qwen3-8B:ro
+  env:
+    HF_HUB_OFFLINE: "1"
+  startup_timeout: 1800
+  benchmark_timeout: 1800
+  benchmark_concurrency: [1, 2, 4, 8]
+  benchmark_rounds: 20
+```
+
+```bash
+python -m aiconfigurator.generator.main render-artifacts \
+  --backend vllm --version 0.20.1 --deployment-target slurm \
+  --config slurm.yaml --output ./slurm-bundle
+# Copy the bundle to a fresh directory on the cluster, then run there:
+bash submit.sh benchmark --test-only
+bash submit.sh benchmark
+# Alternative for a persistent service: bash submit.sh serve
+```
+
+The same `SlurmConfig` section is accepted through `--generator-config`, dotted
+`--generator-set SlurmConfig.*` overrides, SDK bridges and typed requests. Existing
+Dynamo Kubernetes, llm-d, FPM and sflow outputs are unaffected by choosing those
+targets. Slurm does not emit Kubernetes resources or require nv-sflow.
+
+The AISimulate package also exposes generation through its compatibility CLI:
+
+```bash
+aiconfigurator cli generate \
+  --model-path Qwen/Qwen3-8B --system b200_sxm --backend vllm --total-gpus 2 \
+  --dynamo-version 1.2.0 --config-template-version 0.20.1 \
+  --deployment-target slurm --generator-config slurm.yaml --save-dir ./results
+```
+
+Copy the generated model directory containing `submit.sh` to the cluster.
+This command uses naive sizing plus explicit overrides; it does not perform an
+SLA optimization search. Set `rule: benchmark` in the generator input to preserve
+the benchmark batch-size rules. Executable lookup and child processes both use
+`SlurmConfig.env.PATH`, so an independently installed AIPerf client can be mounted
+read-only and added to that path without changing the backend Python environment.
+
+Account, partition and container image must be supplied. Defaults are a one-hour
+limit, 16 CPUs, 64 GiB memory, 30-minute startup and benchmark deadlines, and
+concurrencies 1/2/4/8 with 20 requests per concurrency slot. ISL/OSL, tokenizer,
+endpoint type and other workload controls come from the existing `BenchConfig`
+and `SlaConfig`. Backend template versions must match the container's backend;
+they are independent of the Slurm scheduler configuration.
+
+Set the Dynamo version to match the image as well. Dynamo 1.3 rejects the old
+`nvext.ignore_eos` request field. For Dynamo 1.3 and newer, both benchmark templates
+emit only the supported root-level `ignore_eos` field; older versions retain the
+legacy request form.
+
+Backend sizing rules still apply. In particular, the vLLM `benchmark` rule sets
+decode `max_num_tokens` to `max_batch_size`. With vLLM 0.20.1 / FlashInfer, a decode
+batch size of 8 failed during kernel warmup in cluster validation; the P/D
+validation input uses 32. Inspect `deployment.json` to see the resolved limits.
+DeepSeek V4 Flash with vLLM 0.25.1 requires explicit FP8 KV cache; the tested
+input uses `Workers.agg.kv_cache_dtype: fp8` and block size 256. The naive model
+weight estimator currently overestimates these DS/GLM quantized checkpoints;
+their four-GPU validation used explicit topology overrides based on the actual
+checkpoint sizes, and does not validate automatic capacity estimation.
+
+Logs, smoke responses, actual package versions and AIPerf reports are retained
+under `results/<job-id>/`. `result.json` records failure causes and cleanup.
+Benchmark failures, incomplete request counts, nonzero request errors and premature
+worker exits produce a nonzero job exit. Serving
+jobs retain resources until cancelled with `scancel` or the Slurm time limit.
+
+`submit.sh` leaves a submission lock even if the scheduler response is lost.
+After a disconnected submission, inspect `job.id`, `job.id.tmp`, `squeue` and
+`sacct` before doing anything else. Use a fresh bundle directory for a deliberate
+new run; do not remove the lock and blindly resubmit. Generation itself never
+contacts the cluster or submits a job.

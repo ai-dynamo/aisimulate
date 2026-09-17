@@ -1365,3 +1365,27 @@ kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
 ```
 
 Compare the measured TTFT, TPOT, and tokens/s/gpu against the AIConfigurator estimates printed in Step 2. See [Benchmark Artifacts](#benchmark-artifacts) for details on the generated scripts.
+
+### Generate a Slurm deployment
+
+Use `--deployment-target slurm` with `--generator-config` containing a
+`SlurmConfig` section. Supply `account`, `partition`, `container_image` and any
+`container_mounts`; resource/time limits and benchmark concurrency can also be
+set there. For example, `--generator-set SlurmConfig.partition=batch` overrides
+the partition. Backend and Dynamo version options retain their normal meaning.
+
+For generation without an SLA search, use `aiconfigurator cli generate
+--model-path MODEL --system SYSTEM --backend vllm --total-gpus N
+--deployment-target slurm --generator-config slurm.yaml --save-dir ./results`.
+This compatibility CLI is included in AISimulate. Put `rule: benchmark` in the
+input YAML when using the benchmark sizing rules.
+
+The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch`
+for a complete deploy/health-check/AIPerf/cleanup run. On the cluster, run
+`bash submit.sh benchmark --test-only`, then `bash submit.sh benchmark` (or
+`bash submit.sh serve`). Submissions save a job receipt and prevent duplicate runs
+from the same bundle directory. V1 supports single-node NVIDIA agg/P-D topologies
+for vLLM, SGLang and TRT-LLM; the image must contain Dynamo, etcd/NATS and, for
+benchmarks, AIPerf. See the Slurm target section of the
+[generator overview](../../python/aisimulate/docs/generator_overview.md) for the
+complete input example, outputs and current scope.

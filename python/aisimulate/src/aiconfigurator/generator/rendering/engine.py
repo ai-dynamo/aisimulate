@@ -254,7 +254,7 @@ def render_backend_templates(
         templates_dir: Directory containing backend-specific template directories
         version: Version string (e.g., '1.1.0rc5'). If None, uses default templates
         deployment_target: Deployment platform ('dynamo-j2', 'dynamo-python', 'llm-d-helm',
-            'llm-d-kustomize', or 'fpm')
+            'llm-d-kustomize', 'fpm', or 'slurm')
         resolved_facts: Optional ``ResolvedFacts`` (typed ``Any`` to avoid an import
             cycle). When it carries a matched model profile, model ``defaults:``
             cli flags are appended (facts-default precedence: fill-if-absent) at the
@@ -294,6 +294,12 @@ def render_backend_templates(
     _raw_param_values = param_values
     param_values = apply_rule_plugins(dict(param_values), backend)
     context = prepare_template_context(param_values, backend)
+    benchmark_dynamo_version = _parse_template_version(param_values.get("generator_dynamo_version"))
+    # Dynamo 1.3 rejects the removed nvext.ignore_eos field; the root-level
+    # ignore_eos field remains supported across backends. Preserve older output.
+    context["bench_legacy_nvext_ignore_eos"] = benchmark_dynamo_version is None or benchmark_dynamo_version < Version(
+        "1.3.0"
+    )
     if backend == "vllm":
         dynamo_version = param_values.get("generator_dynamo_version")
         context["vllm_prefill_worker_role_args"] = vllm_worker_role_args("prefill", dynamo_version)
@@ -683,6 +689,11 @@ def render_backend_templates(
     context["decode_gpu"] = decode_gpu
     context["agg_gpu"] = agg_gpu
     context["encode_gpu"] = encode_gpu
+
+    if deployment_target == "slurm":
+        from aiconfigurator.generator.builders.slurm_builder import build_slurm_artifacts
+
+        return build_slurm_artifacts(context, param_values, backend, rendered_templates, env)
 
     # Render auxiliary templates based on deployment target
     if deployment_target == "llm-d-kustomize":
