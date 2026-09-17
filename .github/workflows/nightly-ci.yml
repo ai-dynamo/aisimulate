@@ -12,9 +12,9 @@ name: Main branch nightly CI
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. Isolated compliance jobs gate the build/staging jobs. Each
 # arch job then builds, stages to Artifactory, and smoke-tests the downloaded
-# wheel on every supported Python. Artifactory is the only distribution
-# channel; the only GitHub artifacts are compliance evidence (dependency
-# inventories and license CSVs).
+# wheel on every supported Python. Verified copies, checksums, and
+# provenance remain in nightly-dist-* for FPE, accuracy, and installation
+# consumers; GitHub also retains dependency inventories and license evidence.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
@@ -548,6 +548,21 @@ jobs:
           }
           echo "fetched ${wheel} (checksum matches the build)"
 
+      # Preserve the established consumer handoff only after the staged
+      # wheel has been downloaded and verified against the build. Upload
+      # before dependency code runs so the artifact remains immutable.
+      - name: Upload verified nightly artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-dist-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist/*
+          if-no-files-found: error
+          # Wheels and crates are already compressed; skip recompression.
+          compression-level: 0
+          # Matches the Dynamo nightly compliance policy's 30-day window.
+          retention-days: 30
+          overwrite: true
+
 
       # Installs the wheel fetched back from Artifactory, not the local
       # build, so a corrupted or wrong upload fails here instead of at the
@@ -749,8 +764,8 @@ jobs:
       contents: read
     uses: ./.github/workflows/fpe-support-matrix.yml
     with:
-      # No wheel_artifact: the workflow builds its own wheel at this SHA.
       expected_sha: ${{ github.sha }}
+      wheel_artifact: nightly-dist-amd64
 
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
