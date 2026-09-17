@@ -1,0 +1,3505 @@
+{
+  "schema_version": 1,
+  "status": "collected_unpublished",
+  "system": "b300_sxm",
+  "framework": "vllm",
+  "runtime_version": "0.25.0",
+  "attempts": [
+    {
+      "job_id": 457802,
+      "id": "gemm-bfloat16",
+      "op": "gemm",
+      "case_plan_sha256": "9e7e25416609297e4f7d7de2e4ac6eca34903f4fdf09fb26ae507b821fb4a704",
+      "task_ids_sha256": "37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457802
+      ]
+    },
+    {
+      "job_id": 457803,
+      "id": "gemm-fp8",
+      "op": "gemm",
+      "case_plan_sha256": "be5400b4e8e34e8ba766db574844f8f7b85d0d6c74988997ce8a5ea525ce7dd2",
+      "task_ids_sha256": "a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457803
+      ]
+    },
+    {
+      "job_id": 457899,
+      "id": "gemm-nvfp4",
+      "op": "gemm",
+      "case_plan_sha256": "28b73dd26f11c603b29128fbb0648e1911623413abdec01c6d574378087018fe",
+      "task_ids_sha256": "ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+      "expected": 37518,
+      "done": 37518,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457899
+      ]
+    },
+    {
+      "job_id": 457900,
+      "id": "mla_bmm_gen_pre",
+      "op": "mla_bmm_gen_pre",
+      "case_plan_sha256": "7684b30a5b4e5c9a083461fd4c016b66781c3f3c813ddb12b99ede8538911c8f",
+      "task_ids_sha256": "3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5",
+      "expected": 300,
+      "done": 300,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457900
+      ]
+    },
+    {
+      "job_id": 457901,
+      "id": "mla_bmm_gen_post",
+      "op": "mla_bmm_gen_post",
+      "case_plan_sha256": "5acbadfdbca78bfaa5123d8c99df1f1a894c26412d7c60311ad3364a1c9576da",
+      "task_ids_sha256": "faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53",
+      "expected": 336,
+      "done": 336,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457901
+      ]
+    },
+    {
+      "job_id": 457902,
+      "id": "encoder_attention",
+      "op": "encoder_attention",
+      "case_plan_sha256": "bad4525c9372c15322ee75ed8d4734336e15496dd575f1d429650539e0bc63fe",
+      "task_ids_sha256": "8a4f0e45a56a4b73354b445a9b3bccde722835cb6c6c133991182ba092eb1296",
+      "expected": 7679,
+      "done": 7679,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457902
+      ]
+    },
+    {
+      "job_id": 457903,
+      "id": "attention_context",
+      "op": "attention_context",
+      "case_plan_sha256": "f1e59204ebb14e91afbe4bd4b0f553027e46440fc201241b41b91a705cbe43a2",
+      "task_ids_sha256": "04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+      "expected": 54468,
+      "done": 52836,
+      "failed": 1632,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457903
+      ]
+    },
+    {
+      "job_id": 457904,
+      "id": "attention_generation",
+      "op": "attention_generation",
+      "case_plan_sha256": "55d1f0abfc5476cf3c365690b0343a364605da363b3016d7ff6f989da054e411",
+      "task_ids_sha256": "12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+      "expected": 67636,
+      "done": 65408,
+      "failed": 2228,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457904
+      ]
+    },
+    {
+      "job_id": 457905,
+      "id": "mla_context_module",
+      "op": "mla_context_module",
+      "case_plan_sha256": "fa02b3af9ac165797297ef1af4d8b950e66a6bfa08375e8c2e6748e9574c309b",
+      "task_ids_sha256": "5b1dd5428859b6622f336dbc519f3c5dadc310525ee9c11d72a17557f91c8b39",
+      "expected": 13176,
+      "done": 13059,
+      "failed": 117,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457905
+      ]
+    },
+    {
+      "job_id": 458640,
+      "id": "msa_context_module",
+      "op": "msa_context_module",
+      "case_plan_sha256": "efe88b8070f8a266c9a0b26cbd2f065f39f2f54fec06b7ca09445687c1ae7c40",
+      "task_ids_sha256": "a887b4c5331833a3ac788bdfa89e15d536beaa52bb4794a0fd27e94d05a17e47",
+      "expected": 17568,
+      "done": 14137,
+      "failed": 3431,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457906,
+        458369
+      ],
+      "finalization_recovery": {
+        "source_job_id": 458369,
+        "source_exit_code": 1,
+        "new_gpu_measurements": false,
+        "reason": "Install missing pandas utility dependency and resume the stock finalizer."
+      },
+      "worker_intervention": {
+        "timestamp_utc": "2026-09-17T05:20:24.378343+00:00",
+        "job_id": 458369,
+        "worker_pid": 730442,
+        "parent_pid": 699770,
+        "worker_command": "/tmp/b300-vllm025-219-production-msa_context_module/venv/bin/python -s -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=77, pipe_handle=92) --multiprocessing-fork ",
+        "parent_command": "python -u /workspace/repos/aisimulate-b300-219/python/aisimulate/collector/collect.py --backend vllm --gpu b300_sxm --model-cases-full --ops msa_context_module --resume --resume-retry-failed --checkpoint-dir /tmp/b300-vllm025-219-production-msa_context_module/msa_context_module/checkpoints ",
+        "wchan": "futex_do_wait",
+        "worker_status": "Name:\tpython\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t730442\nNgid:\t0\nPid:\t730442\nPPid:\t699770\nTracerPid:\t0\nUid:\t141787\t141787\t141787\t141787\nGid:\t30\t30\t30\t30\nFDSize:\t256\nGroups:\t30 1625 1626 1636 1646 1655 1661 1666 1685 1692 1693 1720 2005 2151 2255 11578 20338 20359 20360 20367 20383 20384 20402 20404 20405 20406 20407 20409 20410 20411 20427 20602 20637 20640 20842 20885 20928 20970 20977 20978 21017 21018 21019 21096 21219 21252 21312 21323 21327 21392 21397 21413 21484 21495 21502 \nNStgid:\t730442\nNSpid:\t730442\nNSpgid:\t699769\nNSsid:\t699447\nKthread:\t0\nVmPeak:\t101415776 kB\nVmSize:\t101415676 kB\nVmLck:\t      16 kB\nVmPin:\t       0 kB\nVmHWM:\t 1978924 kB\nVmRSS:\t 1978924 kB\nRssAnon:\t 1165956 kB\nRssFile:\t  791192 kB\nRssShmem:\t   21776 kB\nVmData:\t 2100344 kB\nVmStk:\t     140 kB\nVmExe:\t    2872 kB\nVmLib:\t 2446044 kB\nVmPTE:\t    7000 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t42\nSigQ:\t1/16432441\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004423\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\t00000000,00000000,0000ffff,00000000,00000000,0000ffff\nCpus_allowed_list:\t0-15,96-111\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000003\nMems_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t112987\nnonvoluntary_ctxt_switches:\t198\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n",
+        "reason": "Progress stuck at 3474/3475 for over five minutes; all GPUs idle; sole remaining task worker blocked in futex_do_wait.",
+        "action": "SIGTERM to this verified task-owned worker only; allow stock parent to classify its exit and finalize.",
+        "escalation": {
+          "timestamp_utc": "2026-09-17T05:22:58.932631+00:00",
+          "reason": "SIGTERM did not stop the blocked worker after more than 60 seconds.",
+          "signal": "SIGKILL",
+          "worker_status": "Name:\tpython\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t730442\nNgid:\t0\nPid:\t730442\nPPid:\t699770\nTracerPid:\t0\nUid:\t141787\t141787\t141787\t141787\nGid:\t30\t30\t30\t30\nFDSize:\t256\nGroups:\t30 1625 1626 1636 1646 1655 1661 1666 1685 1692 1693 1720 2005 2151 2255 11578 20338 20359 20360 20367 20383 20384 20402 20404 20405 20406 20407 20409 20410 20411 20427 20602 20637 20640 20842 20885 20928 20970 20977 20978 21017 21018 21019 21096 21219 21252 21312 21323 21327 21392 21397 21413 21484 21495 21502 \nNStgid:\t730442\nNSpid:\t730442\nNSpgid:\t699769\nNSsid:\t699447\nKthread:\t0\nVmPeak:\t101415776 kB\nVmSize:\t101415676 kB\nVmLck:\t      16 kB\nVmPin:\t       0 kB\nVmHWM:\t 1978924 kB\nVmRSS:\t 1978924 kB\nRssAnon:\t 1165956 kB\nRssFile:\t  791192 kB\nRssShmem:\t   21776 kB\nVmData:\t 2100344 kB\nVmStk:\t     140 kB\nVmExe:\t    2872 kB\nVmLib:\t 2446044 kB\nVmPTE:\t    7000 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t42\nSigQ:\t1/16432441\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000100004423\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\t00000000,00000000,0000ffff,00000000,00000000,0000ffff\nCpus_allowed_list:\t0-15,96-111\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000003\nMems_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t143253\nnonvoluntary_ctxt_switches:\t198\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n"
+        }
+      },
+      "remeasured_partial_rows": {
+        "msa_context_module_perf.parquet": 0
+      },
+      "resume_source_job_id": 457906,
+      "recovered_cases": 44
+    },
+    {
+      "job_id": 457907,
+      "id": "dsv4_csa_context_module",
+      "op": "dsv4_csa_context_module",
+      "case_plan_sha256": "cadb16e11ca7fd135d70866c934252b021e35f3e7afca38cf27e15714fd72b6c",
+      "task_ids_sha256": "38a6cd429db806b370f13a9b847ad836440166e29d1e68c8e0c56da13396d5db",
+      "expected": 5840,
+      "done": 5840,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457907
+      ]
+    },
+    {
+      "job_id": 457908,
+      "id": "gemm-fp8_block-00",
+      "op": "gemm",
+      "case_plan_sha256": "f0e2aab80e6f4ccc4ffaee3b70215121c365d9135f2498464bee21d61b3cfa18",
+      "task_ids_sha256": "e0f07c473cae107b8c2a5520c2bb1ae85045e499a268a73f0ba1ce97d035a42a",
+      "expected": 9633,
+      "done": 9348,
+      "failed": 285,
+      "failed_ids_missing_from_summary": 26,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457908
+      ]
+    },
+    {
+      "job_id": 457909,
+      "id": "gemm-fp8_block-01",
+      "op": "gemm",
+      "case_plan_sha256": "6df2c2198cdbe3128607a3950b166a5390530f9cedcfa4231daa5388a346f83c",
+      "task_ids_sha256": "fee7715156b25ee24e67995e9ae17a3bede2bbeed890c479b99cc84ade4d8fc8",
+      "expected": 9633,
+      "done": 9348,
+      "failed": 285,
+      "failed_ids_missing_from_summary": 168,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457909
+      ]
+    },
+    {
+      "job_id": 457910,
+      "id": "gemm-fp8_block-02",
+      "op": "gemm",
+      "case_plan_sha256": "0e57beda826dbc38c0598f287e46438775f6f3a45bd054e4d7e7b08a2cb15e63",
+      "task_ids_sha256": "03318633ff86a012c7e9bf8310f97ba545972b973af130273420a0c381c85a66",
+      "expected": 9126,
+      "done": 8856,
+      "failed": 270,
+      "failed_ids_missing_from_summary": 174,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457910
+      ]
+    },
+    {
+      "job_id": 457911,
+      "id": "gemm-fp8_block-03",
+      "op": "gemm",
+      "case_plan_sha256": "d39df537412b68b71eb9935906e5c3fcf2a3bee07566f52e882b56e91f04732c",
+      "task_ids_sha256": "c5da28e5b245195dbf0816485f8230a16d02cf3aa39e8fed9dcffb8da85e87c8",
+      "expected": 9126,
+      "done": 8856,
+      "failed": 270,
+      "failed_ids_missing_from_summary": 151,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        457911
+      ]
+    },
+    {
+      "job_id": 458020,
+      "id": "mhc_module",
+      "op": "mhc_module",
+      "case_plan_sha256": "ade63b524d6d1ad3c7c785b53a3385c1ea8c899a46119e67a6b2a7486658a758",
+      "task_ids_sha256": "4251dd697ea2e18fcaeed92b1a7cbdf452549a75d3a38284340d5da8502e03a1",
+      "expected": 140,
+      "done": 140,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458020
+      ]
+    },
+    {
+      "job_id": 458021,
+      "id": "dsv4_paged_mqa_logits_module",
+      "op": "dsv4_paged_mqa_logits_module",
+      "case_plan_sha256": "f1c8827d89c82aeec4a28e2869a017bfe221ac9a7918f0464e2325f25783d248",
+      "task_ids_sha256": "0b35d1427f37f58a74ae69d6503f0eecb1ba5d60499325b10e1dad10a8199250",
+      "expected": 3918,
+      "done": 3918,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458021
+      ]
+    },
+    {
+      "job_id": 458022,
+      "id": "dsv4_hca_attn_module",
+      "op": "dsv4_hca_attn_module",
+      "case_plan_sha256": "9edb1af69decfa84ce04abd9d1e681339cf0ae920f8a62b6a37f881dc77691f3",
+      "task_ids_sha256": "0e844f577823301a0af954d0d20baab4642bb1c0368652998bc28160dfab816d",
+      "expected": 3918,
+      "done": 3918,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458022
+      ]
+    },
+    {
+      "job_id": 458023,
+      "id": "dsv4_csa_generation_module",
+      "op": "dsv4_csa_generation_module",
+      "case_plan_sha256": "81112f06bb970514510faecb13deb495cc20018b9be1732737fa6244441bc442",
+      "task_ids_sha256": "21f9356813701f48d6451510032ec2746c9a64e3433c7f9954a0156c187dcae0",
+      "expected": 1544,
+      "done": 1544,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458023
+      ]
+    },
+    {
+      "job_id": 458024,
+      "id": "dsv4_hca_generation_module",
+      "op": "dsv4_hca_generation_module",
+      "case_plan_sha256": "3adcfbccc6d99e0af86e8111e9a4d51ff87ded807c588c18c2115d1df542ea8b",
+      "task_ids_sha256": "f6f9fe724d2fa5ad60fb6d0a162f93cd7901bd26093925a5fef0cbae9f310eb4",
+      "expected": 1544,
+      "done": 1544,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458024
+      ]
+    },
+    {
+      "job_id": 458025,
+      "id": "dsv4_hca_context_module",
+      "op": "dsv4_hca_context_module",
+      "case_plan_sha256": "b64fb7840deebb45935c95132021c5258a2d09f894e9b2cefc98d1cb7ae6910c",
+      "task_ids_sha256": "d36420598033f22968df6d517a051324bdac1f448ff41be9aacf12beec3dd893",
+      "expected": 5840,
+      "done": 5840,
+      "failed": 0,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458025
+      ]
+    },
+    {
+      "job_id": 458026,
+      "id": "mla_generation_module",
+      "op": "mla_generation_module",
+      "case_plan_sha256": "1a6a392798a4aceb06e2d02540bbe235236c9c193f760446206ac0fb77edd1cf",
+      "task_ids_sha256": "3473224f524c629652b2a402f358af23f7f8a1cc2660955225ad5572182ae33e",
+      "expected": 13248,
+      "done": 11400,
+      "failed": 1848,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458026
+      ]
+    },
+    {
+      "job_id": 458027,
+      "id": "gdn",
+      "op": "gdn",
+      "case_plan_sha256": "f714cfa5c1b4204ced1a06fef65234b7429e2d93620386cb52c4ff62d0a61bbe",
+      "task_ids_sha256": "ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+      "expected": 84,
+      "done": 80,
+      "failed": 4,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458027
+      ]
+    },
+    {
+      "job_id": 458641,
+      "id": "moe",
+      "op": "moe",
+      "case_plan_sha256": "5f72ab02dce4d6ee8e53bef7028276cb49eaea94c4f5b44869432238281b77d1",
+      "task_ids_sha256": "261fd9888e2e292a179050ceb03bf8f7ab9d4f27ccd033f5075a92c165aec537",
+      "expected": 3069,
+      "done": 2700,
+      "failed": 369,
+      "failed_ids_missing_from_summary": 0,
+      "unattempted": 0,
+      "runtime": {
+        "vllm": "0.25.0",
+        "source_commit": "gdd10e03f9",
+        "torch": "2.11.0+cu130",
+        "cuda": "13.0",
+        "devices": [
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          },
+          {
+            "name": "NVIDIA B300 SXM6 AC",
+            "sm": [
+              10,
+              3
+            ]
+          }
+        ],
+        "packages": {
+          "numpy": "2.2.6",
+          "pyarrow": "25.0.1",
+          "pandas": "2.3.2",
+          "flashinfer-python": "0.6.13"
+        },
+        "slurm_gpu_frequency_request": "high",
+        "hard_lock_verified": false
+      },
+      "measurement_job_ids": [
+        458028,
+        458594
+      ],
+      "finalization_recovery": {
+        "source_job_id": 458594,
+        "source_exit_code": 1,
+        "new_gpu_measurements": false,
+        "reason": "Install missing pandas utility dependency and resume the stock finalizer."
+      },
+      "remeasured_partial_rows": {
+        "moe_perf.parquet": 37
+      },
+      "resume_source_job_id": 458028,
+      "recovered_cases": 14
+    }
+  ],
+  "clock_policy": {
+    "slurm_gpu_frequency_request": "high",
+    "hard_lock_verified": false
+  },
+  "tables": {
+    "context_attention_perf.parquet": {
+      "path": "b300_sxm/attention/vllm/0.25.0/context_attention_perf.parquet",
+      "rows": 52836,
+      "sha256": "776e970fb25532c0480f1bb3b666c9f34b83408bc0af7ab106bb3a01e53a1239",
+      "sources": [
+        {
+          "job_id": 457903,
+          "measurement_job_ids": [
+            457903
+          ],
+          "id": "attention_context",
+          "source_sha256": "209e8b206783d2515ed00d5e922f2bf79d4bd576efc4c0c9d36f7300f682bd1f",
+          "source_rows": 52836,
+          "failed_cases": 1632,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+            "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+            "collected_at": "2026-09-16",
+            "rows": 52836,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 52836
+    },
+    "dsv4_csa_context_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_csa_context_module_perf.parquet",
+      "rows": 5840,
+      "sha256": "63e9b6b89418403e1998e691e2f93a5be67fd930a7997dac0d248ba0f577d7c3",
+      "sources": [
+        {
+          "job_id": 457907,
+          "measurement_job_ids": [
+            457907
+          ],
+          "id": "dsv4_csa_context_module",
+          "source_sha256": "6af8065d068880aa62cf3951e1bfa085c7e5fff2b082ca3f44fcd6b8ad41572e",
+          "source_rows": 5840,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:38a6cd429db806b370f13a9b847ad836440166e29d1e68c8e0c56da13396d5db",
+            "collected_at": "2026-09-16",
+            "rows": 5840,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 5840
+    },
+    "dsv4_csa_generation_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_csa_generation_module_perf.parquet",
+      "rows": 1544,
+      "sha256": "632a9063ce5f857ab95731449176045fbde3551efcaefb35a93feea29549e5da",
+      "sources": [
+        {
+          "job_id": 458023,
+          "measurement_job_ids": [
+            458023
+          ],
+          "id": "dsv4_csa_generation_module",
+          "source_sha256": "51362d6488368bde21705b0fe4edbf3458a5510b3d8680ae532927b7da8a3f67",
+          "source_rows": 1544,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:21f9356813701f48d6451510032ec2746c9a64e3433c7f9954a0156c187dcae0",
+            "collected_at": "2026-09-16",
+            "rows": 1544,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 1544
+    },
+    "dsv4_hca_attn_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
+      "rows": 3918,
+      "sha256": "cc616dbae378df19da3788d0d0b632b220144a60fb6067bbcb95cc94afe79513",
+      "sources": [
+        {
+          "job_id": 458022,
+          "measurement_job_ids": [
+            458022
+          ],
+          "id": "dsv4_hca_attn_module",
+          "source_sha256": "3de4c7b5d59e6d22beea71b93f285ae7bef2f0ac50187484c31277045bfe6148",
+          "source_rows": 3918,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:0e844f577823301a0af954d0d20baab4642bb1c0368652998bc28160dfab816d",
+            "collected_at": "2026-09-16",
+            "rows": 3918,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 3918
+    },
+    "dsv4_hca_context_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_context_module_perf.parquet",
+      "rows": 5840,
+      "sha256": "fe349c63ed6445f442f2298e47456c37ffef5f1c43d458cf5d57538d282e581e",
+      "sources": [
+        {
+          "job_id": 458025,
+          "measurement_job_ids": [
+            458025
+          ],
+          "id": "dsv4_hca_context_module",
+          "source_sha256": "107e9c75cae2e1ca11187c8f6029a094f7fc1fcb4be5036a79f1d8f75f1910b2",
+          "source_rows": 5840,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:d36420598033f22968df6d517a051324bdac1f448ff41be9aacf12beec3dd893",
+            "collected_at": "2026-09-16",
+            "rows": 5840,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 5840
+    },
+    "dsv4_hca_generation_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_generation_module_perf.parquet",
+      "rows": 1544,
+      "sha256": "cdc48ea8a89e6b5543720df991f5f11d691b56349b1ab6a042bf6cbb550e6f62",
+      "sources": [
+        {
+          "job_id": 458024,
+          "measurement_job_ids": [
+            458024
+          ],
+          "id": "dsv4_hca_generation_module",
+          "source_sha256": "90788ac82563b53aa5ab009e53dd995d2f22a80f1b24476c9180e27eb9420d83",
+          "source_rows": 1544,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:f6f9fe724d2fa5ad60fb6d0a162f93cd7901bd26093925a5fef0cbae9f310eb4",
+            "collected_at": "2026-09-16",
+            "rows": 1544,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 1544
+    },
+    "dsv4_paged_mqa_logits_module_perf.parquet": {
+      "path": "b300_sxm/sparse_attention/vllm/0.25.0/dsv4_paged_mqa_logits_module_perf.parquet",
+      "rows": 3918,
+      "sha256": "64de2420ed80948ca068da0fc1e014734e53e6a77d71ab224e566b350be2280f",
+      "sources": [
+        {
+          "job_id": 458021,
+          "measurement_job_ids": [
+            458021
+          ],
+          "id": "dsv4_paged_mqa_logits_module",
+          "source_sha256": "13517738fb413c7a8c7a79bda4e34334da1b2278d1ba892a23866c74a9b24ff6",
+          "source_rows": 3918,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb",
+            "case_plan_hash": "sha256:0b35d1427f37f58a74ae69d6503f0eecb1ba5d60499325b10e1dad10a8199250",
+            "collected_at": "2026-09-16",
+            "rows": 3918,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 3918
+    },
+    "encoder_attention_perf.parquet": {
+      "path": "b300_sxm/encoder_attention/vllm/0.25.0/encoder_attention_perf.parquet",
+      "rows": 7679,
+      "sha256": "16be054bba772c137db5f34774627410626c15eb6c3e4ba2f0d07418eddfbaac",
+      "sources": [
+        {
+          "job_id": 457902,
+          "measurement_job_ids": [
+            457902
+          ],
+          "id": "encoder_attention",
+          "source_sha256": "dc9a8ef497037e5c4440b13d34190cb7a2600d21f1b9918cb30d07655816a381",
+          "source_rows": 7679,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:b65cba616f0be2a3d04cc4192ee7e46b096784accdf6e1bb5e193987894a8830",
+            "case_plan_hash": "sha256:8a4f0e45a56a4b73354b445a9b3bccde722835cb6c6c133991182ba092eb1296",
+            "collected_at": "2026-09-16",
+            "rows": 7679,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 7679
+    },
+    "gdn_perf.parquet": {
+      "path": "b300_sxm/linear_attention/vllm/0.25.0/gdn_perf.parquet",
+      "rows": 10326,
+      "sha256": "3348d7f8adb0515980553aa288473f8db9fb861b37f42e84c7a4c56024c37845",
+      "sources": [
+        {
+          "job_id": 458027,
+          "measurement_job_ids": [
+            458027
+          ],
+          "id": "gdn",
+          "source_sha256": "b127a9cb54d19694488b7cf73a25624ec737c37497558126d3f5eb85779df090",
+          "source_rows": 10326,
+          "failed_cases": 4,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:ad983a508da4af6b521f77f75043cd8959537105866666aa1fbdd8da1298212f",
+            "case_plan_hash": "sha256:ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+            "collected_at": "2026-09-16",
+            "rows": 10326,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 10326
+    },
+    "gemm_perf.parquet": {
+      "path": "b300_sxm/gemm/vllm/0.25.0/gemm_perf.parquet",
+      "rows": 148962,
+      "sha256": "21328b3f7937c336452368337385f91e0e5e9f9ce067cce48a959ab9d43f014a",
+      "sources": [
+        {
+          "job_id": 457802,
+          "measurement_job_ids": [
+            457802
+          ],
+          "id": "gemm-bfloat16",
+          "source_sha256": "19a8564f23e8dbc1f69f27e481ab806a80c2ba7d982fedb606a61d3473a41d67",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+            "collected_at": "2026-09-16",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457803,
+          "measurement_job_ids": [
+            457803
+          ],
+          "id": "gemm-fp8",
+          "source_sha256": "8b476072a5829bff617a52d0d0dd2ef4de7fa50899101c6e6cf73a398e387b77",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+            "collected_at": "2026-09-16",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457899,
+          "measurement_job_ids": [
+            457899
+          ],
+          "id": "gemm-nvfp4",
+          "source_sha256": "ad4cef8e21bf846f52c0056259511efac0225d9ea5efe0b9363d4a6321a55c50",
+          "source_rows": 37518,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+            "collected_at": "2026-09-16",
+            "rows": 37518,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457908,
+          "measurement_job_ids": [
+            457908
+          ],
+          "id": "gemm-fp8_block-00",
+          "source_sha256": "7cbed755a70773291cd0ddf117b3b19c97822c92c4363ae99392e74349d69f53",
+          "source_rows": 9348,
+          "failed_cases": 285,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:e0f07c473cae107b8c2a5520c2bb1ae85045e499a268a73f0ba1ce97d035a42a",
+            "collected_at": "2026-09-16",
+            "rows": 9348,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457909,
+          "measurement_job_ids": [
+            457909
+          ],
+          "id": "gemm-fp8_block-01",
+          "source_sha256": "a89aa830d93114539679db24708d38b7220cdf83ddf9568a9754f7c26cd5efdd",
+          "source_rows": 9348,
+          "failed_cases": 285,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:fee7715156b25ee24e67995e9ae17a3bede2bbeed890c479b99cc84ade4d8fc8",
+            "collected_at": "2026-09-16",
+            "rows": 9348,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457910,
+          "measurement_job_ids": [
+            457910
+          ],
+          "id": "gemm-fp8_block-02",
+          "source_sha256": "ab93477b3df9549183de89bf2695d532d8f5128c26dffaf99e3a71e12a296766",
+          "source_rows": 8856,
+          "failed_cases": 270,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:03318633ff86a012c7e9bf8310f97ba545972b973af130273420a0c381c85a66",
+            "collected_at": "2026-09-16",
+            "rows": 8856,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457911,
+          "measurement_job_ids": [
+            457911
+          ],
+          "id": "gemm-fp8_block-03",
+          "source_sha256": "f10cff767a41fc79847f9bea4d0b436c52e0be645906781db7590938d35275de",
+          "source_rows": 8856,
+          "failed_cases": 270,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+            "case_plan_hash": "sha256:c5da28e5b245195dbf0816485f8230a16d02cf3aa39e8fed9dcffb8da85e87c8",
+            "collected_at": "2026-09-16",
+            "rows": 8856,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 148962
+    },
+    "generation_attention_perf.parquet": {
+      "path": "b300_sxm/attention/vllm/0.25.0/generation_attention_perf.parquet",
+      "rows": 65408,
+      "sha256": "74db4d37d7f75bb709e7ef24e0ea55c90138fa85a85752f7406588ffc708f2e3",
+      "sources": [
+        {
+          "job_id": 457904,
+          "measurement_job_ids": [
+            457904
+          ],
+          "id": "attention_generation",
+          "source_sha256": "b284d15bffd6c679e8e870c9831d61e2a5854cb60ee741e8df5c4c9252a98cb6",
+          "source_rows": 65408,
+          "failed_cases": 2228,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+            "case_plan_hash": "sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+            "collected_at": "2026-09-16",
+            "rows": 65408,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 65408
+    },
+    "mhc_module_perf.parquet": {
+      "path": "b300_sxm/mhc/vllm/0.25.0/mhc_module_perf.parquet",
+      "rows": 140,
+      "sha256": "48480b7339c39be668c083ae42a0e2d7ef769fe6dfec453999c2ab2d33892c7e",
+      "sources": [
+        {
+          "job_id": 458020,
+          "measurement_job_ids": [
+            458020
+          ],
+          "id": "mhc_module",
+          "source_sha256": "0fd096b2937ad0e8cf3324fd7764f7ef5607f488413c0b9a7a2181f70238ac2d",
+          "source_rows": 140,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:fc748ba7378714bee0e03107d3dec91f0d4659792df2cd2e31a51bdde4dd5c43",
+            "case_plan_hash": "sha256:4251dd697ea2e18fcaeed92b1a7cbdf452549a75d3a38284340d5da8502e03a1",
+            "collected_at": "2026-09-16",
+            "rows": 140,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 140
+    },
+    "mla_bmm_perf.parquet": {
+      "path": "b300_sxm/mla_bmm/vllm/0.25.0/mla_bmm_perf.parquet",
+      "rows": 636,
+      "sha256": "1e640e27a40c8ce1e9edd7f3366f5535f39d565fd667887c98a52645cf14c90d",
+      "sources": [
+        {
+          "job_id": 457900,
+          "measurement_job_ids": [
+            457900
+          ],
+          "id": "mla_bmm_gen_pre",
+          "source_sha256": "64698fd5bb664efd85b125b6595ceb90327d70b2c67e3648c64f77f9304f3456",
+          "source_rows": 300,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87",
+            "case_plan_hash": "sha256:3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5",
+            "collected_at": "2026-09-16",
+            "rows": 300,
+            "status": "complete"
+          }
+        },
+        {
+          "job_id": 457901,
+          "measurement_job_ids": [
+            457901
+          ],
+          "id": "mla_bmm_gen_post",
+          "source_sha256": "ee6c4802fcf39f2b3b5b0b966cd433884fdd47834a8b07e2ba95683dfd7523bd",
+          "source_rows": 336,
+          "failed_cases": 0,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87",
+            "case_plan_hash": "sha256:faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53",
+            "collected_at": "2026-09-16",
+            "rows": 336,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 636
+    },
+    "mla_context_module_perf.parquet": {
+      "path": "b300_sxm/mla/vllm/0.25.0/mla_context_module_perf.parquet",
+      "rows": 13059,
+      "sha256": "fa7f3d1a0d1975795be09471015c7244029bfa6d56db5ad78d3bade0fc60c3fe",
+      "sources": [
+        {
+          "job_id": 457905,
+          "measurement_job_ids": [
+            457905
+          ],
+          "id": "mla_context_module",
+          "source_sha256": "84a8760665cc5ec3ce4473d59352244b888eff645e1eae150b9994c5b569d7cc",
+          "source_rows": 13059,
+          "failed_cases": 117,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:113fa413702792e5aa95bf4ee7c12f5da9b4410e97fe1be13054acc088a6b7fb",
+            "case_plan_hash": "sha256:5b1dd5428859b6622f336dbc519f3c5dadc310525ee9c11d72a17557f91c8b39",
+            "collected_at": "2026-09-16",
+            "rows": 13059,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 13059
+    },
+    "mla_generation_module_perf.parquet": {
+      "path": "b300_sxm/mla/vllm/0.25.0/mla_generation_module_perf.parquet",
+      "rows": 11400,
+      "sha256": "e563ccadb8ce7a83e4f9db434ad006b6e17ed8ae864588a56a73ccb8e060a21d",
+      "sources": [
+        {
+          "job_id": 458026,
+          "measurement_job_ids": [
+            458026
+          ],
+          "id": "mla_generation_module",
+          "source_sha256": "afcc067a0d9902b37a7e68c2efe494a321344657d97eeeaa93fbf0cadcf81dfe",
+          "source_rows": 11400,
+          "failed_cases": 1848,
+          "original_metadata": {
+            "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+            "collector_hash": "sha256:113fa413702792e5aa95bf4ee7c12f5da9b4410e97fe1be13054acc088a6b7fb",
+            "case_plan_hash": "sha256:3473224f524c629652b2a402f358af23f7f8a1cc2660955225ad5572182ae33e",
+            "collected_at": "2026-09-16",
+            "rows": 11400,
+            "status": "complete"
+          }
+        }
+      ],
+      "reference_b200_rows": 11400
+    },
+    "moe_perf.parquet": {
+      "path": "b300_sxm/moe/vllm/0.25.0/moe_perf.parquet",
+      "rows": 72924,
+      "sha256": "49e0d74f2b8cb39f8f93623e2fd6445b1310c2644bb25e1a3d18703dd07e0c71",
+      "sources": [
+        {
+          "job_id": 458641,
+          "measurement_job_ids": [
+            458028,
+            458594
+          ],
+          "id": "moe",
+          "source_sha256": "71bc6a94e6da3426b544dd7ef923520099c49935429a03a4fa852a7e82319557",
+          "source_rows": 72924,
+          "failed_cases": 369,
+          "original_metadata": {
+            "rows": 72924,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:fe2d2d23d340ded7bff27c17b5682e950458c2946d84d1a04bf8608cdb5a689d",
+                "case_plan_hash": "sha256:261fd9888e2e292a179050ceb03bf8f7ab9d4f27ccd033f5075a92c165aec537",
+                "collected_at": "2026-09-16",
+                "rows": 72559,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:fe2d2d23d340ded7bff27c17b5682e950458c2946d84d1a04bf8608cdb5a689d",
+                "case_plan_hash": "sha256:999bf157086b0c2d5cad715cea1ca4587a76130bad8adf97ef81b52b94636387",
+                "collected_at": "2026-09-16",
+                "rows": 402,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      ],
+      "reference_b200_rows": 72378
+    },
+    "msa_context_module_perf.parquet": {
+      "path": "b300_sxm/msa/vllm/0.25.0/msa_context_module_perf.parquet",
+      "rows": 14137,
+      "sha256": "ac08db7b62fa3becfa748ce943cc5e139dec54d387787236dea15e2f179f494a",
+      "sources": [
+        {
+          "job_id": 458640,
+          "measurement_job_ids": [
+            457906,
+            458369
+          ],
+          "id": "msa_context_module",
+          "source_sha256": "7f610e707b90223457435bca9fcffd463a3fedb0c801c3fc2c782fc65000c81a",
+          "source_rows": 14137,
+          "failed_cases": 3431,
+          "original_metadata": {
+            "rows": 14137,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:31c1c4310a284442a8275ef4c55c51eb54ff9ba934f18f3ceb9e2b5d002f2623",
+                "case_plan_hash": "sha256:a887b4c5331833a3ac788bdfa89e15d536beaa52bb4794a0fd27e94d05a17e47",
+                "collected_at": "2026-09-16",
+                "rows": 14093,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:31c1c4310a284442a8275ef4c55c51eb54ff9ba934f18f3ceb9e2b5d002f2623",
+                "case_plan_hash": "sha256:a020d6ba3e1335800443fb6fc09fe930a8c274f3b6d362993b66262a012824df",
+                "collected_at": "2026-09-16",
+                "rows": 44,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      ],
+      "reference_b200_rows": 14110
+    }
+  },
+  "total_tables": 17,
+  "total_rows": 420111,
+  "runtime_source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40",
+  "reference_pr": "https://github.com/ai-dynamo/aisimulate/pull/219",
+  "collector_commit": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+  "scope": "B300 counterparts of the 17 measured B200 tables published in PR #219; no copied timings or reuse declarations.",
+  "retained_cases": 350380,
+  "passed_cases": 339641,
+  "failed_cases": 10739,
+  "unattempted_cases": 0,
+  "coverage_vs_b200": {
+    "context_attention_perf.parquet": {
+      "b300_rows": 52836,
+      "b200_rows": 52836,
+      "shared_keys": 52836,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "batch_size",
+        "isl",
+        "num_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "beam_width",
+        "attn_dtype",
+        "kv_cache_dtype",
+        "step",
+        "window_size"
+      ]
+    },
+    "dsv4_csa_context_module_perf.parquet": {
+      "b300_rows": 5840,
+      "b200_rows": 5840,
+      "shared_keys": 5840,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "dsv4_csa_generation_module_perf.parquet": {
+      "b300_rows": 1544,
+      "b200_rows": 1544,
+      "shared_keys": 1544,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "dsv4_hca_attn_module_perf.parquet": {
+      "b300_rows": 3918,
+      "b200_rows": 3918,
+      "shared_keys": 3918,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "local_num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "dsv4_hca_context_module_perf.parquet": {
+      "b300_rows": 5840,
+      "b200_rows": 5840,
+      "shared_keys": 5840,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "dsv4_hca_generation_module_perf.parquet": {
+      "b300_rows": 1544,
+      "b200_rows": 1544,
+      "shared_keys": 1544,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "dsv4_paged_mqa_logits_module_perf.parquet": {
+      "b300_rows": 3918,
+      "b200_rows": 3918,
+      "shared_keys": 3918,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "local_num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step",
+        "compress_ratio"
+      ]
+    },
+    "encoder_attention_perf.parquet": {
+      "b300_rows": 7679,
+      "b200_rows": 7679,
+      "shared_keys": 7679,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "batch_size",
+        "isl",
+        "num_heads",
+        "head_dim",
+        "attn_dtype"
+      ]
+    },
+    "gdn_perf.parquet": {
+      "b300_rows": 10326,
+      "b200_rows": 10326,
+      "shared_keys": 10326,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "phase",
+        "batch_size",
+        "seq_len",
+        "num_tokens",
+        "d_model",
+        "d_conv",
+        "num_k_heads",
+        "head_k_dim",
+        "num_v_heads",
+        "head_v_dim",
+        "model_name"
+      ]
+    },
+    "gemm_perf.parquet": {
+      "b300_rows": 148962,
+      "b200_rows": 148962,
+      "shared_keys": 148962,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "gemm_dtype",
+        "m",
+        "n",
+        "k"
+      ]
+    },
+    "generation_attention_perf.parquet": {
+      "b300_rows": 65408,
+      "b200_rows": 65408,
+      "shared_keys": 65408,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "batch_size",
+        "isl",
+        "num_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "beam_width",
+        "attn_dtype",
+        "kv_cache_dtype",
+        "step",
+        "window_size"
+      ]
+    },
+    "mhc_module_perf.parquet": {
+      "b300_rows": 140,
+      "b200_rows": 140,
+      "shared_keys": 140,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "architecture",
+        "num_tokens",
+        "num_sites",
+        "hc_mult",
+        "hidden_size",
+        "sinkhorn_iters"
+      ]
+    },
+    "mla_bmm_perf.parquet": {
+      "b300_rows": 636,
+      "b200_rows": 636,
+      "shared_keys": 636,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "bmm_dtype",
+        "num_tokens",
+        "num_heads"
+      ]
+    },
+    "mla_context_module_perf.parquet": {
+      "b300_rows": 13059,
+      "b200_rows": 13059,
+      "shared_keys": 13059,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step"
+      ]
+    },
+    "mla_generation_module_perf.parquet": {
+      "b300_rows": 11400,
+      "b200_rows": 11400,
+      "shared_keys": 11400,
+      "b300_only_keys": 0,
+      "b200_only_keys": 0,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step"
+      ]
+    },
+    "moe_perf.parquet": {
+      "b300_rows": 72924,
+      "b200_rows": 72378,
+      "shared_keys": 72222,
+      "b300_only_keys": 702,
+      "b200_only_keys": 156,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "moe_dtype",
+        "num_tokens",
+        "hidden_size",
+        "inter_size",
+        "topk",
+        "num_experts",
+        "moe_tp_size",
+        "moe_ep_size",
+        "distribution"
+      ]
+    },
+    "msa_context_module_perf.parquet": {
+      "b300_rows": 14137,
+      "b200_rows": 14110,
+      "shared_keys": 13935,
+      "b300_only_keys": 202,
+      "b200_only_keys": 175,
+      "key_columns": [
+        "framework",
+        "version",
+        "op_name",
+        "kernel_source",
+        "model",
+        "architecture",
+        "mla_dtype",
+        "kv_cache_dtype",
+        "gemm_type",
+        "num_heads",
+        "batch_size",
+        "isl",
+        "tp_size",
+        "step"
+      ]
+    }
+  },
+  "clock_observations": {
+    "sampling_interval_seconds": 1,
+    "hard_lock_verified": false,
+    "note": "Sampled clocks cannot assign an exact frequency to each measurement. Active samples use GPU utilization >=20%.",
+    "jobs": {
+      "457802": {
+        "samples": 2152,
+        "samples_gpu_util_ge_20pct": 643,
+        "graphics_mhz": {
+          "min": 1102.0,
+          "median": 1837.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "4e1d9b1a43eb831a787bb0d0aa78288440bb208d36729cd99be54ad45751cd8e"
+      },
+      "457803": {
+        "samples": 2656,
+        "samples_gpu_util_ge_20pct": 780,
+        "graphics_mhz": {
+          "min": 1657.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "b8fa5ad793bbd6ef6b38b92d70c15d8bed6bf0f7c7f60a094a3b6fa2cfe0a9f4"
+      },
+      "457899": {
+        "samples": 1856,
+        "samples_gpu_util_ge_20pct": 82,
+        "graphics_mhz": {
+          "min": 1207.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "e9fb42d226f6e9c3a8abe28a949f27ced5eaea2be898a086354974d969913d1c"
+      },
+      "457900": {
+        "samples": 264,
+        "samples_gpu_util_ge_20pct": 0,
+        "graphics_mhz": null,
+        "memory_mhz_values": [],
+        "clock_csv_sha256": "58b9b506e5cd09f50664bdab87c871af09eea27a15a94295c254d2ca121a5315"
+      },
+      "457901": {
+        "samples": 272,
+        "samples_gpu_util_ge_20pct": 0,
+        "graphics_mhz": null,
+        "memory_mhz_values": [],
+        "clock_csv_sha256": "fcded38f395fa642c7f983b1c4dcbe3c51aa5af2543e844d3f64c78f0d27559d"
+      },
+      "457902": {
+        "samples": 904,
+        "samples_gpu_util_ge_20pct": 104,
+        "graphics_mhz": {
+          "min": 1545.0,
+          "median": 1916.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "22bda0b25d28ffd8758d3b6b9119d65763ca187f05fb27f20a70eb8826f2c1bd"
+      },
+      "457903": {
+        "samples": 4184,
+        "samples_gpu_util_ge_20pct": 1043,
+        "graphics_mhz": {
+          "min": 1185.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "a5442403def8eb1a8fa9d00e66f59b88ec43edb9a9203aeae9200fe01d185a7b"
+      },
+      "457904": {
+        "samples": 7088,
+        "samples_gpu_util_ge_20pct": 2869,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "c617dce5f7206781d926f27d194108f82f67c8dca6bc6bd1bc64217d6313175a"
+      },
+      "457905": {
+        "samples": 8168,
+        "samples_gpu_util_ge_20pct": 1379,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "116f9dad665875f56cf9f3fb5c62055f6c87fddada13fc502ad0cde5e6c3bbe6"
+      },
+      "457906": {
+        "samples": 17904,
+        "samples_gpu_util_ge_20pct": 1681,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "892e98031518cafd403b49c00e8974d9b3bd04371ca7ee9ae5588789335c6e4a"
+      },
+      "457907": {
+        "samples": 9192,
+        "samples_gpu_util_ge_20pct": 5327,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "383cb8c3d847c59565ca25c323217d1ae2fc54da0931048d72d3ef044d67c205"
+      },
+      "457908": {
+        "samples": 8512,
+        "samples_gpu_util_ge_20pct": 83,
+        "graphics_mhz": {
+          "min": 855.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "c29bec75ca54d5ee34233544c13a0a39a0a5cf164400c6484ca855ea9757f4ca"
+      },
+      "457909": {
+        "samples": 10248,
+        "samples_gpu_util_ge_20pct": 94,
+        "graphics_mhz": {
+          "min": 877.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "ddd7624404a26e6a5898b70fe652b2442b5d351a2197bfd5d87883bb8eea2e36"
+      },
+      "457910": {
+        "samples": 10248,
+        "samples_gpu_util_ge_20pct": 58,
+        "graphics_mhz": {
+          "min": 982.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "34c065772913b87f0233d4855ef06545c9d486fe4d6a87bce4949558787603c5"
+      },
+      "457911": {
+        "samples": 9760,
+        "samples_gpu_util_ge_20pct": 90,
+        "graphics_mhz": {
+          "min": 922.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "02cfc906eaa0e94c32cce5c07cf17549cd467b33ee100d3a15a95915b1402152"
+      },
+      "458020": {
+        "samples": 568,
+        "samples_gpu_util_ge_20pct": 6,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "8e8c4f4f8b3d6dd9d2d5373dfdb6c8307736fbcb24ecf5a38b68d62d78894ae1"
+      },
+      "458021": {
+        "samples": 1648,
+        "samples_gpu_util_ge_20pct": 9,
+        "graphics_mhz": {
+          "min": 1867.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "2690bd5eb7e82734b781007cb648ef37d1f9cc4cfaabc004ff3d04d72b30298e"
+      },
+      "458022": {
+        "samples": 1952,
+        "samples_gpu_util_ge_20pct": 79,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "3a27bd9f19ba80fa6379a1b6f55b1157ebde68a97063c1e4b85932fafcb29543"
+      },
+      "458023": {
+        "samples": 2944,
+        "samples_gpu_util_ge_20pct": 0,
+        "graphics_mhz": null,
+        "memory_mhz_values": [],
+        "clock_csv_sha256": "b62da933b2475c278a42dd5058fc19f65edc6883cc101c56da60f3c405a5e406"
+      },
+      "458024": {
+        "samples": 2784,
+        "samples_gpu_util_ge_20pct": 0,
+        "graphics_mhz": null,
+        "memory_mhz_values": [],
+        "clock_csv_sha256": "a36d67bfbb21d7773dd701b9ff6c6d52dd2660d271438ac6411c38826cafc067"
+      },
+      "458025": {
+        "samples": 8160,
+        "samples_gpu_util_ge_20pct": 4408,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "64c11a654b609c6b1ce497a909ace3c364afdc3488d481635fabd0f586bdf605"
+      },
+      "458026": {
+        "samples": 9160,
+        "samples_gpu_util_ge_20pct": 412,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "7cce0c41d0dd412f529d2855cb1f6125a17bb5a4edc1289587d00251744ecf06"
+      },
+      "458027": {
+        "samples": 4208,
+        "samples_gpu_util_ge_20pct": 792,
+        "graphics_mhz": {
+          "min": 1852.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "b7a40302b686694841e79d8b0875a8468163a98807e82e67ed93d16f9d32b205"
+      },
+      "458028": {
+        "samples": 8512,
+        "samples_gpu_util_ge_20pct": 1032,
+        "graphics_mhz": {
+          "min": 1462.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "92a89c9763492844050386d4f8d4be112c92d2a62d5dc323cf6d6d59bbc5e644"
+      },
+      "458369": {
+        "samples": 13696,
+        "samples_gpu_util_ge_20pct": 132,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "1248b2fc55edb5ebfa16dcb6f2705b937b7e21284b6b91f13fc5a1686ed9331f"
+      },
+      "458594": {
+        "samples": 920,
+        "samples_gpu_util_ge_20pct": 10,
+        "graphics_mhz": {
+          "min": 2032.0,
+          "median": 2032.0,
+          "max": 2032.0
+        },
+        "memory_mhz_values": [
+          3996.0
+        ],
+        "clock_csv_sha256": "a6bcf0d58f9b89505cfe8f01fe50a26ef66eafdd14d00c4208d8048dd8a79b7c"
+      }
+    }
+  },
+  "runtime_image": "vllm/vllm-openai@sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97",
+  "runtime_utility_dependencies": {
+    "pyarrow": "25.0.1",
+    "finalization_only_pandas": "2.3.2",
+    "wheel_hashes": [
+      {
+        "filename": "pandas-2.3.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "sha256": "96d31a6b4354e3b9b8a2c848af75d31da390657e3ac6f30c05c82068b9ed79b9"
+      },
+      {
+        "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+        "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+      },
+      {
+        "filename": "pytz-2025.2-py2.py3-none-any.whl",
+        "sha256": "5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00"
+      },
+      {
+        "filename": "six-1.17.0-py2.py3-none-any.whl",
+        "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+      },
+      {
+        "filename": "tzdata-2025.2-py2.py3-none-any.whl",
+        "sha256": "1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8"
+      }
+    ]
+  },
+  "slurm_status_file": "campaign/slurm-job-status.psv",
+  "validation": {
+    "collector_data_rules_passed": 7,
+    "metadata_discovery_tests_passed": 27,
+    "native_engine_tables": 17,
+    "exact_gemm_queries": 4,
+    "exact_msa_queries": 3,
+    "strict_provenance": true,
+    "shared_layer": false,
+    "validation_file": "vllm-0.25.0-validation.json"
+  },
+  "withheld": {
+    "dsa_context_and_generation": "Outside the 17-table scope; smoke hit runtime/kernel failures.",
+    "msa_generation": "Outside scope; smoke hit a Triton power-of-two compilation constraint.",
+    "compute_scale": "Smoke callbacks ran, but stock finalization rejected the undeclared scale_matrix output.",
+    "kda": "Different preview runtime; no B200 measurements or reuse declaration copied.",
+    "car_nccl": "Outside the 17-table scope."
+  },
+  "failure_notes": {
+    "gemm_fp8_block": "1110 tasks rejected by the fallback scale-shape assertion. Full logs cover records omitted from stock JSON summaries.",
+    "dense_attention": "3860 tasks rejected for head dimensions (192,192).",
+    "mla": "1965 tasks rejected by FlashInfer query/KV-head constraints.",
+    "gdn": "4 tasks hit the explicit CUDA grid-y limit.",
+    "msa": "3431 failures remain after one clean retry: CSR head constraints, Triton compilation, CUDA errors, and one blocked worker intervention.",
+    "moe": "369 failures remain after one clean retry: alignment/shape/configuration constraints and CUDA/kernel errors."
+  },
+  "reproduction": {
+    "archive": "desktop:/home/simonec/repo/b300-vllm025-219-artifacts/b300-vllm025-219-evidence.tar.gz",
+    "archive_sha256": "29d6b379dbfbc96ff383fd77d753d8c2ef8636fc219718226b96dd1799b5742e",
+    "campaign_source_commit": "ef09b82fc95a71b91e8183cf7ee684c28b827f89",
+    "runtime_manifest": "campaign/runtime-manifest.yaml",
+    "runtime_manifest_sha256": "38d37674a3c069ce5ff17ba7dbb7e93bfa72b3172ccd6dd1b9cd6cf7d05588d1",
+    "scripts": [
+      "campaign/run-collection.sh",
+      "campaign/check_collection.py",
+      "campaign/assemble_data.py",
+      "campaign/validate_delivery.py"
+    ],
+    "submission_records": [
+      "campaign/production-wave1.json",
+      "campaign/production-wave2.json",
+      "campaign/production-retry.json",
+      "campaign/production-retry-moe.json",
+      "campaign/production-finalization.json"
+    ],
+    "source_image_sha256": "31c7e7dea646f0e98d932cbcd2bb00a540021600048fa134d14ee0cc823647cc"
+  }
+}
