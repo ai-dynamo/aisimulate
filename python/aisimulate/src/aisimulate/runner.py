@@ -1344,6 +1344,9 @@ def _materialize_engine_role(
             timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
             timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
             timing_backend_version = resolved_version(timing_backend_version)
+            if timing_backend_version is not None:
+                timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
+                rank["timing_model"] = timing_model
             if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="

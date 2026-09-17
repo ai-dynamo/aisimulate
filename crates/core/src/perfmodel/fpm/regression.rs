@@ -592,6 +592,9 @@ mod tests {
 
     #[test]
     fn collinear_active_axes_use_slope_regularization_with_free_intercept() {
+        let mut config = crate::EstimatorConfig::default();
+        config.fpm_regression.fit.singular_ridge_scale = 0.25;
+        let options = config.regression_options();
         let observations = (1..=6)
             .map(|attention| RegressionObservation {
                 raw_x: [attention as f64, 2.0 * attention as f64],
@@ -611,8 +614,15 @@ mod tests {
         // The two standardized columns are identical, so the unregularized
         // normal equation is singular. The fallback regularizes only the two
         // slopes, leaving the free intercept at the population target mean.
-        let regularized_fit =
-            fit_linear_active_set(&standardized, standardization, &[0, 1], 1e-9).unwrap();
+        // trace(X'X)=18, lambda=18/4=4.5, so the combined slope is
+        // shrunk by 12/(12+4.5)=8/11. At x=7: 17.5 + 10.5*8/11 = 553/22.
+        let regularized_fit = fit_linear_active_set(
+            &standardized,
+            standardization,
+            &[0, 1],
+            options.regression_ridge_scale,
+        )
+        .unwrap();
         assert!(
             regularized_fit
                 .coefficients
@@ -620,13 +630,20 @@ mod tests {
                 .all(|slope| *slope > 0.0)
         );
         assert_close(regularized_fit.intercept, 17.5, 1e-12);
-        assert_close(regularized_fit.predict(&[7.0, 14.0]).unwrap(), 28.0, 1e-7);
+        assert_close(
+            regularized_fit.predict(&[7.0, 14.0]).unwrap(),
+            553.0 / 22.0,
+            1e-12,
+        );
 
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(&options);
+        assert_eq!(regression.ridge_scale, 0.25);
         for observation in observations {
             assert!(regression.add_observation(observation.raw_x, observation.observed_ms));
         }
         assert!(regression.is_ready());
+        // The full NNLS search can select a nonsingular single-axis face,
+        // which fits these exactly collinear observations without shrinkage.
         assert_close(regression.predict(&[7.0, 14.0]).unwrap(), 28.0, 1e-7);
     }
 

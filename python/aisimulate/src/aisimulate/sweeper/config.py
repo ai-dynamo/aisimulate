@@ -482,7 +482,7 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
-    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL", "SOL_FULL"] = "SILICON"
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = Field(default=None, min_length=1)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
@@ -747,6 +747,11 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
             if controls and getattr(self, f"{role}_timing_model") is not None:
                 raise ValueError(f"{role} estimator settings require default timing")
+            mode = controls.get("database_mode")
+            if isinstance(mode, str) and mode.upper() == "SOL_FULL":
+                raise ValueError(
+                    f"role_estimator_controls.{role}.database_mode cannot be SOL_FULL; it is a per-call diagnostic"
+                )
             if "systems_paths" in controls:
                 paths = controls["systems_paths"]
                 if (

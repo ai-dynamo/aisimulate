@@ -145,8 +145,13 @@ class TimingConfig(StrictModel):
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
     systems_paths: list[str] | None = Field(default=None, min_length=1)
-    database_mode: str | None = None
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
     transfer_policy: str | list[str] | None = None
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
 
     @model_validator(mode="before")
     @classmethod
@@ -231,7 +236,7 @@ class KvTransferConfig(StrictModel):
 
 
 class EstimatorPolicyConfig(StrictModel):
-    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL", "SOL_FULL"] = "SILICON"
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
@@ -275,7 +280,7 @@ class EstimatorPolicyConfig(StrictModel):
                 or worker.timing.database_mode is not None
                 or worker.timing.transfer_policy is not None
                 or worker.timing.fallback_policy == "allow"
-                or (worker.timing.estimation_mode not in {None, "op_level"} and worker.timing.forward_model != "fpm")
+                or worker.timing.estimation_mode not in {None, "op_level", "fpm_interpolation"}
             )
             for worker in roles
         ):

@@ -811,7 +811,8 @@ def _candidate_prediction(
             # Per-role roots can differ; preserve them next to the role's timing.
             timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
-            timing["transfer_policy"] = list(resolved["transfer_policy"] or [])
+            policy = resolved["transfer_policy"]
+            timing["transfer_policy"] = list(policy) if policy is not None else None
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],

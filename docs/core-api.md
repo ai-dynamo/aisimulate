@@ -305,6 +305,12 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   class in Python, and use the explicit migration helper for saved EngineConfig
   values. Downstream Dynamo callers must migrate before this API is released;
   keep the crate and wheel versions aligned at the coordinated minor release.
+- Publication is blocked by [the release gate](../.github/release-gates.json)
+  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
+  merged, and its Planner/wheel smoke validated against this API. Nightly CI runs
+  `scripts/check_release_migrations.py` before artifact staging and the downstream
+  publish trigger. Manual releases must run the same check. Clear the pending
+  entry in a reviewed change only after the migration evidence is available.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.

@@ -45,6 +45,7 @@ from typing import Any
 
 import aiconfigurator_core
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config
+from aiconfigurator_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aiconfigurator_core.sdk.models import get_model
 from aiconfigurator_core.sdk.operations import FPMForwardOp
 from aiconfigurator_core.sdk.operations.base import Operation
@@ -395,10 +396,6 @@ def _transfer_policy_tokens(database: Any, override: str | list[str] | None = No
 # --------------------------------------------------------------------------- #
 # Public entry points.
 # --------------------------------------------------------------------------- #
-
-
-class InvalidEngineConfigurationError(ValueError):
-    """Invalid caller controls; estimator fallback must not hide these errors."""
 
 
 def compile_engine(

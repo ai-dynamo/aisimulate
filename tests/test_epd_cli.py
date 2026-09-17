@@ -170,6 +170,13 @@ def test_epd_public_schema_rejects_unsupported(kind, recommend):
         (CoreRecommendationConfig if recommend else CorePredictionConfig).model_validate(raw)
 
 
+def test_encoder_legacy_fpm_does_not_bypass_estimator_policy_validation():
+    raw = _prediction()
+    raw["engine"]["workers"]["aggregated"]["timing"] = {"forward_model": "fpm", "estimation_mode": "fpm_regression"}
+    with pytest.raises(ValueError, match="estimator policies"):
+        CorePredictionConfig.model_validate(raw)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

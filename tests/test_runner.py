@@ -1049,6 +1049,32 @@ def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
     assert timing_config["backend_version"] == "0.11.1"
 
 
+def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
+    runtime = RecordingRuntime()
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "tp": 2,
+            "attention_dp": 1,
+        },
+    }
+    args = {"tensor_parallel_size": 2, "rank": {"block_size": 4, "num_gpu_blocks": 128, "timing_model": timing}}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
+    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+    assert actual == resolve_query_version("h200_sxm", "vllm", "current")
+    assert timing["config"]["backend_version"] == "current"
+
+
 def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
     timing = {
         "type": "external",

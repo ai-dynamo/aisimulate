@@ -156,7 +156,13 @@ pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicEr
             .call1((Vec::<String>::new(),))?
             .extract::<Vec<PathBuf>>()
     })
-    .map_err(|error: PyErr| AicError::DataRoot(format!("resolve systems paths: {error}")))
+    .map_err(|error: PyErr| {
+        if Python::with_gil(|py| error.is_instance_of::<PyValueError>(py)) {
+            AicError::InvalidEngineConfig(format!("resolve systems paths: {error}"))
+        } else {
+            AicError::DataRoot(format!("resolve systems paths: {error}"))
+        }
+    })
 }
 
 /// Resolve the bundled `systems/` directory for [`AicEngine::from_spec`].

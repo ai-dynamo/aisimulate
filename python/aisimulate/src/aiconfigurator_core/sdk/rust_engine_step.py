@@ -172,6 +172,8 @@ class ForwardPassPerfOptions:
     regression_attention_kv_weight: float = 1.0
     regression_prefill_attention_pair_weight: float = 1.0
     regression_ffn_token_weight: float = 1.0
+    bucket_shape: tuple[int, int] | None = None
+    regression_ridge_scale: float = 1e-9
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -357,7 +359,7 @@ def _json_dumps(value: Any) -> str:
 def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:
     if value is None:
         return None
-    wire_value = value.copy()
+    wire_value = dict(value)
     for field in _REGRESSION_WEIGHT_FIELDS:
         weight = wire_value.get(field)
         if isinstance(weight, float) and not math.isfinite(weight):
@@ -383,7 +385,7 @@ def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
 
         configured = get_systems_paths()
         env_root = os.environ.get("AICONFIGURATOR_SYSTEMS_PATH")
-        entries = tuple([env_root] if configured == [packaged] and env_root else configured)
+        entries = tuple([env_root] if configured == [packaged] and env_root is not None else configured)
     resolved: list[str] = []
     for entry in entries:
         if not isinstance(entry, str) or not entry.strip():

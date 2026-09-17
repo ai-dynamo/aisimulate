@@ -123,7 +123,8 @@ def _engine_args_payload(
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
         payload["timing_model"] = {"type": "external", "provider": "aic", "config": dict(forward_pass_estimator.config)}
-        payload["timing_model"]["config"][memory_fraction_field] = float(memory_fraction)
+        if memory_fraction_field in payload:
+            payload["timing_model"]["config"][memory_fraction_field] = payload[memory_fraction_field]
         payload["tensor_parallel_size"] = tp
         payload["dp_size"] = attention_dp
         if forward_pass_estimator.performance_data_root:

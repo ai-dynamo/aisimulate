@@ -165,6 +165,17 @@ def test_public_afd_companion_forward_model_reaches_estimator(phase, companion_r
     assert report.metadata["afd_replay"]["companion"]["forward_model"] == expected_model
 
 
+@pytest.mark.parametrize("mode", ["auto", "fpm_regression"])
+def test_afd_legacy_fpm_does_not_bypass_estimator_policy_validation(mode):
+    raw = _pure_prediction()
+    raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
+    raw["engine"]["workers"] = {
+        "prefill": {"parallelism": {"tensor": 2}, "timing": {"forward_model": "fpm", "estimation_mode": mode}}
+    }
+    with pytest.raises(ValueError, match="estimator policies"):
+        CorePredictionConfig.model_validate(raw)
+
+
 @pytest.mark.parametrize(
     ("afd", "match"),
     [

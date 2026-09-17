@@ -35,6 +35,30 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
+def test_release_migration_gate_blocks_staging_until_reviewed_clearance(tmp_path):
+    from scripts.check_release_migrations import GATES, require_completed_migrations
+
+    with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
+        require_completed_migrations(GATES)
+    path = tmp_path / "gates.json"
+    path.write_text(json.dumps({"pending_migrations": []}))
+    require_completed_migrations(path)
+    for invalid in ({}, {"pending_migrations": None}, {"pending_migrations": [{}]}):
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(ValueError):
+            require_completed_migrations(path)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        require_completed_migrations(path)
+
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    guard = jobs["changes-guard"]
+    index = next(i for i, step in enumerate(guard["steps"]) if "check_release_migrations.py" in step.get("run", ""))
+    assert index < next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "decide")
+    assert "changes-guard" in jobs["build-artifacts"]["needs"]
+    assert "needs.changes-guard.outputs.should-build == 'true'" in jobs["build-artifacts"]["if"]
+
+
 def _fast_run(**overrides):
     return {
         "id": 10,

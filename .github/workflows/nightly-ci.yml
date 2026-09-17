@@ -66,6 +66,12 @@ jobs:
       should-build: ${{ steps.decide.outputs.should-build }}
       dev-date: ${{ steps.version.outputs.dev-date }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require completed downstream API migrations
+        run: python3 scripts/check_release_migrations.py
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
       - name: Compute nightly version date

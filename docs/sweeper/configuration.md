@@ -178,6 +178,9 @@ Database modes choose the source of each operation estimate:
 | `EMPIRICAL` | calibrated estimation for every operation (`latency = SOL / utilization`) |
 | `SOL` | uncalibrated analytic speed-of-light estimate |
 
+`SOL_FULL` is a low-level per-call diagnostic, not an estimator default; public
+prediction and Sweeper configuration reject it.
+
 `transfer_policy` is not a search dimension. It selects which fixed Core transfer kinds the
 empirical forward-pass estimator may use when its own calibration slice is missing. It accepts `off`,
 `conservative`, `balanced`, or `aggressive`, or an explicit list containing `xshape`, `xquant`,

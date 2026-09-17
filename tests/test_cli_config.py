@@ -948,6 +948,62 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
     CorePredictionConfig.model_validate(prediction)
 
 
+@pytest.mark.parametrize("policy", [None, []])
+def test_candidate_preserves_default_vs_disabled_transfers_and_pinned_capacity(policy):
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+
+    config = _fpm_recommendation()
+    smart = recommendation_to_sweeper(config)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    resolved = ForwardPassPerfModelConfig(
+        model="example/model",
+        system="h200_sxm",
+        backend="vllm",
+        worker_type="aggregated",
+        backend_version="test",
+        estimation_mode="op_level",
+        transfer_policy=policy,
+    ).to_dict()
+    deployment = build_backend_deployment(
+        sample, backend_version="test", forward_pass_estimators={"agg": ForwardPassEstimatorSpec(config=resolved)}
+    )
+    assert "gpu_memory_utilization" not in deployment.agg_engine_args["timing_model"]["config"]
+    prediction = _candidate_prediction(
+        config, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
+    )
+    replay = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction))
+    timing = replay.backend_deployment.agg_engine_args["timing_model"]["config"]
+    assert timing["transfer_policy"] == policy
+    assert "gpu_memory_utilization" not in timing
+
+
+def test_public_estimator_config_rejects_sol_full():
+    from aisimulate.config.engine import TimingConfig
+    from aisimulate.sweeper.config import SearchSpace
+
+    for make in (
+        lambda: CorePredictionConfig.model_validate({"engine": {**_engine(), "database_mode": "SOL_FULL"}}),
+        lambda: SearchSpace(model_name="m", hardware_sku="h200_sxm", database_mode="SOL_FULL"),
+        lambda: SearchSpace(
+            model_name="m", hardware_sku="h200_sxm", role_estimator_controls={"agg": {"database_mode": "SOL_FULL"}}
+        ),
+        lambda: TimingConfig(database_mode="sol_full"),
+    ):
+        with pytest.raises(ValueError, match="database_mode"):
+            make()
+
+
 def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults() -> None:
     config = _fpm_recommendation()
     raw = config.model_dump(mode="python", exclude_none=True)

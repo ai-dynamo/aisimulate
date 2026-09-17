@@ -181,6 +181,87 @@ def request(**changes):
     )
 
 
+def test_legacy_options_preserve_shape_ridge_and_general_mapping():
+    from collections.abc import Mapping
+
+    from aiconfigurator_core.sdk import ForwardPassPerfOptions
+
+    class OptionsMapping(Mapping):
+        def __init__(self, values):
+            self.values = values
+
+        def __getitem__(self, key):
+            return self.values[key]
+
+        def __iter__(self):
+            return iter(self.values)
+
+        def __len__(self):
+            return len(self.values)
+
+    legacy = {
+        "schema_version": 1,
+        "model_name": "m",
+        "system_name": "h200_sxm",
+        "backend": "vllm",
+        "tp_size": 1,
+        "pp_size": 1,
+    }
+    options = ForwardPassPerfOptions(bucket_shape=(2, 8), regression_ridge_scale=0.25)
+    payload = options.to_dict()
+    for value in [options, OptionsMapping(payload)]:
+        migrated = ForwardPassPerfModelConfig.from_legacy_engine_config(legacy, "decode", value)
+        regression = migrated.estimator_config["fpm_regression"]
+        assert regression["sampling"]["bins_per_axis"] == [2, 8]
+        assert regression["fit"]["singular_ridge_scale"] == 0.25
+        assert migrated.estimator_config["correction"]["sampling"]["bins_per_axis"] == [2, 8]
+    assert payload == options.to_dict()
+
+
+@pytest.mark.parametrize("invalid_root", ["", "missing-directory"])
+def test_invalid_discovered_roots_are_configuration_errors(monkeypatch, tmp_path, invalid_root):
+    from importlib.resources import files
+
+    import aiconfigurator_core
+    from aiconfigurator_core.sdk import perf_database
+
+    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", [str(files("aiconfigurator_core") / "systems")])
+    root = str(tmp_path / invalid_root) if invalid_root else ""
+    monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", root)
+    for policy in ["deny", "allow"]:
+        with pytest.raises(ValueError, match="resolve systems paths"):
+            aiconfigurator_core.RustForwardPassPerfModel.best_available(
+                json.dumps(
+                    {
+                        "model": "Qwen/Qwen3-32B",
+                        "system": "h200_sxm",
+                        "backend": "vllm",
+                        "worker_type": "aggregated",
+                        "estimation_mode": "auto",
+                        "fallback_policy": policy,
+                    }
+                )
+            )
+
+
+def test_compile_engine_classifies_controls_without_wrapping_model_failures(monkeypatch):
+    from aiconfigurator_core.sdk import engine, models
+    from aiconfigurator_core.sdk.errors import InvalidEngineConfigurationError
+
+    with pytest.raises(InvalidEngineConfigurationError, match="Unknown forward_model"):
+        engine.compile_engine("missing-model", "h200_sxm", "vllm", forward_model="typo")
+
+    failure = ValueError("fixture model lookup failed")
+
+    def unavailable(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(models, "_get_model_info", unavailable)
+    with pytest.raises(ValueError) as caught:
+        engine.compile_engine("missing-model", "h200_sxm", "vllm")
+    assert caught.value is failure
+
+
 def unavailable_compiler(monkeypatch):
     from aiconfigurator_core.sdk import engine
 
