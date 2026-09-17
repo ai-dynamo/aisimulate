@@ -7,6 +7,9 @@ compares forward-pass predictions with measurements from the public
 ## What is published
 
 - Only Overview: expandable model/configuration rows and sortable metrics.
+- Hide configurations with zero measurements and models with no measured
+  configurations. Overview counts reflect visible configurations; complete
+  evaluation artifacts still retain all configurations.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages.
