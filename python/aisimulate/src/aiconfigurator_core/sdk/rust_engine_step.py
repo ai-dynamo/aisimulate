@@ -124,7 +124,11 @@ class RustForwardPassPerfModel:
     construction: ``"prefill"``, ``"decode"``, or ``"aggregated"``. All DP
     ranks in an iteration use that worker type's two-dimensional critical-
     attention/global-FFN feature schema. ``"agg"`` and other aliases are not
-    accepted.
+    accepted. Each instance belongs to one worker, selected by the caller.
+    Prefill and Decode own one regression store each; Aggregated owns four
+    stores routed by the composition of all active ranks. Each store has its
+    own fit and retention state. ``max_observations`` (default ``64``) and
+    ``min_observations`` (default ``5``) apply independently to each store.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -221,7 +225,7 @@ class RustForwardPassPerfModel:
 
         Description: create a regression-only forward-pass model bound to one
         engine-level ``worker_type``. It returns ``None`` for non-empty estimates
-        until enough compatible samples have been provided through
+        until the selected workload store has a ready fit from samples provided through
         ``tune_with_fpms()``. Correction factor getters return ``None`` in this
         mode. ``worker_type`` must be exactly ``"prefill"``, ``"decode"``, or
         ``"aggregated"``.
@@ -246,7 +250,8 @@ class RustForwardPassPerfModel:
         convenience form. Native workload inference and role-bound regression
         feature extraction use only ``scheduled_requests``; queued fields and
         ``wall_time`` are ignored for estimation. Regression models return
-        ``None`` until their single store has enough tuned observations. Empty
+        ``None`` until the selected store has a ready fit. A different store's
+        readiness does not supply a fallback prediction. Empty
         scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
@@ -268,9 +273,22 @@ class RustForwardPassPerfModel:
         """API: ``model.diagnostics() -> dict[str, Any]``.
 
         Description: return source, readiness, retained sample count, and
-        fallback warning.
+        fallback warning. Regression retained count is summed across stores;
+        ``ready`` means at least one store has a ready fit. Consult
+        ``regression_store_diagnostics()`` for individual store readiness.
         """
         return json.loads(self._inner.diagnostics())
+
+    def regression_store_diagnostics(self) -> list[dict[str, Any]]:
+        """Return each regression store's label, readiness, and retained count.
+
+        Entries have ``workload_kind``, ``ready``, and ``retained_observations``.
+        Aggregated models include all four stores, including empty ones, in
+        order: ``pure_decode``, ``contains_locally_mixed``,
+        ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
+        their single store; native AIC models return an empty list.
+        """
+        return json.loads(self._inner.regression_store_diagnostics())
 
     def get_min_correction_factor(self) -> float | None:
         """API: ``model.get_min_correction_factor() -> float | None``.

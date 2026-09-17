@@ -9,7 +9,8 @@ use std::path::Path;
 
 use aiconfigurator_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
-    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
+    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassWorkerType, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -44,6 +45,13 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
 /// Compile the forward-pass model's public constructor and telemetry type.
 pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
     ForwardPassPerfModel::from_regression(ForwardPassWorkerType::Aggregated, regression_options())
+}
+
+/// Per-store diagnostics remain accessible without changing the summary type.
+pub fn regression_stores(
+    model: &ForwardPassPerfModel,
+) -> Vec<ForwardPassRegressionStoreDiagnostics> {
+    model.regression_store_diagnostics()
 }
 
 /// Construct and expose every public regression-weight option from an external crate.
@@ -89,8 +97,9 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aiconfigurator_core::{
-        ForwardPassMetrics, TimingEvidenceSource, TimingEvidenceSummary, TimingOperationEvidence,
-        TimingPhaseEvidence, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ForwardPassMetrics, ForwardPassRegressionWorkloadKind, TimingEvidenceSource,
+        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
+        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 
     #[test]
@@ -143,18 +152,17 @@ mod tests {
     fn external_latency_only_provider_needs_no_energy_implementation() {
         use aiconfigurator_core::TimingModel;
         assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
-        assert_eq!(LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(), 1.0);
+        assert_eq!(
+            LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
+            1.0
+        );
     }
 
     #[test]
     fn timing_evidence_types_are_public() {
-        let operation = TimingOperationEvidence::new(
-            "gemm",
-            2.0,
-            Some(900.0),
-            TimingEvidenceSource::Silicon,
-        )
-        .unwrap();
+        let operation =
+            TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
+                .unwrap();
         let phase = TimingPhaseEvidence::from_operations(vec![operation]);
         let summary = TimingEvidenceSummary {
             prefill: phase,
@@ -197,7 +205,16 @@ mod tests {
 
     #[test]
     fn regression_constructor_is_environment_independent() {
-        let _model = regression_model().expect("construct regression model");
+        let model = regression_model().expect("construct regression model");
+        let stores = regression_stores(&model);
+        assert_eq!(stores.len(), 4);
+        assert_eq!(
+            stores[0].workload_kind,
+            ForwardPassRegressionWorkloadKind::PureDecode
+        );
+        assert!(stores
+            .iter()
+            .all(|store| !store.ready && store.retained_observations == 0));
         let _roles = [
             ForwardPassWorkerType::Prefill,
             ForwardPassWorkerType::Decode,
