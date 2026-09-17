@@ -116,6 +116,9 @@ capabilities.py                        — generation-time capability/denylist f
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
 intersected with hardware capability floors and minus the hang denylist.
 
+TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
+in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
+
 ## Whole-forward FPM campaign
 
 Use the dedicated `python3 -m collector.fpm_forward` entry point for vLLM

@@ -417,7 +417,13 @@ def run_moe_torch(
         "w4afp8": 4,
         "nvfp4": 4,
     }[moe_type]
-    if (inter_size // moe_tp_size) % (256 // _weight_bits) != 0:
+    # Blackwell MXFP4 uses TRTLLMGenFusedMoE, whose weight loader pads
+    # before TP sharding. Its logical intermediate size need not satisfy
+    # the CUTLASS plugin's physical-weight alignment check below.
+    # TensorRT-LLM v1.3.0rc20, c25c23f71786bad54d192893d696ce8043426eca:
+    # _torch/modules/fused_moe/quantization.py:5634-5659,5705-5735.
+    native_mxfp4_padding = moe_type in _MXFP4_MOE_TYPES and 100 <= sm_version < 120
+    if not native_mxfp4_padding and (inter_size // moe_tp_size) % (256 // _weight_bits) != 0:
         raise ValueError(
             f"TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
             f"of 256/weight_bits = {256 // _weight_bits} for {moe_type} (TLLM_CHECK_WITH_INFO "
