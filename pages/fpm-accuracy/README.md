@@ -10,7 +10,7 @@ compares forward-pass predictions with measurements from the public
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages.
-- FPM KV warmup, FPM no KV warmup (KV-off input), and online Regression.
+- FPM (KV warmup on), FPM (KV warmup off) (KV-off input), and online Regression.
 - MAPE over successful predictions, with predicted/measured counts, coverage,
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.

@@ -5,7 +5,7 @@
 (() => {
   "use strict";
   const METHODS = ["warmup", "nowarmup", "regression"];
-  const labels = { warmup: "FPM KV warmup", nowarmup: "FPM no KV warmup", regression: "Regression" };
+  const labels = { warmup: "FPM (KV warmup on)", nowarmup: "FPM (KV warmup off)", regression: "Regression" };
   const body = document.getElementById("overview-body");
   const branchSelect = document.getElementById("branch");
   const collapsed = new Set();
