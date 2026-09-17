@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -17,10 +17,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aiperf_steppable_abi::{
+    BackendDistributionStatsV1, BackendFinalSummaryV1, BackendGoodputStatsV1,
+    BackendLatencyStatsV1, BackendRequestCountsV1, BackendThroughputStatsV1, ByteMutSliceV1,
     ByteSliceV1, CAPABILITY_COMPACT_BUFFER_LEASES_V1, CAPABILITY_COMPACT_REQUEST_V1,
-    CompactRequestV1, CreateRequestV1, DirectRequestSliceV1, DirectRequestV1, EngineEventSliceV1,
-    EngineEventV1, HashBufferIdV1, HashBufferLeaseCallbacksV1, HashBufferRangeV1,
-    PluginDescriptorV1, PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION, REQUEST_FACT_FLAG_LATENCIES,
+    CAPABILITY_FINAL_REPORT_BUNDLE_V1, CompactRequestV1, CreateRequestV1, DirectRequestSliceV1,
+    DirectRequestV1, EngineEventSliceV1, EngineEventV1, FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
+    FINAL_ARTIFACT_KIND_REPORT_JSON_V1, FinalArtifactChunkV1, FinalArtifactMetadataV1,
+    HashBufferIdV1, HashBufferLeaseCallbacksV1, HashBufferRangeV1, PluginDescriptorV1,
+    PluginVTableV1, REQUEST_FACT_FLAG_ADMISSION, REQUEST_FACT_FLAG_LATENCIES,
     REQUEST_FACT_FLAG_OUTPUT_LENGTH, REQUEST_FLAG_UUID, ReplayHandleV1, ReplayStateV1,
     RequestFactSliceV1, RequestFactV1, RequestIdMutSliceV1, RequestIdSliceV1, RequestIdV1,
     SLA_FLAG_E2E, SLA_FLAG_ITL, SLA_FLAG_TTFT, SlaThresholdsV1, StatusV1, StepRequestV1,
@@ -37,6 +41,7 @@ use aisimulate_core::replay::{
 };
 use aisimulate_placement_abi::{MAX_BATCH_MUTATIONS_V1, PlacementLimitsV1, WorkerCapacityV1};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -215,6 +220,25 @@ struct BackendReplay {
     lease_callbacks: Option<HashBufferLeaseCallbacksV1>,
     hash_buffers: HashMap<HashBufferIdV1, RegisteredHashBuffer>,
     next_hash_buffer_id: u64,
+    finalization: Finalization,
+}
+
+enum Finalization {
+    Open,
+    Finalizing,
+    LegacyFinalized,
+    Complete(FinalArtifacts),
+    Poisoned,
+}
+
+struct FinalArtifacts {
+    report_json: FinalArtifact,
+    per_request_jsonl: FinalArtifact,
+}
+
+struct FinalArtifact {
+    bytes: Vec<u8>,
+    sha256: [u8; 32],
 }
 
 #[derive(Clone, Copy)]
@@ -290,6 +314,17 @@ unsafe fn backend_mut(handle: ReplayHandleV1) -> Result<&'static mut BackendRepl
     Ok(replay)
 }
 
+unsafe fn backend_mut_for_mutation(
+    handle: ReplayHandleV1,
+) -> Result<&'static mut BackendReplay, StatusV1> {
+    let replay = unsafe { backend_mut(handle) }?;
+    if !matches!(replay.finalization, Finalization::Open) {
+        replay.last_error = "replay report was already finalized".to_owned();
+        return Err(StatusV1::REJECTED);
+    }
+    Ok(replay)
+}
+
 fn panic_status(handle: ReplayHandleV1) -> StatusV1 {
     // Error recording is best-effort: containment is the required C-ABI
     // guarantee. Do not let recording the original panic trigger another.
@@ -310,6 +345,19 @@ fn batch_panic_status(handle: ReplayHandleV1) -> StatusV1 {
             replay.poisoned = true;
             replay.last_error =
                 "panic contained after AISimulate steppable batch mutation; replay is poisoned"
+                    .to_owned();
+        }
+    }));
+    StatusV1::INTERNAL
+}
+
+fn finalization_panic_status(handle: ReplayHandleV1) -> StatusV1 {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(replay) = unsafe { backend_mut_even_if_poisoned(handle) } {
+            replay.poisoned = true;
+            replay.finalization = Finalization::Poisoned;
+            replay.last_error =
+                "panic contained while finalizing AISimulate steppable report; replay is poisoned"
                     .to_owned();
         }
     }));
@@ -558,6 +606,7 @@ unsafe fn create_impl(
                 lease_callbacks: None,
                 hash_buffers: HashMap::new(),
                 next_hash_buffer_id: 1,
+                finalization: Finalization::Open,
             });
             // Safety: validated non-null output pointer.
             unsafe { *handle = ReplayHandleV1(Box::into_raw(replay).cast()) };
@@ -640,7 +689,7 @@ unsafe fn register_hash_buffer_impl(
     {
         return StatusV1::INVALID_ARGUMENT;
     }
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -699,7 +748,7 @@ unsafe fn submit_compact_hash_buffer_range_impl(
     {
         return StatusV1::INVALID_ARGUMENT;
     }
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -787,7 +836,7 @@ unsafe extern "C" fn submit(
         Err(status) => return status,
     };
     // Safety: the handle is only dereferenced after null validation.
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -816,7 +865,7 @@ unsafe extern "C" fn submit_compact(
         Ok(request) => request,
         Err(status) => return status,
     };
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -875,7 +924,7 @@ unsafe fn submit_batch_impl(
     for request in &mut converted {
         request.uuid.get_or_insert_with(Uuid::new_v4);
     }
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -932,7 +981,7 @@ unsafe extern "C" fn cancel(
     }
     // Safety: validated non-null input pointer.
     let request_id = Uuid::from_bytes(unsafe { *request_id });
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -988,7 +1037,7 @@ unsafe extern "C" fn cancel_batch(
         // Safety: non-empty input batch is valid for this FFI call.
         unsafe { std::slice::from_raw_parts(request_ids.data, request_ids.len as usize) }
     };
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -1038,7 +1087,7 @@ unsafe extern "C" fn step(
         return StatusV1::INVALID_ARGUMENT;
     }
     // Safety: the handle is only dereferenced after null validation.
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -1143,7 +1192,7 @@ unsafe extern "C" fn step(
     StatusV1::OK
 }
 
-unsafe extern "C" fn take_report(
+unsafe fn take_report_impl(
     handle: ReplayHandleV1,
     wall_ms: f64,
     report: *mut ByteSliceV1,
@@ -1155,9 +1204,15 @@ unsafe extern "C" fn take_report(
         Ok(replay) => replay,
         Err(status) => return status,
     };
+    if !matches!(replay.finalization, Finalization::Open) {
+        replay.last_error = "replay report was already finalized through another API".to_owned();
+        return StatusV1::REJECTED;
+    }
+    replay.finalization = Finalization::Finalizing;
     let report_value = match replay.engine.take_report(wall_ms) {
         Ok(report_value) => report_value,
         Err(error) => {
+            replay.finalization = Finalization::Open;
             replay.last_error = error.to_string();
             return StatusV1::REJECTED;
         }
@@ -1165,13 +1220,411 @@ unsafe extern "C" fn take_report(
     let encoded = match serde_json::to_string(&report_value) {
         Ok(encoded) => encoded,
         Err(error) => {
+            replay.finalization = Finalization::Poisoned;
             replay.last_error = error.to_string();
             return StatusV1::INTERNAL;
         }
     };
+    replay.finalization = Finalization::LegacyFinalized;
     // Safety: validated non-null output pointer.
     unsafe { *report = allocated_bytes(encoded) };
     StatusV1::OK
+}
+
+unsafe extern "C" fn take_report(
+    handle: ReplayHandleV1,
+    wall_ms: f64,
+    report: *mut ByteSliceV1,
+) -> StatusV1 {
+    if !report.is_null() {
+        // Safety: the non-null host-owned output is valid for this call.
+        unsafe { *report = ByteSliceV1::EMPTY };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        take_report_impl(handle, wall_ms, report)
+    })) {
+        Ok(status) => status,
+        Err(_) => finalization_panic_status(handle),
+    }
+}
+
+fn backend_distribution(
+    source: &aisimulate_core::replay::TraceDistributionStats,
+) -> BackendDistributionStatsV1 {
+    BackendDistributionStatsV1 {
+        mean_ms: source.mean_ms,
+        min_ms: source.min_ms,
+        max_ms: source.max_ms,
+        median_ms: source.median_ms,
+        p75_ms: source.p75_ms,
+        p90_ms: source.p90_ms,
+        p95_ms: source.p95_ms,
+        p99_ms: source.p99_ms,
+        std_ms: source.std_ms,
+    }
+}
+
+fn backend_final_summary(
+    report: &aisimulate_core::replay::ReplayReport,
+) -> Result<BackendFinalSummaryV1, String> {
+    let count = |value: usize, name: &str| {
+        u64::try_from(value).map_err(|_| format!("{name} does not fit the Steppable ABI"))
+    };
+    let goodput = match &report.goodput {
+        Some(goodput) => BackendGoodputStatsV1 {
+            is_present: 1,
+            reserved: [0; 7],
+            completed_requests: count(goodput.completed_requests, "goodput completed requests")?,
+            request_throughput_rps: goodput.request_throughput_rps,
+            output_throughput_tok_s: goodput.output_throughput_tok_s,
+        },
+        None => BackendGoodputStatsV1 {
+            is_present: 0,
+            reserved: [0; 7],
+            completed_requests: 0,
+            request_throughput_rps: 0.0,
+            output_throughput_tok_s: 0.0,
+        },
+    };
+    Ok(BackendFinalSummaryV1 {
+        struct_size: std::mem::size_of::<BackendFinalSummaryV1>() as u32,
+        flags: 0,
+        request_counts: BackendRequestCountsV1 {
+            num_requests: count(report.request_counts.num_requests, "request count")?,
+            completed_requests: count(report.request_counts.completed_requests, "completed count")?,
+            total_input_tokens: count(
+                report.request_counts.total_input_tokens,
+                "input token count",
+            )?,
+            total_output_tokens: count(
+                report.request_counts.total_output_tokens,
+                "output token count",
+            )?,
+        },
+        throughput: BackendThroughputStatsV1 {
+            duration_ms: report.throughput.duration_ms,
+            wall_time_ms: report.throughput.wall_time_ms,
+            request_throughput_rps: report.throughput.request_throughput_rps,
+            input_throughput_tok_s: report.throughput.input_throughput_tok_s,
+            output_throughput_tok_s: report.throughput.output_throughput_tok_s,
+            total_throughput_tok_s: report.throughput.total_throughput_tok_s,
+            prefill_worker_seconds: report.throughput.prefill_worker_seconds,
+            decode_worker_seconds: report.throughput.decode_worker_seconds,
+            prefill_gpus_per_worker: count(
+                report.throughput.prefill_gpus_per_worker,
+                "prefill GPUs per worker",
+            )?,
+            decode_gpus_per_worker: count(
+                report.throughput.decode_gpus_per_worker,
+                "decode GPUs per worker",
+            )?,
+            gpu_hours: report.throughput.gpu_hours,
+        },
+        prefix_cache_reused_ratio: report.prefix_cache_reused_ratio,
+        first_admission_prefix_cache_reused_ratio: report.first_admission_prefix_cache_reused_ratio,
+        latency: BackendLatencyStatsV1 {
+            ttft: backend_distribution(&report.latency.ttft),
+            ttst: backend_distribution(&report.latency.ttst),
+            tpot: backend_distribution(&report.latency.tpot),
+            itl: backend_distribution(&report.latency.itl.distribution),
+            itl_max_ms: report.latency.itl.max_ms,
+            e2e: backend_distribution(&report.latency.e2e),
+            output_token_throughput_per_user: backend_distribution(
+                &report.latency.output_token_throughput_per_user,
+            ),
+        },
+        goodput,
+    })
+}
+
+fn final_artifacts(
+    report: &aisimulate_core::replay::ReplayReport,
+) -> Result<FinalArtifacts, String> {
+    let report_json = canonical_report_json(report)?;
+    let mut per_request_jsonl = Vec::new();
+    for record in &report.per_request {
+        serde_json::to_writer(&mut per_request_jsonl, record).map_err(|error| error.to_string())?;
+        per_request_jsonl.push(b'\n');
+    }
+    Ok(FinalArtifacts {
+        report_json: FinalArtifact::new(report_json),
+        per_request_jsonl: FinalArtifact::new(per_request_jsonl),
+    })
+}
+
+impl FinalArtifact {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            sha256: Sha256::digest(&bytes).into(),
+            bytes,
+        }
+    }
+}
+
+fn canonical_report_json(
+    report: &aisimulate_core::replay::ReplayReport,
+) -> Result<Vec<u8>, String> {
+    let value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "AISimulate report did not serialize as a JSON object".to_owned())?;
+    let sorted = object.iter().collect::<BTreeMap<_, _>>();
+    let mut payload = serde_json::to_string_pretty(&sorted).map_err(|error| error.to_string())?;
+    payload = python_json_number_exponents(&payload)?;
+    payload.push('\n');
+    Ok(payload.into_bytes())
+}
+
+fn python_json_number_exponents(payload: &str) -> Result<String, String> {
+    let bytes = payload.as_bytes();
+    let mut normalized = Vec::with_capacity(payload.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            normalized.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            normalized.push(byte);
+            index += 1;
+            continue;
+        }
+        if byte != b'e' && byte != b'E' {
+            normalized.push(byte);
+            index += 1;
+            continue;
+        }
+        let mut exponent = index + 1;
+        let sign = if exponent < bytes.len() && (bytes[exponent] == b'+' || bytes[exponent] == b'-')
+        {
+            let sign = bytes[exponent];
+            exponent += 1;
+            sign
+        } else {
+            b'+'
+        };
+        let digits_start = exponent;
+        while exponent < bytes.len() && bytes[exponent].is_ascii_digit() {
+            exponent += 1;
+        }
+        if exponent == digits_start {
+            normalized.push(byte);
+            index += 1;
+            continue;
+        }
+        normalized.push(b'e');
+        normalized.push(sign);
+        if exponent - digits_start == 1 {
+            normalized.push(b'0');
+        }
+        normalized.extend_from_slice(&bytes[digits_start..exponent]);
+        index = exponent;
+    }
+    String::from_utf8(normalized).map_err(|error| error.to_string())
+}
+
+fn artifact(artifacts: &FinalArtifacts, kind: u32) -> Option<&FinalArtifact> {
+    match kind {
+        FINAL_ARTIFACT_KIND_REPORT_JSON_V1 => Some(&artifacts.report_json),
+        FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1 => Some(&artifacts.per_request_jsonl),
+        _ => None,
+    }
+}
+
+unsafe fn take_final_summary_impl(
+    handle: ReplayHandleV1,
+    wall_ms: f64,
+    summary: *mut BackendFinalSummaryV1,
+) -> StatusV1 {
+    if summary.is_null() || !wall_ms.is_finite() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    if !matches!(replay.finalization, Finalization::Open) {
+        replay.last_error = "replay report was already finalized through another API".to_owned();
+        return StatusV1::REJECTED;
+    }
+    replay.finalization = Finalization::Finalizing;
+    let report = match replay.engine.take_report(wall_ms) {
+        Ok(report) => report,
+        Err(error) => {
+            replay.finalization = Finalization::Open;
+            replay.last_error = error.to_string();
+            return StatusV1::REJECTED;
+        }
+    };
+    let summary_value = match backend_final_summary(&report) {
+        Ok(summary_value) => summary_value,
+        Err(error) => {
+            replay.finalization = Finalization::Poisoned;
+            replay.last_error = error;
+            return StatusV1::INTERNAL;
+        }
+    };
+    let artifacts = match final_artifacts(&report) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            replay.finalization = Finalization::Poisoned;
+            replay.last_error = error;
+            return StatusV1::INTERNAL;
+        }
+    };
+    replay.finalization = Finalization::Complete(artifacts);
+    // Safety: pointer was checked non-null and points to one host-owned output record.
+    unsafe { *summary = summary_value };
+    StatusV1::OK
+}
+
+unsafe extern "C" fn take_final_summary(
+    handle: ReplayHandleV1,
+    wall_ms: f64,
+    summary: *mut BackendFinalSummaryV1,
+) -> StatusV1 {
+    if !summary.is_null() {
+        // Safety: the non-null host-owned output is valid for this call.
+        unsafe { *summary = std::mem::zeroed() };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        take_final_summary_impl(handle, wall_ms, summary)
+    })) {
+        Ok(status) => status,
+        Err(_) => finalization_panic_status(handle),
+    }
+}
+
+unsafe fn get_final_artifact_metadata_impl(
+    handle: ReplayHandleV1,
+    kind: u32,
+    metadata: *mut FinalArtifactMetadataV1,
+) -> StatusV1 {
+    if metadata.is_null() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    let Finalization::Complete(artifacts) = &replay.finalization else {
+        replay.last_error = "final artifacts require final summary first".to_owned();
+        return StatusV1::REJECTED;
+    };
+    let Some(artifact) = artifact(artifacts, kind) else {
+        return StatusV1::UNSUPPORTED;
+    };
+    let Ok(byte_len) = u64::try_from(artifact.bytes.len()) else {
+        replay.last_error = "final artifact exceeds Steppable ABI length".to_owned();
+        return StatusV1::INTERNAL;
+    };
+    // Safety: pointer was checked non-null and points to one host-owned output record.
+    unsafe {
+        *metadata = FinalArtifactMetadataV1 {
+            struct_size: std::mem::size_of::<FinalArtifactMetadataV1>() as u32,
+            kind,
+            byte_len,
+            sha256: artifact.sha256,
+        };
+    }
+    StatusV1::OK
+}
+
+unsafe extern "C" fn get_final_artifact_metadata(
+    handle: ReplayHandleV1,
+    kind: u32,
+    metadata: *mut FinalArtifactMetadataV1,
+) -> StatusV1 {
+    if !metadata.is_null() {
+        // Safety: the non-null host-owned output is valid for this call.
+        unsafe { *metadata = std::mem::zeroed() };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        get_final_artifact_metadata_impl(handle, kind, metadata)
+    })) {
+        Ok(status) => status,
+        Err(_) => finalization_panic_status(handle),
+    }
+}
+
+unsafe fn read_final_artifact_chunk_impl(
+    handle: ReplayHandleV1,
+    kind: u32,
+    offset: u64,
+    destination: ByteMutSliceV1,
+    result: *mut FinalArtifactChunkV1,
+) -> StatusV1 {
+    if result.is_null()
+        || destination.data.is_null()
+        || destination.len == 0
+        || !ffi_slice_len_is_valid::<u8>(destination.len)
+    {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let replay = match unsafe { backend_mut(handle) } {
+        Ok(replay) => replay,
+        Err(status) => return status,
+    };
+    let Finalization::Complete(artifacts) = &replay.finalization else {
+        replay.last_error = "final artifacts require final summary first".to_owned();
+        return StatusV1::REJECTED;
+    };
+    let Some(artifact) = artifact(artifacts, kind) else {
+        return StatusV1::UNSUPPORTED;
+    };
+    let Ok(offset) = usize::try_from(offset) else {
+        return StatusV1::INVALID_ARGUMENT;
+    };
+    if offset > artifact.bytes.len() {
+        return StatusV1::INVALID_ARGUMENT;
+    }
+    let len = destination.len.min((artifact.bytes.len() - offset) as u64) as usize;
+    // Safety: destination was checked non-null and host promises its declared writable range.
+    unsafe {
+        std::ptr::copy_nonoverlapping(artifact.bytes[offset..].as_ptr(), destination.data, len)
+    };
+    // Safety: result was checked non-null and points to one host-owned output record.
+    unsafe {
+        *result = FinalArtifactChunkV1 {
+            struct_size: std::mem::size_of::<FinalArtifactChunkV1>() as u32,
+            flags: 0,
+            written_len: len as u64,
+            is_final: u8::from(offset + len == artifact.bytes.len()),
+            reserved: [0; 7],
+        };
+    }
+    StatusV1::OK
+}
+
+unsafe extern "C" fn read_final_artifact_chunk(
+    handle: ReplayHandleV1,
+    kind: u32,
+    offset: u64,
+    destination: ByteMutSliceV1,
+    result: *mut FinalArtifactChunkV1,
+) -> StatusV1 {
+    if !result.is_null() {
+        // Safety: the non-null host-owned output is valid for this call.
+        unsafe { *result = std::mem::zeroed() };
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        read_final_artifact_chunk_impl(handle, kind, offset, destination, result)
+    })) {
+        Ok(status) => status,
+        Err(_) => finalization_panic_status(handle),
+    }
 }
 
 unsafe extern "C" fn release_bytes(bytes: ByteSliceV1) {
@@ -1253,7 +1706,7 @@ unsafe extern "C" fn advance_now_ms(handle: ReplayHandleV1, now_ms: f64) -> Stat
     }
     // Safety: the handle is only dereferenced after null validation in
     // `backend_mut`.
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -1265,7 +1718,7 @@ unsafe extern "C" fn set_capture_per_request(handle: ReplayHandleV1, capture: u8
     if capture > 1 {
         return StatusV1::INVALID_ARGUMENT;
     }
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -1291,7 +1744,7 @@ unsafe extern "C" fn set_sla_thresholds(
     {
         return StatusV1::INVALID_ARGUMENT;
     }
-    let replay = match unsafe { backend_mut(handle) } {
+    let replay = match unsafe { backend_mut_for_mutation(handle) } {
         Ok(replay) => replay,
         Err(status) => return status,
     };
@@ -1355,6 +1808,9 @@ static VTABLE: PluginVTableV1 = PluginVTableV1 {
     create_with_hash_buffer_leases: Some(create_with_hash_buffer_leases),
     register_hash_buffer: Some(register_hash_buffer),
     submit_compact_hash_buffer_range: Some(submit_compact_hash_buffer_range),
+    take_final_summary: Some(take_final_summary),
+    get_final_artifact_metadata: Some(get_final_artifact_metadata),
+    read_final_artifact_chunk: Some(read_final_artifact_chunk),
 };
 
 static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
@@ -1362,7 +1818,9 @@ static DESCRIPTOR: PluginDescriptorV1 = PluginDescriptorV1 {
     abi_minor: 0,
     struct_size: std::mem::size_of::<PluginDescriptorV1>() as u32,
     flags: 0,
-    capabilities: CAPABILITY_COMPACT_REQUEST_V1 | CAPABILITY_COMPACT_BUFFER_LEASES_V1,
+    capabilities: CAPABILITY_COMPACT_REQUEST_V1
+        | CAPABILITY_COMPACT_BUFFER_LEASES_V1
+        | CAPABILITY_FINAL_REPORT_BUNDLE_V1,
     provider_id: PROVIDER_ID.as_ptr().cast::<c_char>(),
     vtable: &VTABLE,
 };
@@ -1385,6 +1843,312 @@ mod tests {
         PluginVTableV1 as PlacementVTableV1, StatusV1 as PlacementStatusV1,
     };
     use std::sync::atomic::AtomicUsize;
+
+    fn empty_replay_handle() -> ReplayHandleV1 {
+        let engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .expect("test replay builds");
+        ReplayHandleV1(
+            Box::into_raw(Box::new(BackendReplay {
+                engine: Box::new(engine),
+                last_error: String::new(),
+                poisoned: false,
+                lease_callbacks: None,
+                hash_buffers: HashMap::new(),
+                next_hash_buffer_id: 1,
+                finalization: Finalization::Open,
+            }))
+            .cast(),
+        )
+    }
+
+    #[test]
+    fn final_bundle_exposes_summary_and_a_complete_report_artifact() {
+        let handle = empty_replay_handle();
+        let mut summary = unsafe { std::mem::zeroed::<BackendFinalSummaryV1>() };
+        assert_eq!(
+            unsafe { take_final_summary(handle, 1.0, &raw mut summary) },
+            StatusV1::OK
+        );
+        assert_eq!(summary.request_counts.num_requests, 0);
+
+        let mut metadata = unsafe { std::mem::zeroed::<FinalArtifactMetadataV1>() };
+        assert_eq!(
+            unsafe {
+                get_final_artifact_metadata(
+                    handle,
+                    FINAL_ARTIFACT_KIND_REPORT_JSON_V1,
+                    &raw mut metadata,
+                )
+            },
+            StatusV1::OK
+        );
+        let mut bytes = [0_u8; 65_536];
+        let mut chunk = unsafe { std::mem::zeroed::<FinalArtifactChunkV1>() };
+        assert_eq!(
+            unsafe {
+                read_final_artifact_chunk(
+                    handle,
+                    FINAL_ARTIFACT_KIND_REPORT_JSON_V1,
+                    0,
+                    ByteMutSliceV1 {
+                        data: bytes.as_mut_ptr(),
+                        len: bytes.len() as u64,
+                    },
+                    &raw mut chunk,
+                )
+            },
+            StatusV1::OK
+        );
+        assert_eq!(chunk.is_final, 1);
+        assert_eq!(chunk.written_len, metadata.byte_len);
+        assert_eq!(
+            Sha256::digest(&bytes[..chunk.written_len as usize]).as_slice(),
+            metadata.sha256
+        );
+        assert_eq!(bytes[0], b'{');
+        assert_eq!(bytes[1], b'\n');
+        assert_eq!(bytes[chunk.written_len as usize - 1], b'\n');
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&bytes[..chunk.written_len as usize])
+                .is_ok()
+        );
+
+        let mut repeated_metadata = unsafe { std::mem::zeroed::<FinalArtifactMetadataV1>() };
+        assert_eq!(
+            unsafe {
+                get_final_artifact_metadata(
+                    handle,
+                    FINAL_ARTIFACT_KIND_REPORT_JSON_V1,
+                    &raw mut repeated_metadata,
+                )
+            },
+            StatusV1::OK
+        );
+        assert_eq!(metadata.sha256, repeated_metadata.sha256);
+
+        let mut jsonl_metadata = unsafe { std::mem::zeroed::<FinalArtifactMetadataV1>() };
+        assert_eq!(
+            unsafe {
+                get_final_artifact_metadata(
+                    handle,
+                    FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
+                    &raw mut jsonl_metadata,
+                )
+            },
+            StatusV1::OK
+        );
+        assert_eq!(jsonl_metadata.byte_len, 0);
+
+        unsafe { destroy(handle) };
+    }
+
+    #[test]
+    fn legacy_and_final_bundle_reports_are_mutually_exclusive() {
+        let handle = empty_replay_handle();
+        let mut legacy = ByteSliceV1::EMPTY;
+        assert_eq!(
+            unsafe { take_report(handle, 1.0, &raw mut legacy) },
+            StatusV1::OK
+        );
+        unsafe { release_bytes(legacy) };
+        let mut summary = unsafe { std::mem::zeroed::<BackendFinalSummaryV1>() };
+        assert_eq!(
+            unsafe { take_final_summary(handle, 1.0, &raw mut summary) },
+            StatusV1::REJECTED
+        );
+        unsafe { destroy(handle) };
+
+        let handle = empty_replay_handle();
+        let mut summary = unsafe { std::mem::zeroed::<BackendFinalSummaryV1>() };
+        assert_eq!(
+            unsafe { take_final_summary(handle, 1.0, &raw mut summary) },
+            StatusV1::OK
+        );
+        let mut legacy = ByteSliceV1::EMPTY;
+        assert_eq!(
+            unsafe { take_report(handle, 1.0, &raw mut legacy) },
+            StatusV1::REJECTED
+        );
+        assert!(legacy.data.is_null());
+        unsafe { destroy(handle) };
+    }
+
+    #[test]
+    fn finalized_replay_rejects_later_mutations() {
+        let handle = empty_replay_handle();
+        let mut summary = unsafe { std::mem::zeroed::<BackendFinalSummaryV1>() };
+        assert_eq!(
+            unsafe { take_final_summary(handle, 1.0, &raw mut summary) },
+            StatusV1::OK
+        );
+        let tokens = [7_u32];
+        let request = DirectRequestV1 {
+            struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+            flags: REQUEST_FLAG_UUID,
+            tokens: U32SliceV1 {
+                data: tokens.as_ptr(),
+                len: 1,
+            },
+            output_token_ids: U32SliceV1::EMPTY,
+            max_output_tokens: 1,
+            uuid: [61; 16],
+            dp_rank: 0,
+            preferred_dp_rank: 0,
+            preferred_prefill_dp_rank: 0,
+            arrival_timestamp_ms: 0.0,
+            priority: 0,
+            strict_priority: 0,
+            policy_class: ByteSliceV1::EMPTY,
+            replay_context: aiperf_steppable_abi::ReplayContextV1::EMPTY,
+        };
+        let mut request_id = [0; 16];
+        assert_eq!(
+            unsafe { submit(handle, request, &raw mut request_id) },
+            StatusV1::REJECTED
+        );
+        assert_eq!(
+            unsafe { set_capture_per_request(handle, 1) },
+            StatusV1::REJECTED
+        );
+        let mut step_result = StepResultV1::EMPTY;
+        assert_eq!(
+            unsafe {
+                step(
+                    handle,
+                    StepRequestV1 {
+                        struct_size: std::mem::size_of::<StepRequestV1>() as u32,
+                        flags: 0,
+                        until_ms: 1.0,
+                    },
+                    &raw mut step_result,
+                )
+            },
+            StatusV1::REJECTED
+        );
+        unsafe { destroy(handle) };
+    }
+
+    #[test]
+    fn final_jsonl_artifact_supports_contiguous_host_reads() {
+        let handle = empty_replay_handle();
+        assert_eq!(unsafe { set_capture_per_request(handle, 1) }, StatusV1::OK);
+        let tokens = [7_u32];
+        let request = DirectRequestV1 {
+            struct_size: std::mem::size_of::<DirectRequestV1>() as u32,
+            flags: REQUEST_FLAG_UUID,
+            tokens: U32SliceV1 {
+                data: tokens.as_ptr(),
+                len: tokens.len() as u64,
+            },
+            output_token_ids: U32SliceV1::EMPTY,
+            max_output_tokens: 1,
+            uuid: [31; 16],
+            dp_rank: 0,
+            preferred_dp_rank: 0,
+            preferred_prefill_dp_rank: 0,
+            arrival_timestamp_ms: 0.0,
+            priority: 0,
+            strict_priority: 0,
+            policy_class: ByteSliceV1::EMPTY,
+            replay_context: aiperf_steppable_abi::ReplayContextV1::EMPTY,
+        };
+        let mut request_id = [0; 16];
+        assert_eq!(
+            unsafe { submit(handle, request, &raw mut request_id) },
+            StatusV1::OK
+        );
+        let mut step_result = StepResultV1::EMPTY;
+        for _ in 0..16 {
+            assert_eq!(
+                unsafe {
+                    step(
+                        handle,
+                        StepRequestV1 {
+                            struct_size: std::mem::size_of::<StepRequestV1>() as u32,
+                            flags: 0,
+                            until_ms: 1_000_000.0,
+                        },
+                        &raw mut step_result,
+                    )
+                },
+                StatusV1::OK
+            );
+            unsafe {
+                release_events(step_result.events);
+                release_request_facts(step_result.request_facts);
+            }
+            if step_result.is_idle != 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            step_result.is_idle, 1,
+            "test request must finish before finalization"
+        );
+        let mut summary = unsafe { std::mem::zeroed::<BackendFinalSummaryV1>() };
+        assert_eq!(
+            unsafe { take_final_summary(handle, step_result.end_ms, &raw mut summary) },
+            StatusV1::OK
+        );
+        let mut metadata = unsafe { std::mem::zeroed::<FinalArtifactMetadataV1>() };
+        assert_eq!(
+            unsafe {
+                get_final_artifact_metadata(
+                    handle,
+                    FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
+                    &raw mut metadata,
+                )
+            },
+            StatusV1::OK
+        );
+        assert!(metadata.byte_len > 1);
+
+        let mut first = [0_u8; 1];
+        let mut first_chunk = unsafe { std::mem::zeroed::<FinalArtifactChunkV1>() };
+        assert_eq!(
+            unsafe {
+                read_final_artifact_chunk(
+                    handle,
+                    FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
+                    0,
+                    ByteMutSliceV1 {
+                        data: first.as_mut_ptr(),
+                        len: first.len() as u64,
+                    },
+                    &raw mut first_chunk,
+                )
+            },
+            StatusV1::OK
+        );
+        assert_eq!(first_chunk.written_len, 1);
+        assert_eq!(first_chunk.is_final, 0);
+
+        let mut tail = vec![0_u8; metadata.byte_len as usize - 1];
+        let mut tail_chunk = unsafe { std::mem::zeroed::<FinalArtifactChunkV1>() };
+        assert_eq!(
+            unsafe {
+                read_final_artifact_chunk(
+                    handle,
+                    FINAL_ARTIFACT_KIND_PER_REQUEST_JSONL_V1,
+                    1,
+                    ByteMutSliceV1 {
+                        data: tail.as_mut_ptr(),
+                        len: tail.len() as u64,
+                    },
+                    &raw mut tail_chunk,
+                )
+            },
+            StatusV1::OK
+        );
+        assert_eq!(tail_chunk.written_len, metadata.byte_len - 1);
+        assert_eq!(tail_chunk.is_final, 1);
+        let mut complete = first.to_vec();
+        complete.extend_from_slice(&tail);
+        assert_eq!(Sha256::digest(&complete).as_slice(), metadata.sha256);
+        assert!(complete.ends_with(b"\n"));
+        unsafe { destroy(handle) };
+    }
 
     #[test]
     fn ffi_slice_lengths_accept_the_exact_isize_byte_boundary() {
@@ -1603,6 +2367,7 @@ mod tests {
             }),
             hash_buffers: HashMap::new(),
             next_hash_buffer_id: 1,
+            finalization: Finalization::Open,
         });
         let handle = ReplayHandleV1(Box::into_raw(replay).cast());
 
@@ -1745,6 +2510,7 @@ mod tests {
             lease_callbacks: None,
             hash_buffers: HashMap::new(),
             next_hash_buffer_id: 1,
+            finalization: Finalization::Open,
         });
         let handle = ReplayHandleV1(Box::into_raw(replay).cast());
         let tokens = [1_u32];

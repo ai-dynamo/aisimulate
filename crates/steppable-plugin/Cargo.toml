@@ -21,6 +21,7 @@ aiperf-steppable-abi = { path = "../../../../dynamic-simulation-abi/crates/stepp
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 uuid = { workspace = true }
 
 [dev-dependencies]
