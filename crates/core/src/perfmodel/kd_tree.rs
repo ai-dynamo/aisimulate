@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Private exact k-d tree used by repeated performance-model lookups.
+//! Private k-d tree with caller-defined pruning bounds for repeated lookups.
 
 /// Read-only point storage for a [`KdTree`].
 ///
@@ -24,8 +24,10 @@ impl PointSet for [Vec<f64>] {
 
 /// Bounded nearest-neighbour state supplied by each lookup.
 ///
-/// Implementations choose their exact ordering rule. The squared cutoff is
-/// used only for exact far-branch pruning.
+/// Implementations choose their ordering rule. For exact search, the squared
+/// cutoff must include every distance that can improve that ordering, including
+/// ties. A cutoff based on squared distance does not necessarily preserve ties
+/// in a rounded square-root distance.
 pub(crate) trait NeighborCollector {
     fn consider(&mut self, sample: usize, distance_squared: f64);
     fn cutoff_distance_squared(&self) -> Option<f64>;
@@ -39,7 +41,8 @@ struct KdNode {
     right: Option<usize>,
 }
 
-/// Immutable exact nearest-neighbour index over finite, equal-sized points.
+/// Immutable nearest-neighbour index over finite, equal-sized points.
+/// Exactness depends on the collector's ordering and pruning bound agreeing.
 #[derive(Debug, Clone)]
 pub(crate) struct KdTree {
     nodes: Vec<KdNode>,
@@ -122,8 +125,10 @@ impl KdTree {
         query.len() == self.dims && query.iter().all(|value| value.is_finite())
     }
 
-    /// Search the tree and pass exact candidates to the caller's bounded
-    /// collector.
+    /// Search the tree and pass candidates to the caller's bounded collector.
+    /// `points` must contain the same immutable coordinates in the same order
+    /// as at construction; the tree stores indices into that point set.
+    /// The caller must also check [`Self::can_query`] before searching.
     pub(crate) fn search<P, C>(&self, points: &P, query: &[f64], nearest: &mut C)
     where
         P: PointSet + ?Sized,
@@ -156,15 +161,14 @@ impl KdTree {
                 visit(tree, points, query, near, nearest);
             }
             // Equality must visit the far branch. It can contain an equally
-            // distant sample with an earlier original index. Keep this test in
-            // squared space so sqrt rounding cannot prune a valid candidate.
+            // distant sample with an earlier original index. The collector is
+            // responsible for a conservative squared bound for its ordering.
             if nearest
                 .cutoff_distance_squared()
                 .is_none_or(|cutoff| delta * delta <= cutoff)
+                && let Some(far) = far
             {
-                if let Some(far) = far {
-                    visit(tree, points, query, far, nearest);
-                }
+                visit(tree, points, query, far, nearest);
             }
         }
 

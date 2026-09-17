@@ -289,6 +289,9 @@ impl NeighborCollector for NearestTwo {
     }
 
     fn cutoff_distance_squared(&self) -> Option<f64> {
+        // Preserve UtilGrid's existing prediction behavior. Its ordering uses
+        // rounded sqrt distances, while this bound uses squared distance; two
+        // different squared distances can round to the same ordering key.
         self.second.map(|second| second.distance_squared)
     }
 }

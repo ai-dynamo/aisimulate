@@ -2612,13 +2612,19 @@ mod tests {
                             // Force a boundary hold, including beyond ragged rows.
                             *query.last_mut().unwrap() = 32.0 + ordinal as f64 / 7.0;
                             if ordinal == 18 {
+                                // Infinity survives log2 and requires a scan.
                                 query[0] = f64::INFINITY;
                             }
                             if ordinal == 19 {
+                                // NaN is clamped by max(), so this stays finite.
                                 query[0] = f64::NAN;
                             }
                             let q_log: Vec<f64> =
                                 query.iter().map(|v| v.max(1e-12).log2()).collect();
+                            assert_eq!(
+                                index.kd_tree.as_ref().unwrap().can_query(&q_log),
+                                ordinal != 18
+                            );
                             let actual = hold_anchor_weights_prepared(&cfg, index, &query, width);
                             // This is the unchanged exhaustive selector from the baseline,
                             // independent of the new tree and candidate heap.
