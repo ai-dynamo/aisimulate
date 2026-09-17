@@ -2185,7 +2185,7 @@ def test_python_license_gate_checks_target_environment_before_export(
         if command[1:4] == ["-m", "pip", "install"]:
             requirements = Path(command[command.index("-r") + 1]).read_text().splitlines()
             assert requirements == ["prettytable>=3", "wcwidth"]
-            assert command[-1] == "pip-licenses==5.5.5"
+            assert command[-2:] == ["pip-licenses==5.5.5", "setuptools>=84"]
             assert kwargs["check"]
             return SimpleNamespace(returncode=0)
         assert command[1:4] == ["-m", "piplicenses", "--with-system"]
