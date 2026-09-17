@@ -630,7 +630,7 @@ fn lower_agentic(
         let entry = &entries[id_to_index[&node.request_id]];
         node.recorded_interval_ms = Some((
             (entry.start_ms - first_start) as f64,
-            (entry.end_ms - first_start) as f64,
+            Some((entry.end_ms - first_start) as f64),
         ));
     }
     Ok(graph)

@@ -239,7 +239,7 @@ pub struct AgenticNode {
     // Importer provenance for formats whose execution gates do not retain
     // recorded request starts. Excluded from the canonical graph contract.
     #[serde(skip)]
-    pub(super) recorded_interval_ms: Option<(f64, f64)>,
+    pub(super) recorded_interval_ms: Option<(f64, Option<f64>)>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,

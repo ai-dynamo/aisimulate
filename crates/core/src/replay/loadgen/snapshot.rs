@@ -173,15 +173,12 @@ impl ValidatedAgenticGraph {
             .nodes
             .iter()
             .map(|node| {
-                let (start, end) = node
-                    .recorded_interval_ms
-                    .map(|(start, end)| (start, Some(end)))
-                    .unwrap_or_else(|| {
-                        (
-                            node.not_before_ms,
-                            node.recorded_api_time_ms.map(|d| node.not_before_ms + d),
-                        )
-                    });
+                let (start, end) = node.recorded_interval_ms.unwrap_or_else(|| {
+                    (
+                        node.not_before_ms,
+                        node.recorded_api_time_ms.map(|d| node.not_before_ms + d),
+                    )
+                });
                 if !start.is_finite()
                     || start < 0.0
                     || end.is_some_and(|end| !end.is_finite() || end < start)
