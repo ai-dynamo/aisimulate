@@ -376,7 +376,10 @@ impl AgenticReplayContext {
             } else {
                 live_conversations.insert(node.session_id.as_str());
             }
-            let mut delay = (recorded_start - t_star_ms).max(0.0);
+            // Recorded starts classify history, but do not add execution gates.
+            // Retain authored gates; live dependencies still release relative
+            // to actual dispatch/completion, while historical edges become timers.
+            let mut delay = (node.not_before_ms - t_star_ms).max(0.0);
             let mut pending = Vec::new();
             if !historical {
                 for edge in &node.dependencies {

@@ -92,7 +92,7 @@ fn dynamo_snapshot_uses_original_intervals_for_history_and_frontier() {
     );
     assert_eq!(requests[1].remaining_delay_ms, 0.0);
     assert!(requests[1].pending_dependencies.is_empty());
-    assert_eq!(requests[2].remaining_delay_ms, 1000.0);
+    assert_eq!(requests[2].remaining_delay_ms, 0.0);
     assert_eq!(
         requests[2].pending_dependencies,
         [exact.identity("b").unwrap().request_id]
@@ -120,6 +120,44 @@ fn dynamo_snapshot_uses_original_intervals_for_history_and_frontier() {
     assert_eq!(ready.authored_request_id.as_deref(), Some("c"));
     driver.on_complete(ready.request_uuid, 480.0).unwrap();
     assert!(driver.is_drained());
+}
+
+#[test]
+fn dynamo_snapshot_live_dependencies_use_actual_completion_after_the_cut() {
+    let prepared = graph()
+        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 0 })
+        .unwrap();
+    for cut_ms in [600.0, 1000.0] {
+        for speedup in [1.0, 2.0] {
+            let snapshot = prepared.context().prepare_play(0, 0, Some(cut_ms)).unwrap();
+            assert_eq!(snapshot.evidence().primers[0].source_request_id, "a");
+            let mut driver = WorkloadDriver::new_agentic_snapshots(
+                PreparedAgenticSnapshots::from_plays(vec![snapshot]).unwrap(),
+                64,
+                true,
+                speedup,
+            )
+            .unwrap();
+            assert_eq!(driver.total_turns(), 2);
+            // The historical a→b edge retains its recorded deadline. The live
+            // b→c edge retains 900ms of think time after actual b completion,
+            // even when replay service is faster than the recorded 100ms.
+            let b_at_ms = (1000.0 - cut_ms) / speedup;
+            let c_at_ms = b_at_ms + 10.0 + 900.0 / speedup;
+            for (id, at_ms) in [("b", b_at_ms), ("c", c_at_ms)] {
+                assert_eq!(driver.next_ready_time_ms(), Some(at_ms));
+                assert!(driver.pop_ready(at_ms - 1.0, 1).is_empty());
+                let mut ready = driver.pop_ready(at_ms, usize::MAX);
+                assert_eq!(ready.len(), 1);
+                let ready = ready.pop().unwrap();
+                assert_eq!(ready.authored_request_id.as_deref(), Some(id));
+                driver
+                    .on_complete(ready.request_uuid, at_ms + 10.0)
+                    .unwrap();
+            }
+            assert!(driver.is_drained());
+        }
+    }
 }
 
 #[test]
