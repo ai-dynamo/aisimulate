@@ -214,18 +214,6 @@ fn dynamic_placement_config(
 
 const PROVIDER_ID: &[u8] = b"aisimulate\0";
 
-/// Converts the core scheduler's next deadline into the ABI's externally
-/// observable clock domain.
-///
-/// The host may advance the replay clock to service another graph event before
-/// returning to this provider.  A core deadline that was pending before that
-/// advance is due immediately; reporting it as a past deadline would make the
-/// ABI state self-contradictory.  Keep it at the current clock so the host can
-/// drive the due work in its next same-timestamp turn.
-fn observable_next_event_ms(now_ms: f64, next_event_ms: Option<f64>) -> f64 {
-    next_event_ms.map_or(f64::NAN, |next_ms| next_ms.max(now_ms))
-}
-
 struct BackendReplay {
     engine: Box<dyn SteppableReplay>,
     last_error: String,
@@ -1180,7 +1168,7 @@ unsafe extern "C" fn step(
         .into_boxed_slice();
     let events_len = events.len() as u64;
     let events_data = Box::into_raw(events).cast::<EngineEventV1>();
-    let next_event_ms = observable_next_event_ms(outcome.end_ms, replay.engine.next_event_ms());
+    let next_event_ms = replay.engine.next_event_ms().unwrap_or(f64::NAN);
     // Safety: validated non-null output pointer. Event ownership transfers to
     // the host, which must call `release_events` exactly once.
     unsafe {
@@ -1794,8 +1782,7 @@ unsafe extern "C" fn state(handle: ReplayHandleV1, state: *mut ReplayStateV1) ->
         Ok(replay) => replay,
         Err(status) => return status,
     };
-    let next_event_ms =
-        observable_next_event_ms(replay.engine.now_ms(), replay.engine.next_event_ms());
+    let next_event_ms = replay.engine.next_event_ms().unwrap_or(f64::NAN);
     // Safety: validated non-null output pointer.
     unsafe {
         *state = ReplayStateV1 {
@@ -2204,14 +2191,6 @@ mod tests {
         }
         assert_eq!(result.is_idle, 1, "test request must finish");
         unsafe { destroy(handle) };
-    }
-
-    #[test]
-    fn observable_next_event_never_precedes_the_externally_advanced_clock() {
-        assert!(observable_next_event_ms(42.0, None).is_nan());
-        assert_eq!(observable_next_event_ms(42.0, Some(17.0)), 42.0);
-        assert_eq!(observable_next_event_ms(42.0, Some(42.0)), 42.0);
-        assert_eq!(observable_next_event_ms(42.0, Some(99.0)), 99.0);
     }
 
     #[test]
