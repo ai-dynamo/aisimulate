@@ -327,12 +327,12 @@ checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
 before runtime dependencies execute, preserving the accuracy and installation
 consumer contract.
 
-Scheduled runs perform two kinds of validation:
+Two kinds of validation then run:
 
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
   and console commands are checked using the downloaded wheel.
-- **FPE Support Matrix:** the amd64 nightly wheel is reused and checked against
+- **FPE Support Matrix (scheduled runs):** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
