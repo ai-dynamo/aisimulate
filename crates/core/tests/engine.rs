@@ -132,6 +132,93 @@ fn spec(config: ReplayEngineConfig) -> ReplaySpec {
     }
 }
 
+#[test]
+fn every_backend_stops_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for speculative in [false, true] {
+            for planned in [false, true] {
+                for (prompt, output, expected) in [(3, 10, 5), (7, 10, 1), (3, 2, 2), (3, 0, 0)] {
+                    let mut config = engine_config(TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    });
+                    config.rank.backend = backend;
+                    config.rank.max_model_len = Some(8);
+                    config.rank.sglang.chunked_prefill_size = 4;
+                    if speculative {
+                        config.rank.aic_nextn = Some(2);
+                        config.rank.aic_nextn_accept_rates = Some("1,1".to_string());
+                    }
+                    let mut replay = spec(config);
+                    let mut req = request("limited", 0.0, prompt, output);
+                    if planned {
+                        req.output_token_ids = Some((100..100 + output as u32).collect());
+                    }
+                    replay.requests = vec![req];
+                    let report = run_engine_replay(replay).unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+                    assert_eq!(
+                        report.per_request[0].output_length, expected,
+                        "{backend:?}, speculative={speculative}, planned={planned}, prompt={prompt}"
+                    );
+                    assert_eq!(report.request_counts.total_output_tokens, expected);
+                    assert_eq!(report.per_request[0].requested_output_length, output);
+                }
+            }
+        }
+    }
+}
+
+#[rstest::rstest]
+fn backends_reserve_only_context_capped_output(
+    #[values(Backend::Trtllm, Backend::Sglang)] backend: Backend,
+) {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    });
+    config.rank.backend = backend;
+    config.rank.max_model_len = Some(8);
+    config.rank.num_gpu_blocks = 5;
+    config.rank.enable_prefix_caching = false;
+    let mut replay = spec(config);
+    replay.requests = vec![request("a", 0.0, 4, 100), request("b", 0.0, 4, 100)];
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert_eq!(report.request_counts.total_output_tokens, 8);
+    assert_eq!(report.per_request[0].first_admit_ms, Some(0.0));
+    assert_eq!(
+        report.per_request[0].first_admit_ms,
+        report.per_request[1].first_admit_ms
+    );
+}
+
+#[test]
+fn disaggregated_backends_stop_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for prompt in [3, 7] {
+            let timing = TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            };
+            let mut replay = disaggregated_spec(backend, timing.clone(), timing);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().rank.max_model_len = Some(8);
+            config.decode.as_mut().unwrap().rank.max_model_len = Some(8);
+            replay.engine = serde_json::to_value(config).unwrap();
+            replay.requests = vec![request("limited", 0.0, prompt, 10)];
+            let report = run_engine_replay(replay).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+            assert_eq!(
+                report.per_request[0].output_length,
+                8 - prompt,
+                "{backend:?}"
+            );
+        }
+    }
+}
+
 fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: 1,

@@ -73,6 +73,75 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
     }
 }
 
+#[rstest::rstest]
+fn rejects_prompt_at_or_above_max_model_len(
+    #[values(8, 9)] prompt_len: u32,
+    #[values(false, true)] handoff: bool,
+) {
+    let mut args = test_args(16, 4, 4);
+    args.max_model_len = Some(8);
+    let mut core = SglangCore::new(args);
+    let req = direct_request((0..prompt_len).collect(), 1);
+    let handoff_id = HandoffId::from(Uuid::from_u128(900));
+    let command = if handoff {
+        SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: req,
+        }
+    } else {
+        SchedulerCommand::Submit(req)
+    };
+    core.apply_command(command).unwrap();
+    let pass = core.execute_hidden_pass(0.0);
+    assert!(matches!(
+        pass.output_signals.as_slice(),
+        [OutputSignal {
+            token_id: None,
+            completed: true,
+            rejected: true,
+            ..
+        }]
+    ));
+    assert!(pass.admissions.is_empty());
+    assert_eq!(pass.end_ms, 0.0);
+    assert!(core.waiting.is_empty());
+    assert!(core.running.is_empty());
+    assert_eq!(core.kv_manager.cache().available_tokens(), 64);
+    if handoff {
+        assert_eq!(
+            core.apply_command(SchedulerCommand::CancelSource { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+    }
+    // A rejected request must not block later valid work.
+    core.receive(direct_request(vec![1; 7], 10));
+    let mut signals = Vec::new();
+    for step in 0..4 {
+        signals.extend(
+            core.execute_hidden_pass(step as f64 * 1000.0)
+                .output_signals,
+        );
+    }
+    assert_eq!(signals.len(), 1);
+    assert!(signals[0].completed && !signals[0].rejected);
+}
+
+#[rstest::rstest]
+fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_len: u32) {
+    let mut args = test_args(16, 4, 4);
+    args.max_model_len = Some(8);
+    let mut core = SglangCore::new(args);
+    let error = core
+        .apply_command(SchedulerCommand::ReserveDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(901)),
+            request: direct_request((0..prompt_len).collect(), 1),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("max_model_len"));
+    assert_eq!(core.kv_manager.cache().available_tokens(), 64);
+}
+
 #[test]
 fn request_storage_reservation_is_bounded_for_submit_and_destination() {
     const BLOCK_SIZE: usize = 4;

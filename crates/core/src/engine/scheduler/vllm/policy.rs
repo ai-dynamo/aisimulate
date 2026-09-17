@@ -104,12 +104,10 @@ pub(super) fn destination_capacity_error<S: PolicySequence>(
 }
 
 pub(super) fn should_reject_for_model_len<S: PolicySequence>(
-    policy: SchedulingPolicy,
     sequence: &S,
     max_model_len: Option<usize>,
 ) -> bool {
-    policy == SchedulingPolicy::Vllm
-        && max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
+    max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
 }
 
 /// Number of additional tokens the request may generate before reaching

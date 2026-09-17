@@ -1138,14 +1138,11 @@ impl VllmCore {
             .num_gpu_blocks
             .saturating_mul(self.args.block_size)
             .saturating_sub(prompt_len);
-        let model_remaining = if self.args.scheduling_policy() == SchedulingPolicy::Vllm {
-            self.args
-                .max_model_len
-                .map(|limit| limit.saturating_sub(prompt_len))
-                .unwrap_or(usize::MAX)
-        } else {
-            usize::MAX
-        };
+        let model_remaining = self
+            .args
+            .max_model_len
+            .map(|limit| limit.saturating_sub(prompt_len))
+            .unwrap_or(usize::MAX);
         max_output_tokens.min(kv_remaining).min(model_remaining)
     }
 
@@ -1191,6 +1188,13 @@ impl VllmCore {
                 planned = max_output_tokens,
                 "planned output token count differs from max_output_tokens; using planned count"
             );
+        }
+        // TRT-LLM reserves KV through completion, so use the realizable output
+        // length for admission as well as the shared generation stop condition.
+        if self.args.scheduling_policy() == SchedulingPolicy::TrtllmGuaranteedNoEvict
+            && let Some(limit) = self.args.max_model_len
+        {
+            max_output_tokens = max_output_tokens.min(limit.saturating_sub(prompt_len));
         }
         if let Some(clamped) = policy::normalize_max_output_tokens(
             self.args.scheduling_policy(),
@@ -1726,11 +1730,7 @@ impl VllmCore {
                     .get(&uuid)
                     .expect("waiting request missing from state");
                 (
-                    policy::should_reject_for_model_len(
-                        scheduling_policy,
-                        &request.sequence,
-                        self.args.max_model_len,
-                    ),
+                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len),
                     admission.stage_for(request.prompt_is_prebuilt()),
                 )
             };

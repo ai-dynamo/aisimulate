@@ -359,7 +359,7 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
-    if backend == "vllm":
+    if backend == "vllm" or isinstance(engine.context_length, int):
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)

@@ -81,7 +81,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
-    if backend == "vllm" and sample.get("context_length") is not None:
+    if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
