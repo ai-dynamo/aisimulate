@@ -54,6 +54,57 @@ _FP8_DB = _db(context_mla=["bfloat16", "fp8"])
 _NO_INFO_DB = _db()
 
 
+@pytest.mark.parametrize("kv", [common.KVCacheQuantMode.bfloat16, common.KVCacheQuantMode.fp8])
+def test_hopper_mla_compute_is_independent_of_table_coverage(fake_model_info, kv, caplog):
+    fake_model_info(
+        "DeepseekV3ForCausalLM",
+        {**_V3_FP8_RAW, "kv_lora_rank": 512, "qk_rope_head_dim": 64, "torch_dtype": "bfloat16"},
+    )
+    mc = _mc()
+    mc.kvcache_quant_mode = kv
+    db = _db(context_mla=["fp8", "bfloat16"])
+    db.version = "0.5.14"
+    db.system_spec = {"gpu": {"sm_version": 90}}
+    with caplog.at_level("INFO"):
+        resolve_context_fmha_by_data(mc, "local-r1", db, "sglang", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    assert mc.kvcache_quant_mode == kv
+    assert "FA3 execution dtype" in caplog.text
+    assert "falling back" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"fmha": common.FMHAQuantMode.fp8},
+        {"forward_model": "fpm"},
+        {"sm": 100},
+        {"sm": 103},
+        {"version": "0.5.13"},
+        {"version": "0.5.15"},
+        {"backend": "trtllm"},
+        {"attention_backend": "flashinfer"},
+        {"architecture": "DeepseekV32ForCausalLM"},
+        {"raw": {"kv_lora_rank": 256}},
+        {"raw": {"torch_dtype": "float16"}},
+    ],
+)
+def test_hopper_mla_mapping_preserves_explicit_modes_and_unaudited_paths(fake_model_info, override):
+    raw = {**_V3_FP8_RAW, "kv_lora_rank": 512, "qk_rope_head_dim": 64, "torch_dtype": "bfloat16"}
+    raw.update(override.get("raw", {}))
+    fake_model_info(override.get("architecture", "DeepseekV3ForCausalLM"), raw)
+    mc = _mc(override.get("fmha"), forward_model=override.get("forward_model", "op_level"))
+    mc.attention_backend = override.get("attention_backend")
+    helpers.resolve_sglang_mla_compute(
+        mc,
+        "local-r1",
+        override.get("backend", "sglang"),
+        override.get("version", "0.5.14"),
+        {"gpu": {"sm_version": override.get("sm", 90)}},
+    )
+    assert mc.fmha_quant_mode == override.get("fmha")
+
+
 def test_context_role_inferred_fp8_downgrades_to_bf16(fake_model_info, caplog):
     """Auto-inferred fp8 FMHA with a bf16-only context table falls back to bf16."""
     fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)

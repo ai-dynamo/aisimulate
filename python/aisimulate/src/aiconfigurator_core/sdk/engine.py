@@ -46,8 +46,10 @@ from typing import Any
 import aiconfigurator_core
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config
 from aiconfigurator_core.sdk.models import get_model
+from aiconfigurator_core.sdk.models.helpers import resolve_sglang_mla_compute
 from aiconfigurator_core.sdk.operations import FPMForwardOp
 from aiconfigurator_core.sdk.operations.base import Operation
+from aiconfigurator_core.sdk.perf_database import load_system_spec
 
 PerOpValue = tuple[str, float, float, str]
 _MoeCommFallbackPayload = tuple[str, str, int, int, int, int]
@@ -452,13 +454,16 @@ def compile_engine(
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
     apply_nextn(model_config, nextn)
-    model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
     # tolerant database load. Explicit policy is also serialized independently
     # below, so a missing Python view cannot silently downgrade the Rust reload.
     literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
+    resolve_sglang_mla_compute(
+        model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
+    )
+    model = get_model(model_path, model_config, backend)
     database = _maybe_load_database(
         system,
         backend,

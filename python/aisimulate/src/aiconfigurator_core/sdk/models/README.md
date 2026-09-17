@@ -61,6 +61,16 @@ model_path
   -> cls.create(model_info, ...)      # construct via classmethod factory
 ```
 
+System-aware callers resolve measured execution precision before `get_model()`.
+`resolve_sglang_mla_compute()` maps inferred DeepSeek-V3/R1 attention to BF16
+on SGLang 0.5.14 SM90 FA3, for the measured BF16 model with 512-rank KV and
+64-dimensional RoPE. FA3 uses BF16 compute with either BF16 or FP8 KV storage.
+This mapping does not consult profile availability. Explicit FMHA overrides,
+FPM identities, Blackwell, and unaudited runtime/geometry combinations remain
+unchanged. Native compilation, KV memory construction, and the estimate-path
+FMHA resolver share this rule. See the
+[kernel evidence](../../../../collector/sglang/mla-precision-20260917.md).
+
 ### `create()` Classmethod
 
 Each model class has a `create(cls, model_info, model_config, backend_name)` classmethod that handles construction. Per-family construction details (MoE prefix args, post-construction hooks like `set_hybrid_config`) live inside `create()`, keeping `get_model()` itself generic.
