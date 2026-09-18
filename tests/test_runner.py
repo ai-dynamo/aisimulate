@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 import aisimulate
-from aisimulate import aic
+from aisimulate import capacity as aic
 from aisimulate.cli_args import build_parser
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
@@ -611,12 +611,12 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
-    import aiconfigurator_core
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    import aisimulate_core
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     class Estimator:
         def __init__(self, config):
-            self.config = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
             self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
 
         def diagnostics(self):
@@ -1093,7 +1093,7 @@ def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
     )
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
     actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
-    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+    from aisimulate_core.sdk.perf_database import resolve_query_version
 
     assert actual == resolve_query_version("h200_sxm", "vllm", "current")
     assert timing["config"]["backend_version"] == "current"
@@ -1290,7 +1290,7 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory
 
     calls = []
     estimate = {

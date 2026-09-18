@@ -8,7 +8,6 @@ import csv
 from pathlib import Path
 
 import pytest
-
 from tools.prediction_regression_gate import compare
 
 pytestmark = pytest.mark.unit

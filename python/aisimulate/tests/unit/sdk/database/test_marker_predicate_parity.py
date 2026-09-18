@@ -7,8 +7,8 @@ predicate (Collector V3 design §5/§6.3: ``collection_meta.yaml`` status:partia
 
 This predicate exists in FOUR independent copies (AIC-1502 PR3 Task 2 review):
 
-- canonical: ``aiconfigurator_core.sdk.perf_database._version_dir_state()["partial"]``
-- lenient:   ``aiconfigurator_core.sdk.operations.base._version_dir_is_partial()``
+- canonical: ``aisimulate_core.sdk.perf_database._version_dir_state()["partial"]``
+- lenient:   ``aisimulate_core.sdk.operations.base._version_dir_is_partial()``
   (deliberately lenient hot-path duplicate — see below)
 - tool:      ``tools.prediction_regression_gate.grid._dir_is_incomplete()``
 - tool:      ``tools.sanity_check.create_charts._dir_is_incomplete()``
@@ -33,10 +33,10 @@ import types
 from pathlib import Path
 
 import pytest
-
-from aiconfigurator.sdk.operations.base import _version_dir_is_partial
-from aiconfigurator.sdk.perf_database import _version_dir_state
 from tools.prediction_regression_gate import grid as _grid
+
+from aisimulate.sdk.operations.base import _version_dir_is_partial
+from aisimulate.sdk.perf_database import _version_dir_state
 
 pytestmark = pytest.mark.unit
 

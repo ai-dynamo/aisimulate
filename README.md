@@ -84,7 +84,7 @@ does not verify that optional adapters can load.
 ### Upgrade from standalone AIConfigurator
 
 Remove the former standalone distributions first so that only AISimulate owns
-the compatibility imports and command:
+the installed package files and legacy command:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
@@ -299,7 +299,7 @@ The compatibility support matrix covers AIC command-based aggregated and
 disaggregated workflows by model, system, backend, and backend version:
 
 - [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
-- [AIC support-matrix data](python/aisimulate/src/aiconfigurator_core/systems/support_matrix/)
+- [AIC support-matrix data](python/aisimulate/src/aisimulate_core/systems/support_matrix/)
 - [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
 
 Check one exact cell from the installed package with:
@@ -340,8 +340,9 @@ This repository produces exactly two release artifacts:
 
 It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
-`aisimulate` wheel preserves the `aiconfigurator`, `aiconfigurator_core`, and
-`aisimulate_core` Python import namespaces during the compatibility window.
+`aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
+estimator packages. Only the legacy `aiconfigurator` executable remains; see
+[Python source migration](docs/python-source-migration.md) for removed imports.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations

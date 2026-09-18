@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.cli.main import _latest_support_matrix_version, _run_support_mode
+from aisimulate.legacy_cli.main import _latest_support_matrix_version, _run_support_mode
 
 pytestmark = pytest.mark.unit
 
@@ -143,18 +143,18 @@ def test_latest_support_matrix_version_does_not_fall_back_to_unrelated_rows():
 
 def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, capsys):
     monkeypatch.setattr(
-        "aiconfigurator.cli.main.get_model_config_from_model_path",
+        "aisimulate.legacy_cli.main.get_model_config_from_model_path",
         lambda _model: {"architecture": "UnknownArchitecture"},
     )
     monkeypatch.setattr(
-        "aiconfigurator.cli.main.common.get_support_matrix",
+        "aisimulate.legacy_cli.main.common.get_support_matrix",
         lambda: [_row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.10")],
     )
 
     def fail_check_support(*_args, **_kwargs):
         raise AssertionError("check_support should not run without an auto-selected version")
 
-    monkeypatch.setattr("aiconfigurator.cli.main.common.check_support", fail_check_support)
+    monkeypatch.setattr("aisimulate.legacy_cli.main.common.check_support", fail_check_support)
 
     _run_support_mode(
         SimpleNamespace(

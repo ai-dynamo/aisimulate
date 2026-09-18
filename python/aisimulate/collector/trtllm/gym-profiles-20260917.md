@@ -10,6 +10,17 @@ query version `1.3.0rc20`.
 This campaign measures TRT-LLM directly. It does not borrow SGLang timings.
 The existing row schemas and consumer keys are unchanged.
 
+The refreshed context MLA tables and their `op_backend_facts.yaml` entries
+cover B200 and H200 only. The B300, GB200, GB300, H100 and RTX Pro 6000
+Server rc20 tables retain their historical labels and have not been remeasured
+or certified by this campaign. The facts registry joins persisted table keys;
+it is not a prediction of the current collector's output on every system.
+The source-backed collector correction applies to future runs on the listed
+SMs. Refreshing each remaining system requires matching collection evidence
+and an accompanying table/facts update; rewriting old labels alone would not
+establish that evidence. `tools/perf_database/backend_facts.py --check` checks
+all persisted slices, including the two refreshed systems.
+
 ## Results
 
 | Production run | Planned / passed cases | Failed / unattempted | Measured rows |

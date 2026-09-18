@@ -31,10 +31,10 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk.perf_database import (
     PerfDatabase,
 )
-from aiconfigurator_core.sdk.operations.mamba import KDAKernel
+from aisimulate_core.sdk.operations.mamba import KDAKernel
 
 pytestmark = pytest.mark.unit
 

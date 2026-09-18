@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-
 from collector.wideep.sglang import collect_moe_a2a as a2a
 
 pytestmark = pytest.mark.unit

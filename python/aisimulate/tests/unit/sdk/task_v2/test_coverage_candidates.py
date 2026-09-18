@@ -23,16 +23,16 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.config import ModelConfig
-from aiconfigurator.sdk.moe_comm_resolver import a2a_covers_parallel, resolve_model_config_moe_comm
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk import common
+from aisimulate.sdk.config import ModelConfig
+from aisimulate.sdk.moe_comm_resolver import a2a_covers_parallel, resolve_model_config_moe_comm
+from aisimulate.sdk.perf_database import (
     PerfDataNotAvailableError,
     databases_cache,
     load_system_spec,
     set_systems_paths,
 )
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
@@ -132,7 +132,7 @@ def _one_shot_log_state():
     They are process-global by design (one log per model/system, not per Task),
     so a test that needs a fresh log must not leave the set emptied for the
     tests that run after it."""
-    import aiconfigurator.sdk.task_v2 as task_v2
+    import aisimulate.sdk.task_v2 as task_v2
 
     empty_before = set(task_v2._LARGE_EP_EMPTY_COVERAGE_LOGGED)
     asym_before = set(task_v2._LARGE_EP_ASYMMETRIC_COVERAGE_WARNED)
@@ -600,7 +600,7 @@ def test_generation_only_coverage_keeps_decode_fused_and_warns(synth_systems_gen
     base_backend._get_memory_usage sizes the worker from -- the same
     mis-pricing class the disagg-decode capture caught, in the other
     direction. One warning names the asymmetry."""
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.sdk.task_v2"):
         t = _disagg_task()
         assert t._resolve_moe_comm_backend("decode", _tuple(dp=8, moe_ep=8)) is None
         assert t._resolve_moe_comm_backend("decode", _tuple(dp=16, moe_ep=16)) is None
@@ -640,10 +640,10 @@ def test_disagg_replica_budget_follows_coverage(synth_systems):
 def test_uncovered_model_keeps_fused_defaults_and_logs_once(caplog):
     """Shipped h200_sxm/sglang carries no moe_a2a rows for the Qwen3 shape, so
     the task keeps the fused ladders and states which collector to run."""
-    import aiconfigurator.sdk.task_v2 as task_v2
+    import aisimulate.sdk.task_v2 as task_v2
 
     task_v2._LARGE_EP_EMPTY_COVERAGE_LOGGED.clear()  # restored by the autouse fixture
-    with caplog.at_level(logging.INFO, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.INFO, logger="aisimulate.sdk.task_v2"):
         t = Task(
             serving_mode="agg",
             model_path=SYNTH_MODEL,
@@ -702,7 +702,7 @@ class _SupportedOverride:
 
 def _override_supported(monkeypatch, drop=()):
     """Patch every Task DB load to hide ``drop`` from supported_quant_mode."""
-    from aiconfigurator.sdk.perf_database import get_database
+    from aisimulate.sdk.perf_database import get_database
 
     database = get_database("h200_sxm", "sglang", "0.5.14")
     supported = {k: v for k, v in (database.supported_quant_mode or {}).items() if k not in drop}
@@ -739,7 +739,7 @@ def test_uninformative_table_abstains_instead_of_green_lighting(monkeypatch):
     """An op the DB records no supported_quant_mode for carries no capability
     information: it must not green-light the check. With the fused entry gone,
     the large-EP table becomes the deciding one."""
-    from aiconfigurator.sdk.errors import UnsupportedWideepConfigError
+    from aisimulate.sdk.errors import UnsupportedWideepConfigError
 
     _override_supported(monkeypatch, drop=("context_mla", "context_mla_granular"))
     t = _mixed_regime_task(fmha_quant_mode=common.FMHAQuantMode.bfloat16)
@@ -791,7 +791,7 @@ def test_single_regime_tasks_match_the_pre_change_key_logic(kwargs, expect_large
     the old three-branch ``attention_op_keys(family, backend, flag)`` call
     produced, and validate to the same outcome -- the per-regime machinery is
     only allowed to change MIXED tasks."""
-    from aiconfigurator.sdk.models import attention_op_keys
+    from aisimulate.sdk.models import attention_op_keys
 
     t = Task(serving_mode="agg", **kwargs)
     pairs = t._reachable_attention_op_keys("agg")
@@ -799,7 +799,7 @@ def test_single_regime_tasks_match_the_pre_change_key_logic(kwargs, expect_large
     assert pairs[0] == attention_op_keys(t.model_family, t.backend_name, expect_large_ep)
     assert t._attention_op_keys("agg") == pairs[0]
     if expect_raises:
-        from aiconfigurator.sdk.errors import UnsupportedWideepConfigError
+        from aisimulate.sdk.errors import UnsupportedWideepConfigError
 
         with pytest.raises(UnsupportedWideepConfigError):
             t.validate()

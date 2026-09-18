@@ -82,9 +82,9 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
 
 def _language_execution(spec: ReplaySpec) -> dict:
     """Normalize compiler/Sweeper spellings at the existing execution boundary."""
-    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+    from aisimulate_core.sdk.perf_database import resolve_query_version
 
-    from ..aic import DEFAULT_BACKEND_VERSIONS
+    from ..capacity import DEFAULT_BACKEND_VERSIONS
     from ..runner import _materialize_engine_role
     from .engine import SchedulerPredictionConfig
 

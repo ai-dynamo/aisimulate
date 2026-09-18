@@ -29,9 +29,9 @@ zero coverage. Legacy AIC sentinels such as `0.0` or `NaN` are not published as
 numeric power.
 
 The existing implementation references are AIC's
-[`InferenceSummary.get_power_data_coverage`](../python/aisimulate/src/aiconfigurator_core/sdk/inference_summary.py),
+[`InferenceSummary.get_power_data_coverage`](../python/aisimulate/src/aisimulate_core/sdk/inference_summary.py),
 its CLI
-[`POWER_DATA_COVERAGE_THRESHOLD` and publication gate](../python/aisimulate/src/aiconfigurator/cli/api.py),
+[`POWER_DATA_COVERAGE_THRESHOLD` and publication gate](../python/aisimulate/src/aisimulate/legacy_cli/api.py),
 and FPE's
 [`PerOpValue` energy channel](../crates/core/src/perfmodel/engine/runtime.rs).
 The machine-readable

@@ -3,7 +3,7 @@
 
 //! Backend, database-mode, quant-mode, model-family, and perf-data-filename
 //! enums plus the `QuantMapping` payload shared by the quant-mode enums.
-//! Mirrors the enum surface of `src/aiconfigurator/sdk/common.py`.
+//! Mirrors the enum surface of `src/aisimulate/sdk/common.py`.
 //!
 //! HF-architecture-to-family routing lives in `models/registry.rs`, not
 //! here, because it carries AIC-specific lookup tables that depend on

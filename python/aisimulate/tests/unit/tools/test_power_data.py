@@ -22,7 +22,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aiconfigurator_core/systems/data/b200_sxm"
+DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aisimulate_core/systems/data/b200_sxm"
 
 
 @pytest.mark.parametrize(

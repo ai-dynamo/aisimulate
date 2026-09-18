@@ -422,7 +422,7 @@ jobs:
           python -m venv staged-wheel-smoke
           staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
           staged-wheel-smoke/bin/python -c \
-            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            "import aisimulate, aisimulate_core; \
             assert aisimulate_core._build_smoke() > 0"
       - name: Preserve wheel for trusted staging
         if: github.event_name == 'push'
@@ -879,7 +879,7 @@ jobs:
       - run: >-
           release-smoke/bin/python -c
           "import importlib.metadata as metadata;
-          import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
+          import aisimulate, aisimulate_core;
           assert aisimulate.__version__ == aisimulate_core.__version__ == '0.13.0';
           assert metadata.version('aisimulate') == '0.13.0';
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};

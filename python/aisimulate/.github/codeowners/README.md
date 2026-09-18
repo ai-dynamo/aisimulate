@@ -14,7 +14,7 @@ owns the files you touched. To check explicitly, before pushing:
 python .github/codeowners/who_owns.py --codeowners CODEOWNERS --changed --base main
 
 # owners of specific paths
-python .github/codeowners/who_owns.py --codeowners CODEOWNERS src/aiconfigurator/sdk/backends/trtllm_backend.py collector/trtllm/collect.py
+python .github/codeowners/who_owns.py --codeowners CODEOWNERS src/aisimulate/sdk/backends/trtllm_backend.py collector/trtllm/collect.py
 ```
 
 A line with more than one team is co-ownership: under "any one approves," any one

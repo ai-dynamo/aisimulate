@@ -15,10 +15,10 @@ Covers:
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.models import get_model
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.models import get_model
 
 pytestmark = pytest.mark.unit
 
@@ -455,7 +455,7 @@ class TestInferenceSummaryEncoderFields:
 
     @pytest.fixture
     def summary(self):
-        from aiconfigurator.sdk.inference_summary import InferenceSummary
+        from aisimulate.sdk.inference_summary import InferenceSummary
 
         rc = RuntimeConfig(batch_size=1, isl=512, osl=128)
         return InferenceSummary(rc)
@@ -625,7 +625,7 @@ class TestEncoderMemoryInSummary:
         path was removed; these tests are about the encoder MEMORY plumbing,
         so the step values are fixed dummies.
         """
-        from aiconfigurator.sdk.backends import base_backend as base_backend_module
+        from aisimulate.sdk.backends import base_backend as base_backend_module
 
         monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args, **kwargs: True)
         monkeypatch.setattr(
@@ -646,7 +646,7 @@ class TestEncoderMemoryInSummary:
         """Text-only model: encoder_memory should be empty dict."""
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-32B", model_config, "trtllm")
         database = SimpleNamespace(
@@ -670,8 +670,8 @@ class TestEncoderMemoryInSummary:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from aiconfigurator.sdk.backends import base_backend as base_backend_module
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends import base_backend as base_backend_module
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-VL-32B-Instruct", model_config, "trtllm")
         database = SimpleNamespace(
@@ -703,7 +703,7 @@ class TestEncoderMemoryInSummary:
         """VL model with num_images>0: encoder_memory must contain weights/activations/kvcache."""
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-VL-32B-Instruct", model_config, "trtllm")
         database = SimpleNamespace(
@@ -741,7 +741,7 @@ class TestEncoderMemoryInSummary:
     def test_qwen35_image_estimate_executes_nonzero_encoder_work(self, model_name, monkeypatch):
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model_config = config.ModelConfig(moe_tp_size=1) if "A3B" in model_name else config.ModelConfig()
         model = get_model(model_name, model_config, "trtllm")
@@ -804,7 +804,7 @@ class TestEncoderMemoryInSummary:
     ):
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model_config = config.ModelConfig(moe_tp_size=1, moe_ep_size=1) if "A3B" in model_name else config.ModelConfig()
         model = get_model(model_name, model_config, "trtllm")
@@ -882,7 +882,7 @@ class TestSmartResizeTokenResolution:
     non-aligned inputs)."""
 
     def test_non_aligned_dims_round_to_nearest_factor(self):
-        from aiconfigurator.sdk.backends.base_backend import BaseBackend
+        from aisimulate.sdk.backends.base_backend import BaseBackend
 
         enc_cfg = common.VisionEncoderConfig(
             depth=27,
