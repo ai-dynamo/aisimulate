@@ -1169,7 +1169,9 @@ def _materialize_engine_role(
     timing_rank = role_config.get("rank", role_config)
     timing = timing_rank.get("timing_model") if isinstance(timing_rank, dict) else None
     if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
-        canonical = timing.get("config", {})
+        canonical = timing.get("config")
+        if not isinstance(canonical, dict):
+            raise ValueError("external AIC timing config must be a mapping")
         for aliases, fields in (
             (("tensor_parallel_size", "aic_tp_size"), ("tp", "tp_size")),
             (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),

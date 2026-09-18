@@ -50,7 +50,10 @@ impl Availability<'_> {
                 .map(|root| vec![PerfSource(root.join(name), None)])
                 .unwrap_or_default(),
             "dsv4_megamoe_module_perf.parquet" => {
-                vec![PerfSource(self.db.data_root.join(name), None)]
+                vec![PerfSource(
+                    self.db.dsv4_megamoe.primary_path().to_owned(),
+                    None,
+                )]
             }
             _ => self
                 .db
@@ -94,6 +97,15 @@ impl Availability<'_> {
 
     fn op(&mut self, op: &Op) -> Result<(), AicError> {
         use Op::*;
+        // CSA context parallelism consumes both sparse correction tables even
+        // when its base module uses the analytic SOL. HCA never consumes them.
+        if let Dsv4Context(module) = op
+            && module.cp_size > 1
+            && module.attn_kind == crate::perf_database::dsv4::AttnKind::Csa
+        {
+            self.any(&["dsv4_paged_mqa_logits_module_perf.parquet"])?;
+            self.any(&["dsv4_csa_topk_calib_perf.parquet"])?;
+        }
         let sol = matches!(
             self.db.database_mode,
             DatabaseMode::Sol | DatabaseMode::SolFull
@@ -212,10 +224,7 @@ impl Availability<'_> {
                 } else {
                     "generation"
                 };
-                self.any(&[
-                    &format!("dsv4_{kind}_{phase}_module_perf.parquet"),
-                    "dsv4_paged_mqa_logits_module_perf.parquet",
-                ])
+                self.any(&[&format!("dsv4_{kind}_{phase}_module_perf.parquet")])
             }
             Dsv4MegaMoe(_) => self.any(&["dsv4_megamoe_module_perf.parquet"]),
             MoeAllToAll(_) => self.any(&[
@@ -273,9 +282,12 @@ mod tests {
     use super::*;
     use crate::common::enums::TransferPolicy;
     use crate::config::PerfDbSources;
+    use crate::operators::dsv4::{Dsv4MegaMoeOp, Dsv4ModuleOp};
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{EmbeddingOp, GemmOp};
     use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+    use crate::perfmodel::engine::{Engine, spec::EngineSpec};
+    use std::sync::Arc;
 
     fn systems() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
@@ -284,6 +296,151 @@ mod tests {
         std::fs::copy(spec, root.path().join("b200_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
         root
+    }
+
+    fn engine_readiness(db: PerfDatabase, op: Op) -> Result<(), AicError> {
+        let config = serde_json::from_value(serde_json::json!({
+            "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+            "model_name": "readiness-fixture",
+            "system_name": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0",
+            "tp_size": 1, "pp_size": 1, "database_mode": db.database_mode,
+        }))
+        .unwrap();
+        let (context, generation) = if matches!(op, Op::Dsv4Generation(_)) {
+            (vec![], vec![op])
+        } else {
+            (vec![op], vec![])
+        };
+        Engine::build(EngineSpec::new(config, context, generation), Arc::new(db))?
+            .validate_forward_pass_readiness()
+    }
+
+    fn dsv4_op(kind: &str, context: bool, cp: u32) -> Op {
+        let module: Dsv4ModuleOp = serde_json::from_value(serde_json::json!({
+            "name": "attention", "scale_factor": 1.0, "attn_kind": kind,
+            "num_heads": 64, "native_heads": 64, "tp_size": 1, "cp_size": cp,
+            "kv_cache_dtype": "bfloat16", "fmha_quant_mode": "bfloat16",
+            "gemm_quant_mode": "bfloat16", "architecture": "DeepseekV4ForCausalLM",
+        }))
+        .unwrap();
+        if context {
+            Op::Dsv4Context(module)
+        } else {
+            Op::Dsv4Generation(module)
+        }
+    }
+
+    fn table(path: &std::path::Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn dsv4_requires_its_phase_module_not_an_auxiliary_table() {
+        for kind in ["Csa", "Hca"] {
+            for context in [true, false] {
+                let root = systems();
+                let data = root.path().join("data/b200_sxm/vllm/0.24.0");
+                table(&data.join("dsv4_paged_mqa_logits_module_perf.parquet"));
+                let load =
+                    || PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+                let phase = if context { "context" } else { "generation" };
+                let required = format!("dsv4_{}_{phase}_module_perf.parquet", kind.to_lowercase());
+                let error = engine_readiness(load(), dsv4_op(kind, context, 1)).unwrap_err();
+                assert!(error.to_string().contains(&required), "{error}");
+                table(&data.join(required));
+                engine_readiness(load(), dsv4_op(kind, context, 1)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn csa_context_parallel_requires_both_sparse_tables() {
+        let mqa = "dsv4_paged_mqa_logits_module_perf.parquet";
+        let topk = "dsv4_csa_topk_calib_perf.parquet";
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+        ] {
+            for present in [vec![], vec![mqa], vec![topk], vec![mqa, topk]] {
+                let root = systems();
+                let data = root.path().join("data/b200_sxm/vllm/0.24.0");
+                if mode != DatabaseMode::Sol {
+                    table(&data.join("dsv4_csa_context_module_perf.parquet"));
+                    table(&data.join("dsv4_hca_context_module_perf.parquet"));
+                }
+                for name in &present {
+                    table(&data.join(name));
+                }
+                let load = || {
+                    PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                        .unwrap()
+                        .with_mode(mode, TransferPolicy::ALL)
+                };
+                assert_eq!(
+                    engine_readiness(load(), dsv4_op("Csa", true, 2)).is_ok(),
+                    present.len() == 2,
+                    "{mode:?}, {present:?}"
+                );
+                engine_readiness(load(), dsv4_op("Hca", true, 2)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn megamoe_readiness_uses_only_the_resolved_primary() {
+        let root = systems();
+        let name = "dsv4_megamoe_module_perf.parquet";
+        let family = root.path().join("data/b200_sxm/moe/vllm/0.24.0").join(name);
+        table(&family);
+        let op = || {
+            Op::Dsv4MegaMoe(Dsv4MegaMoeOp {
+                name: "megamoe".into(),
+                scale_factor: 1.0,
+                hidden_size: 4096,
+                inter_size: 2048,
+                topk: 8,
+                num_experts: 256,
+                moe_tp_size: 1,
+                moe_ep_size: 8,
+                quant_mode: crate::common::enums::MoeQuantMode::Fp8,
+                workload_distribution: "balanced".into(),
+                is_context: true,
+                source_policy: "primary".into(),
+                pre_dispatch: "none".into(),
+                num_fused_shared_experts: 0,
+                kernel_source: "fixture".into(),
+                kernel_dtype: "fp8".into(),
+            })
+        };
+        let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        assert_eq!(db.dsv4_megamoe.primary_path(), family);
+        engine_readiness(db, op()).unwrap();
+
+        let custom = root.path().join("custom.parquet");
+        table(&custom);
+        for primary in [&custom, &root.path().join("missing.parquet")] {
+            // MegaMoE ignores row filters and additional sources at query time.
+            let sources = PerfDbSources::from([(
+                name.into(),
+                vec![
+                    PerfSource(primary.clone(), Some(vec!["excluded".into()])),
+                    PerfSource(family.clone(), None),
+                ],
+            )]);
+            let db = PerfDatabase::load_with_sources(
+                root.path(),
+                "b200_sxm",
+                "vllm",
+                "0.24.0",
+                &sources,
+            )
+            .unwrap();
+            assert_eq!(db.dsv4_megamoe.primary_path(), primary);
+            assert_eq!(engine_readiness(db, op()).is_ok(), primary == &custom);
+        }
     }
 
     #[test]

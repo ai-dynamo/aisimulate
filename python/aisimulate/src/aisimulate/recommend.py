@@ -143,6 +143,8 @@ def recommendation_to_sweeper(
         }
         for role, raw in workers.items()
         if role in {"aggregated", "prefill", "decode"}
+        and not set(modes) & {"afd", "afd+pd"}
+        and workers.get("encoder") is None
     }
     for role in ("prefill", "decode"):
         if workers.get(role, {}).get("hardware") is not None:
