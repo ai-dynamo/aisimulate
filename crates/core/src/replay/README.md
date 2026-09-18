@@ -478,9 +478,12 @@ All runtimes emit request timing into `TraceCollector` in `src/replay/report.rs`
 - token emission
 - completion
 
-The harness does not compute final throughput/latency metrics incrementally. It
-records events, then `TraceCollector::finish()` derives the final
-`ReplayReport`.
+Batch summary reporting folds completed requests into aggregate statistics after
+their completion callbacks and spills exact latency samples as needed.
+`prepare_batch_report()` collects the remaining state and computes the final
+distributions; `TraceCollector::finish()` returns that prepared `ReplayReport`.
+Detailed reporting and steppable runtimes retain the request records needed by
+their consumers and derive the report when `finish()` is called.
 
 ## Mental Model
 

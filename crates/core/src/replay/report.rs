@@ -1121,7 +1121,9 @@ impl TraceCollector {
                 &mut self.itl_distribution,
                 &mut self.output_token_throughput_per_user,
             );
-            summary.add(&stats, self.sla)?;
+            summary.add(&stats, self.sla).map_err(|error| {
+                crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+            })?;
         }
         let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
         self.prepared_report = Some(summary.finish(base).map_err(|error| {

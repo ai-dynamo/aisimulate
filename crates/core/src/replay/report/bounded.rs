@@ -238,6 +238,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batch_report_write_failures_preserve_resource_error_type() {
+        for complete_before_batch in [false, true] {
+            let mut collector = TraceCollector::default();
+            if !complete_before_batch {
+                collector.begin_batch_reporting();
+            }
+            let uuid = Uuid::from_u128(1);
+            collector.on_arrival(uuid, 0.0, 8, 1);
+            collector.on_admit(uuid, 0.0, 0);
+            collector.on_token(uuid, 1.0);
+            collector.on_terminal(uuid, 1.0, ReplayTerminalStatus::Completed);
+            if complete_before_batch {
+                collector.begin_batch_reporting();
+            }
+            assert_eq!(
+                collector.completed_to_retire.is_empty(),
+                complete_before_batch
+            );
+
+            // A read-only file with no write buffer fails at the actual sample
+            // write, without changing process-wide temporary-directory state.
+            let file = tempfile::NamedTempFile::new().unwrap();
+            collector.bounded_summary.as_mut().unwrap().ttft.disk = Some(BufWriter::with_capacity(
+                0,
+                File::open(file.path()).unwrap(),
+            ));
+            let error = collector.prepare_batch_report().unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<crate::replay::ReplayError>(),
+                    Some(crate::replay::ReplayError::ResourceLimited(_))
+                ),
+                "complete_before_batch={complete_before_batch}: {error:#}"
+            );
+            assert!(format!("{error:#}").contains("report storage: write exact report sample"));
+            assert!(collector.prepared_report.is_none());
+        }
+    }
+
+    #[test]
     fn spilled_quantiles_match_exact_selection() {
         let values: Vec<_> = (0..20_003)
             .map(|i| ((i * 1237) % 2003) as f64 / 7.0)
