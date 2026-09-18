@@ -483,3 +483,39 @@ def test_explicit_default_moe_backend_is_inactive_with_custom_timing():
     sample["agg_num_gpu_blocks"] = 128
     deployment = build_backend_deployment(sample, backend_version="test")
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("field", ["aic_nextn_accepted", "nextn_accepted"])
+@pytest.mark.parametrize("accepted", [0, 1.25])
+def test_optional_runner_rejects_new_mtp_representation(nested, field, accepted):
+    from dataclasses import replace
+
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.replay import BackendDeploymentSpec, RunnerCapabilities
+
+    rank = {"aic_nextn": 2, field: accepted}
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={"rank": rank} if nested else rank,
+        ),
+        workload={},
+        goal={},
+    )
+    legacy = RunnerCapabilities(supported_backend_topologies=(("*", "*"),))
+    with pytest.raises(ValueError, match="MTP expected acceptance"):
+        legacy.require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    legacy_rates = {"aic_nextn": 2, "aic_nextn_accept_rates": "1,0.25"}
+    legacy.require_compatible(
+        replace(
+            spec,
+            backend_deployment=replace(
+                spec.backend_deployment,
+                agg_engine_args=legacy_rates,
+            ),
+        )
+    )

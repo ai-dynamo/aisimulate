@@ -256,6 +256,7 @@ class RunnerCapabilities:
     supports_agentic_speculative_decoding: bool = True
     supports_cached_prefix_tokens: bool = False
     supported_engine_model_controls: tuple[str, ...] = ()
+    supports_mtp_expected_acceptance: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -335,6 +336,10 @@ class RunnerCapabilities:
                 raise ValueError(
                     f"runner does not support engine model controls {unsupported_controls}; use --stack engine"
                 )
+            if not self.supports_mtp_expected_acceptance and any(
+                rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")
+            ):
+                raise ValueError("runner does not support explicit MTP expected acceptance; use --stack engine")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:

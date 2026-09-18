@@ -277,6 +277,7 @@ class EngineReplayRunnerFactory:
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
             supports_cached_prefix_tokens=True,
+            supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supported_trace_formats=(
                 "mooncake",
