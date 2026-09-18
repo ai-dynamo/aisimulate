@@ -25,6 +25,7 @@ def _mock_helper_imports(monkeypatch):
     fake_torch.bfloat16 = "bfloat16"
     fake_torch.float16 = "float16"
     fake_torch.float32 = "float32"
+    fake_torch.float8_e4m3fn = "float8_e4m3fn"
     fake_torch.cuda = types.SimpleNamespace(
         empty_cache=lambda: None,
         get_device_capability=lambda *_a, **_kw: (9, 0),
@@ -720,3 +721,30 @@ class TestFailClosedOrchestration:
 
         assert process.killed
         assert process.waited
+
+
+class TestOrdinaryMLAPrecision:
+    @pytest.mark.parametrize(
+        "gemm_type,dtype,block", [("bfloat16", "bfloat16", None), ("fp8_block", "float8_e4m3fn", [128, 128])]
+    )
+    def test_uniform_projections(self, gemm_type, dtype, block):
+        mod = _import_module()
+        projection = types.SimpleNamespace(
+            weight=types.SimpleNamespace(dtype=dtype),
+            quant_method=types.SimpleNamespace(quant_config=types.SimpleNamespace(weight_block_size=block)),
+        )
+        attention = types.SimpleNamespace(
+            **dict.fromkeys(("fused_qkv_a_proj_with_mqa", "q_b_proj", "kv_b_proj", "o_proj"), projection)
+        )
+        mod._validate_mla_projection_precision(attention, gemm_type)
+
+    def test_mixed_projection_rejected_before_writing_row(self):
+        mod = _import_module()
+        bf16 = types.SimpleNamespace(weight=types.SimpleNamespace(dtype="bfloat16"), quant_method=None)
+        fp8 = types.SimpleNamespace(
+            weight=types.SimpleNamespace(dtype="float8_e4m3fn"),
+            quant_method=types.SimpleNamespace(quant_config=types.SimpleNamespace(weight_block_size=[128, 128])),
+        )
+        attention = types.SimpleNamespace(fused_qkv_a_proj_with_mqa=bf16, q_b_proj=bf16, kv_b_proj=bf16, o_proj=fp8)
+        with pytest.raises(ValueError, match="o_proj executes fp8_block"):
+            mod._validate_mla_projection_precision(attention, "bfloat16")

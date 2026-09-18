@@ -636,3 +636,18 @@ for CLI compatibility coverage, or inspect the
 [per-system CSV files](../src/aiconfigurator_core/systems/support_matrix/).
 For strict-native estimator coverage, use the
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/).
+
+## SGLang ordinary MLA context modules
+
+For uniform-projection checkpoints, `run_attention_torch(..., ordinary_mla=True)`
+collects the complete context attention module into
+`mla_context_module_perf.txt`. It invokes SGLang's real `prepare_qkv_latent`
+and creates fresh `AttentionInputs` on every warmup and timed iteration, so
+Q/KV down-projection is included. Prefill is timed eagerly. The loaded projection
+weights must match the requested single `gemm_type`; mixed BF16/NVFP4 modules
+are rejected instead of mislabeled.
+
+Pass the actual per-rank head count and `target_tp_size`. The runner can take
+`chunked_prefill_size` to reproduce the serving chunk limit. The existing
+wide-EP and DSA paths keep their separate behavior. The ordinary context table
+uses the existing consumer schema; this does not add mixed-precision modeling.
