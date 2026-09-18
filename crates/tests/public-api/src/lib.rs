@@ -217,4 +217,77 @@ mod tests {
         assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
         assert_eq!(options.features.ffn_token_weight, 4.0);
     }
+
+    #[test]
+    fn agentic_snapshot_preparation_and_execution_are_public() {
+        use aisimulate_core::replay::loadgen::{
+            AgenticGraphBuilder, AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow,
+            AgenticSnapshotOptions, AgenticSourceProvenance, PreparedAgenticSnapshots,
+            WorkloadDriver, AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION,
+        };
+
+        let mut builder = AgenticGraphBuilder::new(AgenticMooncakeHeader {
+            schema: AGENTIC_MOONCAKE_SCHEMA.into(),
+            version: AGENTIC_MOONCAKE_VERSION,
+            block_size: 64,
+            hash_id_scope: AgenticHashIdScope::Local,
+            source: AgenticSourceProvenance {
+                format: "public-api-fixture".into(),
+                digest: "authored-snapshot".into(),
+            },
+        })
+        .unwrap();
+        for (request_id, start) in [("before", 1_000.0), ("after", 1_100.0)] {
+            builder
+                .push(AgenticMooncakeRow {
+                    request_id: request_id.into(),
+                    play_id: "play".into(),
+                    session_id: "session".into(),
+                    model: "fixture-model".into(),
+                    input_length: Some(128),
+                    output_length: Some(1),
+                    hash_ids: Some(vec![90, 10]),
+                    not_before_ms: start,
+                    recorded_api_time_ms: Some(10.0),
+                    ..AgenticMooncakeRow::default()
+                })
+                .unwrap();
+        }
+        let graph = builder.finish().unwrap();
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        assert_eq!(prepared.snapshots().len(), 1);
+        let evidence = &prepared.snapshots()[0];
+        assert_eq!(evidence.seed, 42);
+        assert!((1_025.0..1_075.0).contains(&evidence.t_star_ms));
+        let context = prepared.context();
+        assert!(context.prepare_play(0, 0, Some(0.0)).is_err());
+        let first = context.prepare_play_from_start(0, 0).unwrap();
+        let recycled = context.prepare_play_from_start(0, 1).unwrap();
+        assert_eq!(first.evidence().t_star_ms, 1_000.0);
+        assert!(first
+            .evidence()
+            .requests
+            .iter()
+            .all(|request| !request.historical));
+        assert_ne!(first.evidence().cache_id, recycled.evidence().cache_id);
+        assert_ne!(
+            first.materialize_prefix("before", 128).unwrap(),
+            recycled.materialize_prefix("before", 128).unwrap()
+        );
+        assert_eq!(
+            first.materialize_prefix("before", 65).unwrap(),
+            first.materialize_prefix("after", 128).unwrap()[..65]
+        );
+        let mut driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
+            32,
+            true,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(driver.total_turns(), 2);
+        assert_eq!(driver.next_ready_time_ms(), Some(0.0));
+    }
 }

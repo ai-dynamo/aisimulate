@@ -110,6 +110,10 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             )
         })?);
     }
+    let recorded_starts = raw_rows
+        .iter()
+        .filter_map(|raw| raw.timestamp.map(|start| (raw.request_id.clone(), start)))
+        .collect::<FxHashMap<_, _>>();
     let mut rows = raw_rows
         .into_iter()
         .map(|raw| -> Result<AgenticMooncakeRow> {
@@ -170,7 +174,7 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
         })
         .collect::<Result<Vec<_>>>()?;
     assign_dependency_component_play_ids(&mut rows, "legacy-play");
-    AgenticTrace::from_agentic_mooncake_rows(
+    let mut graph = AgenticTrace::from_agentic_mooncake_rows(
         AgenticMooncakeHeader {
             schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
             version: AGENTIC_MOONCAKE_VERSION,
@@ -182,7 +186,15 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             },
         },
         rows,
-    )
+    )?;
+    // Dependent requests execute relative to completion, but snapshots need
+    // their original starts. Legacy rows do not record completion timestamps.
+    for node in &mut graph.nodes {
+        node.recorded_interval_ms = recorded_starts
+            .get(&node.request_id)
+            .map(|&start| (start, None));
+    }
+    Ok(graph)
 }
 
 pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRow], prefix: &str) {
@@ -1440,6 +1452,7 @@ impl AgenticTraceBuilder {
             hash_ids,
             not_before_ms: raw.not_before_ms,
             recorded_api_time_ms: raw.recorded_api_time_ms,
+            recorded_interval_ms: None,
             priority: raw.priority.unwrap_or(0),
             strict_priority: raw.strict_priority.unwrap_or(0),
             policy_class: raw.policy_class,

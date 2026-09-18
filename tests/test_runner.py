@@ -1397,3 +1397,74 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(trace_format: str) -> None:
+    evidence = [{"seed": 2**64 - 1, "lane_id": "lane:0", "t_star_ms": 50.0}]
+
+    class SnapshotRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | {"agentic_snapshots": evidence})
+
+    runtime = SnapshotRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": trace_format,
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 2**64 - 1},
+                }
+            )
+        )
+    )
+    assert runtime.execution_spec["traffic"]["agentic_snapshot"] == {"seed": 2**64 - 1}
+    assert report.metadata["agentic_snapshots"] == evidence
+    assert "native_report" not in report.metadata
+
+
+@pytest.mark.parametrize("snapshot", [{}, {"seed": True}, {"seed": -1}, {"seed": 2**64}, {"seed": 1, "extra": 0}])
+def test_agentic_snapshot_runner_rejects_untyped_invalid_options(snapshot: dict) -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_snapshot"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": snapshot,
+                }
+            )
+        )
+    assert runtime.execution_spec is None
+
+
+def test_agentic_snapshot_capability_is_explicit() -> None:
+    from dataclasses import replace
+
+    factory = EngineReplayRunnerFactory()
+    assert factory.capabilities().supports_agentic_snapshots
+    capabilities = replace(factory.capabilities(), supports_agentic_snapshots=False)
+    with pytest.raises(ValueError, match="does not support agentic snapshots"):
+        capabilities.require_compatible(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                }
+            )
+        )
