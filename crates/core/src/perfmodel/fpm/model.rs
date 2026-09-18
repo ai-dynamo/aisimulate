@@ -316,6 +316,8 @@ impl ForwardPassPerfModel {
             },
             options,
             last_warning: None,
+            provenance: None,
+            is_correction_enabled: true,
         })
     }
 
@@ -636,6 +638,7 @@ impl ForwardPassPerfModel {
                     retained_observations: corrections.observation_count(),
                     correction_ready_buckets: ready_buckets,
                     last_warning: self.last_warning.clone(),
+                    provenance: self.provenance.clone(),
                 }
             }
         }
@@ -744,7 +747,7 @@ impl ForwardPassPerfModel {
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
-            ForwardPassPerfMode::Regression { .. } => None,
+            ForwardPassPerfMode::Regression { .. } | ForwardPassPerfMode::Learned { .. } => None,
         }
     }
 
