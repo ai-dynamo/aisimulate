@@ -127,6 +127,34 @@ serving/frontend work, but aggregate logs cannot split that interval. Neither
 explains a quantified share of the residual without a matched R1 trace.
 Do not transfer the earlier DeepSeek-V4 trace's overhead number to R1.
 
+### Collector-path clarification
+
+A phase-level rule cannot be applied to every collector. The full SGLang MLA
+module collector does use eager prefill and graph decode (subject to decode
+coverage). Its normal context path sets `use_module_cuda_graph=False` and times
+back-to-back eager calls. The separate standalone MLA collector calls
+`benchmark_with_power` without overriding `use_cuda_graph=True`; the outer
+benchmark captures the operation even though mock server args disable the
+runtime's own graphs. GEMM/MoE microbenchmarks also use that graph default and
+do not apply a universal prefill/decode switch.
+
+Crucially, inspecting the **original installed replay wheel** at `2cfe6f83`
+with `get_database(system, "sglang", "0.5.14")` and
+`MLAModule.load_data(database)` gives empty context and generation module views
+for both `b200_sxm` and `b300_sxm`. Thus `context_mla_block` in the per-op report
+is a fallback wrapper name, not proof of a module-table hit: these predictions
+use the granular projection/MLA path. Both profile sidecars pin the refreshed
+`context_mla_perf` collector to `35b5292364a0c8d004d3450af27f6259a17aa668`, whose
+`collect_mla.py::benchmark_layer` uses the outer graph-enabled benchmark.
+
+The user's eager-prefill/graph-decode description is correct for the full module
+collector. The broader claim that all prefill profiles use graphs is incorrect.
+The narrower graph-versus-eager exposure is established for the standalone MLA
+path used here; historical GEMM/MoE row provenance remains partly unresolved.
+This does not quantify the TTFT contribution or justify adding a blanket CPU
+launch penalty. No performance data, runtime behavior, or reported MAPE changes
+in this clarification.
+
 The next discriminating measurement is a warm single-request R1 prefill with
 per-request stage timestamps and all-rank CUDA/CPU tracing, starting with B200
 FP8 TP8 at 1k and 8k. Compare selected op costs with the forward critical path;
