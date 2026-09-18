@@ -42,6 +42,17 @@ def prediction_to_replay_spec(
 
 
 def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
+    # Resolve once before lowering capacity, timing, and provenance. Omitting
+    # the version otherwise reaches stale replay defaults that the bundled
+    # database no longer accepts. Fully synthetic workers need no database.
+    workers = (engine.workers.aggregated, engine.workers.prefill, engine.workers.decode)
+    if engine.backend_version is None and any(
+        worker is not None and (worker.timing.type == "default" or worker.kv_cache.capacity.type == "default")
+        for worker in workers
+    ):
+        from .sweeper.kv_estimate import resolve_backend_version
+
+        engine = engine.model_copy(update={"backend_version": resolve_backend_version(engine.hardware, engine.backend)})
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     common: dict[str, Any] = {
         "deployment_mode": mode,
