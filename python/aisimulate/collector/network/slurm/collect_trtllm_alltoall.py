@@ -16,7 +16,7 @@ Benchmarks two NVLink-based All-to-All communication strategies:
       Single-node only.
 
 Rows are emitted in the unified ``moe_a2a`` schema consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_a2a_data`` — the same
+``aisimulate_core.sdk.operations.moe_comm.load_moe_a2a_data`` — the same
 table (and CSV header) the sglang DeepEP collector
 (``collector/wideep/sglang/collect_moe_a2a.py``) writes, whose row builder
 and sidecar finalizer this module shares. The column mapping mirrors the

@@ -32,18 +32,18 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import PerfDatabase, get_database
-from aiconfigurator_core import resolve_op_sources_report_json
-from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+from aisimulate.sdk import common
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.perf_database import PerfDatabase, get_database
+from aisimulate_core import resolve_op_sources_report_json
+from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
 def test_sglang_mla_module_manifest_and_native_sources(system):
-    systems = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems"
+    systems = Path(__file__).resolve().parents[4] / "src/aisimulate_core/systems"
     basename = "mla_context_module_perf.parquet"
     data = systems / "data" / system
     primary = data / "mla/sglang/0.5.14" / basename
@@ -452,7 +452,7 @@ def test_loaded_rows_keep_primary_and_fill_only_missing_shapes(systems_root: Pat
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     def _write_gemm_parquet(rel: str, rows: list[tuple[str, str, int, int, int, float]]) -> None:
         path = systems_root / rel
@@ -839,7 +839,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     (systems_root / "h100_sxm.yaml").write_text(
         yaml.safe_dump(
@@ -897,7 +897,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm"])
 def test_corrected_024_gemm_uses_declared_025_measurements(system):
     """Every unshadowed donor row loads; retained 0.24 primary latencies win."""
-    data = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems/data" / system
+    data = Path(__file__).resolve().parents[4] / "src/aisimulate_core/systems/data" / system
     old = pq.read_table(data / "gemm/vllm/0.24.0/gemm_perf.parquet").to_pylist()
     fresh = pq.read_table(data / "gemm/vllm/0.25.0/gemm_perf.parquet").to_pylist()
     assert all(row["gemm_dtype"] != "fp8_block" for row in old)

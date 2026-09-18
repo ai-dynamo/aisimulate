@@ -56,8 +56,8 @@ def _operation_classes() -> dict[str, type]:
     shells; ``PythonOperation`` covers the Python-side orchestration ops.
     """
     # Importing the package registers every op subclass.
-    import aiconfigurator.sdk.operations  # noqa: F401
-    from aiconfigurator.sdk.operations.base import Operation, PythonOperation
+    import aisimulate.sdk.operations  # noqa: F401
+    from aisimulate.sdk.operations.base import Operation, PythonOperation
 
     seen: set[type] = set()
     stack: list[type] = [Operation, PythonOperation]
@@ -72,13 +72,13 @@ def _operation_classes() -> dict[str, type]:
         cls.__name__: cls
         for cls in seen
         if not cls.__name__.startswith("_")
-        and (cls.__module__.startswith("aiconfigurator") or cls.__module__.endswith("_aiconfigurator_core"))
+        and (cls.__module__.startswith("aisimulate") or cls.__module__.endswith("_native"))
     }
 
 
 def test_every_operation_reaches_the_engine_or_is_exempt():
-    from aiconfigurator.sdk import engine
-    from aiconfigurator.sdk.operations.base import Operation
+    from aisimulate.sdk import engine
+    from aisimulate.sdk.operations.base import Operation
 
     classes = _operation_classes()
     engine_backed = {name for name, cls in classes.items() if issubclass(cls, Operation)}

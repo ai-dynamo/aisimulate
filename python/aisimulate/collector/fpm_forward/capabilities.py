@@ -8,14 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.models.helpers import _infer_quant_modes_from_raw_config
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk import common
+from aisimulate.sdk.models.helpers import _infer_quant_modes_from_raw_config
+from aisimulate.sdk.perf_database import (
     context_fmha_supported_modes,
     get_database,
     get_latest_database_version,
 )
-from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
 from .model_capability import ResolvedModelConfig, load_model_config, resolve_attention_source
 

@@ -18,9 +18,9 @@ import subprocess as sp
 
 import pytest
 
-from aiconfigurator.cli.api import EstimateResult, cli_estimate
-from aiconfigurator.cli.main import configure_parser as configure_cli_parser
-from aiconfigurator.sdk import common
+from aisimulate.legacy_cli.api import EstimateResult, cli_estimate
+from aisimulate.legacy_cli.main import configure_parser as configure_cli_parser
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.e2e
 
@@ -348,7 +348,7 @@ def test_agg_estimate_responds_to_common_nextn():
 
 def test_agg_estimate_resolves_lightning_nvfp4_for_hopper_before_model_construction(monkeypatch):
     """Hopper must use the weight-only MoE lane before its ops are built."""
-    import aiconfigurator.sdk.models as models
+    import aisimulate.sdk.models as models
 
     class ModelConstructionObservedError(Exception):
         pass

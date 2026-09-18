@@ -9,8 +9,8 @@ pytestmark = pytest.mark.unit
 
 
 def test_disagg_resolves_each_role_moe_comm_before_session_run(monkeypatch):
-    import aiconfigurator.cli.api as api
-    import aiconfigurator.sdk.inference_session as inference_session
+    import aisimulate.legacy_cli.api as api
+    import aisimulate.sdk.inference_session as inference_session
 
     databases = {"prefill": object(), "decode": object()}
     resolver_calls = []

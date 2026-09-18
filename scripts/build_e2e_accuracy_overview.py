@@ -21,9 +21,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
-INFERENCEX_RELEASE_URL_PREFIX = (
-    "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
-)
+INFERENCEX_RELEASE_URL_PREFIX = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
 FORBIDDEN_PUBLIC_FRAGMENTS = (
     "gitlab-master.nvidia.com",
     "linear.app/nvidia",
@@ -119,19 +117,13 @@ def _is_multinode(row: dict[str, Any]) -> bool:
     hardware = _required_text(row.get("hardware"), "hardware")
     normalized = _normalized_hardware(hardware)
     gpus_per_node = next(
-        (
-            count
-            for family, count in GPUS_PER_NODE_BY_FAMILY.items()
-            if normalized.startswith(family)
-        ),
+        (count for family, count in GPUS_PER_NODE_BY_FAMILY.items() if normalized.startswith(family)),
         None,
     )
     if gpus_per_node is None:
         is_multinode = row.get("is_multinode")
         if not isinstance(is_multinode, bool):
-            raise SnapshotError(
-                "row with unknown hardware family must provide boolean is_multinode"
-            )
+            raise SnapshotError("row with unknown hardware family must provide boolean is_multinode")
         return is_multinode
     return _total_gpus(row) > gpus_per_node
 
@@ -155,9 +147,7 @@ def _topology_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _aggregate_shape_error(
-    rows: list[dict[str, Any]], measured_field: str, prediction_field: str
-) -> float | None:
+def _aggregate_shape_error(rows: list[dict[str, Any]], measured_field: str, prediction_field: str) -> float | None:
     topologies: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         topologies[_topology_key(row)].append(row)
@@ -170,13 +160,7 @@ def _aggregate_shape_error(
             concurrency = _finite(row.get("conc"))
             measured = _finite(row.get(measured_field))
             prediction = _finite(row.get(prediction_field))
-            if (
-                concurrency is None
-                or measured is None
-                or prediction is None
-                or measured == 0
-                or prediction == 0
-            ):
+            if concurrency is None or measured is None or prediction is None or measured == 0 or prediction == 0:
                 continue
             points.append((concurrency, measured, prediction))
         points.sort(key=lambda point: point[0])
@@ -188,9 +172,7 @@ def _aggregate_shape_error(
         for _, measured, prediction in points[1:]:
             measured_shape = measured / anchor_measured
             prediction_shape = prediction / anchor_prediction
-            errors.append(
-                abs((prediction_shape - measured_shape) / measured_shape) * 100
-            )
+            errors.append(abs((prediction_shape - measured_shape) / measured_shape) * 100)
         weighted_error += sum(errors)
         comparison_count += len(errors)
 
@@ -216,9 +198,7 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
         assert predicted_ttft is not None
         assert predicted_tpot is not None
         if measured_ttft == 0 or measured_tpot == 0:
-            raise SnapshotError(
-                "accuracy inputs must not contain zero measured latency"
-            )
+            raise SnapshotError("accuracy inputs must not contain zero measured latency")
         eligible_rows.append(row)
         ttft_errors.append(_absolute_percentage_error(predicted_ttft, measured_ttft))
         tpot_errors.append(_absolute_percentage_error(predicted_tpot, measured_tpot))
@@ -227,12 +207,8 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
         "points": len(eligible_rows),
         "ttft_mape_pct": _round_metric(_mean(ttft_errors)),
         "tpot_mape_pct": _round_metric(_mean(tpot_errors)),
-        "ttft_shape_error_pct": _round_metric(
-            _aggregate_shape_error(rows, "silicon_ttft_ms", f"{prefix}_ttft_ms")
-        ),
-        "tpot_shape_error_pct": _round_metric(
-            _aggregate_shape_error(rows, "silicon_tpot_ms", f"{prefix}_tpot_ms")
-        ),
+        "ttft_shape_error_pct": _round_metric(_aggregate_shape_error(rows, "silicon_ttft_ms", f"{prefix}_ttft_ms")),
+        "tpot_shape_error_pct": _round_metric(_aggregate_shape_error(rows, "silicon_tpot_ms", f"{prefix}_tpot_ms")),
     }
 
 
@@ -248,21 +224,14 @@ def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 def _identity_summary(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
     return {
-        "gpu_skus": sorted(
-            {_required_text(row.get("hardware"), "hardware") for row in rows}
-        ),
-        "frameworks": sorted(
-            {_required_text(row.get("framework"), "framework") for row in rows}
-        ),
-        "precisions": sorted(
-            {_required_text(row.get("precision"), "precision") for row in rows}
-        ),
+        "gpu_skus": sorted({_required_text(row.get("hardware"), "hardware") for row in rows}),
+        "frameworks": sorted({_required_text(row.get("framework"), "framework") for row in rows}),
+        "precisions": sorted({_required_text(row.get("precision"), "precision") for row in rows}),
         "workloads": sorted(
             {
                 f"{int(row['isl'])}:{int(row['osl'])}"
                 for row in rows
-                if _finite(row.get("isl")) is not None
-                and _finite(row.get("osl")) is not None
+                if _finite(row.get("isl")) is not None and _finite(row.get("osl")) is not None
             },
             key=lambda value: tuple(int(part) for part in value.split(":")),
         ),
@@ -271,9 +240,7 @@ def _identity_summary(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
 
 def _workload_label(workload: str) -> str:
     def short_length(value: int) -> str:
-        return (
-            f"{value // 1024}k" if value >= 1024 and value % 1024 == 0 else str(value)
-        )
+        return f"{value // 1024}k" if value >= 1024 and value % 1024 == 0 else str(value)
 
     input_tokens, output_tokens = (int(part) for part in workload.split(":"))
     return f"{short_length(input_tokens)}{short_length(output_tokens)}"
@@ -369,7 +336,7 @@ def _aic_source(
         or not isinstance(source.get("commit_sha"), str)
         or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
         or source["commit_sha"] != predictions.get("aic_commit_sha")
-        or runtime.get("cli_entry_point") != "aiconfigurator.main:main"
+        or runtime.get("cli_entry_point") != "aisimulate.legacy_cli.entrypoint:main"
     ):
         raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISimulate checkout")
     if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
@@ -382,11 +349,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     workloads = []
     for workload in identities["workloads"]:
         input_tokens, output_tokens = (int(part) for part in workload.split(":"))
-        workload_rows = [
-            row
-            for row in rows
-            if row.get("isl") == input_tokens and row.get("osl") == output_tokens
-        ]
+        workload_rows = [row for row in rows if row.get("isl") == input_tokens and row.get("osl") == output_tokens]
         statuses = _status_counts(workload_rows)
         gpu_summaries = []
         for gpu in sorted({str(row["hardware"]) for row in workload_rows}):
@@ -403,9 +366,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
                         **_series_metrics(gpu_rows, "dynamo"),
                         "status_counts": gpu_statuses,
                         "coverage_pct": _round_metric(
-                            gpu_statuses["success"] / len(gpu_rows) * 100
-                            if gpu_rows
-                            else None
+                            gpu_statuses["success"] / len(gpu_rows) * 100 if gpu_rows else None
                         ),
                     },
                 }
@@ -422,9 +383,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
                     **_series_metrics(workload_rows, "dynamo"),
                     "status_counts": statuses,
                     "coverage_pct": _round_metric(
-                        statuses["success"] / len(workload_rows) * 100
-                        if workload_rows
-                        else None
+                        statuses["success"] / len(workload_rows) * 100 if workload_rows else None
                     ),
                 },
                 "gpus": gpu_summaries,
@@ -459,14 +418,10 @@ def _validate_inputs(
     metadata: dict[str, Any],
     coverage: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    release_tag = _required_text(
-        predictions.get("release_tag"), "predictions.release_tag"
-    )
+    release_tag = _required_text(predictions.get("release_tag"), "predictions.release_tag")
     for name, document in (("metadata", metadata), ("coverage", coverage)):
         if document.get("release_tag") != release_tag:
-            raise SnapshotError(
-                f"{name}.release_tag does not match predictions.release_tag"
-            )
+            raise SnapshotError(f"{name}.release_tag does not match predictions.release_tag")
 
     rows = predictions.get("rows")
     if not isinstance(rows, list) or not rows:
@@ -476,17 +431,11 @@ def _validate_inputs(
     if metadata.get("point_count") != len(rows):
         raise SnapshotError("metadata.point_count does not match predictions.rows")
     if coverage.get("final_unique_groups") != len(rows):
-        raise SnapshotError(
-            "coverage.final_unique_groups does not match predictions.rows"
-        )
+        raise SnapshotError("coverage.final_unique_groups does not match predictions.rows")
     if metadata.get("aic_commit_sha") != predictions.get("aic_commit_sha"):
-        raise SnapshotError(
-            "metadata.aic_commit_sha does not match predictions.aic_commit_sha"
-        )
+        raise SnapshotError("metadata.aic_commit_sha does not match predictions.aic_commit_sha")
     if coverage.get("aic_commit_sha") != predictions.get("aic_commit_sha"):
-        raise SnapshotError(
-            "coverage.aic_commit_sha does not match predictions.aic_commit_sha"
-        )
+        raise SnapshotError("coverage.aic_commit_sha does not match predictions.aic_commit_sha")
 
     status_counts = {"success": 0, "unsupported": 0, "failed": 0}
     for row in rows:
@@ -508,22 +457,15 @@ def _validate_inputs(
         has_ttft = _finite(row.get("dynamo_ttft_ms")) is not None
         has_tpot = _finite(row.get("dynamo_tpot_ms")) is not None
         if has_ttft != has_tpot:
-            raise SnapshotError(
-                "AISimulate TTFT and TPOT must be present or absent together"
-            )
+            raise SnapshotError("AISimulate TTFT and TPOT must be present or absent together")
         if has_ttft and (row["dynamo_ttft_ms"] <= 0 or row["dynamo_tpot_ms"] <= 0):
             raise SnapshotError("successful AISimulate latencies must be positive")
         if status == "success" and not has_ttft:
             raise SnapshotError("successful AISimulate row is missing latency metrics")
         if status != "success" and has_ttft:
             raise SnapshotError("non-success AISimulate row contains latency metrics")
-        if (
-            status == "success"
-            and row.get("aisimulate_runner") != "aisimulate.engine_replay"
-        ):
-            raise SnapshotError(
-                "successful row does not identify the public AISimulate runner"
-            )
+        if status == "success" and row.get("aisimulate_runner") != "aisimulate.engine_replay":
+            raise SnapshotError("successful row does not identify the public AISimulate runner")
 
     aisimulate_run = metadata.get("aisimulate_run")
     if not isinstance(aisimulate_run, dict):
@@ -531,9 +473,7 @@ def _validate_inputs(
     expected_counts = {"selected": len(rows), **status_counts}
     for field, expected in expected_counts.items():
         if aisimulate_run.get(field) != expected:
-            raise SnapshotError(
-                f"metadata.aisimulate_run.{field} does not match prediction rows"
-            )
+            raise SnapshotError(f"metadata.aisimulate_run.{field} does not match prediction rows")
     return rows
 
 
@@ -550,12 +490,8 @@ def build_summary(
     all_rows = _validate_inputs(predictions, metadata, coverage)
     expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
     if source_url != expected_source_url:
-        raise SnapshotError(
-            "source URL does not match the validated predictions.release_tag"
-        )
-    scoped_rows = [
-        row for row in all_rows if not (exclude_multinode and _is_multinode(row))
-    ]
+        raise SnapshotError("source URL does not match the validated predictions.release_tag")
+    scoped_rows = [row for row in all_rows if not (exclude_multinode and _is_multinode(row))]
     if not scoped_rows:
         raise SnapshotError("no rows remain after applying the publication scope")
 
@@ -566,10 +502,7 @@ def build_summary(
     statuses = _status_counts(scoped_rows)
     identities = _identity_summary(scoped_rows)
     aisimulate_run = metadata.get("aisimulate_run")
-    if (
-        not isinstance(aisimulate_run, dict)
-        or aisimulate_run.get("status") != "complete"
-    ):
+    if not isinstance(aisimulate_run, dict) or aisimulate_run.get("status") != "complete":
         raise SnapshotError("metadata.aisimulate_run must be complete")
     runtime = aisimulate_run.get("runtime")
     if not isinstance(runtime, dict):
@@ -596,8 +529,7 @@ def build_summary(
             "corrections": sorted(
                 correction["id"]
                 for correction in aisimulate_run.get("corrections", [])
-                if isinstance(correction, dict)
-                and isinstance(correction.get("id"), str)
+                if isinstance(correction, dict) and isinstance(correction.get("id"), str)
             ),
         },
         "scope": {
@@ -621,15 +553,10 @@ def build_summary(
             "aisimulate": {
                 **_series_metrics(scoped_rows, "dynamo"),
                 "status_counts": statuses,
-                "coverage_pct": _round_metric(
-                    statuses["success"] / len(scoped_rows) * 100
-                ),
+                "coverage_pct": _round_metric(statuses["success"] / len(scoped_rows) * 100),
             },
         },
-        "models": [
-            _model_summary(model, by_model[model])
-            for model in sorted(by_model, key=str.casefold)
-        ],
+        "models": [_model_summary(model, by_model[model]) for model in sorted(by_model, key=str.casefold)],
     }
     revision = _evaluated_revision(runtime, branch)
     if revision is not None:
@@ -651,9 +578,7 @@ def build_summary(
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
         if fragment in serialized:
-            raise SnapshotError(
-                f"public output contains forbidden fragment: {fragment}"
-            )
+            raise SnapshotError(f"public output contains forbidden fragment: {fragment}")
     return result
 
 

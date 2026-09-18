@@ -166,7 +166,7 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
         "status": "complete",
         "runtime": {
             "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
-            "cli_entry_point": "aiconfigurator.main:main",
+            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
         },
     }
     for document in (predictions, metadata, coverage):

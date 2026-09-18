@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.perf_database import _load_collection_meta_yaml
+from aisimulate.sdk.perf_database import _load_collection_meta_yaml
 
 pytestmark = pytest.mark.unit
 
@@ -107,7 +107,7 @@ def test_v2_event_runtime_rejects_unknown_fields(tmp_path):
 
 
 def test_b300_gemm_healing_distinguishes_shipped_rows_from_attempted_neighbors():
-    path = REPO_ROOT / "src/aiconfigurator_core/systems/data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml"
+    path = REPO_ROOT / "src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml"
 
     document = _load_collection_meta_yaml(str(path))
     healing_events = document["tables"]["gemm_perf"]["collections"][1:]

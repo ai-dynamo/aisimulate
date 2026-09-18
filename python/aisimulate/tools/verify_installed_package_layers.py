@@ -72,16 +72,15 @@ def _verify_payload() -> None:
         (
             "aisimulate/__init__.py",
             "aisimulate_core/__init__.py",
-            "aiconfigurator/cli/main.py",
-            "aiconfigurator/generator/api.py",
-            "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
-            "aiconfigurator_core/__init__.py",
-            "aiconfigurator_core/_aiconfigurator_core.py",
-            "aiconfigurator_core/_aiconfigurator_core.pyi",
-            "aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
-            "aiconfigurator_core/sdk/engine.py",
-            "aiconfigurator_core/sdk/memory.py",
-            "aiconfigurator_core/systems/h100_sxm.yaml",
+            "aisimulate/legacy_cli/main.py",
+            "aisimulate/generator/api.py",
+            "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
+            "aisimulate_core/_native.py",
+            "aisimulate_core/_native.pyi",
+            "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+            "aisimulate_core/sdk/engine.py",
+            "aisimulate_core/sdk/memory.py",
+            "aisimulate_core/systems/h100_sxm.yaml",
             "collector/__init__.py",
             "collector/model_cases.py",
             "collector/cases/base_ops/mla_module.yaml",
@@ -105,7 +104,7 @@ def _verify_payload() -> None:
         ),
     )
 
-    resources = importlib.resources.files("aiconfigurator_core")
+    resources = importlib.resources.files("aisimulate_core")
     required_resources = (
         resources / "model_configs" / "meta-llama--Meta-Llama-3.1-8B_config.json",
         resources / "systems" / "h100_sxm.yaml",
@@ -121,17 +120,17 @@ def _verify_payload() -> None:
 
 def _verify_imports() -> None:
     runtime = importlib.import_module("aisimulate._runtime")
-    compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
-    core = importlib.import_module("aiconfigurator_core")
-    stable = importlib.import_module("aisimulate_core")
+    compatibility_runtime = importlib.import_module("aisimulate_core._native")
+    core = importlib.import_module("aisimulate_core")
     importlib.import_module("collector")
     importlib.import_module("collector.fpm_forward")
     if core.AicEngine is not runtime.AicEngine or compatibility_runtime.AicEngine is not runtime.AicEngine:
-        raise RuntimeError("AicEngine identity differs across unified compatibility namespaces")
-    if stable.AicEngine is not runtime.AicEngine:
-        raise RuntimeError("aisimulate_core does not re-export the unified native AicEngine")
+        raise RuntimeError("AicEngine identity differs across canonical native bindings")
+    for name in ("aiconfigurator", "aiconfigurator_core"):
+        if importlib.util.find_spec(name) is not None:
+            raise RuntimeError(f"removed legacy import namespace is still installed: {name}")
 
-    sdk = importlib.import_module("aiconfigurator_core.sdk")
+    sdk = importlib.import_module("aisimulate_core.sdk")
     expected_facade = {
         "AttentionBackend",
         "EngineHandle",
@@ -146,15 +145,15 @@ def _verify_imports() -> None:
         "estimate_num_gpu_blocks",
     }
     if set(sdk.__all__) != expected_facade:
-        raise RuntimeError(f"unexpected aiconfigurator_core.sdk facade: {sdk.__all__!r}")
+        raise RuntimeError(f"unexpected aisimulate_core.sdk facade: {sdk.__all__!r}")
     for module_name, public_name in (
         ("engine", "EngineHandle"),
         ("memory", "estimate_kv_cache"),
         ("rust_engine_step", "ForwardPassPerfModelConfig"),
         ("rust_engine_step", "ForwardPassPerfOptions"),
     ):
-        canonical = importlib.import_module(f"aiconfigurator_core.sdk.{module_name}")
-        legacy = importlib.import_module(f"aiconfigurator.sdk.{module_name}")
+        canonical = importlib.import_module(f"aisimulate_core.sdk.{module_name}")
+        legacy = importlib.import_module(f"aisimulate.sdk.{module_name}")
         if getattr(sdk, public_name) is not getattr(canonical, public_name):
             raise RuntimeError(f"SDK facade export {public_name} lost object identity")
         if legacy is not canonical or getattr(legacy, public_name) is not getattr(canonical, public_name):
@@ -162,7 +161,7 @@ def _verify_imports() -> None:
 
 
 def _exercise_engine() -> None:
-    from aiconfigurator_core.sdk.engine import EngineHandle
+    from aisimulate_core.sdk.engine import EngineHandle
 
     engine = EngineHandle.compile(
         "MiniMaxAI/MiniMax-M2.5",
@@ -380,9 +379,7 @@ def main() -> int:
         _exercise_engine()
     if args.exercise_fpe:
         _exercise_fpe_matrix()
-    print(
-        f"Verified unified aisimulate {wheel_version}: application, compatibility SDKs, resources, and native runtime"
-    )
+    print(f"Verified unified aisimulate {wheel_version}: application, canonical SDKs, resources, and native runtime")
     return 0
 
 

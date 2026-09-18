@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from collector import provenance
 from collector.wideep.vllm.finalize_campaign import SYSTEM_GPU_IDENTITIES, SYSTEM_LAYOUTS
 

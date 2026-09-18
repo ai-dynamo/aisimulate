@@ -30,13 +30,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.backends.base_backend import BaseBackend
-from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator_core.sdk.rust_engine_step import _engine_config_json, should_use_rust_engine_step
-from aiconfigurator_core.sdk.speculation import DraftOpSpec, NullScheme, SpeculationConfig
-from aiconfigurator_core.sdk.speculation.materialize import materialize_spec_scheme
-from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.backends.base_backend import BaseBackend
+from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate_core.sdk.rust_engine_step import _engine_config_json, should_use_rust_engine_step
+from aisimulate_core.sdk.speculation import DraftOpSpec, NullScheme, SpeculationConfig
+from aisimulate_core.sdk.speculation.materialize import materialize_spec_scheme
+from aisimulate_core.sdk.speculation.mtp import MTPScheme
 
 
 class _RecordingOp:
@@ -207,7 +207,7 @@ class TestAttentionWidthChannel:
 
     @staticmethod
     def _gen_attention(name="generation_attention"):
-        from aiconfigurator_core.sdk.operations.attention import GenerationAttention
+        from aisimulate_core.sdk.operations.attention import GenerationAttention
 
         return GenerationAttention(name, 1.0, n=32, n_kv=8, kv_cache_dtype=common.KVCacheQuantMode.bfloat16)
 
@@ -356,7 +356,7 @@ def test_native_attention_preserves_positional_options_and_keyword_widths(round_
     import copy
     import pickle
 
-    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
+    from aisimulate_core.sdk.operations.attention import GenerationAttention
 
     op = GenerationAttention(
         "draft_attention",
@@ -387,7 +387,7 @@ def test_native_attention_preserves_positional_options_and_keyword_widths(round_
 
 @pytest.fixture(scope="module")
 def real_database():
-    from aiconfigurator_core.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.perf_database import get_database_view
 
     return get_database_view("h100_sxm", "vllm", "0.24.0")
 
@@ -396,8 +396,8 @@ def real_database():
 @pytest.mark.parametrize("draft_count", [1, 3, 7])
 @pytest.mark.parametrize("batch_size", [1, 512])
 def test_every_standalone_draft_op_matches_independent_decode(real_database, draft_count, batch_size):
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
     cfg = _model_config()
     cfg.tp_size = 2  # Includes communication ops with nonlinear size costs.
@@ -429,10 +429,10 @@ def test_every_standalone_draft_op_matches_independent_decode(real_database, dra
 def test_every_tree_draft_op_queries_its_own_width(real_database, tree_shape, batch_size):
     import copy
 
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.operations.attention import GenerationAttention
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
     from .test_dense_draft_schemes import EAGLE3_CONFIG
 
@@ -476,8 +476,8 @@ def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_data
     import copy
     import dataclasses
 
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
 
     from .test_dense_draft_schemes import EAGLE3_CONFIG
 
@@ -522,9 +522,9 @@ def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, 
     import copy
     import pickle
 
-    from aiconfigurator_core.sdk.engine import build_ops_json
-    from aiconfigurator_core.sdk.operations.gemm import GEMM
-    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+    from aisimulate_core.sdk.engine import build_ops_json
+    from aisimulate_core.sdk.operations.gemm import GEMM
+    from aisimulate_core.sdk.speculation.materialize import _fold_width
 
     baseline = GEMM("draft_gemm", 1.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
     folded = copy.copy(baseline)
@@ -540,7 +540,7 @@ def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, 
 @pytest.mark.unit
 @pytest.mark.parametrize("tokens,width", [(0, 6), (5, 0), (-1, 6), (5, 1.5), (True, 6)])
 def test_materialize_rejects_invalid_draft_width(tokens, width):
-    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+    from aisimulate_core.sdk.speculation.materialize import _fold_width
 
     with pytest.raises(ValueError, match="positive integer"):
         _fold_width(_RecordingOp("draft"), tokens, width)
@@ -548,9 +548,9 @@ def test_materialize_rejects_invalid_draft_width(tokens, width):
 
 @pytest.mark.unit
 def test_draft_query_wrapper_does_not_hide_retired_native_ops():
-    from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
-    from aiconfigurator_core.sdk.operations.moe import MoEDispatch
-    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+    from aisimulate_core.sdk.engine import OpConversionError, build_ops_json
+    from aisimulate_core.sdk.operations.moe import MoEDispatch
+    from aisimulate_core.sdk.speculation.materialize import _fold_width
 
     op = MoEDispatch("draft_retired", 1.0, 7168, 8, 256, 1, 16, 1, False, backend="sglang", moe_backend="deepep_moe")
     _fold_width(op, 1, 4)
@@ -560,8 +560,8 @@ def test_draft_query_wrapper_does_not_hide_retired_native_ops():
 
 @pytest.mark.unit
 def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
-    from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
-    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+    from aisimulate_core.sdk.engine import OpConversionError, build_ops_json
+    from aisimulate_core.sdk.speculation.materialize import _fold_width
 
     op = _RecordingOp("draft_unsupported")
     _fold_width(op, 1, 4)
@@ -573,9 +573,9 @@ def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
 @pytest.mark.parametrize("draft_path", ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
 @pytest.mark.parametrize("draft_count", [1, 3])
 def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real_database, draft_path, draft_count):
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.operations.overlap import OverlapOp
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.operations.overlap import OverlapOp
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
     independent = get_model(draft_path, _model_config(), "vllm")
     target = get_model(
@@ -622,8 +622,8 @@ def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real
 def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_tokens, gen_requests, prefix):
     import math
 
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
     from .test_dense_draft_schemes import EAGLE3_CONFIG
 
@@ -688,12 +688,12 @@ def _assert_public_mixed_rows(estimate, native):
 @pytest.mark.parametrize("database_mode", ["SILICON", "SOL"])
 @pytest.mark.parametrize("draft", ["eagle3", "Qwen/Qwen3-0.6B", "Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
 def test_public_mixed_draft_names_values_and_sources_match_native(draft, database_mode, gen_requests):
-    from aiconfigurator.sdk.inference_session import InferenceSession
-    from aiconfigurator_core.sdk.backends.factory import get_backend
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.perf_database import get_database_view
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
-    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.backends.factory import get_backend
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.step_estimate import MixedStepInput
 
     from .test_dense_draft_schemes import EAGLE3_CONFIG
 
@@ -724,11 +724,11 @@ def test_public_mixed_draft_names_values_and_sources_match_native(draft, databas
 @pytest.mark.parametrize("gen_requests", [0, 7])
 @pytest.mark.parametrize("depth", [0, 2])
 def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, gen_requests, depth):
-    from aiconfigurator.sdk.inference_session import InferenceSession
-    from aiconfigurator_core.sdk.backends.factory import get_backend
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
-    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.backends.factory import get_backend
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.step_estimate import MixedStepInput
 
     config = _model_config()
     config.nextn = depth
@@ -748,12 +748,12 @@ def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, g
 
 @pytest.mark.integration
 def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_database, monkeypatch):
-    from aiconfigurator.sdk.inference_session import InferenceSession
-    from aiconfigurator_core.sdk import rust_engine_step
-    from aiconfigurator_core.sdk.backends.factory import get_backend
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.performance_result import MoECommFallback
-    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk import rust_engine_step
+    from aisimulate_core.sdk.backends.factory import get_backend
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.performance_result import MoECommFallback
+    from aisimulate_core.sdk.step_estimate import MixedStepInput
 
     context_fallback = ("context", "deepep_ht", 32, 8, 8, 1)
     generation_fallback = ("generation", "deepep_ll", 32, 8, 4, 1)
@@ -790,14 +790,14 @@ def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_data
 def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests):
     import copy
 
-    from aiconfigurator.sdk.inference_session import InferenceSession
-    from aiconfigurator_core.sdk.backends.factory import get_backend
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.operations import MoEAllToAll
-    from aiconfigurator_core.sdk.perf_database import get_database_view
-    from aiconfigurator_core.sdk.performance_result import MoECommFallback
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
-    from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.backends.factory import get_backend
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.operations import MoEAllToAll
+    from aisimulate_core.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.performance_result import MoECommFallback
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+    from aisimulate_core.sdk.step_estimate import MixedStepInput
 
     config = ModelConfig(
         tp_size=1,
@@ -852,13 +852,13 @@ def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(rea
     import copy
     import pickle
 
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op, build_ops_json
-    from aiconfigurator_core.sdk.errors import SolNotImplementedError
-    from aiconfigurator_core.sdk.models import get_model
-    from aiconfigurator_core.sdk.operations.gemm import GEMM
-    from aiconfigurator_core.sdk.operations.overlap import FallbackOp, OverlapOp
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
-    from aiconfigurator_core.sdk.speculation.draft_model import DraftModelScheme
+    from aisimulate_core.sdk.engine import _evaluate_single_op, build_ops_json
+    from aisimulate_core.sdk.errors import SolNotImplementedError
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.operations.gemm import GEMM
+    from aisimulate_core.sdk.operations.overlap import FallbackOp, OverlapOp
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.speculation.draft_model import DraftModelScheme
 
     leaf = GEMM("gemm", 2.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
     composite = FallbackOp(
@@ -917,8 +917,8 @@ def test_query_overrides_fail_before_mutating_either_phase(phase):
 
 @pytest.mark.unit
 def test_native_scale_factor_setter_rejects_composites_and_updates_leaf():
-    from aiconfigurator_core.sdk.operations.gemm import GEMM
-    from aiconfigurator_core.sdk.operations.overlap import FallbackOp, OverlapOp
+    from aisimulate_core.sdk.operations.gemm import GEMM
+    from aisimulate_core.sdk.operations.overlap import FallbackOp, OverlapOp
 
     leaf = GEMM("leaf", 1.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
     leaf._scale_factor = 3.0

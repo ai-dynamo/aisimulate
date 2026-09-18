@@ -4,10 +4,10 @@
 //! End-to-end embedded round-trip.
 //!
 //! Drives the full Rust → Python → Rust embedded build path through
-//! [`aiconfigurator_core::AicEngineBuilder`]. It crosses into Python once to run
-//! `aiconfigurator_core.sdk.engine.compile_engine`, gets bincoded `EngineSpec`
+//! [`aisimulate_core::AicEngineBuilder`]. It crosses into Python once to run
+//! `aisimulate_core.sdk.engine.compile_engine`, gets bincoded `EngineSpec`
 //! bytes back, loads the matching perf database, and returns an
-//! [`aiconfigurator_core::AicEngine`]. The test asserts that the **pure-Rust hot
+//! [`aisimulate_core::AicEngine`]. The test asserts that the **pure-Rust hot
 //! path** produces finite, positive latencies.
 //!
 //! ## Why this proves the Mocker hot path is PyO3-free
@@ -23,14 +23,14 @@
 //! ## Run requirements
 //!
 //! Engine construction embeds a Python interpreter (PyO3 `auto-initialize`)
-//! and imports `aiconfigurator_core.sdk.engine`, which itself imports the
-//! maturin-built `aiconfigurator_core` extension. The test therefore needs
-//! `aiconfigurator_core` installed into the interpreter
+//! and imports `aisimulate_core.sdk.engine`, which itself imports the
+//! maturin-built `aisimulate_core` extension. The test therefore needs
+//! `aisimulate_core` installed into the interpreter
 //! (`uv run maturin develop -m crates/core/Cargo.toml --release --features extension-module`).
 //!
 //! The embedded interpreter (the framework libpython the test binary links) is
 //! NOT the uv venv, so it does not see the venv's installed core package or the
-//! maturin-built `aiconfigurator_core` automatically. Point it at the core
+//! maturin-built `aisimulate_core` automatically. Point it at the core
 //! source and venv site-packages via **absolute** `PYTHONPATH` entries
 //! (relative paths do not resolve under cargo's test cwd):
 //! ```text
@@ -59,11 +59,11 @@ use pyo3::prelude::*;
 const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
 
 /// Soft-skip guard: true only when the embedded interpreter can import the
-/// `aiconfigurator_core.sdk.engine` module (which transitively imports the
-/// maturin-built `aiconfigurator_core`). Returns false otherwise so the test
+/// `aisimulate_core.sdk.engine` module (which transitively imports the
+/// maturin-built `aisimulate_core`). Returns false otherwise so the test
 /// passes without running the assertions on a bare `cargo test`.
 fn python_engine_importable() -> bool {
-    Python::with_gil(|py| match py.import("aiconfigurator_core.sdk.engine") {
+    Python::with_gil(|py| match py.import("aisimulate_core.sdk.engine") {
         Ok(_) => true,
         Err(e) => {
             let exe: String = py
@@ -84,12 +84,12 @@ fn embedded_builder_round_trip() {
         assert!(
             !required,
             "embedded_round_trip: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
-             `aiconfigurator_core.sdk.engine` is not importable — run after \
+             `aisimulate_core.sdk.engine` is not importable — run after \
              `maturin develop` with PYTHONPATH including aic-core/src, the venv \
              site-packages."
         );
         eprintln!(
-            "embedded_round_trip: SKIP — `aiconfigurator_core.sdk.engine` not importable. \
+            "embedded_round_trip: SKIP — `aisimulate_core.sdk.engine` not importable. \
              Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
         );
         return;

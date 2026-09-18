@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .aic import resolve_model_context_length
+from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (

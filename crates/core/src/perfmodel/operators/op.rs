@@ -127,12 +127,12 @@ pub enum Op {
     /// `WideEPDeepSeekModel` variant.
     WideEpGenerationMla(WideEpGenerationMlaOp),
     /// Two op groups that execute in parallel on different CUDA streams.
-    /// Mirrors Python `aiconfigurator.sdk.operations.overlap.OverlapOp`:
+    /// Mirrors Python `aisimulate.sdk.operations.overlap.OverlapOp`:
     /// `latency = max(sum(group_a), sum(group_b))`.
     Overlap(OverlapOp),
     /// Try a primary op; on perf-DB miss, fall back to summing a list of
     /// granular ops. Mirrors Python
-    /// `aiconfigurator.sdk.operations.overlap.FallbackOp`: supports the
+    /// `aisimulate.sdk.operations.overlap.FallbackOp`: supports the
     /// transitional state where some systems have module-level profiling
     /// data and others still ship per-kernel granular data.
     Fallback(FallbackOp),

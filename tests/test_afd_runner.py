@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate.runner import (
     AFDCompanionTiming,
     AICAFDCompanionPerformanceModel,
@@ -21,6 +20,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplaySpec,
 )
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
 
 def _metadata(*phases: str) -> dict:

@@ -15,13 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends import base_backend as base_backend_module
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.perf_database import get_database_view
-from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends import base_backend as base_backend_module
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.perf_database import get_database_view
+from aisimulate.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -185,8 +185,8 @@ def test_equal_root_and_text_quantization_accepts_complete_vision_exclusions(tmp
 def test_repeated_text_only_quantized_loads_preserve_scope_and_language_modes(
     tmp_path, monkeypatch, source, language_only
 ):
-    from aiconfigurator_core.sdk import utils as utils_module
-    from aiconfigurator_core.sdk.models.helpers import _get_model_info
+    from aisimulate_core.sdk import utils as utils_module
+    from aisimulate_core.sdk.models.helpers import _get_model_info
 
     model_id = "moonshotai/Kimi-K2.5"
     raw = utils_module._load_pre_downloaded_hf_config(model_id)
@@ -419,7 +419,7 @@ def test_kimi_resize_matches_pinned_navit_processor(height, width, video, expect
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("layout", ["native", "legacy-top-level", "legacy-nested"])
 def test_checkpoint_processor_limits_reach_runtime(tmp_path, monkeypatch, remote, layout):
-    from aiconfigurator_core.sdk import utils as utils_module
+    from aisimulate_core.sdk import utils as utils_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K2.5")["raw_config"])
     if layout == "native":
@@ -533,7 +533,7 @@ def test_kimi_processor_rejects_different_effective_native_side_limits(processor
 def test_loaded_native_side_override_cannot_change_other_processor_default(
     tmp_path, monkeypatch, remote, image_processor, video_processor
 ):
-    from aiconfigurator_core.sdk import utils as utils_module
+    from aisimulate_core.sdk import utils as utils_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K2.5")["raw_config"])
     files = {

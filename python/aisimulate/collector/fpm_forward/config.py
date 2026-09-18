@@ -459,7 +459,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
 def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
     """Expose deployment-only Generator inputs without importing its stack.
 
-    Importing ``aiconfigurator.generator.api`` loads the rendering stack. That
+    Importing ``aisimulate.generator.api`` loads the rendering stack. That
     is appropriate during execution, but unnecessary for ``--plan-only`` and
     must not become a dependency of ordinary op-level collection.
     """

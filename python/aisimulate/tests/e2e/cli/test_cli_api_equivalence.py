@@ -15,7 +15,7 @@ import sys
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli import cli_default, cli_exp
+from aisimulate.legacy_cli import cli_default, cli_exp
 
 pytestmark = pytest.mark.e2e
 
@@ -99,7 +99,7 @@ class TestCLIDefaultEquivalence:
         cmd = [
             sys.executable,
             "-m",
-            "aiconfigurator.main",
+            "aisimulate.legacy_cli.entrypoint",
             "cli",
             "default",
             "--model-path",
@@ -152,7 +152,7 @@ class TestCLIExpEquivalence:
     """Tests that cli_exp API produces same results as CLI command."""
 
     # Path to a smaller example YAML file to speed up tests
-    EXAMPLE_YAML_PATH = "src/aiconfigurator/cli/exps/qwen3_32b_disagg.yaml"
+    EXAMPLE_YAML_PATH = "src/aisimulate/legacy_cli/exps/qwen3_32b_disagg.yaml"
 
     def test_cli_exp_api_vs_command_with_example_yaml(self, tmp_path):
         """cli_exp API should produce same results as running CLI command."""
@@ -169,7 +169,7 @@ class TestCLIExpEquivalence:
         cmd = [
             sys.executable,
             "-m",
-            "aiconfigurator.main",
+            "aisimulate.legacy_cli.entrypoint",
             "cli",
             "exp",
             "--yaml-path",

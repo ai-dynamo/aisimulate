@@ -10,8 +10,8 @@ import re
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.pareto_analysis import (
+from aisimulate.sdk import common
+from aisimulate.sdk.pareto_analysis import (
     _AFD_DECODE_DEGRADATION,
     _AFD_PREFILL_DEGRADATION,
     _AFD_TTFT_CORRECTION_FACTOR,
@@ -19,7 +19,7 @@ from aiconfigurator.sdk.pareto_analysis import (
     _combine_afd_row_with_static_prefill,
     _enumerate_afd_prefill_options,
 )
-from aiconfigurator.sdk.picking import pick_default
+from aisimulate.sdk.picking import pick_default
 
 pytestmark = pytest.mark.unit
 
@@ -291,16 +291,16 @@ class TestEnumerateAfdPrefillOptions:
                 )
                 return FakeSummary(model_config, runtime_config.batch_size)
 
-        monkeypatch.setattr("aiconfigurator.sdk.pareto_analysis.get_backend", lambda _name: FakeBackend())
+        monkeypatch.setattr("aisimulate.sdk.pareto_analysis.get_backend", lambda _name: FakeBackend())
         monkeypatch.setattr(
-            "aiconfigurator.sdk.pareto_analysis.get_model",
+            "aisimulate.sdk.pareto_analysis.get_model",
             lambda _model_path, model_config, _backend_name: type(
                 "FakeModel",
                 (),
                 {"model_config": copy.deepcopy(model_config)},
             )(),
         )
-        monkeypatch.setattr("aiconfigurator.sdk.pareto_analysis.InferenceSession", FakeInferenceSession)
+        monkeypatch.setattr("aisimulate.sdk.pareto_analysis.InferenceSession", FakeInferenceSession)
 
         options = _enumerate_afd_prefill_options(
             model_path="Qwen/Qwen3-32B",

@@ -119,6 +119,11 @@ explains replacements and remaining differences; the
 [legacy CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/legacy-aic-user-guide.md)
 documents retained commands.
 
+The canonical Python imports are `aisimulate` and `aisimulate_core`. AISimulate
+0.13.0 removes the `aiconfigurator` and `aiconfigurator_core` import namespaces;
+see the [Python source migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/python-source-migration.md)
+for replacement imports. The legacy executable remains available as described above.
+
 When upgrading from standalone AIConfigurator, remove the old distributions first
 so that AISimulate owns the installed files:
 

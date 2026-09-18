@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from collector import provenance
 
 pytestmark = pytest.mark.unit

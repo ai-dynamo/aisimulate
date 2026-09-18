@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .aic import (
+from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
@@ -74,7 +74,7 @@ def prediction_to_replay_spec(
 def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
     if deployment.backend_version not in {"current", "previous", "next"}:
         return deployment
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     updates = {}
     metadata = dict(deployment.performance_model_metadata)
@@ -165,7 +165,7 @@ def _deployment(
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
-        from aiconfigurator_core.sdk.perf_database import load_system_spec
+        from aisimulate_core.sdk.perf_database import load_system_spec
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -463,7 +463,7 @@ def _worker_engine_args(
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
-        from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 

@@ -14,7 +14,6 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-
 from collector.wideep.sglang.collect_moe_a2a import MoeA2AShape, PhaseTiming
 from collector.wideep.vllm import collect_moe_a2a as a2a
 
