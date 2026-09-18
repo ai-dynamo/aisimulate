@@ -96,7 +96,10 @@ artifact generation.
   [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/)
   — published accuracy evidence.
 - [Development guide](https://github.com/ai-dynamo/aisimulate/blob/main/DEVELOPMENT.md)
-  — source setup, tests, and contribution workflow.
+  — source setup and tests.
+- [Contributing](https://github.com/ai-dynamo/aisimulate/blob/main/CONTRIBUTING.md) and
+  [Code of Conduct](https://github.com/ai-dynamo/aisimulate/blob/main/CODE_OF_CONDUCT.md)
+  — contribution requirements and community guidelines.
 
 Estimator coverage is separate from serving-accuracy and deployment validation.
 Use the published evidence for your workload and verify deployment choices with
