@@ -73,6 +73,8 @@ def _run_recommendation(
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
+    if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
@@ -150,6 +152,8 @@ def recommendation_to_sweeper(
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
+    if engine.get("speculation") is not None:
+        search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
@@ -743,6 +747,8 @@ def _candidate_prediction(
         "workers": {},
     }
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    if sample.get("speculation") is not None:
+        engine["speculation"] = deepcopy(sample["speculation"])
     if deployment.encoder is not None:
         from .config.epd import encoder_prediction_fields
 

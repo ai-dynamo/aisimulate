@@ -25,7 +25,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -172,6 +172,8 @@ struct AicTimingConfig {
     #[serde(default)]
     nextn: u32,
     #[serde(default)]
+    speculation: Option<NgramTimingConfig>,
+    #[serde(default)]
     kv_block_size: Option<u32>,
     #[serde(default)]
     gpu_memory_utilization: Option<f64>,
@@ -187,11 +189,54 @@ struct AicTimingConfig {
     forward_model: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PromptLookupKind {
+    Ngram,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NgramTimingConfig {
+    kind: PromptLookupKind,
+    params: NgramTimingParams,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NgramTimingParams {
+    num_speculative_tokens: u32,
+}
+
 const fn one() -> u32 {
     1
 }
 
 impl AicTimingConfig {
+    fn speculative_depth(&self) -> Result<u32> {
+        let Some(speculation) = &self.speculation else {
+            return Ok(self.nextn);
+        };
+        ensure!(
+            self.nextn == 0,
+            "ngram speculation cannot be combined with nextn"
+        );
+        ensure!(
+            self.backend == "vllm",
+            "ngram speculation requires backend=vllm"
+        );
+        ensure!(
+            self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
+            "ngram speculation requires op_level timing"
+        );
+        let depth = speculation.params.num_speculative_tokens;
+        ensure!(
+            (1..=5).contains(&depth),
+            "ngram num_speculative_tokens must be in 1..=5"
+        );
+        Ok(depth)
+    }
+
     fn resolved_backend_version(&self) -> &str {
         self.backend_version
             .as_deref()
@@ -238,6 +283,7 @@ impl AicTimingConfig {
              moe_ep_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
+        self.speculative_depth()?;
         ensure!(
             self.moe_tp_size.is_some() == self.moe_ep_size.is_some(),
             "AIC moe_tp_size and moe_ep_size must be configured together"
@@ -301,6 +347,13 @@ impl AicTimingModel {
             kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
             kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
             kwargs.set_item("nextn", config.nextn)?;
+            if let Some(speculation) = &config.speculation {
+                let value = PyModule::import(py, "json")?.call_method1(
+                    "loads",
+                    (serde_json::to_string(speculation).expect("serializable ngram config"),),
+                )?;
+                kwargs.set_item("speculation", value)?;
+            }
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
             kwargs.set_item("forward_model", config.forward_model.as_deref())?;
@@ -572,10 +625,10 @@ fn materialize_aic_capacity(
         role.rank.block_size
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
+    let timing_depth = config.speculative_depth()?;
     ensure!(
-        config.nextn as usize == engine_nextn,
-        "AIC nextn={} does not match engine aic_nextn={engine_nextn}",
-        config.nextn
+        timing_depth as usize == engine_nextn,
+        "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
     );
     if capacity_is_explicit {
         return Ok(());
@@ -1857,6 +1910,7 @@ mod tests {
             kv_cache_dtype: None,
             comm_dtype: None,
             nextn: 0,
+            speculation: None,
             kv_block_size: None,
             gpu_memory_utilization: None,
             mem_fraction_static: None,
@@ -1864,6 +1918,41 @@ mod tests {
             cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
+        }
+    }
+
+    #[test]
+    fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
+        let mut config = aic_config();
+        config.speculation = Some(NgramTimingConfig {
+            kind: PromptLookupKind::Ngram,
+            params: NgramTimingParams {
+                num_speculative_tokens: 2,
+            },
+        });
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
+        role.rank.aic_nextn = Some(2);
+        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+        config.nextn = 2;
+        assert!(config.validate_parallel_shape().is_err());
+        config.nextn = 0;
+        config
+            .speculation
+            .as_mut()
+            .unwrap()
+            .params
+            .num_speculative_tokens = 6;
+        assert!(config.validate_parallel_shape().is_err());
+    }
+
+    #[test]
+    fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
+        for payload in [
+            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
+            serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
+        ] {
+            assert!(serde_json::from_value::<NgramTimingConfig>(payload).is_err());
         }
     }
 

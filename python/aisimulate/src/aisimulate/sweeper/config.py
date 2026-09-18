@@ -27,6 +27,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..config.engine import NgramSpeculationConfig
+
 
 class OptimizationTarget(str, Enum):
     """What the search optimizes for.
@@ -501,6 +503,7 @@ class SearchSpace(BaseModel):
     context_length: int | None = None
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    speculation: NgramSpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
     # Attention--FFN disaggregation. The A/F topology is a finite, complete
@@ -570,6 +573,23 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.speculation is not None:
+            if self.aic_nextn is not None:
+                raise ValueError("speculation cannot be combined with aic_nextn")
+            if self.backend != ["vllm"] or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode):
+                raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+            if self.encoder is not None:
+                raise ValueError("ngram speculation does not support EPD")
+            roles = []
+            if "agg" in self.deployment_mode:
+                roles.append("agg")
+            if "disagg" in self.deployment_mode:
+                roles.extend(("prefill", "decode"))
+            for role in roles:
+                if getattr(self, f"{role}_native_host_offload") is not None:
+                    raise ValueError("ngram speculation does not support host_offload")
+                if getattr(self, f"{role}_forward_model") not in (None, "op_level"):
+                    raise ValueError("ngram speculation requires op_level timing")
         for field_name, allowed in SEARCH_CHOICES.items():
             values = getattr(self, field_name)
             if not values:
