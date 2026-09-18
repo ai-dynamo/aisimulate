@@ -51,7 +51,9 @@ jobs:
         env:
           RELEASE: ${{ inputs.release }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-        run: echo "subpath=fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/amd64" >> "${GITHUB_OUTPUT}"
+        run: >-
+          echo "subpath=fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/amd64"
+          >> "${GITHUB_OUTPUT}"
       # The post-merge path contains an otherwise undiscoverable producer run
       # and predates the immutable handoff manifest. Build once here rather
       # than guessing at provenance; every consumer below reuses this wheel.

@@ -2283,7 +2283,7 @@ def test_release_artifact_handoffs_cannot_mix_versions():
     assert stage["env"]["ARTIFACTORY_SUBPATH"] == "${{ steps.location.outputs.subpath }}"
     assert stage["env"]["WHEEL_SOURCE_SHA"] == "${{ inputs.source_sha }}"
     location = next(s for s in jobs["prepare"]["steps"] if s.get("id") == "location")
-    assert "fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/amd64" in location["run"]
+    assert "fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/amd64" in location["run"]
     for name in ("generate", "qualify"):
         download = next(
             s for s in jobs[name]["steps"] if s.get("name") == "Fetch the release FPE wheel from Artifactory"
