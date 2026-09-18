@@ -234,7 +234,9 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
-    gated_mlp: bool = False
+    # Keyword-only: inserted after existing positional fields shipped, so it must
+    # not shift the positional binding of in_channels and the fields below it.
+    gated_mlp: bool = field(default=False, kw_only=True)
     in_channels: int = 3
     image_size: int = 0
     has_cls_token: bool = False
