@@ -5,6 +5,8 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, MockEngineArgs, OutputSignal, PreemptionMode,
 };
@@ -44,6 +46,134 @@ fn prefix_cache_args() -> MockEngineArgs {
         .speedup_ratio(0.0)
         .build()
         .unwrap()
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_committed_chunk_but_keeps_queued_demand(#[case] engine_type: EngineType) {
+    let args = MockEngineArgs::builder()
+        .engine_type(engine_type)
+        .block_size(4)
+        .num_gpu_blocks(16)
+        .max_num_batched_tokens(Some(4))
+        .max_num_seqs(Some(1))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(true)
+        .speedup_ratio(0.0)
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let first = Uuid::from_u128(81_001);
+    let queued = Uuid::from_u128(81_002);
+    let first_tokens: Vec<_> = (0..8).collect();
+    let queued_tokens: Vec<_> = (100..108).collect();
+    let first_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&first_tokens, 4));
+    let queued_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&queued_tokens, 4));
+    let oracle = BeladyOracle::new(vec![
+        (first, first_hashes.clone()),
+        (queued, queued_hashes.clone()),
+    ])
+    .unwrap();
+    core.set_belady_oracle(oracle.clone());
+    for (uuid, tokens) in [(first, first_tokens), (queued, queued_tokens)] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 1_000.0);
+    assert_eq!(core.state.requests[&first].num_computed_tokens, 4);
+    for &hash in &first_hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
+    assert_eq!(oracle.next_use(queued_hashes[0]), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: queued })
+        .unwrap();
+    assert_eq!(oracle.next_use(queued_hashes[0]), usize::MAX);
+
+    if engine_type == EngineType::Vllm {
+        assert!(core.policy_preempt(1_000.0).is_some());
+        assert_eq!(core.state.requests[&first].num_preemptions, 1);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+        core.execute_pass(&mut collector, 1_000.0);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_full_hit_zero_output_requests(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    let mut core = VllmCore::new(args);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(81_003);
+    let second = Uuid::from_u128(81_004);
+    let oracle =
+        BeladyOracle::new(vec![(first, hashes.clone()), (second, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    for (uuid, expected_next) in [(first, 1), (second, usize::MAX)] {
+        core.receive(DirectRequest {
+            tokens: tokens.clone(),
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert!(
+            pass.output_signals
+                .iter()
+                .any(|signal| signal.uuid == uuid && signal.completed)
+        );
+        if uuid == second {
+            assert_eq!(pass.admissions[0].reused_input_tokens, tokens.len());
+        }
+        for &hash in &hashes {
+            assert_eq!(oracle.next_use(hash), expected_next);
+        }
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_terminal_rejection_without_computing_prompt(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.num_gpu_blocks = 1;
+    let mut core = VllmCore::new(args);
+    let uuid = Uuid::from_u128(81_005);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    core.receive(DirectRequest {
+        tokens,
+        max_output_tokens: 0,
+        uuid: Some(uuid),
+        ..Default::default()
+    });
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == uuid && signal.rejected)
+    );
+    assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
 }
 
 #[rstest]
@@ -518,50 +648,117 @@ mod destination_lifecycle {
         core.execute_pass(&mut collector, now_ms)
     }
 
-    #[test]
-    fn materialized_prompt_above_max_model_len_is_rejected() {
-        let args = MockEngineArgs::builder()
-            .block_size(4)
-            .num_gpu_blocks(12)
-            .max_model_len(Some(8))
-            .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
-            .enable_chunked_prefill(true)
-            .enable_prefix_caching(true)
-            .worker_type(WorkerType::Decode)
-            .speedup_ratio(0.0)
-            .build()
-            .unwrap();
+    fn destination_args(engine_type: EngineType, num_gpu_blocks: usize) -> MockEngineArgs {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.num_gpu_blocks = num_gpu_blocks;
+        args.max_num_batched_tokens = Some(32);
+        args.max_num_seqs = Some(2);
+        args
+    }
+
+    fn reserve_destination(
+        core: &mut VllmCore,
+        handoff_id: HandoffId,
+        request_id: Uuid,
+        prompt: &[u32],
+        max_output_tokens: usize,
+    ) -> Option<usize> {
+        core.apply_command_effects(
+            SchedulerCommand::ReserveDestination {
+                handoff_id,
+                request: request(request_id, prompt.to_vec(), max_output_tokens),
+            },
+            true,
+        )
+        .unwrap()
+        .lifecycle_events
+        .into_iter()
+        .find_map(|event| match event {
+            SchedulerLifecycleEvent::DestinationReserved {
+                transferable_prompt_tokens,
+                ..
+            } => Some(transferable_prompt_tokens),
+            _ => None,
+        })
+    }
+
+    fn drive_until_destination_reserved(core: &mut VllmCore) -> usize {
+        let mut now_ms = 0.0;
+        for _ in 0..32 {
+            let pass = execute(core, now_ms);
+            now_ms = pass.end_ms;
+            if let Some(tokens) = core
+                .retry_pending_destinations()
+                .into_iter()
+                .find_map(|event| match event {
+                    SchedulerLifecycleEvent::DestinationReserved {
+                        transferable_prompt_tokens,
+                        ..
+                    } => Some(transferable_prompt_tokens),
+                    _ => None,
+                })
+            {
+                return tokens;
+            }
+        }
+        panic!("pending destination was not reserved");
+    }
+
+    #[rstest]
+    fn destination_rejects_over_limit_prompt_before_reserving_kv(
+        #[values(EngineType::Vllm, EngineType::Trtllm)] engine_type: EngineType,
+        #[values(8, 9)] prompt_len: usize,
+        #[values(false, true)] allow_destination_admission: bool,
+    ) {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.max_model_len = Some(8);
         let mut core = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(30_001));
         let uuid = Uuid::from_u128(30_002);
+        let active_before = core.kv_manager.num_active_blocks();
 
-        assert!(matches!(
-            core.apply_command(SchedulerCommand::ReserveDestination {
-                handoff_id,
-                request: request(uuid, vec![1; 9], 1),
-            })
-            .unwrap(),
-            SchedulerCommandResult::DestinationAccepted { request_id } if request_id == uuid
-        ));
+        let error = core
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(uuid, vec![1; prompt_len], 1),
+                },
+                allow_destination_admission,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("max_model_len"));
+        assert!(!core.destination_is_held(handoff_id));
+        assert_eq!(core.destination_block_count(handoff_id), 0);
+        assert_eq!(core.destination_reservation_attempts(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), active_before);
+        assert!(core.retry_pending_destinations().is_empty());
+        assert!(core.is_drained());
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+
+        // Rejection must leave both IDs and KV capacity reusable by valid work.
+        assert!(reserve_destination(&mut core, handoff_id, uuid, &[1; 7], 1).is_some());
         assert_eq!(
             core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
                 .unwrap(),
             SchedulerCommandResult::Applied
         );
-
         let pass = execute(&mut core, 0.0);
         assert!(matches!(
             pass.output_signals.as_slice(),
             [OutputSignal {
                 uuid: signal_uuid,
-                token_id: None,
+                token_id: Some(_),
                 completed: true,
-                rejected: true,
+                rejected: false,
                 ..
             }] if *signal_uuid == uuid
         ));
-        assert!(!core.state().requests.contains_key(&uuid));
     }
 
     #[test]
@@ -899,13 +1096,95 @@ mod destination_lifecycle {
     }
 
     #[test]
-    fn trtllm_destination_reservation_fails_without_acquiring_kv() {
+    fn vllm_generation_destinations_keep_resident_prefix_reuse() {
+        let mut destination = VllmCore::new(destination_args(EngineType::Vllm, 1));
+        let first_handoff = HandoffId::from(Uuid::from_u128(10_301));
+        let second_handoff = HandoffId::from(Uuid::from_u128(10_302));
+        let first_request = Uuid::from_u128(10_303);
+        let second_request = Uuid::from_u128(10_304);
+        let shared_prompt = [7; 4];
+
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                first_handoff,
+                first_request,
+                &shared_prompt,
+                1,
+            ),
+            Some(4)
+        );
+        destination
+            .apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: first_handoff,
+            })
+            .unwrap();
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                second_handoff,
+                second_request,
+                &shared_prompt,
+                1,
+            ),
+            Some(0)
+        );
+        assert_eq!(destination.request_block_count(first_request), 1);
+        assert_eq!(destination.destination_block_count(second_handoff), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+    }
+
+    #[test]
+    fn trtllm_same_prefix_generation_destinations_need_fresh_full_footprints() {
+        let mut destination = VllmCore::new(destination_args(EngineType::Trtllm, 7));
+        let first_handoff = HandoffId::from(Uuid::from_u128(10_401));
+        let second_handoff = HandoffId::from(Uuid::from_u128(10_402));
+        let first_request = Uuid::from_u128(10_403);
+        let second_request = Uuid::from_u128(10_404);
+        let shared_prompt = [9; 4];
+
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                first_handoff,
+                first_request,
+                &shared_prompt,
+                12,
+            ),
+            Some(4)
+        );
+        destination
+            .apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: first_handoff,
+            })
+            .unwrap();
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                second_handoff,
+                second_request,
+                &shared_prompt,
+                12,
+            ),
+            None
+        );
+        assert_eq!(destination.destination_block_count(second_handoff), 0);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+
+        assert_eq!(drive_until_destination_reserved(&mut destination), 4);
+        assert!(!destination.state.requests.contains_key(&first_request));
+        assert_eq!(destination.destination_block_count(second_handoff), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+    }
+
+    #[test]
+    fn trtllm_destination_reservation_protects_completion_headroom() {
         let args = MockEngineArgs::builder()
             .engine_type(EngineType::Trtllm)
             .block_size(4)
-            .num_gpu_blocks(12)
+            .num_gpu_blocks(4)
             .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
+            .max_num_seqs(Some(2))
             .enable_chunked_prefill(true)
             .enable_prefix_caching(true)
             .worker_type(WorkerType::Decode)
@@ -914,26 +1193,250 @@ mod destination_lifecycle {
             .unwrap();
         let mut destination = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(10_005));
+        let destination_request = Uuid::from_u128(10_006);
+        let unrelated_request = Uuid::from_u128(10_007);
 
-        let error = destination
+        assert!(matches!(
+            destination
             .apply_command(SchedulerCommand::ReserveDestination {
                 handoff_id,
-                request: request(Uuid::from_u128(10_006), (0..8).collect(), 2),
+                    request: request(destination_request, (0..4).collect(), 8),
             })
-            .unwrap_err();
+                .unwrap(),
+            SchedulerCommandResult::DestinationAccepted { request_id }
+                if request_id == destination_request
+        ));
+        assert!(destination.destination_is_held(handoff_id));
+        assert_eq!(destination.destination_block_count(handoff_id), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
 
         assert_eq!(
-            error.to_string(),
-            "destination reservation is not supported for TRT-LLM"
+            destination.receive(request(unrelated_request, (100..104).collect(), 4)),
+            unrelated_request
         );
-        assert!(!destination.destination_is_held(handoff_id));
-        assert_eq!(destination.kv_manager.num_active_blocks(), 0);
+        let before_activation = execute(&mut destination, 0.0);
+        assert!(before_activation.output_signals.is_empty());
+        assert_eq!(destination.mocker_metrics().running_requests, 0);
+        assert_eq!(destination.mocker_metrics().waiting_requests, 2);
+
+        assert_eq!(
+            destination
+                .apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Applied
+        );
+        let first_decode = execute(&mut destination, before_activation.end_ms);
+        assert!(
+            first_decode
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == destination_request)
+        );
+        assert_eq!(destination.mocker_metrics().running_requests, 1);
+        assert!(destination.state.requests.contains_key(&unrelated_request));
+
+        let mut now_ms = first_decode.end_ms;
+        for _ in 0..16 {
+            if destination.is_drained() {
+                break;
+            }
+            let pass = execute(&mut destination, now_ms);
+            now_ms = pass.end_ms;
+        }
         assert!(destination.is_drained());
     }
 }
 
 mod core_behavior {
     use super::*;
+
+    fn cadence_core(max_num_seqs: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Vllm)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(max_num_seqs))
+                .prefill_schedule_interval(4)
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn cadence_request(
+        uuid: u128,
+        prompt_start: u32,
+        prompt_len: u32,
+        output: usize,
+    ) -> DirectRequest {
+        DirectRequest {
+            tokens: (prompt_start..prompt_start + prompt_len).collect(),
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(uuid)),
+            ..DirectRequest::default()
+        }
+    }
+
+    #[test]
+    fn attention_dp_cadence_defers_waiting_and_chunked_prefills() {
+        let mut core = cadence_core(4);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(1, 0, 4, 8));
+        core.prepare_group_pass(0, 2);
+        let seed = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(seed.fpm.unwrap().num_prefill_requests, 1);
+
+        core.receive(cadence_request(2, 100, 12, 2));
+        core.prepare_group_pass(1, 2);
+        let throttled = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(throttled.num_prefill_requests, 0);
+        assert_eq!(throttled.num_decode_requests, 1);
+        assert_eq!(throttled.num_queued_prefill, 1);
+
+        core.prepare_group_pass(4, 2);
+        let aligned = core.execute_pass(&mut collector, 2.0).fpm.unwrap();
+        assert_eq!(aligned.num_prefill_requests, 1);
+        assert_eq!(aligned.num_decode_requests, 1);
+
+        core.prepare_group_pass(5, 2);
+        let chunk_throttled = core.execute_pass(&mut collector, 3.0).fpm.unwrap();
+        assert_eq!(chunk_throttled.num_prefill_requests, 0);
+        assert_eq!(chunk_throttled.num_decode_requests, 1);
+    }
+
+    #[test]
+    fn attention_dp_cadence_releases_prefills_when_capacity_bound() {
+        let mut core = cadence_core(2);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(10, 0, 4, 8));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 0.0);
+
+        core.receive(cadence_request(11, 100, 4, 0));
+        core.receive(cadence_request(12, 200, 4, 0));
+        core.prepare_group_pass(4, 2);
+        let saturated = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(saturated.num_prefill_requests, 1);
+        assert_eq!(saturated.num_queued_prefill, 1);
+
+        core.prepare_group_pass(5, 2);
+        let released = core.execute_pass(&mut collector, 2.0).fpm.unwrap();
+        assert_eq!(released.num_prefill_requests, 1);
+        assert_eq!(released.num_decode_requests, 1);
+        assert_eq!(released.num_queued_prefill, 0);
+    }
+
+    #[test]
+    fn attention_dp_cadence_does_not_release_after_kv_preemption() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Vllm)
+            .block_size(4)
+            .num_gpu_blocks(6)
+            .max_num_batched_tokens(Some(16))
+            .max_num_seqs(Some(2))
+            .prefill_schedule_interval(4)
+            .enable_chunked_prefill(true)
+            .enable_prefix_caching(false)
+            .preemption_mode(PreemptionMode::Lifo)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        for (uuid, start) in [(31, 0), (32, 100)] {
+            core.receive(cadence_request(uuid, start, 8, 8));
+        }
+
+        let mut aligned_step = 0;
+        let victim = loop {
+            core.prepare_group_pass(aligned_step, 2);
+            let pass = core.execute_pass(&mut collector, aligned_step as f64);
+            if pass.mocker_metrics.vllm_preemptions_total > 0 {
+                break core
+                    .state
+                    .requests
+                    .iter()
+                    .find_map(|(uuid, request)| {
+                        (request.status == RequestStatus::Preempted).then_some(*uuid)
+                    })
+                    .expect("preemption must requeue one victim");
+            }
+            aligned_step += 4;
+            assert!(aligned_step < 64, "fixture did not trigger KV preemption");
+        };
+
+        core.prepare_group_pass(aligned_step + 1, 2);
+        let throttled = core.execute_pass(&mut collector, aligned_step as f64 + 1.0);
+        let request = core
+            .state
+            .requests
+            .get(&victim)
+            .expect("victim must remain queued on the non-aligned step");
+        assert_eq!(request.status, RequestStatus::Preempted);
+        assert_eq!(request.num_computed_tokens, 0);
+        assert_eq!(throttled.fpm.unwrap().num_queued_decode, 1);
+    }
+
+    #[test]
+    fn attention_dp_cadence_admits_one_token_prefix_remainder() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Vllm)
+            .block_size(4)
+            .num_gpu_blocks(64)
+            .max_num_batched_tokens(Some(8))
+            .max_num_seqs(Some(4))
+            .prefill_schedule_interval(4)
+            .enable_chunked_prefill(true)
+            .enable_prefix_caching(true)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(40, 0, 4, 0));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 0.0);
+
+        core.receive(cadence_request(41, 100, 4, 8));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 1.0);
+
+        let near_hit = core.receive(cadence_request(42, 0, 5, 1));
+        core.prepare_group_pass(1, 2);
+        let throttled = core.execute_pass(&mut collector, 2.0);
+
+        assert!(
+            throttled
+                .admissions
+                .iter()
+                .any(|admission| admission.uuid == near_hit),
+            "a request with one local prefill token remaining must be admitted"
+        );
+        assert_eq!(throttled.fpm.unwrap().num_prefill_requests, 1);
+    }
+
+    #[test]
+    fn prefill_cadence_is_inactive_without_attention_dp() {
+        let mut core = cadence_core(4);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(20, 0, 4, 8));
+        core.prepare_group_pass(0, 1);
+        core.execute_pass(&mut collector, 0.0);
+        core.receive(cadence_request(21, 100, 4, 1));
+
+        core.prepare_group_pass(1, 1);
+        let pass = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(pass.num_prefill_requests, 1);
+        assert_eq!(pass.num_decode_requests, 1);
+    }
 
     #[test]
     fn test_planned_output_tokens_are_emitted_exactly() {

@@ -18,7 +18,6 @@ from typing import NamedTuple
 
 import pkg_resources
 import torch
-
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 

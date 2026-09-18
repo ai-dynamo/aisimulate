@@ -34,16 +34,17 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk import engine
-from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
-from aiconfigurator_core.sdk.perf_database import get_database
+from aisimulate_core.sdk import common, engine
+from aisimulate_core.sdk.engine_table_view import fetch_table_view
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.operations.moe import MoE
+from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
+from aisimulate_core.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 SGLANG_CONTEXT_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_context_moe_perf.parquet"
@@ -308,9 +309,8 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
     # kernel resolution and the table walk. An uncollected ctor mode must
     # MISS loudly; the collected mode (a fresh twin, the pattern production
     # uses) must hit the same value as the direct table recompute.
-    from aiconfigurator_core.sdk import common
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-    from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
 
     db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     legacy_table = fetch_table_view(db, "_wideep_context_moe_data")
@@ -338,6 +338,38 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
         db, "deepep_moe", quant, dist, "context", topk, experts, experts, hidden, inter, tp, ep, min(tokens)
     )
     assert float(hit) == pytest.approx(float(direct), rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("quant_mode", "expected_ms"),
+    [
+        pytest.param(common.MoEQuantMode.bfloat16, 0.39341440200805666, id="bf16"),
+        pytest.param(common.MoEQuantMode.fp8_block, 0.23400959968566895, id="fp8-block"),
+    ],
+)
+def test_qwen38_vllm_0271_tp1_ep16_moe_lanes_are_silicon(quant_mode, expected_ms):
+    """Pin the two collected Qwen3.8-Max EP16 lanes at an exact token point."""
+    db = get_database("gb300", "vllm", "0.27.1")
+    db.set_default_database_mode(common.DatabaseMode.SILICON)
+    op = MoE(
+        "qwen38_ep16_moe",
+        1.0,
+        8192,
+        2048,
+        10,
+        512,
+        1,
+        16,
+        quant_mode,
+        "power_law_1.2",
+        1,
+        is_context=True,
+    )
+
+    result = op._engine_query(db, x=128)
+
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(expected_ms, rel=1e-9)
 
 
 if __name__ == "__main__":

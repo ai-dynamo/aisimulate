@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/perf_database/fpm_forward.rs
 
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aiconfigurator_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text

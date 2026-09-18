@@ -34,6 +34,10 @@ fn default_max_num_batched_tokens() -> usize {
     8_192
 }
 
+fn default_prefill_schedule_interval() -> usize {
+    1
+}
+
 fn default_true() -> bool {
     true
 }
@@ -196,6 +200,64 @@ pub struct TrtllmConfig {
     pub capacity_scheduler_policy: TrtllmCapacityPolicy,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G3Scope {
+    WorkerLocal,
+    ClusterShared,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G3OffloadConfig {
+    pub scope: G3Scope,
+    pub num_g3_blocks: usize,
+    #[serde(default = "G3OffloadConfig::default_latency")]
+    pub latency_to_first_byte_ms: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_worker_bandwidth")]
+    pub write_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_read_bandwidth_gbps: f64,
+    #[serde(default = "G3OffloadConfig::default_shared_bandwidth")]
+    pub shared_write_bandwidth_gbps: f64,
+}
+
+impl G3OffloadConfig {
+    fn default_latency() -> f64 {
+        0.1
+    }
+
+    fn default_worker_bandwidth() -> f64 {
+        10.0
+    }
+
+    fn default_shared_bandwidth() -> f64 {
+        80.0
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.num_g3_blocks > 0,
+            "g3_offload.num_g3_blocks must be positive"
+        );
+        for value in [
+            self.latency_to_first_byte_ms,
+            self.read_bandwidth_gbps,
+            self.write_bandwidth_gbps,
+            self.shared_read_bandwidth_gbps,
+            self.shared_write_bandwidth_gbps,
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "g3_offload timing must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Physical controls for framework-native G1-to-host offload.
 ///
 /// Framework policy remains selected by [`EngineConfig::backend`]. This
@@ -273,7 +335,8 @@ pub struct EngineConfig {
     /// KV block size in tokens.
     #[serde(default = "default_block_size")]
     pub block_size: usize,
-    /// Optional model context limit.
+    /// Optional prompt-plus-output token limit for every backend.
+    /// Prompts at or above the limit are rejected; generation stops at the limit.
     pub max_model_len: Option<usize>,
     /// Maximum concurrently runnable sequences.
     #[serde(default = "default_max_num_seqs")]
@@ -281,6 +344,13 @@ pub struct EngineConfig {
     /// Per-pass token budget.
     #[serde(default = "default_max_num_batched_tokens")]
     pub max_num_batched_tokens: usize,
+    /// Admit vLLM prefills only once every N attention-DP group passes.
+    #[serde(default = "default_prefill_schedule_interval")]
+    pub prefill_schedule_interval: usize,
+    /// SGLang scheduler rounds without prefill after a globally synchronized EXTEND.
+    /// Includes chunk continuation and idle rounds; zero disables the interval.
+    #[serde(default)]
+    pub prefill_decode_interval: usize,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -320,6 +390,8 @@ pub struct EngineConfig {
     /// Optional framework-native host-offload simulation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g3_offload: Option<crate::engine::G3OffloadConfig>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -347,6 +419,10 @@ struct EngineConfigWire {
     max_num_seqs: usize,
     #[serde(default = "default_max_num_batched_tokens")]
     max_num_batched_tokens: usize,
+    #[serde(default = "default_prefill_schedule_interval")]
+    prefill_schedule_interval: usize,
+    #[serde(default)]
+    prefill_decode_interval: usize,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -376,6 +452,8 @@ struct EngineConfigWire {
     #[serde(default)]
     native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(default)]
+    g3_offload: Option<crate::engine::G3OffloadConfig>,
+    #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
     #[serde(default)]
     kv_transfer_timing_mode: TransferTimingMode,
@@ -402,6 +480,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             max_model_len: wire.max_model_len,
             max_num_seqs: wire.max_num_seqs,
             max_num_batched_tokens: wire.max_num_batched_tokens,
+            prefill_schedule_interval: wire.prefill_schedule_interval,
+            prefill_decode_interval: wire.prefill_decode_interval,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -416,6 +496,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
             native_host_offload: wire.native_host_offload,
+            g3_offload: wire.g3_offload,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
@@ -434,6 +515,8 @@ impl Default for EngineConfig {
             max_model_len: None,
             max_num_seqs: default_max_num_seqs(),
             max_num_batched_tokens: default_max_num_batched_tokens(),
+            prefill_schedule_interval: default_prefill_schedule_interval(),
+            prefill_decode_interval: 0,
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -448,6 +531,7 @@ impl Default for EngineConfig {
             kv_transfer_bytes_per_token: None,
             kv_cache_bytes_per_token: None,
             native_host_offload: None,
+            g3_offload: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -485,12 +569,20 @@ impl EngineConfig {
             "max_num_batched_tokens must be positive"
         );
         ensure!(
-            self.max_model_len.is_none_or(|limit| limit > 0),
-            "max_model_len must be positive"
+            self.prefill_schedule_interval > 0,
+            "prefill_schedule_interval must be positive"
         );
         ensure!(
-            self.backend == Backend::Vllm || self.max_model_len.is_none(),
-            "max_model_len is supported only for backend=vllm"
+            self.backend == Backend::Vllm || self.prefill_schedule_interval == 1,
+            "prefill_schedule_interval is supported only for backend=vllm; use prefill_decode_interval for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
+            "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
+            self.max_model_len.is_none_or(|limit| limit > 0),
+            "max_model_len must be positive"
         );
         ensure!(
             self.speedup_ratio.is_finite() && self.speedup_ratio >= 0.0,
@@ -514,10 +606,6 @@ impl EngineConfig {
         }
         if self.backend == Backend::Sglang {
             ensure!(
-                !self.emit_kv_token_ids,
-                "emit_kv_token_ids=true is not supported for backend=sglang"
-            );
-            ensure!(
                 self.enable_chunked_prefill,
                 "enable_chunked_prefill=false is not supported for backend=sglang"
             );
@@ -536,6 +624,13 @@ impl EngineConfig {
             self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
             "kv_cache_bytes_per_token must be positive"
         );
+        if let Some(g3) = &self.g3_offload {
+            g3.validate()?;
+            anyhow::ensure!(
+                self.native_host_offload.is_some(),
+                "g3_offload requires native_host_offload"
+            );
+        }
         if let Some(host_offload) = &self.native_host_offload {
             host_offload.validate()?;
             ensure!(
@@ -860,6 +955,7 @@ mod tests {
             num_gpu_blocks: 123,
             max_num_seqs: 7,
             max_num_batched_tokens: 456,
+            prefill_decode_interval: 4,
             worker_type: WorkerType::Decode,
             preemption_mode: PreemptionMode::Fifo,
             emit_kv_events: true,
@@ -873,6 +969,57 @@ mod tests {
         let encoded = serde_json::to_value(&config).unwrap();
         let decoded: EngineConfig = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn scheduler_intervals_default_and_validate_for_each_backend() {
+        for backend in ["vllm", "sglang", "trtllm"] {
+            let mut config: EngineConfig =
+                serde_json::from_value(serde_json::json!({ "backend": backend })).unwrap();
+            assert_eq!(config.prefill_schedule_interval, 1);
+            assert_eq!(config.prefill_decode_interval, 0);
+            config.validate().unwrap();
+
+            config.prefill_decode_interval = 20;
+            if backend == "sglang" {
+                config.validate().unwrap();
+                let decoded: EngineConfig =
+                    serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+                assert_eq!(decoded.prefill_decode_interval, 20);
+            } else {
+                assert!(
+                    config
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("prefill_decode_interval is supported only for backend=sglang")
+                );
+            }
+
+            config.prefill_decode_interval = 0;
+            config.prefill_schedule_interval = 4;
+            if backend == "vllm" {
+                config.validate().unwrap();
+            } else {
+                assert!(
+                    config
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("prefill_schedule_interval is supported only for backend=vllm")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deserialization_rejects_negative_prefill_decode_interval() {
+        let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "backend": "sglang",
+            "prefill_decode_interval": -1
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("expected usize"));
     }
 
     #[test]
@@ -912,6 +1059,18 @@ mod tests {
                 .to_string()
                 .contains("max_model_len")
         );
+
+        let config = EngineConfig {
+            prefill_schedule_interval: 0,
+            ..EngineConfig::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_schedule_interval")
+        );
     }
 
     #[test]
@@ -940,50 +1099,50 @@ mod tests {
     }
 
     #[test]
-    fn sglang_supports_disabled_prefix_caching() {
-        let config = EngineConfig {
-            enable_prefix_caching: false,
-            ..EngineConfig::for_backend(Backend::Sglang)
-        };
-        config.validate().unwrap();
-        crate::engine::EngineFactory::new(config).unwrap();
-    }
-
-    #[test]
-    fn sglang_rejects_remaining_unsupported_controls_at_validation_and_factory_boundaries() {
-        let cases = [
-            ("emit_kv_token_ids", true, true, true),
-            ("enable_chunked_prefill", false, true, false),
-        ];
-
-        for (field, emit_kv_token_ids, enable_prefix_caching, enable_chunked_prefill) in cases {
+    fn sglang_supports_prefix_caching_and_token_id_controls() {
+        for (enable_prefix_caching, emit_kv_token_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let config = EngineConfig {
-                emit_kv_events: emit_kv_token_ids,
-                emit_kv_token_ids,
                 enable_prefix_caching,
-                enable_chunked_prefill,
+                emit_kv_events: true,
+                emit_kv_token_ids,
                 ..EngineConfig::for_backend(Backend::Sglang)
             };
-            assert!(config.validate().unwrap_err().to_string().contains(field));
-            let error = match crate::engine::EngineFactory::new(config) {
-                Ok(_) => panic!("expected EngineFactory to reject {field}"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(field));
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config).unwrap();
         }
     }
 
     #[test]
-    fn max_model_len_is_vllm_only() {
-        for backend in [Backend::Sglang, Backend::Trtllm] {
+    fn sglang_rejects_disabled_chunked_prefill_at_validation_and_factory_boundaries() {
+        let config = EngineConfig {
+            enable_chunked_prefill: false,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        let field = "enable_chunked_prefill";
+        assert!(config.validate().unwrap_err().to_string().contains(field));
+        let error = match crate::engine::EngineFactory::new(config) {
+            Ok(_) => panic!("expected EngineFactory to reject {field}"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(field));
+    }
+
+    #[test]
+    fn max_model_len_is_supported_for_every_backend() {
+        for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
             let mut config = EngineConfig::for_backend(backend);
             config.max_model_len = Some(128);
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config.clone()).unwrap();
+            config.max_model_len = Some(0);
             assert!(
                 config
                     .validate()
                     .unwrap_err()
                     .to_string()
-                    .contains("backend=vllm")
+                    .contains("max_model_len")
             );
         }
     }

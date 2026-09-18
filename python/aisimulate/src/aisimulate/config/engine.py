@@ -12,12 +12,55 @@ from pydantic import Field, field_validator, model_validator
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
-EngineMode = Literal["aggregated", "disaggregated"]
+EngineMode = Literal["aggregated", "disaggregated", "afd"]
 Backend = Literal["vllm", "sglang", "trtllm"]
 KvBytesPerToken = PositiveInt | Literal["auto"]
+AFDPhase = Literal["prefill", "decode", "both"]
+AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
+AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
+
+
+class AFDTopologyPredictionConfig(StrictModel):
+    """One concrete attention/FFN-disaggregated topology."""
+
+    phase: AFDPhase
+    combined_with_pd: bool = Field(strict=True)
+    n_a_nodes: PositiveInt
+    n_f_nodes: PositiveInt
+    tp_a: PositiveInt
+    a_batch_size: PositiveInt
+    f_moe_ep_size: PositiveInt = 1
+    num_microbatches: PositiveInt = 3
+    pipeline_model: AFDPipelineModel = "optimistic"
+    comm_overhead_factor: PositiveFloat = 1.0
+    boundary_on_attn: bool = Field(default=True, strict=True)
+
+
+class AFDSearchRecommendationConfig(StrictModel):
+    """Finite AFD topology domain for a recommendation run."""
+
+    phase: AFDPhase
+    combined_with_pd: bool = Field(strict=True)
+    # This is deliberately required. AFD batches must be memory-qualified for
+    # the target model/hardware rather than inherited from an implicit default.
+    a_batch_size: PositiveInt | Choices[PositiveInt] | IntegerRange
+    tp_a: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
+    f_moe_ep_size: AFDExpertParallel | Choices[AFDExpertParallel] | None = None
+    num_microbatches: PositiveInt | Choices[PositiveInt] | IntegerRange = Field(
+        default_factory=lambda: Choices[PositiveInt](choices=[2, 3, 4])
+    )
+    pipeline_model: AFDPipelineModel | Choices[AFDPipelineModel] = Field(
+        default_factory=lambda: Choices[AFDPipelineModel](choices=["optimistic", "conservative"])
+    )
+    comm_overhead_factor: PositiveFloat = 1.0
+    boundary_on_attn: bool = Field(default=True, strict=True)
+    max_af_ratio: PositiveFloat = 4.0
+    max_candidates: PositiveInt = 10_000
 
 
 class ParallelismPredictionConfig(StrictModel):
@@ -32,12 +75,23 @@ class ParallelismPredictionConfig(StrictModel):
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
+    prefill_schedule_interval: PositiveInt = Field(
+        default=1, description="vLLM only: admit prefill once every N attention-DP group passes."
+    )
+    prefill_decode_interval: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "SGLang only: block new prefill and chunk continuation for N scheduler rounds after each EXTEND. "
+            "Rounds may be idle and do not count output tokens; zero disables the interval."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
     type: Literal["default", "fixed"] = "default"
     memory_fraction: Fraction | None = None
     blocks: PositiveInt | None = None
+    cuda_graph_reserved_bytes: CudaGraphReservedBytes = 0
 
     @model_validator(mode="after")
     def _validate_capacity(self) -> KvCapacityPredictionConfig:
@@ -46,6 +100,8 @@ class KvCapacityPredictionConfig(StrictModel):
                 raise ValueError("fixed KV capacity requires blocks")
             if self.memory_fraction is not None:
                 raise ValueError("fixed KV capacity rejects memory_fraction")
+            if self.cuda_graph_reserved_bytes != 0:
+                raise ValueError("fixed KV capacity rejects cuda_graph_reserved_bytes")
         elif self.blocks is not None:
             raise ValueError("default KV capacity rejects blocks")
         return self
@@ -57,30 +113,100 @@ class HostOffloadConfig(StrictModel):
     h2d_bandwidth_gbps: NonNegativeFloat = 32.0
 
 
+class G3OffloadConfig(StrictModel):
+    scope: Literal["worker_local", "cluster_shared"]
+    num_g3_blocks: PositiveInt
+    latency_to_first_byte_ms: NonNegativeFloat = 0.1
+    read_bandwidth_gbps: NonNegativeFloat = 10.0
+    write_bandwidth_gbps: NonNegativeFloat = 10.0
+    shared_read_bandwidth_gbps: NonNegativeFloat = 80.0
+    shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
+    g3_offload: G3OffloadConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_g3(self):
+        if self.g3_offload is not None and self.host_offload is None:
+            raise ValueError("g3_offload requires host_offload")
+        return self
+
+
+class NgramSpeculationConfig(StrictModel):
+    """Prompt-lookup cost and explicit workload acceptance assumptions."""
+
+    kind: Literal["ngram"]
+    num_speculative_tokens: Annotated[int, Field(strict=True, ge=1, le=5)]
+    acceptance_rates: list[Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]]
+    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+
+    @model_validator(mode="after")
+    def _validate_rates(self) -> NgramSpeculationConfig:
+        if len(self.acceptance_rates) != self.num_speculative_tokens:
+            raise ValueError("acceptance_rates must contain one conditional probability per speculative token")
+        return self
+
+    def cost_config(self) -> dict[str, Any]:
+        return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 
 
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
+    forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
+    fallback_policy: Literal["deny", "allow"] | None = None
+    estimator_config: dict[str, Any] | None = None
+    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
+    transfer_policy: str | list[str] | None = None
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_legacy_estimator_selection(cls, value):
+        if isinstance(value, dict) and value.get("type", "default") == "default" and "forward_model" in value:
+            value = dict(value)
+            legacy = {"op_level": "op_level", "fpm": "fpm_interpolation"}.get(value["forward_model"])
+            if legacy is not None and "estimation_mode" not in value:
+                value["estimation_mode"] = legacy
+                value.setdefault("fallback_policy", "deny")
+        return value
+
     prefill_ms: float | None = Field(default=None, ge=0.0)
     decode_ms: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.estimation_mode == "fpm_interpolation":
+            self.forward_model = "fpm"
+        elif self.estimation_mode == "op_level":
+            self.forward_model = "op_level"
+
         if self.type == "fixed":
             if self.prefill_ms is None or self.decode_ms is None:
                 raise ValueError("fixed timing requires prefill_ms and decode_ms")
         elif self.prefill_ms is not None or self.decode_ms is not None:
             raise ValueError(f"{self.type} timing rejects fixed timing values")
+        if self.type != "default" and self.forward_model != "op_level":
+            raise ValueError(
+                f"{self.type} timing rejects forward_model={self.forward_model!r}; "
+                "forward_model applies to default timing only"
+            )
         return self
 
 
 class WorkerPredictionConfig(StrictModel):
+    hardware: str | None = Field(default=None, min_length=1)
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
     scheduler: SchedulerPredictionConfig = Field(default_factory=SchedulerPredictionConfig)
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
@@ -88,7 +214,20 @@ class WorkerPredictionConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
+class EncoderPredictionConfig(StrictModel):
+    """Dedicated analytical encoder pool, not an event-level language worker."""
+
+    hardware: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tensor: PositiveInt = 1
+    replicas: PositiveInt = 1
+    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = 1
+    latency_correction: PositiveFloat = 1.0
+    rate_degradation: Fraction = 0.9
+
+
 class WorkersPredictionConfig(StrictModel):
+    encoder: EncoderPredictionConfig | None = None
     aggregated: WorkerPredictionConfig | None = None
     prefill: WorkerPredictionConfig | None = None
     decode: WorkerPredictionConfig | None = None
@@ -114,15 +253,93 @@ class KvTransferConfig(StrictModel):
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 
 
-class EnginePredictionConfig(StrictModel):
+class EstimatorPolicyConfig(StrictModel):
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
+    transfer_policy: str | list[str] | None = None
+    systems_paths: list[str] | None = None
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    fallback_policy: Literal["deny", "allow"] = "deny"
+    estimator_config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("systems_paths")
+    @classmethod
+    def _nonempty_system_roots(cls, value):
+        if value is None:
+            return value
+        if not value or any(not path.strip() for path in value):
+            raise ValueError("systems_paths must contain at least one nonempty root")
+        return value
+
+    @model_validator(mode="after")
+    def _supported_estimator_policies(self):
+        mode = getattr(self, "mode", "aggregated")
+        modes = mode.choices if hasattr(mode, "choices") else [mode]
+        workers = getattr(self, "workers", None)
+        custom_policy = (
+            self.database_mode != "SILICON"
+            or self.transfer_policy is not None
+            or self.systems_paths not in (None, ["default"])
+            or self.estimation_mode != "auto"
+            or self.fallback_policy != "deny"
+            or bool(self.estimator_config)
+        )
+        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
+        unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        if unsupported_provider and any(
+            worker is not None
+            and (
+                bool(worker.timing.estimator_config)
+                or worker.timing.systems_paths is not None
+                or worker.timing.database_mode is not None
+                or worker.timing.transfer_policy is not None
+                or worker.timing.fallback_policy == "allow"
+                or worker.timing.estimation_mode not in {None, "op_level", "fpm_interpolation"}
+            )
+            for worker in roles
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing")
+        if custom_policy and (
+            "afd" in modes
+            or getattr(workers, "encoder", None) is not None
+            or any(worker is not None and worker.timing.type != "default" for worker in roles)
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing in every role")
+        for worker in roles:
+            if (
+                worker is not None
+                and worker.timing.type != "default"
+                and any(
+                    getattr(worker.timing, name) is not None
+                    for name in (
+                        "estimation_mode",
+                        "fallback_policy",
+                        "estimator_config",
+                        "systems_paths",
+                        "database_mode",
+                        "transfer_policy",
+                    )
+                )
+            ):
+                raise ValueError("estimator settings require default timing")
+        return self
+
+
+class EnginePredictionConfig(EstimatorPolicyConfig):
     mode: EngineMode = "aggregated"
     model: str
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    workers: WorkersPredictionConfig
+    speculation: NgramSpeculationConfig | None = None
+    workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
+    afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -140,15 +357,21 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
-        _validate_worker_roles(
-            modes={self.mode},
-            workers=self.workers,
-            has_transfer=self.kv_transfer is not None,
-        )
-        if self.mode == "disaggregated" and self.backend == "trtllm":
-            raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
+        _validate_worker_hardware(modes={self.mode}, workers=self.workers)
+        if self.mode == "afd":
+            _validate_prediction_afd(self)
+        else:
+            if self.afd is not None:
+                raise ValueError("engine.afd requires engine.mode='afd'")
+            _validate_worker_roles(
+                modes={self.mode},
+                workers=self.workers,
+                has_transfer=self.kv_transfer is not None,
+            )
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
+        _validate_prediction_scheduler_backend(self)
+        _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
 
 
@@ -252,6 +475,7 @@ class KvCacheRecommendationConfig(StrictModel):
 
 
 class WorkerRecommendationConfig(StrictModel):
+    hardware: str | None = Field(default=None, min_length=1)
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
     scheduler: SchedulerRecommendationConfig = Field(default_factory=SchedulerRecommendationConfig)
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
@@ -259,23 +483,40 @@ class WorkerRecommendationConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
+class EncoderRecommendationConfig(StrictModel):
+    """Finite encoder domains; scalar values pin a single choice."""
+
+    hardware: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tensor: PositiveInt | Choices[PositiveInt] = 1
+    replicas: PositiveInt | Choices[PositiveInt] = 1
+    batch_size: (
+        Annotated[int, Field(strict=True, gt=0, le=8)] | Choices[Annotated[int, Field(strict=True, gt=0, le=8)]]
+    ) = 1
+    latency_correction: PositiveFloat = 1.0
+    rate_degradation: Fraction = 0.9
+
+
 class WorkersRecommendationConfig(StrictModel):
+    encoder: EncoderRecommendationConfig | None = None
     aggregated: WorkerRecommendationConfig | None = None
     prefill: WorkerRecommendationConfig | None = None
     decode: WorkerRecommendationConfig | None = None
 
 
-class EngineRecommendationConfig(StrictModel):
+class EngineRecommendationConfig(EstimatorPolicyConfig):
     mode: EngineMode | Choices[EngineMode] = Field(
         default_factory=lambda: Choices[EngineMode](choices=["aggregated", "disaggregated"])
     )
     model: str
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
-    backend_version: str | None = None
+    backend_version: str | dict[str, str] | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    workers: WorkersRecommendationConfig
+    speculation: NgramSpeculationConfig | None = None
+    workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
+    afd: AFDSearchRecommendationConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -287,15 +528,51 @@ class EngineRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
-        _validate_worker_roles(
-            modes=modes,
-            workers=self.workers,
-            has_transfer=self.kv_transfer is not None,
-        )
+        _validate_worker_hardware(modes=modes, workers=self.workers)
+        if "afd" in modes:
+            if modes != {"afd"}:
+                raise ValueError("AFD recommendation mode cannot be mixed with aggregated/disaggregated modes")
+            _validate_recommendation_afd(self)
+        else:
+            if self.afd is not None:
+                raise ValueError("engine.afd requires engine.mode='afd'")
+            _validate_worker_roles(
+                modes=modes,
+                workers=self.workers,
+                has_transfer=self.kv_transfer is not None,
+            )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_recommendation_host_offload(self)
+        _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
+    if engine.speculation is None:
+        return
+    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError("ngram speculation does not support host_offload")
+        if worker.timing.forward_model != "op_level":
+            raise ValueError("ngram speculation requires op_level timing")
+
+
+def _validate_worker_hardware(*, modes: set[str], workers) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(workers, role)
+        if worker is None or worker.hardware is None:
+            continue
+        if role == "aggregated" or "disaggregated" not in modes or "afd" in modes:
+            raise ValueError("worker hardware overrides require prefill/decode workers in disaggregated mode")
+        hardware = worker.hardware.strip()
+        if not hardware or hardware == "auto" or hardware != worker.hardware:
+            raise ValueError(f"workers.{role}.hardware must be one concrete nonempty hardware identifier")
 
 
 def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
@@ -304,6 +581,68 @@ def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
         for role in ("aggregated", "prefill", "decode")
         if (worker := getattr(workers, role)) is not None and worker.kv_cache.host_offload is not None
     ]
+
+
+def _configured_worker_roles(workers) -> set[str]:
+    return {role for role in ("aggregated", "prefill", "decode") if getattr(workers, role) is not None}
+
+
+def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        for field, backend, default in (
+            ("prefill_schedule_interval", "vllm", 1),
+            ("prefill_decode_interval", "sglang", 0),
+        ):
+            if engine.backend != backend and getattr(worker.scheduler, field) != default:
+                raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
+    afd = engine.afd
+    if afd is None:
+        raise ValueError("engine.mode='afd' requires engine.afd")
+    if engine.kv_transfer is not None:
+        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
+    configured = _configured_worker_roles(engine.workers)
+    if afd.combined_with_pd:
+        if afd.phase == "both":
+            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
+        companion = "decode" if afd.phase == "prefill" else "prefill"
+        if configured != {companion}:
+            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+    else:
+        if afd.phase != "both":
+            raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")
+        if configured:
+            raise ValueError("pure AFD prediction rejects regular aggregated/prefill/decode workers")
+
+
+def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
+    afd = engine.afd
+    if afd is None:
+        raise ValueError("engine.mode='afd' requires engine.afd")
+    if engine.kv_transfer is not None:
+        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
+    configured = _configured_worker_roles(engine.workers)
+    if afd.combined_with_pd:
+        if afd.phase == "both":
+            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
+        companion = "decode" if afd.phase == "prefill" else "prefill"
+        unexpected = configured - {companion}
+        if unexpected:
+            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true accepts only optional workers.{companion}")
+    else:
+        if afd.phase != "both":
+            raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
+        if configured:
+            raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
 
 
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:

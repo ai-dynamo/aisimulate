@@ -28,6 +28,7 @@ pub(super) struct SglangConfig {
     pub(super) max_prefill_tokens: usize,
     pub(super) max_running_requests: usize,
     pub(super) chunked_prefill_size: usize,
+    pub(super) prefill_decode_interval: usize,
     pub(super) clip_max_new_tokens: usize,
     pub(super) init_new_token_ratio: f64,
     pub(super) min_new_token_ratio: f64,
@@ -38,6 +39,7 @@ pub(super) struct SglangConfig {
     pub(super) worker_type: WorkerType,
     pub(super) block_size: usize,
     pub(super) total_kv_tokens: usize,
+    pub(super) max_model_len: Option<usize>,
     pub(super) enable_prefix_caching: bool,
     pub(super) kv_transfer_bytes_per_token: Option<usize>,
     pub(super) kv_transfer_bandwidth: Option<f64>,
@@ -77,6 +79,7 @@ impl SglangConfig {
 
         Self {
             schedule_policy,
+            prefill_decode_interval: args.prefill_decode_interval,
             max_running_requests: args.max_num_seqs.unwrap_or(usize::MAX),
             max_prefill_tokens: sglang
                 .and_then(|s| s.max_prefill_tokens)
@@ -96,6 +99,7 @@ impl SglangConfig {
             worker_type: args.worker_type,
             block_size: args.block_size,
             total_kv_tokens: args.num_gpu_blocks * args.block_size,
+            max_model_len: args.max_model_len,
             enable_prefix_caching: args.enable_prefix_caching,
             kv_transfer_bytes_per_token: args.kv_transfer_bytes_per_token,
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,

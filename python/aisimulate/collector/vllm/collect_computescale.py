@@ -3,16 +3,19 @@
 
 """Measure vLLM FP8 activation quantization overhead for static-FP8 GEMM."""
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968047:
+# compute_scale: 8/8 representative cases. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import torch
-from vllm import _custom_ops as ops
-from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.vllm.utils import setup_distributed
+from vllm import _custom_ops as ops
+from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
+from vllm.version import __version__ as vllm_version
 
 
 def get_computescale_test_cases():

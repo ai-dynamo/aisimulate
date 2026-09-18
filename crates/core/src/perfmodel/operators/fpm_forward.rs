@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/fpm_forward.rs
 
 //! Whole-model forward-pass op (Python `forward_model="fpm"`, class
 //! `FPMForwardOp` in `sdk/operations/fpm_forward.py`).
@@ -75,7 +77,24 @@ pub struct FpmForwardOp {
     /// path does not read it.
     #[serde(default)]
     pub weight_bytes: f64,
+    /// Speculative verify width (tokens verified per request per decode
+    /// step). Default 1 = plain AR decode (bit-compatible with pre-field
+    /// specs). When > 1, the decode query maps the WIDENED token batch onto
+    /// the AR-collected surface at the equivalent-AR point: the engine hands
+    /// this op `batch = requests x width` tokens, and the true step reads
+    /// each request's KV once, so the coordinates are
+    /// `(tokens = batch, total_kv = batch / width * s)` — total new tokens
+    /// AND total KV bytes both match the real verify step exactly; only the
+    /// per-token QK-PV compute (memory-shadowed in decode) is folded onto
+    /// the AR curve. Prefill is unaffected (draft prefill work rides
+    /// separate op-level draft ops).
+    #[serde(default = "default_verify_width")]
+    pub verify_width: u32,
     pub sol_ops: Vec<Op>,
+}
+
+fn default_verify_width() -> u32 {
+    1
 }
 
 fn data_err(msg: String) -> AicError {
@@ -90,6 +109,19 @@ impl FpmForwardOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
+        if self.verify_width == 0 || (self.phase == FpmPhase::Prefill && self.verify_width != 1) {
+            return Err(data_err(format!(
+                "invalid FPM verify_width={} for {}",
+                self.verify_width,
+                self.phase.as_str()
+            )));
+        }
+        if self.phase == FpmPhase::Decode && ctx.batch_size % self.verify_width != 0 {
+            return Err(data_err(format!(
+                "FPM decode batch_size={} must be divisible by verify_width={}",
+                ctx.batch_size, self.verify_width
+            )));
+        }
         let batch_size = ctx.batch_size;
         let s = ctx.s;
         if batch_size < 1 || s < 1 {
@@ -113,9 +145,17 @@ impl FpmForwardOp {
                 let prefix = ctx.prefix as f64;
                 vec![b, b * s as f64, b * prefix]
             }
-            // One new token per request; `s` is the per-request KV length at
-            // this decode step, so the iteration reads batch*s KV tokens.
-            FpmPhase::Decode => vec![b, b * s as f64],
+            // `s` is the per-request KV length at this decode step. Plain AR
+            // (verify_width == 1): one new token per request, the iteration
+            // reads batch*s KV tokens. Verify (width w > 1): `batch` arrives
+            // WIDENED (requests x w new tokens); the step still reads each
+            // request's KV once, so total KV = (batch / w) * s — the
+            // equivalent-AR point on the collected surface (same token count,
+            // same KV bytes as the real block-verify step).
+            FpmPhase::Decode => {
+                let w = f64::from(self.verify_width);
+                vec![b, b / w * s as f64]
+            }
         };
         self.resolve(db, cell, &coords)
     }
@@ -205,7 +245,7 @@ impl FpmForwardOp {
         // Every curve bound comes from a real row, so resolving
         // (row, curve_min) is an exact leaf and never invokes SOL. Keeping the
         // no-SOL closure explicit makes this policy independent of model SOL
-        // support (important for GLM-5.2's currently unported DSA family).
+        // support (important for MiniMax-M3's currently unported MSA family).
         let no_sol = |_coords: &[f64]| f64::NAN;
         let cfg = interp_config(FpmPhase::Decode, &no_sol);
         let row_floor = |row: u32| -> Result<f64, AicError> {
@@ -282,7 +322,7 @@ impl FpmForwardOp {
         // above it — there the measured ceiling row is rescaled by the
         // whole-model SOL ratio between the true and clamped shapes (LOO:
         // median 4.5% / p90 13%), and ONLY when this model's SOL is usable:
-        // an unported roofline (DSA/MSA) answers nothing rather than
+        // an unported roofline (MSA) answers nothing rather than
         // something half-modeled (the batch coordinate then fails the
         // domain gate below).
         const MAX_KV_PRESSURE: f64 = 2.0;
@@ -358,9 +398,9 @@ impl FpmForwardOp {
         // SOL support is checked LAZILY, mirroring Python: exact hits and
         // in-curve lerps never invoke the roofline (Python's SOL view answers
         // every op family; `_oplevel_sol_fn` is only called on transfer/hold
-        // paths). A family the Rust SOL port does not cover yet (DSA / MSA /
-        // MLA modules — e.g. GLM-5.2's DSA attention) therefore only fails
-        // the sol-dependent resolution paths, and the error names the op.
+        // paths). A family the Rust SOL port does not cover yet (MSA / MLA
+        // modules) therefore only fails the sol-dependent resolution paths,
+        // and the error names the op.
         let sol_failure: std::cell::RefCell<Option<AicError>> = std::cell::RefCell::new(None);
         let sol = |sol_coords: &[f64]| -> f64 {
             match sol_total(&self.sol_ops, self.phase, db, sol_coords) {
@@ -589,7 +629,7 @@ mod tests {
 
     const SYSTEMS_ROOT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../python/aisimulate/src/aiconfigurator_core/systems"
+        "/../../python/aisimulate/src/aisimulate_core/systems"
     );
 
     /// A PerfDatabase whose fpm_forward table points at a temp pair; the rest
@@ -619,6 +659,7 @@ mod tests {
             model_path: "org/model-a".to_string(),
             match_identity: default_identity(4),
             weight_bytes: 0.0,
+            verify_width: 1,
             // Empty sol_ops: exact hits and in-curve lerps never call SOL.
             sol_ops: vec![],
         }
@@ -771,6 +812,177 @@ mod tests {
         assert!(
             (got.latency_ms - expected).abs() < 1e-9,
             "{}",
+            got.latency_ms
+        );
+    }
+
+    fn glm_dsa_sol_ops(name: &str) -> Vec<Op> {
+        let dsa = crate::operators::DsaModuleOp::new(
+            name,
+            64,
+            crate::common::enums::KvCacheQuantMode::Fp8,
+            crate::common::enums::FmhaQuantMode::Bfloat16,
+            crate::common::enums::GemmQuantMode::Nvfp4,
+            "GlmMoeDsaForCausalLM",
+            2048,
+        );
+        if name == "context_attention" {
+            vec![Op::DsaContext(dsa)]
+        } else {
+            vec![Op::DsaGeneration(dsa)]
+        }
+    }
+
+    /// Inverse-distance weight of one neighbour site, restating the resolver's
+    /// `w = 1.0 / (d * d + 1e-12)` over the log2 site metric
+    /// (`perf_database/perf_interp.rs:1054-1064` for `d`, `:944-947` for the site
+    /// logs, `:1170` for `w`). The FPM tests below have a single varying site axis,
+    /// so `d` is one absolute log2 difference.
+    fn idw_weight(site: f64, query: f64) -> f64 {
+        let d = (site.log2() - query.log2()).abs();
+        1.0 / (d * d + 1e-12)
+    }
+
+    /// A chunked prefill queries KV totals of 8192*k; k=3 (24576) is not a collected site in
+    /// the GLM cells (powers of two only). With the DSA arms the SOL-ratio transfer from the
+    /// neighbouring sites (16384, 32768) answers instead of `no usable neighbour site`.
+    #[test]
+    fn prefill_off_site_kv_resolves_through_the_dsa_sol_transfer() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |total: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "prefill",
+            batch_size: 1,
+            total_prefill_tokens: total,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(4096, 16384, 45.0),
+            mk(8192, 16384, 90.0),
+            mk(4096, 32768, 50.0),
+            mk(8192, 32768, 100.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.sol_ops = glm_dsa_sol_ops("context_attention");
+
+        let got = prefill.query_totals(&db, &[1.0, 8192.0, 24576.0]).unwrap();
+        assert!(
+            got.latency_ms.is_finite() && got.latency_ms > 0.0,
+            "{}",
+            got.latency_ms
+        );
+
+        // EXACT expected value, not a band: the query's site key (batch=1,
+        // total_kv=24576) is uncollected, so `SiteIndex::resolve_pair`
+        // (`perf_database/perf_interp.rs:1153-1185`) transfers UTIL from the nearest
+        // collected sites — `util_i = SOL(site_i) / lat_i`, inverse-distance mean,
+        // then `SOL(query) / mean_util`. That is a weighted HARMONIC-style combination
+        // of the neighbours, not an arithmetic mean of SOL-rescaled latencies, so a
+        // raw-neighbour or plain-lerp answer cannot satisfy it.
+        //
+        // Prefill site axes are (batch, total_kv) with total_prefill as the curve axis
+        // (`interp_config`), and batch is 1 on the query and on both sites, so only the
+        // KV axis contributes to `d`. Both neighbour curves carry an EXACT point at
+        // total_prefill=8192, so `lat_i` is the measured row latency (90 / 100), not an
+        // interpolation. SOL is the op-level roofline under `sol_total`'s documented
+        // back-mapping (`s = max(total_prefill/batch, 1)`, `prefix = total_kv/batch`,
+        // `x = total_prefill`), restated here so the expected value cannot inherit a
+        // mapping bug from the code under test.
+        let sol = |batch: f64, total_prefill: f64, total_kv: f64| -> f64 {
+            crate::operators::fpm_sol::op_sol_latency_ms(
+                &prefill.sol_ops[0],
+                &db,
+                total_prefill,
+                batch,
+                (total_prefill / batch).max(1.0),
+                total_kv / batch,
+            )
+            .unwrap()
+        };
+        let (w_lo, w_hi) = (idw_weight(16384.0, 24576.0), idw_weight(32768.0, 24576.0));
+        let mean_util = (w_lo * (sol(1.0, 8192.0, 16384.0) / 90.0)
+            + w_hi * (sol(1.0, 8192.0, 32768.0) / 100.0))
+            / (w_lo + w_hi);
+        let expected = sol(1.0, 8192.0, 24576.0) / mean_util;
+        assert!(
+            (got.latency_ms - expected).abs() <= 1e-9 * expected,
+            "transferred latency {} != the SOL-util transfer {expected}",
+            got.latency_ms
+        );
+        // Independent sanity bound on the answer (no SOL term), so a roofline that
+        // degenerated identically on both sides of the check above cannot hide here.
+        assert!(
+            (60.0..=130.0).contains(&got.latency_ms),
+            "transferred latency {} is not between the neighbouring sites",
+            got.latency_ms
+        );
+    }
+
+    /// A decode batch with no (C, C+1) capture-rung pair falls back to ScatteredSites, which
+    /// needs the generation roofline for the same reason.
+    #[test]
+    fn decode_pairless_batch_resolves_through_the_dsa_sol_transfer() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |batch: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "decode",
+            batch_size: batch,
+            total_prefill_tokens: 0,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(8, 65536, 20.0),
+            mk(8, 131072, 22.0),
+            mk(16, 131072, 30.0),
+            mk(16, 262144, 33.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut decode = op(FpmPhase::Decode);
+        decode.sol_ops = glm_dsa_sol_ops("generation_attention");
+
+        let got = decode.query_totals(&db, &[12.0, 131072.0]).unwrap();
+        assert!(
+            got.latency_ms.is_finite() && got.latency_ms > 0.0,
+            "{}",
+            got.latency_ms
+        );
+
+        // EXACT expected value, by the same transfer as the prefill case
+        // (`perf_database/perf_interp.rs:1153-1185`). Decode sites are (batch,) with
+        // total_kv as the curve axis, so `d` is the log2 batch distance; rows 8 and 16
+        // both carry an exact curve point at total_kv=131072, so `lat_i` is 22 / 30.
+        // The decode SOL back-mapping is `s = max(total_kv/batch, 1)`, `prefix = 0`,
+        // `x = batch` (see [`sol_total`]).
+        let sol = |batch: f64, total_kv: f64| -> f64 {
+            crate::operators::fpm_sol::op_sol_latency_ms(
+                &decode.sol_ops[0],
+                &db,
+                batch,
+                batch,
+                (total_kv / batch).max(1.0),
+                0.0,
+            )
+            .unwrap()
+        };
+        let (w_lo, w_hi) = (idw_weight(8.0, 12.0), idw_weight(16.0, 12.0));
+        let mean_util = (w_lo * (sol(8.0, 131072.0) / 22.0) + w_hi * (sol(16.0, 131072.0) / 30.0))
+            / (w_lo + w_hi);
+        let expected = sol(12.0, 131072.0) / mean_util;
+        assert!(
+            (got.latency_ms - expected).abs() <= 1e-9 * expected,
+            "transferred latency {} != the SOL-util transfer {expected}",
+            got.latency_ms
+        );
+        assert!(
+            (15.0..=45.0).contains(&got.latency_ms),
+            "transferred latency {} is not between the neighbouring sites",
             got.latency_ms
         );
     }
@@ -1082,9 +1294,9 @@ mod tests {
     }
 
     /// SOL support is lazy (mirrors Python, whose SOL view answers every op
-    /// family): an unported family (e.g. GLM-5.2's DSA modules) must NOT
-    /// block exact hits or in-curve lerps — only sol-dependent resolution
-    /// paths fail, naming the unported op.
+    /// family): an unported family (e.g. the MLA-BMM module used below)
+    /// must NOT block exact hits or in-curve lerps — only sol-dependent
+    /// resolution paths fail, naming the unported op.
     #[test]
     fn unsupported_sol_family_is_lazy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1111,5 +1323,31 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("no Rust implementation"), "{err}");
+    }
+    #[test]
+    fn verify_query_rejects_invalid_width_before_table_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        let ctx = RuntimeContext {
+            batch_size: 8,
+            s: 4096,
+            ..Default::default()
+        };
+        for (phase, width) in [
+            (FpmPhase::Decode, 0),
+            (FpmPhase::Decode, 3),
+            (FpmPhase::Prefill, 8),
+        ] {
+            let mut query = op(phase);
+            query.verify_width = width;
+            assert!(
+                query
+                    .query(&db, &ctx)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("verify_width")
+            );
+        }
     }
 }

@@ -2743,6 +2743,10 @@ def sample_power_law(size, alpha, xmin, xmax):
     import torch
 
     u = torch.rand(size)
+    if alpha == 1:
+        # The bounded x**-1 density has a logarithmic CDF. The general
+        # inverse below is undefined at this otherwise valid exponent.
+        return xmin * torch.exp(u * math.log(xmax / xmin))
     inv_cdf = ((xmax ** (1 - alpha) - xmin ** (1 - alpha)) * u + xmin ** (1 - alpha)) ** (1 / (1 - alpha))
     return inv_cdf
 
@@ -3461,7 +3465,7 @@ def power_law_deepep_decode(num_tokens, num_experts, topk, ep, alpha):
 _AIC_MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "src",
-    "aiconfigurator",
+    "aisimulate_core",
     "model_configs",
 )
 
@@ -3560,7 +3564,7 @@ def _resolve_local_model_path(model_id: str) -> str:
         1. Existing filesystem path. Must be a directory containing
            ``config.json`` — a file path or a directory without ``config.json``
            raises rather than silently falling through to HF download.
-        2. AIC's bundled configs in ``src/aiconfigurator/model_configs/``
+        2. AIC's bundled configs in ``src/aisimulate_core/model_configs/``
            (``<owner>--<name>_config.json``, with an optional
            ``..._hf_quant_config.json`` side-car).
         3. HuggingFace ``hf_hub_download``: ``config.json`` is required

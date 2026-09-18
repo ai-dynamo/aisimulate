@@ -5,10 +5,11 @@
 //!
 //! Each request lease owns its physical-copy IDs and visibility state. The
 //! manager owns KV-event metadata, while the pool owns occupancy, duplicate
-//! copies, prefix pins, and LRU eviction.
+//! copies, prefix pins, and eviction.
 
 use uuid::Uuid;
 
+use crate::engine::belady::BeladyOracle;
 pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, ReserveOutcome, VllmBlockPool,
@@ -183,7 +184,6 @@ impl DestinationReservation {
         self.pool.fresh_len().saturating_mul(block_size)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.pool.len()
     }
@@ -242,6 +242,10 @@ pub(crate) struct VllmKvManager {
 }
 
 impl VllmKvManager {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.pool.set_belady_oracle(oracle);
+    }
+
     pub(crate) fn new_with_event_sink(
         max_capacity: usize,
         block_size: usize,
@@ -535,6 +539,7 @@ impl VllmKvManager {
         owner: Uuid,
         sequence: &RequestSequence,
         lease: &BlockRequestLease,
+        mode: super::DestinationReservationMode,
         _eviction_now_ms: Option<f64>,
     ) -> VllmAcquire<DestinationReservation> {
         lease.debug_assert_owner(owner);
@@ -547,13 +552,17 @@ impl VllmKvManager {
             .num_input_tokens()
             .div_ceil(self.block_size)
             .min(lease.entries.len());
-        let prefix_candidates = lease.entries[..prompt_blocks]
-            .iter()
-            .map_while(|entry| entry.identity.sequence_hash);
-        let Some(outcome) = self
-            .pool
-            .reserve_resident_prefix(prefix_candidates, prompt_blocks)
-        else {
+        let outcome = match mode {
+            super::DestinationReservationMode::ReuseResidentPrefix => {
+                let prefix_candidates = lease.entries[..prompt_blocks]
+                    .iter()
+                    .map_while(|entry| entry.identity.sequence_hash);
+                self.pool
+                    .reserve_resident_prefix(prefix_candidates, prompt_blocks)
+            }
+            super::DestinationReservationMode::FreshOnly => self.pool.reserve(&[], prompt_blocks),
+        };
+        let Some(outcome) = outcome else {
             return VllmAcquire::CapacityExhausted;
         };
         self.publish_removed(outcome.removed);

@@ -100,7 +100,6 @@ if _REPO_ROOT not in sys.path:
 # name) (config_utils.py:493-498@1.3.0rc20), so expose the base class there
 # before registering the model_type.
 import tensorrt_llm._torch.configs as _trtllm_configs
-
 from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,

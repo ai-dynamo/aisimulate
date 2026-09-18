@@ -10,12 +10,12 @@ from typing import ClassVar
 
 import pytest
 
-from aiconfigurator.cli import api
-from aiconfigurator.cli.api import EstimateResult, _combine_afd_static_estimate_results
-from aiconfigurator.sdk.config import AFDConfig, RuntimeConfig
-from aiconfigurator.sdk.inference_session import AFDInferenceSession
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.performance_result import MoECommFallback
+from aisimulate.legacy_cli import api
+from aisimulate.legacy_cli.api import EstimateResult, _combine_afd_static_estimate_results
+from aisimulate.sdk.config import AFDConfig, RuntimeConfig
+from aisimulate.sdk.inference_session import AFDInferenceSession
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.performance_result import MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -78,7 +78,7 @@ def _build_afd_session_with_phase_metrics(
     monkeypatch.setattr(
         AFDInferenceSession,
         "_build_models",
-        lambda self: (SimpleNamespace(_num_layers=4), SimpleNamespace(_num_layers=4)),
+        lambda self, **_kwargs: (SimpleNamespace(_num_layers=4), SimpleNamespace(_num_layers=4)),
     )
     monkeypatch.setattr(AFDInferenceSession, "_simulate_phase", fake_simulate_phase)
 
@@ -290,10 +290,10 @@ def test_run_afd_estimate_passes_prefix_and_nextn(monkeypatch):
             )
             return summary
 
-    monkeypatch.setattr("aiconfigurator.sdk.inference_session.AFDInferenceSession", FakeSession)
+    monkeypatch.setattr("aisimulate.sdk.inference_session.AFDInferenceSession", FakeSession)
     # Stub out the nvfp4 remap: this test uses a fake model_path that has no
     # HF config, so the remap's _get_model_info would fail trying to download it.
-    monkeypatch.setattr("aiconfigurator.cli.api.resolve_nvfp4_for_system", lambda *a, **k: None)
+    monkeypatch.setattr("aisimulate.legacy_cli.api.resolve_nvfp4_for_system", lambda *a, **k: None)
 
     api._run_afd_estimate(
         model_path="test-model",
@@ -347,7 +347,7 @@ def test_afd_prefill_uses_uncached_prefix_suffix_for_token_math(monkeypatch):
     once per pool with the same suffix length. Regressing this silently
     over-counts prefill bandwidth by the prefix-cache hit rate.
     """
-    from aiconfigurator.sdk.inference_session import _AFDCommOps
+    from aisimulate.sdk.inference_session import _AFDCommOps
 
     captured = {"x_queries": [], "sum_latency_seq_lens": []}
 
@@ -381,7 +381,7 @@ def test_afd_prefill_uses_uncached_prefix_suffix_for_token_math(monkeypatch):
         return summary
 
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[], ffn_ops=[]),
     )
     monkeypatch.setattr(AFDInferenceSession, "_build_afd_comm_ops", fake_build_comm_ops)
@@ -431,7 +431,7 @@ def test_afd_prefill_uses_uncached_prefix_suffix_for_token_math(monkeypatch):
 
 @pytest.mark.parametrize(("nextn", "verify_width"), [(0, 1), (1, 2)])
 def test_afd_decode_mtp_widens_compute_and_communication_queries(monkeypatch, caplog, nextn, verify_width):
-    from aiconfigurator.sdk.inference_session import _AFDCommOps
+    from aisimulate.sdk.inference_session import _AFDCommOps
 
     captured = {"x_queries": [], "batch_sizes": []}
 
@@ -463,7 +463,7 @@ def test_afd_decode_mtp_widens_compute_and_communication_queries(monkeypatch, ca
         return summary
 
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[], ffn_ops=[]),
     )
     monkeypatch.setattr(AFDInferenceSession, "_build_afd_comm_ops", fake_build_comm_ops)
@@ -691,6 +691,22 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
     assert result["decode_balance_ratio"] == pytest.approx(1.33)
     assert result["decode_t_step"] == pytest.approx(50.0)
     assert result["decode_comm_hidden"] is False
+    assert result["afd_layer_measurements"] == {
+        "prefill": {
+            "attention_ms": 0.5,
+            "ffn_ms": 0.7,
+            "a_to_f_ms": 0.05,
+            "f_to_a_ms": 0.05,
+            "num_layers": 4,
+        },
+        "decode": {
+            "attention_ms": 1.2,
+            "ffn_ms": 0.9,
+            "a_to_f_ms": 0.1,
+            "f_to_a_ms": 0.1,
+            "num_layers": 4,
+        },
+    }
 
     # Un-prefixed scalars are NaN (numeric) / None (bool) so consumers
     # cannot accidentally treat decode-only values as the both-phase answer.
@@ -928,7 +944,7 @@ def _afd_cli_estimate_kwargs(**overrides):
 
 def _install_estimate_perf_db_stubs(monkeypatch):
     """Stub out perf_database lookups so cli_estimate(mode='afd') can run."""
-    import aiconfigurator.sdk.perf_database as perf_database
+    import aisimulate.sdk.perf_database as perf_database
 
     monkeypatch.setattr(
         perf_database,
@@ -976,6 +992,37 @@ def test_cli_estimate_afd_combined_with_pd_false_skips_static(monkeypatch):
 
     assert result is afd_only
     assert static_calls == []
+
+
+def test_cli_estimate_afd_rejects_visual_encoder_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                video_height=448,
+                video_width=448,
+                video_frames=8,
+                num_videos=1,
+            ),
+        )
+
+
+def test_cli_estimate_afd_rejects_partial_video_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                video_frames=8,
+                num_videos=0,
+            ),
+        )
+
+
+def test_cli_estimate_afd_rejects_token_only_video_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                num_video_tokens=196,
+            ),
+        )
 
 
 def test_cli_estimate_afd_combined_with_pd_true_runs_static_combine(monkeypatch):
@@ -1066,8 +1113,8 @@ def test_cli_main_estimate_value_error_exits_without_traceback(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import aiconfigurator.cli.main as cli_main
-    import aiconfigurator.sdk.perf_database as perf_database
+    import aisimulate.legacy_cli.main as cli_main
+    import aisimulate.sdk.perf_database as perf_database
 
     monkeypatch.setattr(perf_database, "set_systems_paths", lambda _paths: None)
     monkeypatch.setattr(

@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.errors import MissingSystemFlopsError
-from aiconfigurator.sdk.operations.gemm import GEMM
+from aisimulate.sdk import common
+from aisimulate.sdk.errors import MissingSystemFlopsError
+from aisimulate.sdk.operations.gemm import GEMM
 
 
 class TestGEMMCacheStructure:
@@ -111,7 +111,7 @@ class TestLoadData:
         load counter. Does NOT clear ``GEMM._data_cache`` — that would
         invalidate the comprehensive_perf_db singleton used by sibling
         tests and force a real-disk re-load with no loader patches active."""
-        from aiconfigurator.sdk.operations.base import Operation
+        from aisimulate.sdk.operations.base import Operation
 
         initial_count = Operation._load_data_call_count.get(GEMM, 0)
         for _ in range(5):

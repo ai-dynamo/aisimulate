@@ -26,7 +26,6 @@ def verifier():
 
 def test_spica_scan_covers_all_archive_member_types(verifier):
     names = {
-        "aiconfigurator/__init__.py",
         "spica/",
         "spica/native.so",
         "spica/data/model.bin",
@@ -42,15 +41,14 @@ def test_spica_scan_covers_all_archive_member_types(verifier):
 def test_release_verifier_rejects_stale_spica_archive_member(verifier, monkeypatch, tmp_path):
     wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
     required = {
-        "aiconfigurator/__init__.py",
-        "aiconfigurator/cli/main.py",
-        "aiconfigurator/generator/api.py",
-        "aiconfigurator/logging_utils.py",
-        "aiconfigurator/sdk/_compat.py",
-        "aiconfigurator/sdk/config_adapter/__init__.py",
-        "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
-        "aiconfigurator/sdk/engine.py",
-        "aiconfigurator/sdk/task_v2.py",
+        "aisimulate/legacy_cli/main.py",
+        "aisimulate/generator/api.py",
+        "aisimulate/logging_utils.py",
+        "aisimulate/sdk/_compat.py",
+        "aisimulate/sdk/config_adapter/__init__.py",
+        "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
+        "aisimulate/sdk/engine.py",
+        "aisimulate/sdk/task_v2.py",
     }
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in required:
@@ -92,8 +90,10 @@ def test_infra_scan_rejects_gap_skill_tool_dataset_report_and_web_payloads(verif
 def test_config_adapter_readme_remains_repository_only(verifier):
     payload = verifier._source_payloads()
 
-    assert "aiconfigurator/sdk/config_adapter/README.md" not in payload
-    assert "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
+    assert "aisimulate/sdk/config_adapter/README.md" not in payload
+    assert "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
+    assert "collector/cases/base_ops/mla_module.yaml" in payload
+    assert "collector/fpm_forward/runtime/fpm_exec.sh" in payload
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):
@@ -150,3 +150,16 @@ def test_rust_crate_package_rejects_infra_roots(verifier, monkeypatch, root):
 
     with pytest.raises(RuntimeError, match=root):
         verifier._verify_rust_crate_package()
+
+
+@pytest.mark.parametrize("package", ["aiconfigurator", "aiconfigurator_core"])
+def test_release_verifier_rejects_removed_import_packages(verifier, tmp_path, package):
+    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(f"{package}/__init__.py", "")
+        archive.writestr(
+            "aisimulate-1.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: aisimulate\nVersion: 1.2.0\n",
+        )
+    with pytest.raises(RuntimeError, match="removed legacy import packages"):
+        verifier._verify_wheel(wheel, set())

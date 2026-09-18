@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed system hardware spec parsed from `python/aisimulate/src/aiconfigurator_core/systems/*.yaml`.
+//! Typed system hardware spec parsed from `python/aisimulate/src/aisimulate_core/systems/*.yaml`.
 //!
-//! Mirrors `aiconfigurator.sdk.system_spec.SystemSpec`. The Python type
+//! Mirrors `aisimulate.sdk.system_spec.SystemSpec`. The Python type
 //! subclasses `dict`; the Rust port uses a typed struct because every
 //! downstream consumer here needs typed field access. The on-disk YAML schema
 //! is the contract; struct layout follows the YAML shape one-to-one.
@@ -187,7 +187,7 @@ mod tests {
         // dir is two levels up.
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     #[test]
@@ -203,6 +203,9 @@ mod tests {
         assert_eq!(spec.gpu.sm_version, Some(100));
         assert_eq!(spec.node.num_gpus_per_node, 8);
         assert!(spec.node.num_gpus_per_rack.is_none()); // b200_sxm has no rack tier
+        // InferenceX CX7 400GbE reference, single-direction bandwidth per GPU.
+        assert_eq!(spec.get_p2p_bandwidth(8), 900_000_000_000.0);
+        assert_eq!(spec.get_p2p_bandwidth(16), 50_000_000_000.0);
         assert_eq!(spec.misc.nccl_mem.get(&8), Some(&411_041_792));
         assert_eq!(spec.misc.nccl_version.as_deref(), Some("2.27.3"));
     }
@@ -211,8 +214,13 @@ mod tests {
     fn parse_gb200_rack_tier() {
         let spec = SystemSpec::load(&systems_root().join("gb200.yaml"))
             .expect("gb200.yaml parse must succeed");
-        assert!(spec.node.num_gpus_per_rack.is_some());
-        assert!(spec.node.inter_rack_bw.is_some());
+        assert_eq!(spec.node.num_gpus_per_node, 4);
+        assert_eq!(spec.node.num_gpus_per_rack, Some(72));
+        // NVLink stays within the rack; CX7 NDR400 provides 400 / 8 = 50 GB/s per GPU.
+        assert_eq!(spec.get_p2p_bandwidth(4), 900_000_000_000.0);
+        assert_eq!(spec.get_p2p_bandwidth(72), 900_000_000_000.0);
+        assert_eq!(spec.get_p2p_bandwidth(73), 50_000_000_000.0);
+        assert_eq!(spec.get_p2p_bandwidth(128), 50_000_000_000.0);
     }
 
     #[test]

@@ -1,35 +1,36 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Nightly CI
+name: Main branch nightly CI
 
 # Nightly build of the approved AISimulate release artifacts — the
-# `aisimulate` wheel and the `aisimulate-core` crate — via
+# `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
+# FPE support-matrix refresh at the same source SHA. The GitLab publish
+# trigger waits for the matrix refresh, and a failed refresh fails the run,
+# so consumers (who resolve the newest successful run) never advance to a
+# nightly whose matrix did not refresh. Release artifacts are built via
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
-# entry point. The build job runs only hash-pinned tooling and
-# lockfile-resolved crates; the wheel's unpinned PyPI dependency tree is
-# installed in a separate smoke job after the artifacts are stored.
+# entry point. Isolated compliance jobs gate the build/staging jobs. Each
+# arch job then builds, stages to Artifactory, and smoke-tests the downloaded
+# wheel on every supported Python. Verified copies, checksums, and
+# provenance remain in nightly-dist-* for FPE, accuracy, and installation
+# consumers; GitHub also retains dependency inventories and license evidence.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
-# wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
-# the crate `<base>-dev.YYYYMMDD` (dotted so SemVer orders the date
-# numerically). The date is computed once in the guard job so both arch
-# legs agree across a UTC midnight.
+# wheels get `<base>.devYYYYMMDDNNNNNNNNNN`, and the crate gets the same
+# numeric suffix after `-dev.`. The ten-digit workflow run number makes
+# scheduled and manual publications distinct while preserving date ordering.
+# The original run creation date and number are stable across retries.
 #
-# Staging: uploads the built wheels to the internal PyPI repo and the
-# crate to the internal Cargo repo, both under nightly/<run_id>/ — the
-# ai-dynamo staging path convention (the future release workflow will use
-# a release/ prefix). Files are checksum-verified against the build job's
-# SHA256SUMS before upload and server-side on PUT. The stage job is gated
-# by the `automated-release` environment.
-#
-# Environment prerequisite: create `automated-release` BEFORE merging —
-# a referenced-but-missing environment is auto-created UNPROTECTED and the
-# job runs ungated. Store ARTIFACTORY_URL and ARTIFACTORY_TOKEN as
-# environment secrets only (repo-level secrets would flow to modified
-# workflow copies on pull-request/* refs). With required reviewers set,
-# each night's staging waits for approval — approve or reject promptly,
-# since a waiting run holds the nightly-ci concurrency group.
+# Staging: each arch job uploads its wheel to the internal PyPI repo (and
+# the amd64 leg the crate to the internal Cargo repo) under
+# nightly/<run_id>/ — the ai-dynamo staging path convention (the future
+# release workflow will use a release/ prefix). Uploads are server-side
+# checksum-verified and idempotent across re-runs. Scheduled runs deploy
+# unattended; any other trigger must first pass the manual-approval job,
+# gated by the `manual-release-approver` environment's required reviewers
+# (that environment holds no secrets — all deploy jobs run in
+# `automated-release`).
 #
 # Runs on the repository-specific self-hosted runners (OPS-8249). Jobs run
 # in pinned manylinux_2_28 containers: the default runner image has no C
@@ -41,18 +42,33 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
+  # Manual runs do the full nightly including publish, gated by
+  # manual-release-approver. Dispatch from main so old release sources use
+  # the current workflow.
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: >-
+          Full commit SHA to build, stage, and publish; must be on main or
+          release/*. Dispatch from main. Empty builds main at dispatch time.
+        required: false
+        default: ""
+        type: string
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
   contents: read
 
+# Scheduled runs get their own group so a manual run parked at the approval
+# gate can never block the cron; staging paths are keyed by run_id, so
+# concurrent runs cannot collide. Superseded manual runs are cancelled.
 concurrency:
-  group: nightly-ci
-  cancel-in-progress: false
+  group: nightly-ci-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   changes-guard:
-    name: Skip when main is unchanged
+    name: Resolve target and skip unchanged nightlies
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -61,20 +77,84 @@ jobs:
     outputs:
       should-build: ${{ steps.decide.outputs.should-build }}
       dev-date: ${{ steps.version.outputs.dev-date }}
+      dev-version: ${{ steps.version.outputs.dev-version }}
+      target-sha: ${{ steps.target.outputs.sha }}
+      target-ref: ${{ steps.target.outputs.ref }}
     steps:
+      # Runs with no secrets and no environment. Every manual target —
+      # including main's own tip — must lie on main or a release/* branch.
+      - name: Resolve and validate the target commit
+        id: target
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        with:
+          script: |
+            if (context.eventName === 'schedule') {
+              core.setOutput('sha', context.sha);
+              core.setOutput('ref', context.ref);
+              return;
+            }
+            if (context.ref !== 'refs/heads/main') {
+              core.setFailed('Dispatch from main; use commit_sha to select release source');
+              return;
+            }
+            const requested = (process.env.REQUESTED_SHA || '').trim() || context.sha;
+            if (!/^[0-9a-f]{40}$/.test(requested)) {
+              core.setFailed('commit_sha must be a full 40-hex commit SHA');
+              return;
+            }
+            const branches = (await github.paginate(
+              github.rest.repos.listBranches, {...context.repo, per_page: 100}))
+              .map(b => b.name)
+              .filter(n => n === 'main' || n.startsWith('release/'));
+            for (const branch of branches) {
+              try {
+                const {data} = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${requested}...${branch}`});
+                // ahead/identical: the branch tip contains the requested commit.
+                if (data.status === 'ahead' || data.status === 'identical') {
+                  const {data: commit} = await github.rest.repos.getCommit(
+                    {...context.repo, ref: requested});
+                  core.notice(`Building ${requested} on ${branch}: ` +
+                    `${commit.commit.committer.date} ` +
+                    `"${commit.commit.message.split('\n')[0]}"`);
+                  core.setOutput('sha', requested);
+                  core.setOutput('ref', `refs/heads/${branch}`);
+                  return;
+                }
+              } catch (error) {
+                // A missing comparison may mean the commit is unknown;
+                // authentication, rate-limit, and server failures are fatal.
+                if (error.status !== 404) throw error;
+              }
+            }
+            core.setFailed('commit_sha is not on main or any release/* branch');
+      # Downstream migrations consume this development wheel before they can
+      # merge. Their completion is a stable-release prerequisite, not a nightly gate.
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
-      - name: Compute nightly version date
+      - name: Compute unique nightly version
         id: version
-        run: echo "dev-date=$(date -u +%Y%m%d)" >> "${GITHUB_OUTPUT}"
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const {data: run} = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: context.runId});
+            const date = run.created_at.slice(0, 10).replaceAll('-', '');
+            const number = String(run.run_number);
+            if (!/^\d{8}$/.test(date) || !/^[1-9]\d{0,9}$/.test(number)) {
+              throw new Error('invalid nightly creation date or run number');
+            }
+            core.setOutput('dev-date', date);
+            core.setOutput('dev-version', date + number.padStart(10, '0'));
 
       - name: Compare HEAD with the last successful nightly
         id: decide
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
-            // Only scheduled runs dedup; any other event (e.g. a future
-            // workflow_dispatch) always builds.
+            // Only scheduled runs dedup; other events always build.
             if (context.eventName !== 'schedule') {
               core.setOutput('should-build', 'true');
               return;
@@ -85,6 +165,8 @@ jobs:
                 repo: context.repo.repo,
                 workflow_id: 'nightly-ci.yml',
                 branch: 'main',
+                // Dispatch runs pin older SHAs; only prior crons may dedup.
+                event: 'schedule',
                 status: 'success',
                 per_page: 1,
               });
@@ -102,10 +184,102 @@ jobs:
             }
             core.setOutput('should-build', 'true');
 
+  # Only the FIRST attempt of a scheduled run is unattended. Any other
+  # trigger, and any re-run (run_attempt > 1, including re-runs of the
+  # cron), stops here until a manual-release-approver required reviewer
+  # (the ops team) approves. The environment holds no secrets — it exists
+  # only as a gate.
+  manual-approval:
+    name: Approve manual trigger or re-run
+    needs: changes-guard
+    if: >-
+      needs.changes-guard.outputs.should-build == 'true' &&
+      (github.event_name != 'schedule' || github.run_attempt != '1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: manual-release-approver
+    outputs:
+      approved-attempt: ${{ steps.approval.outputs.run-attempt }}
+    steps:
+      - name: Record approval
+        id: approval
+        run: |
+          echo "approved (event ${GITHUB_EVENT_NAME}, attempt ${GITHUB_RUN_ATTEMPT})"
+          echo "run-attempt=${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+
+  python-compliance:
+    name: Python Dependency Licenses (${{ matrix.arch }}, ${{ matrix.python-version }})
+    # No release environment or build artifacts are available to dependency
+    # build hooks. Both architectures must pass before staging can start.
+    needs: [changes-guard, manual-approval]
+    # Dependency installation uses production runners, so manual runs and
+    # retries need approval before even this isolated compliance work starts.
+    # !cancelled() allows the skipped approval ancestor on scheduled first runs.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      # Keep the license policy/tooling at the workflow revision. Older
+      # release sources need only their package manifest, not this helper.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.changes-guard.outputs.target-sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check Python dependency licenses
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          PYTHON_SERIES: ${{ matrix.python-version }}
+        run: |
+          python -m venv "${RUNNER_TEMP}/venv-licenses"
+          python scripts/check_python_licenses.py \
+            --pyproject source/python/aisimulate/pyproject.toml \
+            --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
+            --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
+      - name: Preserve the dependency inventory as data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/python-inventory/*.csv
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
   build-artifacts:
     name: Build artifacts (${{ matrix.arch }})
-    needs: changes-guard
-    if: needs.changes-guard.outputs.should-build == 'true'
+    needs: [changes-guard, manual-approval, python-compliance]
+    # Runs unattended only on a scheduled first attempt; otherwise requires
+    # an explicit approval. "Re-run failed jobs" cannot revive a skipped
+    # approval, so it fails closed — use "Re-run all jobs" to get the gate.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      needs.python-compliance.result == 'success' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +302,11 @@ jobs:
             container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    environment: automated-release
+    permissions:
+      contents: read
+    outputs:
+      wheel-version: ${{ steps.verify.outputs.wheel-version }}
     container:
       # Digest-pinned manylinux_2_28: ships the C toolchain the native build
       # needs and audit-tags wheels at glibc 2.28 — also the minimum glibc
@@ -143,15 +322,28 @@ jobs:
       RUSTUP_VERSION: "1.29.0"
       RUST_TOOLCHAIN: "1.98.0"
       PYTHON_SERIES: "3.12"
+      # The abi3 wheel claims every Python in requires-python; prove each one.
+      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
       # Use uv's managed interpreter (not the image's python) and ignore any
       # uv.toml discovered in the workspace.
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
-      # Recorded in provenance.json.
-      CONTAINER_IMAGE: ${{ matrix.container_image }}
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.changes-guard.outputs.target-sha }}
+          persist-credentials: false
+      # Historical sources retain their package/build code, while version
+      # stamping and the artifact contract come from the trusted workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: release-tooling
+          sparse-checkout: |
+            /scripts/apply_dev_version.py
+            /scripts/build_release_artifacts.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       # HOME above is the checked-out workspace: anything written there
@@ -243,21 +435,19 @@ jobs:
           "${TOOLS_DIR}/venv-build/bin/python" -m maturin --version
 
       - name: Stamp nightly dev version
-        env:
-          DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/apply_dev_version.py ".dev${DEV_DATE}"
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/apply_dev_version.py ".dev${DEV_DATE}" .
 
       - name: Validate release manifests
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py --check-only
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . --check-only
 
       - name: Build release artifacts
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py \
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . \
             --output-dir "${DIST_DIR}"
 
       - name: Drop duplicate crate (non-amd64 legs)
@@ -268,14 +458,37 @@ jobs:
           # canonical, so drop this leg's duplicate before upload.
           rm "${DIST_DIR}"/aisimulate-core-*.crate
 
+      # The wheel's name is a contract: stamped dev version (catches a
+      # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
+      # arch (catches a build-container regression that would mistag wheels).
+      - name: Verify wheel name, tags, and stamped version
+        id: verify
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          plat="${UV_TARGET%%-*}"
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+            echo "::error::unexpected wheel name: ${wheel}"
+            exit 1
+          }
+          version="${wheel#aisimulate-}"
+          version="${version%%-*}"
+          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "wheel OK: ${wheel} (version ${version})"
+
       - name: Write checksums and provenance
         env:
           MATRIX_ARCH: ${{ matrix.arch }}
+          CONTAINER_IMAGE: ${{ matrix.container_image }}
           MATRIX_RUNNER: ${{ matrix.runner }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_WORKFLOW_REF: ${{ github.workflow_ref }}
-          GH_REF: ${{ github.ref }}
-          GH_SHA: ${{ github.sha }}
+          GH_REF: ${{ needs.changes-guard.outputs.target-ref }}
+          GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_RUN_ATTEMPT: ${{ github.run_attempt }}
           GH_EVENT_NAME: ${{ github.event_name }}
@@ -335,228 +548,38 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload artifacts
+      # Capture trusted crate metadata before smoke dependencies execute.
+      - name: Capture the locked crate inventory
+        if: matrix.arch == 'amd64'
+        run: cargo metadata --locked --format-version 1 > "${RUNNER_TEMP}/cargo-metadata.json"
+      - name: Preserve crate inventory for compliance evidence
+        if: matrix.arch == 'amd64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-dist-${{ matrix.arch }}
-          path: ${{ runner.temp }}/nightly-dist/*
+          name: nightly-crate-inventory
+          path: ${{ runner.temp }}/cargo-metadata.json
           if-no-files-found: error
-          # Wheels and crates are already compressed; skip recompression.
-          compression-level: 0
-          # Matches the Dynamo nightly compliance policy's 30-day window.
           retention-days: 30
+          overwrite: true
 
-  # Installing the wheel pulls its unpinned PyPI dependency tree — untrusted
-  # code that must not share a job with artifact production, so this runs
-  # after the artifacts are immutable in the artifact store. A red smoke job
-  # fails the run, the signal staging consumers gate on.
-  smoke-test:
-    name: Smoke-test wheel (${{ matrix.arch }})
-    needs: [changes-guard, build-artifacts]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: prod-aisimulate-default-amd64-v1
-            uv_target: x86_64-unknown-linux-gnu
-            uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
-            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
-            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
-          - arch: arm64
-            runner: prod-aisimulate-default-arm64-v1
-            uv_target: aarch64-unknown-linux-gnu
-            uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
-            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
-            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    container:
-      image: ${{ matrix.container_image }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-    defaults:
-      run:
-        shell: bash
-    env:
-      UV_VERSION: "0.12.6"
-      # The abi3 wheel claims every Python in requires-python; prove each one.
-      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
-      UV_PYTHON_PREFERENCE: only-managed
-      UV_NO_CONFIG: "1"
-      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
-    steps:
-      # No checkout: this job needs only the stored artifact, keeping the
-      # untrusted dependency install away from repo content.
-      - name: Isolate toolchain paths outside the workspace
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/tmp"
-          {
-            echo "TOOLS_DIR=${RUNNER_TEMP}/tools"
-            echo "DIST_DIR=${RUNNER_TEMP}/nightly-dist"
-            echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache"
-            echo "UV_PYTHON_INSTALL_DIR=${RUNNER_TEMP}/uv-python"
-            echo "TMPDIR=${RUNNER_TEMP}/tmp"
-          } >> "${GITHUB_ENV}"
-
-      - name: Download built artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: nightly-dist-${{ matrix.arch }}
-          path: ${{ runner.temp }}/nightly-dist
-
-      - name: Install uv (checksum-verified)
-        env:
-          UV_TARGET: ${{ matrix.uv_target }}
-          UV_SHA256: ${{ matrix.uv_sha256 }}
-        run: |
-          set -euo pipefail
-          mkdir -p "${TOOLS_DIR}"
-          archive="${TOOLS_DIR}/uv.tar.gz"
-          curl -q --fail --location --silent --show-error --retry 3 \
-            --output "${archive}" \
-            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
-          echo "${UV_SHA256}  ${archive}" | sha256sum --check
-          tar -xzf "${archive}" -C "${TOOLS_DIR}" --strip-components=1
-          rm "${archive}"
-          echo "${TOOLS_DIR}" >> "${GITHUB_PATH}"
-          "${TOOLS_DIR}/uv" --version
-
-      - name: Verify artifact checksums
-        run: |
-          set -euo pipefail
-          (cd "${DIST_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
-
-      # The wheel's name is a contract: stamped dev version (catches a
-      # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
-      # arch (catches a build-container regression that would mistag wheels).
-      # The parsed version is re-asserted against installed metadata below.
-      - name: Verify wheel name, tags, and stamped version
-        env:
-          UV_TARGET: ${{ matrix.uv_target }}
-        run: |
-          set -euo pipefail
-          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
-          plat="${UV_TARGET%%-*}"
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
-          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
-            echo "::error::unexpected wheel name: ${wheel}"
-            exit 1
-          }
-          version="${wheel#aisimulate-}"
-          version="${version%%-*}"
-          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
-          echo "wheel OK: ${wheel} (version ${version})"
-
-      - name: Smoke-test the wheel on every supported Python
-        run: |
-          set -euo pipefail
-          cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
-          import importlib.metadata as metadata
-          import os
-
-          import aiconfigurator
-          import aiconfigurator_core
-          import aisimulate
-          import aisimulate_core
-
-          expected = os.environ["EXPECTED_VERSION"]
-          assert (
-              aisimulate.__version__
-              == aisimulate_core.__version__
-              == metadata.version("aisimulate")
-              == expected
-          ), (aisimulate.__version__, expected)
-          installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
-          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
-          assert installed.isdisjoint(forbidden), installed & forbidden
-          EOF
-          for series in ${PYTHON_SERIES_LIST}; do
-            venv="${TOOLS_DIR}/venv-smoke-${series}"
-            uv venv --python "${series}" "${venv}"
-            uv pip install --python "${venv}/bin/python" "${DIST_DIR}"/aisimulate-*.whl
-            uv pip check --python "${venv}/bin/python"
-            "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
-            "${venv}/bin/aisimulate" --help
-            "${venv}/bin/aiconfigurator" version
-            echo "smoke OK on Python ${series}"
-          done
-
-  # Uploads the smoke-tested wheels and crate to internal Artifactory under
-  # nightly/<run_id>/, checksum-verified before upload and server-side on
-  # PUT. Runs only for scheduled runs on main (never on pull-request/*
-  # copies, which contain unreviewed PR content), behind the protected
-  # environment that scopes the ARTIFACTORY_* secrets.
-  stage-artifactory:
-    name: Stage to Artifactory
-    needs: [build-artifacts, smoke-test]
-    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 30
-    environment: automated-release
-    container:
-      # Keep in sync with the amd64 build-matrix image.
-      # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
-      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
-      env:
-        HOME: /__w/aisimulate/aisimulate
-    defaults:
-      run:
-        shell: bash
-    env:
-      ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-      ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
-    steps:
-      - name: Prepare staging directory
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/stage/amd64" "${RUNNER_TEMP}/stage/arm64" "${RUNNER_TEMP}/stage/upload"
-          echo "STAGE_DIR=${RUNNER_TEMP}/stage" >> "${GITHUB_ENV}"
-
-      - name: Download amd64 artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: nightly-dist-amd64
-          path: ${{ runner.temp }}/stage/amd64
-
-      - name: Download arm64 artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: nightly-dist-arm64
-          path: ${{ runner.temp }}/stage/arm64
-
-      - name: Verify checksums and assemble upload set
-        env:
-          GH_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # nightly/<run_id>/ — the ai-dynamo staging path convention.
-          echo "STAGE_SUBPATH=nightly/${GH_RUN_ID}" >> "${GITHUB_ENV}"
-          for arch in amd64 arm64; do
-            (cd "${STAGE_DIR}/${arch}" && sha256sum --check --strict SHA256SUMS.txt)
-          done
-          # Wheels and the crate. The build job's SHA256SUMS/provenance stay
-          # in the workflow artifact and are not staged.
-          cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}"/arm64/*.whl "${STAGE_DIR}/upload/"
-          cp "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
-          wheels=("${STAGE_DIR}"/upload/*.whl)
-          [ "${#wheels[@]}" -eq 2 ] || { echo "::error::expected 2 wheels"; exit 1; }
-          crates=("${STAGE_DIR}"/upload/*.crate)
-          [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected 1 crate"; exit 1; }
-
-      - name: Upload to Artifactory
+      # This leg's wheel; the amd64 leg also uploads the crate (it is
+      # arch-independent source, one canonical copy).
+      - name: Stage to Artifactory
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
+          GH_RUN_ID: ${{ github.run_id }}
+          MATRIX_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           for name in ARTIFACTORY_URL ARTIFACTORY_TOKEN \
                       ARTIFACTORY_PYPI_REPO ARTIFACTORY_CARGO_REPO; do
             [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
           done
-          subpath="${STAGE_SUBPATH}"
-          [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
+          # nightly/<run_id>/ — the ai-dynamo staging path convention.
+          subpath="nightly/${GH_RUN_ID}"
           put() {
             local file="$1" repo="$2" label="$3"
             local sha url existing
@@ -590,17 +613,439 @@ jobs:
               "${url}"
             echo "staged (${label}): $(basename "${file}")"
           }
-          cd "${STAGE_DIR}/upload"
-          for file in *.crate; do
-            put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
-          done
+          cd "${DIST_DIR}"
+          if [ "${MATRIX_ARCH}" = "amd64" ]; then
+            for file in *.crate; do
+              put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
+            done
+          fi
           for file in *.whl; do
             put "${file}" "${ARTIFACTORY_PYPI_REPO}" pypi
           done
+          echo "STAGED_SUBPATH=${subpath}" >> "${GITHUB_ENV}"
           {
-            echo "### Staged to Artifactory"
+            echo "### Staged to Artifactory (${MATRIX_ARCH})"
             echo "Subpath: \`${subpath}/\`"
             echo '```'
             ls -l
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      # The deploy token is scoped to this download-only step; the smoke
+      # test below installs unpinned dependencies and runs their code, so it
+      # must not inherit the credential.
+      - name: Fetch the staged wheel back from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+        run: |
+          set -euo pipefail
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          fetch_dir="${TOOLS_DIR}/staged-dist"
+          mkdir -p "${fetch_dir}"
+          curl -q --fail --silent --show-error --retry 3 \
+            -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+            --output "${fetch_dir}/${wheel}" \
+            "${ARTIFACTORY_URL%/}/${ARTIFACTORY_PYPI_REPO}/${STAGED_SUBPATH}/${wheel}"
+          built_sha="$(sha256sum "${DIST_DIR}/${wheel}" | cut -d' ' -f1)"
+          staged_sha="$(sha256sum "${fetch_dir}/${wheel}" | cut -d' ' -f1)"
+          [ "${staged_sha}" = "${built_sha}" ] || {
+            echo "::error::staged wheel differs from the built wheel: ${wheel}"
+            exit 1
+          }
+          echo "fetched ${wheel} (checksum matches the build)"
+
+      # Preserve the established consumer handoff only after the staged
+      # wheel has been downloaded and verified against the build. Upload
+      # before dependency code runs so the artifact remains immutable.
+      - name: Upload verified nightly artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-dist-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist/*
+          if-no-files-found: error
+          # Wheels and crates are already compressed; skip recompression.
+          compression-level: 0
+          # Matches the Dynamo nightly compliance policy's 30-day window.
+          retention-days: 30
+          overwrite: true
+
+
+      # Installs the wheel fetched back from Artifactory, not the local
+      # build, so a corrupted or wrong upload fails here instead of at the
+      # consumer. No secrets: dependency build hooks and imported code run
+      # in this step.
+      - name: Smoke-test the staged wheel on every supported Python
+        run: |
+          set -euo pipefail
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          fetch_dir="${TOOLS_DIR}/staged-dist"
+          cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
+          import importlib.metadata as metadata
+          import os
+
+          import aisimulate
+          import aisimulate_core
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert (
+              aisimulate.__version__
+              == aisimulate_core.__version__
+              == metadata.version("aisimulate")
+              == expected
+          ), (aisimulate.__version__, expected)
+          installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
+          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
+          assert installed.isdisjoint(forbidden), installed & forbidden
+          EOF
+          for series in ${PYTHON_SERIES_LIST}; do
+            venv="${TOOLS_DIR}/venv-smoke-${series}"
+            uv venv --python "${series}" "${venv}"
+            uv pip install --python "${venv}/bin/python" "${fetch_dir}/${wheel}"
+            uv pip check --python "${venv}/bin/python"
+            "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
+            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aiconfigurator" version
+            echo "smoke OK on Python ${series}"
+          done
+
+  # Read dependency inventories as data in a fresh job; no runtime imports
+  # share a process or filesystem with the GitHub token used for the prior diff.
+  license-evidence:
+    name: License compliance evidence
+    needs: [build-artifacts, python-compliance]
+    # !cancelled(): the implicit success() also inspects the transitively
+    # needed manual-approval job, which is skipped on scheduled runs.
+    if: >-
+      !cancelled() &&
+      needs.build-artifacts.result == 'success' &&
+      needs.python-compliance.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nightly-python-inventory-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/license-artifacts/python
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-crate-inventory
+          path: ${{ runner.temp }}/license-artifacts
+      - name: Generate license compliance evidence
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          outdir="${RUNNER_TEMP}/license-artifacts"
+          mkdir -p "${outdir}"
+          python3 - "${outdir}" <<'EOF'
+          import csv, glob, io, json, os, sys, urllib.request, zipfile
+
+          outdir = sys.argv[1]
+          rows = []
+          for filename in sorted(glob.glob(f"{outdir}/python/*.csv")):
+              with open(filename, newline="") as f:
+                  for r in csv.DictReader(f):
+                      rows.append({"dependency_type": "python", "name": r["Name"],
+                                   "version": r["Version"], "spdx_license": r["License"]})
+          if not rows:
+              raise SystemExit("missing Python dependency inventories")
+          with open(f"{outdir}/cargo-metadata.json") as f:
+              meta = json.load(f)
+          workspace = set(meta.get("workspace_members") or [])
+          for p in meta["packages"]:
+              if p.get("id") in workspace:
+                  continue
+              rows.append({"dependency_type": "crate", "name": p["name"],
+                           "version": p["version"],
+                           "spdx_license": p.get("license") or "UNKNOWN"})
+          def identity(row):
+              return row["dependency_type"], row["name"], row["version"]
+
+          inventory = {}
+          for row in rows:
+              key = identity(row)
+              if key in inventory and inventory[key] != row:
+                  raise SystemExit("conflicting license metadata for one dependency version")
+              inventory[key] = row
+          rows = [inventory[key] for key in sorted(inventory)]
+          fields = ["dependency_type", "name", "version", "spdx_license"]
+          with open(f"{outdir}/deps.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader()
+              w.writerows(rows)
+
+          def prior_deps():
+              token = os.environ["GH_API_TOKEN"]
+              repo = os.environ["GITHUB_REPOSITORY"]
+              current = os.environ["GITHUB_RUN_ID"]
+              def get(url):
+                  req = urllib.request.Request(url, headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json"})
+                  return urllib.request.urlopen(req, timeout=30)
+              with get(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/"
+                  "nightly-ci.yml/runs?branch=main&event=schedule&status=success&per_page=10") as response:
+                  runs = json.load(response)
+              for run in runs.get("workflow_runs", []):
+                  if str(run["id"]) == current:
+                      continue
+                  with get(run["artifacts_url"]) as response:
+                      arts = json.load(response)
+                  for a in arts.get("artifacts", []):
+                      if "license" not in a["name"] or a.get("expired"):
+                          continue
+                      with get(a["archive_download_url"]) as response:
+                          data = response.read()
+                      with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                          for n in zf.namelist():
+                              if os.path.basename(n) == "deps.csv":
+                                  with io.TextIOWrapper(zf.open(n)) as stream:
+                                      reader = csv.DictReader(stream)
+                                      return {identity(r): r for r in reader}
+              return None
+
+          try:
+              prior = prior_deps()
+          except Exception as exc:
+              print(f"::warning::prior-artifact lookup failed ({exc}); "
+                    "deps-diff.csv lists every dependency as added")
+              prior = None
+          prior = prior or {}
+          current = {identity(r): r for r in rows}
+          dfields = ["change"] + fields + ["prior_version", "prior_spdx_license"]
+          drows = []
+          for key in sorted(set(current) | set(prior)):
+              c, p = current.get(key), prior.get(key)
+              if c and not p:
+                  drows.append({"change": "added", **c,
+                                "prior_version": "", "prior_spdx_license": ""})
+              elif p and not c:
+                  drows.append({"change": "removed",
+                                "dependency_type": p["dependency_type"],
+                                "name": p["name"], "version": "",
+                                "spdx_license": "",
+                                "prior_version": p["version"],
+                                "prior_spdx_license": p["spdx_license"]})
+              elif (c["version"] != p["version"]
+                    or c["spdx_license"] != p["spdx_license"]):
+                  drows.append({"change": "changed", **c,
+                                "prior_version": p["version"],
+                                "prior_spdx_license": p["spdx_license"]})
+          with open(f"{outdir}/deps-diff.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=dfields)
+              w.writeheader()
+              w.writerows(drows)
+          print(f"deps.csv: {len(rows)} rows; deps-diff.csv: {len(drows)} rows")
+          EOF
+
+      # Constant name + overwrite so a re-run replaces the evidence instead
+      # of failing on a duplicate (or, across a UTC midnight, leaving two
+      # "license" artifacts that would abort the OSRB attach's auto-select).
+      - name: Upload license compliance artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: license-artifacts
+          path: ${{ runner.temp }}/license-artifacts/deps*.csv
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: true
+
+  # Refresh strict-native op-level FPE coverage at the exact nightly source
+  # SHA and with the same amd64 wheel verified against Artifactory.
+  # The GitLab publish trigger below requires this to succeed, and a failed
+  # refresh fails the run, so consumers never advance to it. Current tooling
+  # qualifies historical sources using their inventory and exact staged wheel.
+  fpe-support-matrix:
+    name: FPE Support Matrix (selected source)
+    needs: [changes-guard, build-artifacts]
+    # !cancelled(): the implicit success() also inspects the transitively
+    # needed manual-approval job, which is skipped on scheduled runs.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      needs.build-artifacts.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fpe-support-matrix.yml
+    with:
+      expected_sha: ${{ needs.changes-guard.outputs.target-sha }}
+      source_branch: ${{ needs.changes-guard.outputs.target-ref }}
+      wheel_artifact: nightly-dist-amd64
+
+  # Security scanning runs in the internal GitLab release-automation
+  # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
+  # fires the internal pipeline that scans them. Scan findings stay inside
+  # GitLab and never appear in these logs. The job is variable-gated so
+  # nightlies stay green until the GitLab pipeline and the runner-group
+  # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
+  trigger-gitlab-security:
+    name: Trigger GitLab security pipeline
+    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
+    # Same unattended-vs-approved split as build-artifacts, so re-running
+    # only this job cannot fire an unapproved publish. The FPE refresh must
+    # have succeeded before anything advances to the internal pipeline.
+    # Approved manual runs publish too, under a distinct run-number version.
+    if: >-
+      !cancelled() &&
+      needs.build-artifacts.result == 'success' &&
+      needs.fpe-support-matrix.result == 'success' &&
+      needs.license-evidence.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
+      vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
+    # gitlab-master is on-prem and unreachable (even for DNS) from the
+    # AWS-hosted repo runners; these on-prem runners are the sanctioned path.
+    runs-on:
+      group: gitlab_ci_runners
+    timeout-minutes: 10
+    environment: automated-release
+    steps:
+      # Start the nightly Slack thread; the GitLab pipeline's slack jobs
+      # reply to it via the forwarded SLACK_THREAD_TS/SLACK_CHANNEL_ID
+      # (dynamo's pattern). Best-effort: a Slack outage must not block the
+      # security pipeline — GitLab then starts its own thread.
+      - name: Start the Slack thread
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+        run: |
+          set -euo pipefail
+          SLACK_THREAD_TS=""
+          if [ -n "${SLACK_BOT_TOKEN}" ] && [ -n "${SLACK_CHANNEL_ID}" ]; then
+            payload=$(jq -n --arg channel "${SLACK_CHANNEL_ID}" \
+              --arg text ":crescent_moon: *AISimulate nightly* \`${WHEEL_VERSION}\` — artifacts built, smoked, and staged; internal security pipeline starting. <${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|GitHub run>" \
+              '{channel: $channel, text: $text}')
+            SLACK_THREAD_TS=$(curl -sS --max-time 15 --retry 2 \
+              -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              --data "${payload}" | jq -r '.ts // empty' || true)
+            [ -n "${SLACK_THREAD_TS}" ] || \
+              echo "::warning::Slack thread start failed; GitLab will start its own thread"
+          fi
+          echo "SLACK_THREAD_TS=${SLACK_THREAD_TS}" >> "${GITHUB_ENV}"
+
+      - name: Trigger internal security scan
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+          TOOLING_SHA: ${{ github.sha }}
+          WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+        run: |
+          set -euo pipefail
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION TOOLING_SHA; do
+            [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
+          done
+          # Variable names follow the release-automation root pipeline's
+          # contract (PROJECT routes to projects/aisimulate.yml there).
+          # The response is discarded: it names internal pipeline URLs.
+          # Preflight requires a dated NIGHTLY_TAG for nightly runs.
+          nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
+          curl -q --fail --silent --show-error --retry 3 --output /dev/null \
+            -F "token=${GITLAB_TRIGGER_TOKEN}" \
+            -F "ref=main" \
+            -F "variables[PROJECT]=aisimulate" \
+            -F "variables[PIPELINE_TYPE]=security" \
+            -F "variables[RELEASE_TYPE]=nightly" \
+            -F "variables[NIGHTLY_TAG]=${nightly_tag}" \
+            -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
+            -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
+            -F "variables[COMMIT_SHA]=${GH_SHA}" \
+            -F "variables[AISIMULATE_TOOLING_SHA]=${TOOLING_SHA}" \
+            -F "variables[SLACK_THREAD_TS]=${SLACK_THREAD_TS}" \
+            -F "variables[SLACK_CHANNEL_ID]=${SLACK_CHANNEL_ID}" \
+            -F "variables[DRY_RUN]=false" \
+            "${GITLAB_PIPELINE_URL}"
+          echo "internal security pipeline triggered"
+
+  # Failure-only alert to the automation Slack channel, modeled on dynamo's
+  # notify-slack.yml. Mentions come from the SLACK_NOTIFY_MENTIONS repo
+  # variable: comma-separated Slack IDs — U*/W* member IDs become <@id>,
+  # S* usergroup IDs become <!subteam^id>, anything else is passed through.
+  # The webhook is a repo-level secret (not an environment secret) so the
+  # alert still fires when an environment-gated job failed or never ran.
+  notify-slack:
+    name: Notify Slack
+    if: always()
+    needs: [changes-guard, manual-approval, python-compliance, build-artifacts, license-evidence, fpe-support-matrix, trigger-gitlab-security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Collect failed jobs
+        id: failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MENTION_IDS: ${{ vars.SLACK_NOTIFY_MENTIONS }}
+        run: |
+          set -euo pipefail
+          curl -sS --fail --retry 3 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            > jobs.json
+          FAILED_JOBS=$(jq -r '(.jobs // [])[]
+            | select(.conclusion == "failure" or .conclusion == "timed_out")
+            | ":failed: " + .name + "\\n"' jobs.json | tr -d '\n')
+          {
+            echo "FAILED_JOBS<<EOF"
+            echo "${FAILED_JOBS}"
+            echo "EOF"
+          } >> "${GITHUB_ENV}"
+          mentions=""
+          IFS=',' read -ra ids <<< "${MENTION_IDS:-}"
+          for id in "${ids[@]:-}"; do
+            id="$(echo "${id}" | tr -d '[:space:]')"
+            [ -n "${id}" ] || continue
+            case "${id}" in
+              U*|W*) mentions="${mentions} <@${id}>" ;;
+              S*)    mentions="${mentions} <!subteam^${id}>" ;;
+              *)     mentions="${mentions} ${id}" ;;
+            esac
+          done
+          echo "MENTION_TEXT=${mentions:+${mentions} }please investigate and drive to closure." >> "${GITHUB_ENV}"
+          if [ -n "$(echo "${FAILED_JOBS}" | tr -d '[:space:]')" ]; then
+            echo "has_failures=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_failures=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Notify Slack
+        if: steps.failed.outputs.has_failures == 'true'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_NOTIFY_NIGHTLY_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            blocks:
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: ":alert: *AISimulate Nightly CI Failure*"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow Summary>"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "${{ env.FAILED_JOBS }}"
+              - type: "section"
+                text:
+                  type: mrkdwn
+                  text: "${{ env.MENTION_TEXT }}"

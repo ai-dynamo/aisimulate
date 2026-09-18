@@ -3,20 +3,15 @@
 
 """vLLM 0.24.0 dense-attention collector for CUDA backends."""
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
+# attention_context and attention_generation: 8/8 representative cases each. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import os
 
 import torch
-from vllm.config import set_current_vllm_config
-from vllm.platforms import current_platform
-from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm.utils.torch_utils import set_random_seed
-from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.v1.attention.backends.utils import set_kv_cache_layout
-from vllm.v1.attention.selector import AttentionSelectorConfig
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -32,6 +27,14 @@ from collector.vllm.utils import (
     get_attention_backend,
     with_exit_stack,
 )
+from vllm.config import set_current_vllm_config
+from vllm.platforms import current_platform
+from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm.utils.torch_utils import set_random_seed
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.v1.attention.backends.utils import set_kv_cache_layout
+from vllm.v1.attention.selector import AttentionSelectorConfig
+from vllm.version import __version__ as vllm_version
 
 
 class MockAttentionLayer:

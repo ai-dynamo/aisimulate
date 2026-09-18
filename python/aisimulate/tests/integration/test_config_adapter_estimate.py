@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.cli.api import EstimateResult, cli_estimate
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.legacy_cli.api import EstimateResult, cli_estimate
+from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     adapt_config,

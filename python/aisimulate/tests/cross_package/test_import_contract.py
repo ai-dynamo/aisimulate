@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/tests/cross_package/test_import_contract.py
 
-"""Import compatibility contract between the AIC and AIC Core wheels."""
+"""Module identity between the application SDK and estimator SDK."""
 
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ CORE_SDK_LEAF_MODULES = [
     "models.llama",
     "models.minimax_m3",
     "models.moe",
+    "models.muse_glimmer",
     "models.nemotron_h",
     "models.nemotron_nas",
     "models.qwen35",
@@ -72,6 +75,15 @@ CORE_SDK_LEAF_MODULES = [
     # per-op interpolation lives in the compiled engine.
     "performance_result",
     "rust_engine_step",
+    "speculation.base",
+    "speculation.dense_draft",
+    "speculation.dflash",
+    "speculation.draft_model",
+    "speculation.dspark",
+    "speculation.eagle",
+    "speculation.materialize",
+    "speculation.mtp",
+    "speculation.ngram",
     "step_estimate",
     "system_spec",
     "utils",
@@ -96,7 +108,7 @@ def _discover_python_leaves(root: object, prefix: str = "") -> set[str]:
 
 def test_import_contract_covers_every_core_sdk_leaf() -> None:
     """A new core SDK module must add a legacy wrapper and contract case."""
-    core_sdk_root = importlib.resources.files("aiconfigurator_core.sdk")
+    core_sdk_root = importlib.resources.files("aisimulate_core.sdk")
 
     assert set(CORE_SDK_LEAF_MODULES) == _discover_python_leaves(core_sdk_root)
 
@@ -104,8 +116,8 @@ def test_import_contract_covers_every_core_sdk_leaf() -> None:
 @pytest.mark.parametrize("module_suffix", CORE_SDK_LEAF_MODULES)
 def test_legacy_leaf_module_is_canonical_module(module_suffix: str) -> None:
     """Every compatibility leaf must share caches and private module state."""
-    legacy_name = f"aiconfigurator.sdk.{module_suffix}"
-    canonical_name = f"aiconfigurator_core.sdk.{module_suffix}"
+    legacy_name = f"aisimulate.sdk.{module_suffix}"
+    canonical_name = f"aisimulate_core.sdk.{module_suffix}"
 
     legacy_module = importlib.import_module(legacy_name)
     canonical_module = importlib.import_module(canonical_name)
@@ -114,11 +126,11 @@ def test_legacy_leaf_module_is_canonical_module(module_suffix: str) -> None:
     assert sys.modules[legacy_name] is sys.modules[canonical_name]
 
 
-@pytest.mark.parametrize("package_suffix", ["models", "operations"])
+@pytest.mark.parametrize("package_suffix", ["models", "operations", "speculation"])
 def test_legacy_package_reexports_canonical_public_surface(package_suffix: str) -> None:
     """Package facades preserve child wrappers and export canonical objects."""
-    legacy_package = importlib.import_module(f"aiconfigurator.sdk.{package_suffix}")
-    canonical_package = importlib.import_module(f"aiconfigurator_core.sdk.{package_suffix}")
+    legacy_package = importlib.import_module(f"aisimulate.sdk.{package_suffix}")
+    canonical_package = importlib.import_module(f"aisimulate_core.sdk.{package_suffix}")
 
     assert legacy_package.__all__ == canonical_package.__all__
     for public_name in canonical_package.__all__:
@@ -127,8 +139,8 @@ def test_legacy_package_reexports_canonical_public_surface(package_suffix: str) 
 
 def test_models_package_delegates_private_registry() -> None:
     """Private registry access sees the canonical registry, not a copied one."""
-    legacy_models = importlib.import_module("aiconfigurator.sdk.models")
-    canonical_models = importlib.import_module("aiconfigurator_core.sdk.models")
+    legacy_models = importlib.import_module("aisimulate.sdk.models")
+    canonical_models = importlib.import_module("aisimulate_core.sdk.models")
 
     assert legacy_models._MODEL_REGISTRY is canonical_models._MODEL_REGISTRY
 
@@ -142,9 +154,9 @@ def test_models_package_delegates_private_registry() -> None:
 )
 def test_legacy_package_patch_updates_canonical_package(package_suffix: str, attribute: str) -> None:
     """Patching a legacy package attribute must affect canonical code."""
-    canonical_package = importlib.import_module(f"aiconfigurator_core.sdk.{package_suffix}")
+    canonical_package = importlib.import_module(f"aisimulate_core.sdk.{package_suffix}")
 
-    with patch(f"aiconfigurator.sdk.{package_suffix}.{attribute}") as mocked:
+    with patch(f"aisimulate.sdk.{package_suffix}.{attribute}") as mocked:
         assert getattr(canonical_package, attribute) is mocked
 
     assert getattr(canonical_package, attribute) is not mocked
@@ -181,7 +193,7 @@ def test_operations_baseline_exports_survive() -> None:
         "ElementWise",
         "P2P",
     }
-    operations = importlib.import_module("aiconfigurator.sdk.operations")
+    operations = importlib.import_module("aisimulate.sdk.operations")
     exported = set(operations.__all__)
     missing = baseline - exported
     assert not missing, f"public operations exports removed without a deprecation window: {sorted(missing)}"
@@ -200,7 +212,7 @@ def test_fpm_forward_op_keeps_legacy_constructor_layout() -> None:
     """
     import inspect
 
-    from aiconfigurator.sdk.operations import FPMForwardOp
+    from aisimulate.sdk.operations import FPMForwardOp
 
     params = list(inspect.signature(FPMForwardOp.__init__).parameters)
     assert params == ["self", "phase", "model_config", "model_path", "sol_fn", "weight_bytes", "sol_ops"]
@@ -208,13 +220,30 @@ def test_fpm_forward_op_keeps_legacy_constructor_layout() -> None:
 
 def test_representative_from_imports_return_canonical_objects() -> None:
     """The user-facing from-import form remains backward compatible."""
-    from aiconfigurator.sdk.config import ModelConfig as LegacyModelConfig
-    from aiconfigurator.sdk.models import GPTModel as LegacyGPTModel
-    from aiconfigurator.sdk.operations import GEMM as LEGACY_GEMM
-    from aiconfigurator_core.sdk.config import ModelConfig
-    from aiconfigurator_core.sdk.models import GPTModel
-    from aiconfigurator_core.sdk.operations import GEMM
+    from aisimulate.sdk.config import ModelConfig as LegacyModelConfig
+    from aisimulate.sdk.models import GPTModel as LegacyGPTModel
+    from aisimulate.sdk.operations import GEMM as LEGACY_GEMM
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.models import GPTModel
+    from aisimulate_core.sdk.operations import GEMM
 
     assert LegacyModelConfig is ModelConfig
     assert LegacyGPTModel is GPTModel
     assert LEGACY_GEMM is GEMM
+
+
+@pytest.mark.parametrize("module_suffix", [name for name in CORE_SDK_LEAF_MODULES if name.startswith("speculation.")])
+def test_aisimulate_speculation_leaf_preserves_identity(module_suffix: str) -> None:
+    preferred = importlib.import_module(f"aisimulate_core.sdk.{module_suffix}")
+    canonical = importlib.import_module(f"aisimulate_core.sdk.{module_suffix}")
+    assert preferred is canonical
+
+
+def test_aisimulate_speculation_package_preserves_registry() -> None:
+    preferred = importlib.import_module("aisimulate.sdk.speculation")
+    canonical = importlib.import_module("aisimulate_core.sdk.speculation")
+    for name in canonical.__all__:
+        assert getattr(preferred, name) is getattr(canonical, name)
+    assert (
+        preferred.get_spec_scheme_cls("mtp") is importlib.import_module("aisimulate_core.sdk.speculation.mtp").MTPScheme
+    )

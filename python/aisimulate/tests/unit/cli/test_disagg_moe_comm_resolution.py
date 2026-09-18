@@ -9,8 +9,8 @@ pytestmark = pytest.mark.unit
 
 
 def test_disagg_resolves_each_role_moe_comm_before_session_run(monkeypatch):
-    import aiconfigurator.cli.api as api
-    import aiconfigurator.sdk.inference_session as inference_session
+    import aisimulate.legacy_cli.api as api
+    import aisimulate.sdk.inference_session as inference_session
 
     databases = {"prefill": object(), "decode": object()}
     resolver_calls = []
@@ -76,6 +76,11 @@ def test_disagg_resolves_each_role_moe_comm_before_session_run(monkeypatch):
         image_height=0,
         image_width=0,
         num_images=1,
+        video_height=0,
+        video_width=0,
+        video_frames=0,
+        num_videos=0,
+        num_video_tokens=0,
         enable_encoder_dp=False,
         prefill_tp_size=8,
         prefill_pp_size=1,

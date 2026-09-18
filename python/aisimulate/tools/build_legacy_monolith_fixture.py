@@ -25,13 +25,13 @@ DIST_INFO = f"aiconfigurator-{VERSION}.dist-info"
 WHEEL_NAME = f"aiconfigurator-{VERSION}-py3-none-any.whl"
 
 PAYLOAD_SOURCES = {
-    "aiconfigurator/__init__.py": "src/aiconfigurator/__init__.py",
-    "aiconfigurator/sdk/common.py": "src/aiconfigurator/sdk/common.py",
-    "aiconfigurator/systems/h100_sxm.yaml": "aic-core/src/aiconfigurator_core/systems/h100_sxm.yaml",
+    "aiconfigurator/__init__.py": "src/aisimulate/__init__.py",
+    "aiconfigurator/sdk/common.py": "src/aisimulate/sdk/common.py",
+    "aiconfigurator/systems/h100_sxm.yaml": "src/aisimulate_core/systems/h100_sxm.yaml",
     "aiconfigurator/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json": (
-        "aic-core/src/aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json"
+        "src/aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json"
     ),
-    "aiconfigurator_core/__init__.py": "aic-core/src/aiconfigurator_core/__init__.py",
+    "aiconfigurator_core/__init__.py": "src/aisimulate_core/__init__.py",
 }
 
 METADATA = f"""Metadata-Version: 2.4

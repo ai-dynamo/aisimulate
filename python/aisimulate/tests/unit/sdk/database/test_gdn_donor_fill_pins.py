@@ -22,8 +22,8 @@ that shift must be a conscious act.
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator_core.sdk.operations.mamba import GDNKernel
+from aisimulate.sdk.perf_database import get_database
+from aisimulate_core.sdk.operations.mamba import GDNKernel
 
 pytestmark = pytest.mark.unit
 
@@ -39,8 +39,10 @@ def test_b200_sglang_gdn_conv_donor_fill_is_pinned():
     lane = _gdn_context_lane(db, "causal_conv1d_fn", key)
     # Donor-served coordinate: the sglang grid stops at the collection token
     # budget, so batch=32 x seq=16384 exists ONLY via the cross-backend fill.
-    # The pin makes that graft visible and frozen.
-    assert lane[32][16384]["latency"] == pytest.approx(6.3917822265624995, rel=1e-9)
+    # PR #219 added the vLLM 0.25.0 donor at this exact coordinate, replacing
+    # 0.24.0's 6.3917822265624995 ms with its measured 6.34266845703125 ms.
+    # The pin makes that donor revision and graft visible and frozen.
+    assert lane[32][16384]["latency"] == pytest.approx(6.34266845703125, rel=1e-9)
     # Own-row coordinate (sglang's own measurement): first-wins must keep
     # shielding it from every donor.
     assert lane[32][4096]["latency"] == pytest.approx(1.46670654296875, rel=1e-9)

@@ -19,6 +19,7 @@ areas:
       - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
+      - pages/
       - python/aisimulate/src/aisimulate/__init__.py
       - tests/conftest.py
   - label: forward-pass-engine
@@ -30,7 +31,7 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisimulate/
-      - python/aisimulate/src/aisimulate/aic.py
+      - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
@@ -42,15 +43,25 @@ areas:
   - label: replay
     github_team: "@ai-dynamo/aisimulate-replay-codeowners"
     path_globs:
+      - crates/core/examples/
       - crates/core/src/replay/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
+      - tests/test_epd_cli.py
+      - examples/cli/
       - tests/test_stack_discovery.py
+      - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
+      - tests/test_ngram_cli.py
       - tests/test_unified_traffic_runtime.py
+      - tests/test_power_contract.py
+      - tests/fixtures/power-contract-v1.json
       - tests/test_host_offload_cli.py
+      - tests/test_afd_*.py
+      - tests/golden/afd-*
+      - tests/test_g3_offload_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -73,8 +84,16 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_ci_workflow_contracts.py
+      - tests/test_ci_qualification.py
       - tests/test_pages_site.py
+      - tests/test_release_fpe.py
       - tests/test_e2e_accuracy_overview.py
+      - tests/fpm_accuracy/
+      - tests/test_fpm_accuracy_workflow.mjs
+      - tests/test_e2e_accuracy_ui.mjs
+      - tests/test_e2e_accuracy_nightly.py
+      - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
 
 # More-specific shared entries are emitted after base area rules, preserving
@@ -82,6 +101,12 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: pages/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/fpm_accuracy/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_fpm_accuracy_workflow.mjs
+    owners: [infra, maintainers]
   # The full AIC product and estimator migration belongs to the Forward Pass
   # Engine area. Maintainers remain co-owners across the compatibility window.
   - glob: crates/core/src/perfmodel/
@@ -100,15 +125,27 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
+  - glob: tests/test_ci_workflow_contracts.py
+    owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
     owners: [infra, maintainers]
   - glob: tests/test_e2e_accuracy_overview.py
     owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_e2e_accuracy_ui.mjs
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_e2e_accuracy_workflow.mjs
+    owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
+  - glob: docs/power-model.md
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: docs/schemas/power-metrics-v1.schema.json
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
     owners: [forward-pass-engine, sweeper, replay, maintainers]
-  - glob: python/aisimulate/src/aisimulate/aic.py
+  - glob: python/aisimulate/src/aisimulate/capacity.py
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_aic.py
     owners: [forward-pass-engine, maintainers]
@@ -122,6 +159,8 @@ shared:
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
     owners: [replay, maintainers]
+  - glob: crates/core/examples/
+    owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/replay/
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/runner.py
@@ -130,13 +169,49 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_cli_config.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_epd_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: examples/cli/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_worker.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/cli_args.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_host_resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: docs/local-resources.md
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_power_diagnostics.py
+    owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
+  - glob: tests/test_power_contract.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/fixtures/power-contract-v1.json
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_host_offload_cli.py
+    owners: [replay, maintainers]
+  - glob: tests/test_afd_*.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/golden/afd-*
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_g3_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
@@ -175,6 +250,10 @@ shared:
   - glob: SECURITY.md
     owners: [infra, maintainers]
   - glob: AGENTS.md
+    owners: [infra, maintainers]
+  - glob: .coderabbit.yaml
+    owners: [infra, maintainers]
+  - glob: REVIEW.md
     owners: [infra, maintainers]
   - glob: DEVELOPMENT.md
     owners: [infra, maintainers]

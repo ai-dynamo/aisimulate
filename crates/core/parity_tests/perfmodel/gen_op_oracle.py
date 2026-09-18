@@ -6,10 +6,10 @@
 Unlike ``gen_moe_a2a_oracle.py`` / ``gen_moe_expert_compute_oracle.py`` — which sample the
 raw table walks of the retired ``PerfDatabase.query_moe_a2a`` /
 ``query_moe_expert_compute`` shims (now recomputed via the single-op plumbing)
-lookups — this generator drives
-the PYTHON OP OBJECTS (``MoEAllToAll(...).query(db, x=...)`` and
-``MoEExpertCompute(...).query(db, x=...)``). What is under test is therefore the op
-layer's own arithmetic:
+lookups — this generator drives the PYTHON OP OBJECTS through their internal
+orchestration hooks (``MoEAllToAll(...)._engine_query(db, x=...)`` and
+``MoEExpertCompute(...)._engine_query(db, x=...)``). What is under test is
+therefore the op layer's own arithmetic:
 
 * ``MoEAllToAll``: ``x // attention_tp_size`` (plain floor division, no
   ``max(1, ...)`` guard; never ADP-scaled) and the ``* scale_factor`` tail;
@@ -23,7 +23,7 @@ Output goes to ``src/operators/testdata/op_oracle.json``; the Rust
 tests read the two ``op`` slices of that one file, rebuild the same ops
 against the same shipped parquet files and assert a relative error <= 1e-9.
 
-Regenerate (from the repo root, after `git lfs pull`):
+Regenerate (from ``python/aisimulate``, after ``git lfs pull``):
 
     .venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/gen_op_oracle.py
 
@@ -41,9 +41,9 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
-from aiconfigurator_core.sdk.common import MoEQuantMode
-from aiconfigurator_core.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
-from aiconfigurator_core.sdk.perf_database import get_database
+from aisimulate_core.sdk.common import MoEQuantMode
+from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
+from aisimulate_core.sdk.perf_database import get_database
 
 OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "operators", "testdata", "op_oracle.json")
 
@@ -409,7 +409,10 @@ def main() -> None:
 
     header = {
         "_regenerate": (".venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/gen_op_oracle.py"),
-        "_source": "MoEAllToAll(...).query / MoEExpertCompute(...).query (shared_layer=False), SILICON mode",
+        "_source": (
+            "MoEAllToAll(...)._engine_query / "
+            "MoEExpertCompute(...)._engine_query (shared_layer=False), SILICON mode"
+        ),
         "_tuples": [f"{s}/{b}/{v}" for s, b, v in TUPLES],
     }
     out_path = os.path.normpath(OUT_PATH)

@@ -1,13 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/fpm/tests.rs
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::model::{
+    IterationFeatures, IterationObservation, RegressionIterationFeatures, WorkloadKind,
+};
+use super::options::{validate_options, validate_regression_options};
 use super::{
     ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
-    ForwardPassPerfSource,
+    ForwardPassPerfSource, ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::operators::op::Op;
@@ -15,12 +21,14 @@ use crate::operators::{ContextAttentionOp, ElementwiseOp, GemmOp, GenerationAtte
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::Engine;
 use crate::perfmodel::engine::spec::EngineSpec;
-use crate::perfmodel::{EngineConfig, ScheduledRequestMetrics};
-use crate::{AicError, BackendKind, ParallelMapping, QuantizationConfig};
+use crate::{
+    AicError, BackendKind, EngineConfig, ParallelMapping, QuantizationConfig,
+    ScheduledRequestMetrics,
+};
 
 fn systems_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+        .join("../../python/aisimulate/src/aisimulate_core/systems")
 }
 
 const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
@@ -41,7 +49,8 @@ fn context_ops() -> Vec<Op> {
             scale_factor: 1.0,
             n: 4096,
             k: 4096,
-            quant_mode: GemmQuantMode::Fp8Block,
+            // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+            quant_mode: GemmQuantMode::Fp8,
             scale_num_tokens: 0,
             low_precision_input: false,
             seq_split: 1,
@@ -59,6 +68,7 @@ fn context_ops() -> Vec<Op> {
             use_qk_norm: false,
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+            apply_rope: true,
         }),
     ]
 }
@@ -81,6 +91,9 @@ fn generation_ops() -> Vec<Op> {
             window_size: 0,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+            use_qk_norm: false,
+            scale_num_tokens: 1,
+            verify_query_tokens: 0,
         }),
     ]
 }
@@ -123,14 +136,29 @@ fn fixture_engine_config() -> EngineConfig {
 /// public `from_native` constructors compile via Python; `from_engine` lets
 /// the pure-Rust tests build the native variant directly.
 fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-    let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
-    let engine = Engine::build(spec, Arc::new(db)).unwrap();
-    ForwardPassPerfModel::from_engine(Arc::new(engine), options)
+    ForwardPassPerfModel::from_engine(fixture_engine(), options)
+}
+
+fn regression_model(
+    worker_type: ForwardPassWorkerType,
+    options: ForwardPassPerfOptions,
+) -> Result<ForwardPassPerfModel, AicError> {
+    ForwardPassPerfModel::from_regression(worker_type, options)
 }
 
 fn fixture_engine() -> Arc<Engine> {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    // Match SILICON's shared-layer default: 0.24.0 declares reuse of the
+    // corrected, graph-timed FP8-block GEMM measurements from 0.25.0.
+    let db = PerfDatabase::load_resolved(
+        &systems_root(),
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        true,
+        false,
+        false,
+    )
+    .unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     Arc::new(Engine::build(spec, Arc::new(db)).unwrap())
 }
@@ -181,11 +209,193 @@ fn mixed_fpm(
     }
 }
 
+fn regression_fpm(
+    num_prefill_requests: u32,
+    sum_prefill_tokens: u32,
+    sum_prefill_kv_tokens: u32,
+    num_decode_requests: u32,
+    sum_decode_kv_tokens: u32,
+    wall_time: f64,
+) -> ForwardPassMetrics {
+    ForwardPassMetrics {
+        wall_time,
+        scheduled_requests: ScheduledRequestMetrics {
+            num_prefill_requests,
+            sum_prefill_tokens,
+            sum_prefill_kv_tokens,
+            num_decode_requests,
+            sum_decode_kv_tokens,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn regression_features(
+    worker_type: ForwardPassWorkerType,
+    metrics_by_rank: &[ForwardPassMetrics],
+    options: &ForwardPassPerfOptions,
+) -> Result<Option<[f64; 2]>, AicError> {
+    Ok(
+        RegressionIterationFeatures::from_metrics(metrics_by_rank, worker_type, options)?
+            .map(|feature| feature.x),
+    )
+}
+
+/// Four distinct full-rank compositions with varying attention and token work.
+fn regression_workloads(
+    load: u32,
+) -> [(ForwardPassRegressionWorkloadKind, Vec<ForwardPassMetrics>); 4] {
+    use ForwardPassRegressionWorkloadKind::*;
+    [
+        (PureDecode, vec![decode_fpm(load, 100 * load * load, 0.0)]),
+        (
+            ContainsLocallyMixed,
+            vec![regression_fpm(
+                1,
+                load,
+                10 * load * load,
+                1 + load % 3,
+                100 * load,
+                0.0,
+            )],
+        ),
+        (
+            CrossRankAggregated,
+            vec![
+                regression_fpm(1, load, 10 * load * load, 0, 0, 0.0),
+                decode_fpm(load, 100 * load * load, 0.0),
+            ],
+        ),
+        (
+            PurePrefill,
+            vec![regression_fpm(1, load, 10 * load * load, 0, 0, 0.0)],
+        ),
+    ]
+}
+
+fn label_regression_iteration(
+    ranks: &mut [ForwardPassMetrics],
+    options: &ForwardPassPerfOptions,
+    intercept: f64,
+) -> f64 {
+    let x = regression_features(ForwardPassWorkerType::Aggregated, ranks, options)
+        .unwrap()
+        .unwrap();
+    let observed_ms = intercept + 0.002 * x[0] + 0.5 * x[1];
+    for rank in ranks.iter_mut() {
+        rank.wall_time = observed_ms / 2000.0;
+    }
+    ranks.last_mut().unwrap().wall_time = observed_ms / 1000.0;
+    observed_ms
+}
+
 fn assert_close(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < 1e-6,
         "expected {expected}, got {actual}"
     );
+}
+
+// ---- native feature-selection parity ----
+
+#[test]
+fn native_phase_separated_ranks_keep_representative_rank_selection() {
+    let prefill_dominant = regression_fpm(1, 2_000, 50_000, 0, 0, 0.0);
+    let decode = regression_fpm(0, 0, 0, 4, 1_000, 0.0);
+
+    let ranks = vec![prefill_dominant.clone(), decode.clone()];
+    let feature = IterationFeatures::from_metrics(&ranks).unwrap().unwrap();
+    assert_eq!(feature.workload_kind, WorkloadKind::Prefill);
+    assert_eq!(feature.x, vec![2_000.0]);
+
+    let mut reversed = ranks;
+    reversed.reverse();
+    let reversed_feature = IterationFeatures::from_metrics(&reversed).unwrap().unwrap();
+    assert_eq!(reversed_feature.workload_kind, WorkloadKind::Prefill);
+    assert_eq!(reversed_feature.x, vec![2_000.0]);
+
+    let decode_dominant = vec![regression_fpm(1, 900, 75_000, 0, 0, 0.0), decode];
+    let feature = IterationFeatures::from_metrics(&decode_dominant)
+        .unwrap()
+        .unwrap();
+    assert_eq!(feature.workload_kind, WorkloadKind::Decode);
+    assert_eq!(feature.x, vec![4.0, 1_000.0]);
+
+    let mut reversed = decode_dominant;
+    reversed.reverse();
+    let reversed_feature = IterationFeatures::from_metrics(&reversed).unwrap().unwrap();
+    assert_eq!(reversed_feature.workload_kind, WorkloadKind::Decode);
+    assert_eq!(reversed_feature.x, vec![4.0, 1_000.0]);
+}
+
+#[test]
+fn native_iteration_observation_uses_max_finite_positive_wall_time() {
+    let ranks = vec![
+        prefill_fpm(10, f64::NAN),
+        prefill_fpm(20, f64::INFINITY),
+        prefill_fpm(30, -1.0),
+        prefill_fpm(40, 0.0),
+        prefill_fpm(50, 0.007),
+        prefill_fpm(100, 0.001),
+    ];
+    let observation = IterationObservation::from_metrics(&ranks).unwrap().unwrap();
+    assert_eq!(observation.feature.workload_kind, WorkloadKind::Prefill);
+    assert_eq!(observation.feature.x, vec![100.0]);
+    assert_eq!(observation.wall_time_ms, 7.0);
+
+    let mut reversed = ranks;
+    reversed.reverse();
+    let reversed_observation = IterationObservation::from_metrics(&reversed)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reversed_observation.feature.workload_kind,
+        WorkloadKind::Prefill
+    );
+    assert_eq!(reversed_observation.feature.x, vec![100.0]);
+    assert_eq!(reversed_observation.wall_time_ms, 7.0);
+
+    let overflowing_observation =
+        IterationObservation::from_metrics(&[prefill_fpm(50, 0.007), prefill_fpm(100, f64::MAX)])
+            .unwrap()
+            .unwrap();
+    assert!(overflowing_observation.wall_time_ms.is_infinite());
+}
+
+#[test]
+fn native_tuning_preserves_engine_errors_when_wall_time_conversion_overflows() {
+    let finite_metrics = regression_fpm(u32::MAX, 1, 0, 0, 0, 0.001);
+    let mut overflowing_metrics = finite_metrics.clone();
+    overflowing_metrics.wall_time = f64::MAX;
+
+    let mut finite_model = native_model(ForwardPassPerfOptions::default());
+    let finite_error = finite_model
+        .tune_with_fpms(&[vec![finite_metrics]])
+        .unwrap_err();
+    assert_eq!(finite_model.diagnostics().retained_observations, 0);
+
+    let mut overflowing_model = native_model(ForwardPassPerfOptions::default());
+    let overflowing_error = overflowing_model
+        .tune_with_fpms(&[vec![overflowing_metrics]])
+        .unwrap_err();
+    assert_eq!(overflowing_model.diagnostics().retained_observations, 0);
+
+    assert_eq!(overflowing_error.to_string(), finite_error.to_string());
+}
+
+#[test]
+fn regression_tuning_does_not_retain_overflowing_wall_time_conversion() {
+    let mut model = regression_model(
+        ForwardPassWorkerType::Prefill,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    let metrics = regression_fpm(u32::MAX, 1, 0, 0, 0, f64::MAX);
+
+    model.tune_with_fpms(&[vec![metrics]]).unwrap();
+
+    assert_eq!(model.diagnostics().retained_observations, 0);
 }
 
 // ---- Engine::forward_pass_time_ms dispatch parity ----
@@ -302,31 +512,40 @@ fn invalid_schema_rejected() {
 
 #[test]
 fn options_reject_min_observations_above_max() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 10,
-        max_observations: 5,
-        ..Default::default()
-    })
+    let err = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            min_observations: 10,
+            max_observations: 5,
+            ..Default::default()
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, AicError::InvalidEngineConfig(_)));
 }
 
 #[test]
 fn options_reject_non_square_bucket_count() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        bucket_count: 7,
-        ..Default::default()
-    })
+    let err = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            bucket_count: 7,
+            ..Default::default()
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, AicError::InvalidEngineConfig(_)));
 }
 
 #[test]
 fn options_reject_zero_bounds() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        max_num_tokens: 0,
-        ..Default::default()
-    })
+    let err = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            max_num_tokens: 0,
+            ..Default::default()
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, AicError::InvalidEngineConfig(_)));
 }
@@ -363,43 +582,65 @@ fn options_default_directional_correction_factors() {
 }
 
 #[test]
+fn options_reject_unknown_fields() {
+    let err =
+        serde_json::from_str::<ForwardPassPerfOptions>(r#"{"min_observation": 5}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+#[test]
 fn options_validate_directional_correction_factors() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_faster_correction_factor: Some(0.5),
-        max_slower_correction_factor: Some(2.0),
-        ..Default::default()
-    })
+    let model = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            min_faster_correction_factor: Some(0.5),
+            max_slower_correction_factor: Some(2.0),
+            ..Default::default()
+        },
+    )
     .unwrap();
     assert_eq!(model.options().min_faster_correction_factor, Some(0.5));
     assert_eq!(model.options().max_slower_correction_factor, Some(2.0));
 
     for valid_factor in [f64::MIN_POSITIVE, 1.0] {
-        ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-            min_faster_correction_factor: Some(valid_factor),
-            ..Default::default()
-        })
+        regression_model(
+            ForwardPassWorkerType::Aggregated,
+            ForwardPassPerfOptions {
+                min_faster_correction_factor: Some(valid_factor),
+                ..Default::default()
+            },
+        )
         .unwrap();
     }
-    ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        max_slower_correction_factor: Some(1.0),
-        ..Default::default()
-    })
+    regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            max_slower_correction_factor: Some(1.0),
+            ..Default::default()
+        },
+    )
     .unwrap();
 
     for invalid_factor in [f64::NEG_INFINITY, -1.0, 0.0, 1.001, f64::INFINITY, f64::NAN] {
-        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-            min_faster_correction_factor: Some(invalid_factor),
-            ..Default::default()
-        })
+        let err = regression_model(
+            ForwardPassWorkerType::Aggregated,
+            ForwardPassPerfOptions {
+                min_faster_correction_factor: Some(invalid_factor),
+                ..Default::default()
+            },
+        )
         .unwrap_err();
         assert!(matches!(err, AicError::InvalidEngineConfig(_)));
     }
 
     for invalid_factor in [f64::NEG_INFINITY, -1.0, 0.0, 0.999, f64::INFINITY, f64::NAN] {
-        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-            max_slower_correction_factor: Some(invalid_factor),
-            ..Default::default()
-        })
+        let err = regression_model(
+            ForwardPassWorkerType::Aggregated,
+            ForwardPassPerfOptions {
+                max_slower_correction_factor: Some(invalid_factor),
+                ..Default::default()
+            },
+        )
         .unwrap_err();
         assert!(matches!(err, AicError::InvalidEngineConfig(_)));
     }
@@ -409,10 +650,13 @@ fn options_validate_directional_correction_factors() {
 
 #[test]
 fn fallback_regression_returns_none_until_sufficient_data() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 3,
-        ..Default::default()
-    })
+    let model = regression_model(
+        ForwardPassWorkerType::Prefill,
+        ForwardPassPerfOptions {
+            min_observations: 3,
+            ..Default::default()
+        },
+    )
     .unwrap();
     assert_eq!(
         model
@@ -429,56 +673,706 @@ fn fallback_regression_returns_none_until_sufficient_data() {
 }
 
 #[test]
-fn fallback_regression_predicts_prefill_decode_and_mixed_workload_kinds() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 3,
-        ..Default::default()
-    })
-    .unwrap();
+fn regression_worker_type_serialization_uses_exact_public_names() {
+    for (worker_type, encoded) in [
+        (ForwardPassWorkerType::Prefill, r#""prefill""#),
+        (ForwardPassWorkerType::Decode, r#""decode""#),
+        (ForwardPassWorkerType::Aggregated, r#""aggregated""#),
+    ] {
+        assert_eq!(serde_json::to_string(&worker_type).unwrap(), encoded);
+        assert_eq!(
+            serde_json::from_str::<ForwardPassWorkerType>(encoded).unwrap(),
+            worker_type
+        );
+    }
+    assert!(serde_json::from_str::<ForwardPassWorkerType>(r#""agg""#).is_err());
+}
 
-    model
-        .tune_with_fpms(&[
-            vec![prefill_fpm(10, 0.010)],
-            vec![prefill_fpm(20, 0.020)],
-            vec![prefill_fpm(30, 0.030)],
-            vec![decode_fpm(1, 10, 0.007)],
-            vec![decode_fpm(2, 10, 0.009)],
-            vec![decode_fpm(1, 20, 0.012)],
-            vec![mixed_fpm(10, 10, 0.015)],
-            vec![mixed_fpm(20, 10, 0.025)],
-            vec![mixed_fpm(10, 20, 0.020)],
-        ])
+#[test]
+fn prefill_features_use_critical_attention_then_global_ffn() {
+    let ranks = vec![
+        regression_fpm(1, 10, 90, 0, 0, 0.0),
+        regression_fpm(2, 20, 40, 0, 0, 0.0),
+    ];
+    let default_options = ForwardPassPerfOptions::default();
+    let x = regression_features(ForwardPassWorkerType::Prefill, &ranks, &default_options)
+        .unwrap()
         .unwrap();
 
-    assert_close(
-        model
-            .estimate_forward_pass_time_ms(&[prefill_fpm(40, 0.0)])
+    // Rank 0: Q = 90*10 + 10^2/2 + 10/2 = 955, so A = 1045.
+    // Rank 1: Q = 40*20/2 + 20^2/(2*2) + 20/2 = 510, so A = 550.
+    assert_eq!(x, [1045.0, 30.0]);
+
+    let mut reversed = ranks.clone();
+    reversed.reverse();
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Prefill, &reversed, &default_options,)
             .unwrap()
             .unwrap(),
-        40.0,
+        x,
+        "cross-rank maxima and sums must be permutation invariant"
     );
-    assert_close(
-        model
-            .estimate_forward_pass_time_ms(&[decode_fpm(2, 20, 0.0)])
+
+    let weighted = ForwardPassPerfOptions {
+        regression_attention_kv_weight: 2.0,
+        regression_prefill_attention_pair_weight: 0.5,
+        regression_ffn_token_weight: 3.0,
+        ..Default::default()
+    };
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Prefill, &ranks, &weighted)
             .unwrap()
             .unwrap(),
-        14.0,
+        [657.5, 90.0]
     );
-    assert_close(
-        model
-            .estimate_forward_pass_time_ms(&[mixed_fpm(20, 20, 0.0)])
+}
+
+#[test]
+fn decode_features_use_critical_attention_then_global_ffn() {
+    let ranks = vec![
+        regression_fpm(0, 0, 0, 2, 100, 0.0),
+        regression_fpm(0, 0, 0, 3, 80, 0.0),
+    ];
+    let options = ForwardPassPerfOptions::default();
+    let x = regression_features(ForwardPassWorkerType::Decode, &ranks, &options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(x, [100.0, 5.0]);
+    let mut reversed = ranks.clone();
+    reversed.reverse();
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Decode, &reversed, &options)
             .unwrap()
             .unwrap(),
-        30.0,
+        x
+    );
+
+    let weighted = ForwardPassPerfOptions {
+        regression_attention_kv_weight: 2.0,
+        regression_ffn_token_weight: 3.0,
+        ..Default::default()
+    };
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Decode, &ranks, &weighted)
+            .unwrap()
+            .unwrap(),
+        [200.0, 15.0]
+    );
+}
+
+#[test]
+fn aggregated_features_compose_attention_on_the_same_rank() {
+    let ranks = vec![
+        regression_fpm(1, 10, 90, 2, 20, 0.0),
+        regression_fpm(1, 0, 500, 3, 200, 0.0),
+    ];
+    let options = ForwardPassPerfOptions::default();
+    let x = regression_features(ForwardPassWorkerType::Aggregated, &ranks, &options)
+        .unwrap()
+        .unwrap();
+
+    // Rank 0 contributes H + K + Q = 90 + 20 + 955 = 1065.
+    // Rank 1 has P=0, so its H is gated out and it contributes only K=200.
+    // The implementation must not combine H/Q from rank 0 with K from rank 1.
+    assert_eq!(x, [1065.0, 15.0]);
+
+    let mut reversed = ranks.clone();
+    reversed.reverse();
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Aggregated, &reversed, &options)
+            .unwrap()
+            .unwrap(),
+        x
+    );
+
+    let weighted = ForwardPassPerfOptions {
+        regression_attention_kv_weight: 2.0,
+        regression_prefill_attention_pair_weight: 0.5,
+        regression_ffn_token_weight: 3.0,
+        ..Default::default()
+    };
+    assert_eq!(
+        regression_features(ForwardPassWorkerType::Aggregated, &ranks, &weighted)
+            .unwrap()
+            .unwrap(),
+        [697.5, 45.0]
+    );
+}
+
+#[test]
+fn regression_feature_arithmetic_is_finite_at_max_u32_counters() {
+    let max = u32::MAX;
+    let metrics = regression_fpm(max, max, max, max, max, 0.0);
+    let x = regression_features(
+        ForwardPassWorkerType::Aggregated,
+        &[metrics],
+        &ForwardPassPerfOptions::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(x.iter().all(|value| value.is_finite() && *value >= 0.0));
+    assert!(x[0] > f64::from(max));
+    assert_eq!(x[1], 2.0 * f64::from(max));
+}
+
+#[test]
+fn prefill_feature_arithmetic_converts_before_max_u32_products_and_sums() {
+    let max = u32::MAX;
+    let ranks = [
+        regression_fpm(1, max, max, 0, 0, 0.0),
+        regression_fpm(1, max, 0, 0, 0, 0.0),
+    ];
+    let x = regression_features(
+        ForwardPassWorkerType::Prefill,
+        &ranks,
+        &ForwardPassPerfOptions::default(),
+    )
+    .unwrap()
+    .unwrap();
+
+    let max = f64::from(max);
+    let q = max * max + max * max / 2.0 + max / 2.0;
+    assert_eq!(x, [max + q, 2.0 * max]);
+    assert!(x.iter().all(|value| value.is_finite() && *value >= 0.0));
+}
+
+#[test]
+fn finite_huge_weights_reject_nonfinite_derived_features_without_retention() {
+    let options = ForwardPassPerfOptions {
+        regression_attention_kv_weight: f64::MAX,
+        regression_prefill_attention_pair_weight: f64::MAX,
+        regression_ffn_token_weight: f64::MAX,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Prefill, options).unwrap();
+    let metrics = regression_fpm(1, 2, 2, 0, 0, 0.010);
+
+    assert!(matches!(
+        model.estimate_forward_pass_time_ms(&[metrics.clone()]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert_eq!(model.diagnostics().retained_observations, 0);
+
+    assert!(matches!(
+        model.tune_with_fpms(&[vec![metrics]]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert_eq!(model.diagnostics().retained_observations, 0);
+}
+
+#[test]
+fn cached_prefill_metadata_without_tokens_is_idle_or_decode_only() {
+    let cached_metadata = regression_fpm(1, 0, 4096, 0, 0, 1.0);
+    for worker_type in [
+        ForwardPassWorkerType::Prefill,
+        ForwardPassWorkerType::Decode,
+        ForwardPassWorkerType::Aggregated,
+    ] {
+        assert_eq!(
+            regression_features(
+                worker_type,
+                &[cached_metadata.clone()],
+                &ForwardPassPerfOptions::default(),
+            )
+            .unwrap(),
+            None,
+            "H without P or B must not create scheduled work"
+        );
+    }
+
+    let cached_decode = regression_fpm(1, 0, 4096, 2, 100, 0.0);
+    assert_eq!(
+        regression_features(
+            ForwardPassWorkerType::Decode,
+            &[cached_decode.clone()],
+            &ForwardPassPerfOptions::default(),
+        )
+        .unwrap()
+        .unwrap(),
+        [100.0, 2.0]
+    );
+    assert_eq!(
+        regression_features(
+            ForwardPassWorkerType::Aggregated,
+            &[cached_decode],
+            &ForwardPassPerfOptions::default(),
+        )
+        .unwrap()
+        .unwrap(),
+        [100.0, 2.0]
+    );
+}
+
+#[test]
+fn regression_worker_roles_enforce_compatibility() {
+    let decode = decode_fpm(1, 100, 0.0);
+    let prefill = regression_fpm(1, 10, 20, 0, 0, 0.0);
+
+    assert!(matches!(
+        regression_features(
+            ForwardPassWorkerType::Prefill,
+            &[decode.clone()],
+            &ForwardPassPerfOptions::default(),
+        ),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert!(matches!(
+        regression_features(
+            ForwardPassWorkerType::Decode,
+            &[prefill.clone()],
+            &ForwardPassPerfOptions::default(),
+        ),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+
+    let aggregated = regression_features(
+        ForwardPassWorkerType::Aggregated,
+        &[prefill, decode],
+        &ForwardPassPerfOptions::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(aggregated[0] > 0.0);
+    assert_eq!(aggregated[1], 11.0);
+}
+
+#[test]
+fn regression_public_model_dispatch_enforces_shape_and_role() {
+    let mut prefill = regression_model(
+        ForwardPassWorkerType::Prefill,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        prefill.estimate_forward_pass_time_ms(&[]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert!(matches!(
+        prefill.tune_with_fpms(&[Vec::new()]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert!(matches!(
+        prefill.estimate_forward_pass_time_ms(&[decode_fpm(1, 100, 0.0)]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert!(matches!(
+        prefill.tune_with_fpms(&[vec![decode_fpm(1, 100, 0.010)]]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert_eq!(prefill.diagnostics().retained_observations, 0);
+
+    let mut decode = regression_model(
+        ForwardPassWorkerType::Decode,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        decode.estimate_forward_pass_time_ms(&[prefill_fpm(10, 0.0)]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert!(matches!(
+        decode.tune_with_fpms(&[vec![prefill_fpm(10, 0.010)]]),
+        Err(AicError::InvalidForwardPassMetrics(_))
+    ));
+    assert_eq!(decode.diagnostics().retained_observations, 0);
+}
+
+#[test]
+fn regression_classification_uses_all_active_ranks_and_local_mixed_precedence() {
+    use ForwardPassRegressionWorkloadKind::*;
+    let options = ForwardPassPerfOptions::default();
+    let idle = regression_fpm(1, 0, 100_000, 0, 0, 0.0);
+    let mut cases = regression_workloads(4).to_vec();
+    cases.extend([
+        (
+            ContainsLocallyMixed,
+            vec![prefill_fpm(100_000, 0.0), mixed_fpm(1, 1, 0.0)],
+        ),
+        (
+            ContainsLocallyMixed,
+            vec![
+                prefill_fpm(100_000, 0.0),
+                decode_fpm(100, 100_000, 0.0),
+                mixed_fpm(1, 1, 0.0),
+            ],
+        ),
+        (
+            CrossRankAggregated,
+            vec![prefill_fpm(100_000, 0.0), decode_fpm(1, 0, 0.0)],
+        ),
+        (
+            CrossRankAggregated,
+            vec![prefill_fpm(1, 0.0), decode_fpm(100, 100_000, 0.0)],
+        ),
+        (
+            PureDecode,
+            vec![decode_fpm(1, 0, 0.0), decode_fpm(2, 200, 0.0)],
+        ),
+        (
+            PurePrefill,
+            vec![prefill_fpm(1, 0.0), prefill_fpm(100, 0.0)],
+        ),
+    ]);
+    for (expected, mut ranks) in cases {
+        let original = RegressionIterationFeatures::from_metrics(
+            &ranks,
+            ForwardPassWorkerType::Aggregated,
+            &options,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(original.workload_kind, expected);
+        ranks.push(idle.clone());
+        ranks.reverse();
+        let permuted = RegressionIterationFeatures::from_metrics(
+            &ranks,
+            ForwardPassWorkerType::Aggregated,
+            &options,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(permuted, original);
+    }
+    assert_eq!(
+        RegressionIterationFeatures::from_metrics(
+            &[idle],
+            ForwardPassWorkerType::Aggregated,
+            &options,
+        )
+        .unwrap(),
+        None,
+    );
+}
+
+#[test]
+fn aggregated_role_trains_four_independent_workload_fits() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 5,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Aggregated, options.clone()).unwrap();
+    for load in 1..=8 {
+        for (index, (_, mut ranks)) in regression_workloads(load).into_iter().enumerate() {
+            label_regression_iteration(&mut ranks, &options, 10.0 * (index + 1) as f64);
+            model.tune_with_fpms(&[ranks]).unwrap();
+        }
+        if load < 5 {
+            assert_eq!(
+                model.diagnostics().readiness,
+                ForwardPassPerfReadiness::InsufficientData,
+                "samples from different stores cannot combine for readiness"
+            );
+        }
+    }
+    let diagnostics = model.diagnostics();
+    assert_eq!(diagnostics.retained_observations, 32);
+    assert_eq!(diagnostics.readiness, ForwardPassPerfReadiness::Ready);
+    let stores = model.regression_store_diagnostics();
+    for (index, (kind, mut query)) in regression_workloads(9).into_iter().enumerate() {
+        assert_eq!(stores[index].workload_kind, kind);
+        assert_eq!(stores[index].retained_observations, 8);
+        assert!(stores[index].ready);
+        let expected = label_regression_iteration(&mut query, &options, 10.0 * (index + 1) as f64);
+        let actual = model
+            .estimate_forward_pass_time_ms(&query)
+            .unwrap()
+            .unwrap();
+        assert_close(actual, expected);
+    }
+}
+
+#[test]
+fn regression_bucket_predictions_match_hand_derived_equal_feature_oracle() {
+    // With unit weights and one Prefill request, A=(P+1)*H+P*(P+1)/2,
+    // T=P. The other three rank layouts below encode the same literal (A,T):
+    // Decode uses (K,B)=(A,T); local mixed uses P=1, K=A-1, B=T-1;
+    // cross-rank uses P=1 on one rank and (K,B)=(A,T-1) on another.
+    // Targets are hand-calculated from y=c+2*A+3*T, with c=10,20,30,40
+    // for the four buckets. Neither labels nor expected predictions call
+    // the production feature extractor. A pooled fit would use c=25 and
+    // predict 62 ms for every query; separate buckets must give 47/57/67/77.
+    let workloads = |prefill_tokens, prefill_kv_tokens, attention, token_work| {
+        [
+            vec![decode_fpm(token_work, attention, 0.0)],
+            vec![regression_fpm(1, 1, 0, token_work - 1, attention - 1, 0.0)],
+            vec![
+                prefill_fpm(1, 0.0),
+                decode_fpm(token_work - 1, attention, 0.0),
+            ],
+            vec![regression_fpm(
+                1,
+                prefill_tokens,
+                prefill_kv_tokens,
+                0,
+                0,
+                0.0,
+            )],
+        ]
+        .map(|mut ranks| {
+            for (index, rank) in ranks.iter_mut().enumerate() {
+                rank.dp_rank = index as u32;
+            }
+            ranks
+        })
+    };
+    // P, H, A, T, and four literal observed latencies in milliseconds.
+    let training = [
+        (2, 0, 3, 2, [22.0, 32.0, 42.0, 52.0]),
+        (3, 0, 6, 3, [31.0, 41.0, 51.0, 61.0]),
+        (2, 1, 6, 2, [28.0, 38.0, 48.0, 58.0]),
+        (4, 0, 10, 4, [42.0, 52.0, 62.0, 72.0]),
+        (3, 1, 10, 3, [39.0, 49.0, 59.0, 69.0]),
+    ];
+    let queries = workloads(3, 2, 14, 3);
+    let expected_ms = [47.0, 57.0, 67.0, 77.0];
+    let options = ForwardPassPerfOptions {
+        min_observations: 5,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Aggregated, options).unwrap();
+
+    for bucket_index in 0..4 {
+        for (p, h, a, t, latencies_ms) in training {
+            assert_eq!(
+                model
+                    .estimate_forward_pass_time_ms(&queries[bucket_index])
+                    .unwrap(),
+                None,
+                "the selected bucket needs five of its own prior observations"
+            );
+            let mut ranks = workloads(p, h, a, t).into_iter().nth(bucket_index).unwrap();
+            for rank in &mut ranks {
+                rank.wall_time = latencies_ms[bucket_index] / 1000.0;
+            }
+            model.tune_with_fpms(&[ranks]).unwrap();
+        }
+        for (query_index, query) in queries.iter().enumerate() {
+            let prediction = model.estimate_forward_pass_time_ms(query).unwrap();
+            if query_index <= bucket_index {
+                assert_close(prediction.unwrap(), expected_ms[query_index]);
+            } else {
+                assert_eq!(prediction, None, "a cold bucket cannot borrow a fit");
+            }
+        }
+        for (index, bucket) in model.regression_store_diagnostics().iter().enumerate() {
+            assert_eq!(bucket.ready, index <= bucket_index);
+            assert_eq!(
+                bucket.retained_observations,
+                if index <= bucket_index { 5 } else { 0 }
+            );
+        }
+    }
+}
+
+#[test]
+fn ready_regression_store_never_supplies_cold_or_degenerate_workload_predictions() {
+    let options = ForwardPassPerfOptions::default();
+    let mut model = regression_model(ForwardPassWorkerType::Aggregated, options.clone()).unwrap();
+    for load in 1..=6 {
+        let (_, mut ranks) = regression_workloads(load).into_iter().next().unwrap();
+        label_regression_iteration(&mut ranks, &options, 3.0);
+        model.tune_with_fpms(&[ranks]).unwrap();
+    }
+    assert_eq!(
+        model.diagnostics().readiness,
+        ForwardPassPerfReadiness::Ready
+    );
+    let before = model.regression_store_diagnostics();
+    assert!(before[0].ready);
+    for (kind, query) in regression_workloads(7).into_iter().skip(1) {
+        assert_eq!(model.estimate_forward_pass_time_ms(&query).unwrap(), None);
+        let store = before
+            .iter()
+            .find(|store| store.workload_kind == kind)
+            .unwrap();
+        assert_eq!(store.retained_observations, 0);
+        assert!(!store.ready);
+    }
+    // Enough labels with no varying features still do not produce a usable fit.
+    model
+        .tune_with_fpms(&vec![vec![prefill_fpm(8, 0.010)]; 6])
+        .unwrap();
+    let after = model.regression_store_diagnostics();
+    assert_eq!(before[0], after[0]);
+    assert_eq!(after[3].retained_observations, 6);
+    assert!(!after[3].ready);
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[prefill_fpm(8, 0.0)])
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[ForwardPassMetrics::default()])
+            .unwrap(),
+        Some(0.0)
+    );
+    model
+        .tune_with_fpms(&[vec![ForwardPassMetrics::default()]])
+        .unwrap();
+    assert_eq!(model.regression_store_diagnostics(), after);
+}
+
+#[test]
+fn regression_capacity_and_retirement_apply_independently_per_store() {
+    let options = ForwardPassPerfOptions::default();
+    assert_eq!(options.max_observations, 64);
+    let mut model = regression_model(ForwardPassWorkerType::Aggregated, options.clone()).unwrap();
+    for load in 1..=65 {
+        for (_, mut ranks) in regression_workloads(load) {
+            label_regression_iteration(&mut ranks, &options, 3.0);
+            model.tune_with_fpms(&[ranks]).unwrap();
+        }
+    }
+    assert_eq!(model.diagnostics().retained_observations, 256);
+    let before = model.regression_store_diagnostics();
+    assert!(
+        before
+            .iter()
+            .all(|store| store.retained_observations == 64 && store.ready)
+    );
+    let queries = regression_workloads(7);
+    let predictions = queries
+        .iter()
+        .map(|(_, query)| model.estimate_forward_pass_time_ms(query).unwrap())
+        .collect::<Vec<_>>();
+    for load in 66..=80 {
+        let (_, mut ranks) = regression_workloads(load).into_iter().next().unwrap();
+        label_regression_iteration(&mut ranks, &options, 1000.0);
+        model.tune_with_fpms(&[ranks]).unwrap();
+    }
+    assert_eq!(model.diagnostics().retained_observations, 256);
+    assert_eq!(&model.regression_store_diagnostics()[1..], &before[1..]);
+    for (index, (_, query)) in queries.iter().enumerate().skip(1) {
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(query).unwrap(),
+            predictions[index]
+        );
+    }
+}
+
+#[test]
+fn dedicated_regression_store_matches_aggregated_pure_workload_fit() {
+    let options = ForwardPassPerfOptions::default();
+    for (role, workload_index) in [
+        (ForwardPassWorkerType::Decode, 0),
+        (ForwardPassWorkerType::Prefill, 3),
+    ] {
+        let mut dedicated = regression_model(role, options.clone()).unwrap();
+        let mut aggregated =
+            regression_model(ForwardPassWorkerType::Aggregated, options.clone()).unwrap();
+        for load in 1..=8 {
+            let (_, mut ranks) = regression_workloads(load)
+                .into_iter()
+                .nth(workload_index)
+                .unwrap();
+            label_regression_iteration(&mut ranks, &options, 3.0);
+            dedicated.tune_with_fpms(&[ranks.clone()]).unwrap();
+            aggregated.tune_with_fpms(&[ranks]).unwrap();
+        }
+        let (kind, query) = regression_workloads(9)
+            .into_iter()
+            .nth(workload_index)
+            .unwrap();
+        assert_close(
+            dedicated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .unwrap(),
+            aggregated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .unwrap(),
+        );
+        let stores = dedicated.regression_store_diagnostics();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].workload_kind, kind);
+        assert_eq!(stores[0].retained_observations, 8);
+        assert!(stores[0].ready);
+        for load in 9..=65 {
+            let (_, mut ranks) = regression_workloads(load)
+                .into_iter()
+                .nth(workload_index)
+                .unwrap();
+            label_regression_iteration(&mut ranks, &options, 3.0);
+            dedicated.tune_with_fpms(&[ranks]).unwrap();
+        }
+        assert_eq!(dedicated.diagnostics().retained_observations, 64);
+    }
+}
+
+#[test]
+fn regression_store_diagnostics_serialization_is_stable_and_native_has_no_entries() {
+    let model = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    let stores = model.regression_store_diagnostics();
+    let expected = serde_json::json!([
+        {"workload_kind": "pure_decode", "ready": false, "retained_observations": 0},
+        {"workload_kind": "contains_locally_mixed", "ready": false, "retained_observations": 0},
+        {"workload_kind": "cross_rank_aggregated", "ready": false, "retained_observations": 0},
+        {"workload_kind": "pure_prefill", "ready": false, "retained_observations": 0},
+    ]);
+    assert_eq!(serde_json::to_value(&stores).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_value::<Vec<super::ForwardPassRegressionStoreDiagnostics>>(expected)
+            .unwrap(),
+        stores
+    );
+    let native = native_model(ForwardPassPerfOptions::default());
+    assert!(native.regression_store_diagnostics().is_empty());
+}
+
+#[test]
+fn prefill_regression_fits_raw_linear_features_not_log_bucket_coordinates() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 5,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Prefill, options.clone()).unwrap();
+    let mut iterations = vec![
+        vec![regression_fpm(1, 10, 0, 0, 0, 0.0)],
+        vec![regression_fpm(1, 20, 0, 0, 0, 0.0)],
+        vec![regression_fpm(2, 20, 0, 0, 0, 0.0)],
+        vec![regression_fpm(1, 10, 100, 0, 0, 0.0)],
+        vec![regression_fpm(2, 30, 50, 0, 0, 0.0)],
+        vec![regression_fpm(3, 45, 20, 0, 0, 0.0)],
+    ];
+    for ranks in &mut iterations {
+        let x = regression_features(ForwardPassWorkerType::Prefill, ranks, &options)
+            .unwrap()
+            .unwrap();
+        ranks[0].wall_time = (7.0 + 0.02 * x[0] + 0.4 * x[1]) / 1000.0;
+    }
+    model.tune_with_fpms(&iterations).unwrap();
+
+    let query = [regression_fpm(2, 24, 30, 0, 0, 0.0)];
+    let x = regression_features(ForwardPassWorkerType::Prefill, &query, &options)
+        .unwrap()
+        .unwrap();
+    let expected = 7.0 + 0.02 * x[0] + 0.4 * x[1];
+    let actual = model
+        .estimate_forward_pass_time_ms(&query)
+        .unwrap()
+        .unwrap();
+    assert!(
+        (actual - expected).abs() < 1e-5,
+        "expected {expected}, got {actual}"
     );
 }
 
 #[test]
 fn fallback_regression_keeps_decode_fit_ready_when_ols_kv_slope_is_negative() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 6,
-        ..Default::default()
-    })
+    let mut model = regression_model(
+        ForwardPassWorkerType::Decode,
+        ForwardPassPerfOptions {
+            min_observations: 6,
+            ..Default::default()
+        },
+    )
     .unwrap();
 
     // Highly correlated decode batch and KV-token features can make
@@ -539,10 +1433,13 @@ fn fallback_regression_keeps_decode_fit_ready_when_ols_kv_slope_is_negative() {
 
 #[test]
 fn fallback_regression_rejects_intercept_only_fit_when_slopes_are_identifiable() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 4,
-        ..Default::default()
-    })
+    let mut model = regression_model(
+        ForwardPassWorkerType::Decode,
+        ForwardPassPerfOptions {
+            min_observations: 4,
+            ..Default::default()
+        },
+    )
     .unwrap();
 
     model
@@ -567,124 +1464,161 @@ fn fallback_regression_rejects_intercept_only_fit_when_slopes_are_identifiable()
 }
 
 #[test]
-fn fallback_regression_prefill_weighted_hinge_avoids_small_token_collapse() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 6,
-        max_observations: 64,
+fn regression_weights_default_and_validate_only_for_regression() {
+    let defaults = ForwardPassPerfOptions::default();
+    let omitted: ForwardPassPerfOptions = serde_json::from_str("{}").unwrap();
+    for options in [&defaults, &omitted] {
+        assert_eq!(options.regression_attention_kv_weight, 1.0);
+        assert_eq!(options.regression_prefill_attention_pair_weight, 1.0);
+        assert_eq!(options.regression_ffn_token_weight, 1.0);
+    }
+
+    let invalid_options = [
+        ForwardPassPerfOptions {
+            regression_attention_kv_weight: 0.0,
+            ..Default::default()
+        },
+        ForwardPassPerfOptions {
+            regression_prefill_attention_pair_weight: -1.0,
+            ..Default::default()
+        },
+        ForwardPassPerfOptions {
+            regression_ffn_token_weight: f64::NAN,
+            ..Default::default()
+        },
+        ForwardPassPerfOptions {
+            regression_attention_kv_weight: f64::INFINITY,
+            ..Default::default()
+        },
+    ];
+    for options in invalid_options {
+        assert!(matches!(
+            regression_model(ForwardPassWorkerType::Aggregated, options),
+            Err(AicError::InvalidEngineConfig(_))
+        ));
+    }
+
+    let invalid_regression_weights = ForwardPassPerfOptions {
+        regression_attention_kv_weight: f64::NAN,
+        regression_prefill_attention_pair_weight: -1.0,
+        regression_ffn_token_weight: f64::INFINITY,
         ..Default::default()
-    })
-    .unwrap();
-
-    // Production-shaped prefill observations: low-token passes are dominated by
-    // fixed overhead, while larger passes steepen. A single global line can
-    // drive the intercept negative and collapse small-token predictions to the
-    // 1e-6 ms floor.
-    model
-        .tune_with_fpms(&[
-            vec![prefill_fpm(59, 0.0317)],
-            vec![prefill_fpm(120, 0.0450)],
-            vec![prefill_fpm(1_500, 0.0400)],
-            vec![prefill_fpm(5_000, 0.0540)],
-            vec![prefill_fpm(8_000, 0.1000)],
-            vec![prefill_fpm(12_000, 0.1300)],
-            vec![prefill_fpm(20_000, 0.2260)],
-            vec![prefill_fpm(50_000, 0.7290)],
-            vec![prefill_fpm(100_000, 1.5680)],
-        ])
-        .unwrap();
-
-    let small = model
-        .estimate_forward_pass_time_ms(&[prefill_fpm(1_000, 0.0)])
-        .unwrap()
-        .unwrap();
-    let mid = model
-        .estimate_forward_pass_time_ms(&[prefill_fpm(12_000, 0.0)])
-        .unwrap()
-        .unwrap();
-    let large = model
-        .estimate_forward_pass_time_ms(&[prefill_fpm(100_000, 0.0)])
-        .unwrap()
-        .unwrap();
-
+    };
     assert!(
-        small > 1.0,
-        "small prefill should not collapse to the 1e-6 ms floor, got {small}"
+        validate_options(&invalid_regression_weights).is_ok(),
+        "native option validation must ignore regression-only weights"
     );
-    assert!(
-        small < mid && mid < large,
-        "prefill estimates should remain monotonic: small={small}, mid={mid}, large={large}"
-    );
-    assert!(
-        large > 1_000.0,
-        "large prefill should stay in the observed seconds-scale regime, got {large} ms"
+    assert!(matches!(
+        validate_regression_options(&invalid_regression_weights),
+        Err(AicError::InvalidEngineConfig(_))
+    ));
+
+    let metrics = mixed_fpm(32, 4096, 0.0);
+    let baseline = native_model(ForwardPassPerfOptions::default())
+        .estimate_forward_pass_time_ms(&[metrics.clone()])
+        .unwrap()
+        .unwrap();
+    let native_with_invalid_regression_weights = native_model(ForwardPassPerfOptions {
+        regression_attention_kv_weight: f64::NAN,
+        regression_prefill_attention_pair_weight: -1.0,
+        regression_ffn_token_weight: f64::INFINITY,
+        ..Default::default()
+    });
+    assert_close(
+        native_with_invalid_regression_weights
+            .estimate_forward_pass_time_ms(&[metrics])
+            .unwrap()
+            .unwrap(),
+        baseline,
     );
 }
 
 #[test]
-fn tune_with_fpms_uses_one_rank_feature_vector() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 1,
+fn native_tuning_and_correction_ignore_regression_weights() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 2,
         ..Default::default()
-    })
-    .unwrap();
-
-    model
-        .tune_with_fpms(&[vec![prefill_fpm(10, 0.010), decode_fpm(1, 100_000, 0.020)]])
-        .unwrap();
-
-    assert!(
-        model
-            .estimate_forward_pass_time_ms(&[decode_fpm(1, 100_000, 0.0)])
+    };
+    let mut baseline = native_model(options.clone());
+    let mut weighted = native_model(ForwardPassPerfOptions {
+        regression_attention_kv_weight: 2.0,
+        regression_prefill_attention_pair_weight: 3.0,
+        regression_ffn_token_weight: 4.0,
+        ..options
+    });
+    let queries = [
+        prefill_fpm(20, 0.0),
+        decode_fpm(4, 4096, 0.0),
+        mixed_fpm(16, 2048, 0.0),
+    ];
+    let mut iterations = Vec::new();
+    for query in &queries {
+        let native_ms = baseline
+            .estimate_forward_pass_time_ms(&[query.clone()])
             .unwrap()
-            .is_some(),
-        "max-rank decode feature should be tuned"
-    );
-    assert_eq!(
-        model
-            .estimate_forward_pass_time_ms(&[mixed_fpm(10, 100_000, 0.0)])
-            .unwrap(),
-        None,
-        "rank merge should not synthesize a mixed feature from separate ranks"
-    );
+            .unwrap();
+        let mut observation = query.clone();
+        observation.wall_time = native_ms * 1.5 / 1000.0;
+        iterations.push(vec![observation.clone()]);
+        iterations.push(vec![observation]);
+    }
+
+    baseline.tune_with_fpms(&iterations).unwrap();
+    weighted.tune_with_fpms(&iterations).unwrap();
+    assert_eq!(baseline.diagnostics(), weighted.diagnostics());
+    for query in queries {
+        assert_close(
+            baseline
+                .estimate_forward_pass_time_ms(&[query.clone()])
+                .unwrap()
+                .unwrap(),
+            weighted
+                .estimate_forward_pass_time_ms(&[query])
+                .unwrap()
+                .unwrap(),
+        );
+    }
 }
 
 #[test]
 fn tuning_ignores_idle_wall_time_and_queued_only_work() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_observations: 2,
-        ..Default::default()
-    })
+    let mut model = regression_model(
+        ForwardPassWorkerType::Prefill,
+        ForwardPassPerfOptions {
+            min_observations: 2,
+            ..Default::default()
+        },
+    )
     .unwrap();
     let mut queued_only = ForwardPassMetrics::default();
     queued_only.queued_requests.sum_prefill_tokens = 10_000;
     queued_only.wall_time = 1.0;
+    let cached_only = regression_fpm(1, 0, 10_000, 0, 0, 1.0);
 
     model
         .tune_with_fpms(&[
             vec![prefill_fpm(10, 0.0)],
+            vec![prefill_fpm(30, f64::MAX)],
             vec![queued_only],
+            vec![cached_only],
             vec![prefill_fpm(10, 0.010)],
             vec![prefill_fpm(20, 0.020)],
         ])
         .unwrap();
 
     assert_eq!(model.diagnostics().retained_observations, 2);
-    assert_close(
-        model
-            .estimate_forward_pass_time_ms(&[prefill_fpm(30, 0.0)])
-            .unwrap()
-            .unwrap(),
-        30.0,
-    );
 }
 
 #[test]
 fn fallback_regression_has_no_correction_factors() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
-        min_faster_correction_factor: Some(0.5),
-        max_slower_correction_factor: Some(2.0),
-        ..Default::default()
-    })
+    let model = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions {
+            min_faster_correction_factor: Some(0.5),
+            max_slower_correction_factor: Some(2.0),
+            ..Default::default()
+        },
+    )
     .unwrap();
     assert_eq!(model.min_correction_factor(), None);
     assert_eq!(model.max_correction_factor(), None);

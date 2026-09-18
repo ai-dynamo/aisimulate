@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/op.rs
 
 //! `Op` enum: unified typed dispatch for every operator family.
 //!
@@ -125,12 +127,12 @@ pub enum Op {
     /// `WideEPDeepSeekModel` variant.
     WideEpGenerationMla(WideEpGenerationMlaOp),
     /// Two op groups that execute in parallel on different CUDA streams.
-    /// Mirrors Python `aiconfigurator.sdk.operations.overlap.OverlapOp`:
+    /// Mirrors Python `aisimulate.sdk.operations.overlap.OverlapOp`:
     /// `latency = max(sum(group_a), sum(group_b))`.
     Overlap(OverlapOp),
     /// Try a primary op; on perf-DB miss, fall back to summing a list of
     /// granular ops. Mirrors Python
-    /// `aiconfigurator.sdk.operations.overlap.FallbackOp`: supports the
+    /// `aisimulate.sdk.operations.overlap.FallbackOp`: supports the
     /// transitional state where some systems have module-level profiling
     /// data and others still ship per-kernel granular data.
     Fallback(FallbackOp),
@@ -171,6 +173,46 @@ pub enum Op {
     /// the op's `inference_phase` field selects the slice.
     /// Measured-SILICON-only; see `operators/moe_expert_compute.rs`.
     MoeExpertCompute(MoeExpertComputeOp),
+    /// Draft query width relative to the target verification width. The
+    /// ratio changes query dimensions before lookup, never the result.
+    /// Appended as part of the speculative-decoding schema-18 migration.
+    TokenScale(TokenScaleOp),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TokenScaleOp {
+    pub op: Box<Op>,
+    #[serde(deserialize_with = "positive_token_width")]
+    pub numerator: u32,
+    #[serde(deserialize_with = "positive_token_width")]
+    pub denominator: u32,
+}
+
+fn positive_token_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let width = u32::deserialize(d)?;
+    if width == 0 {
+        return Err(serde::de::Error::custom(
+            "draft token widths must be positive",
+        ));
+    }
+    Ok(width)
+}
+
+impl TokenScaleOp {
+    pub fn scale_tokens(&self, value: u32) -> Result<u32, AicError> {
+        if self.numerator == 0 || self.denominator == 0 {
+            return Err(AicError::InvalidEngineConfig(
+                "draft token widths must be positive".into(),
+            ));
+        }
+        // Widen before multiplication so intermediate u32 overflow cannot
+        // corrupt an otherwise representable query. Integer division keeps
+        // the established floor convention on non-aligned ad-hoc queries.
+        let scaled = u64::from(value) * u64::from(self.numerator) / u64::from(self.denominator);
+        u32::try_from(scaled).map_err(|_| {
+            AicError::InvalidEngineConfig("draft query token count exceeds u32".into())
+        })
+    }
 }
 
 /// Inline-defined here (rather than a sibling module under `operators/`)
@@ -224,6 +266,7 @@ impl Op {
     /// family multiplies its own scale_factor inside its `weight_bytes`.
     pub fn weight_bytes(&self) -> f64 {
         match self {
+            Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
             Op::Moe(o) => o.weight_bytes(),
@@ -278,6 +321,7 @@ impl Op {
     /// debugging.
     pub fn name(&self) -> &str {
         match self {
+            Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
             Op::Elementwise(o) => &o.name,
@@ -321,6 +365,7 @@ impl Op {
     /// returns them). Every variant carries `name`.
     pub fn set_name(&mut self, name: String) {
         match self {
+            Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
             Op::Elementwise(o) => o.name = name,
@@ -359,12 +404,55 @@ impl Op {
         }
     }
 
+    /// Uniform repetition-count mutator for draft forwards.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        match self {
+            Op::TokenScale(o) => o.op.set_scale_factor(scale_factor),
+            Op::Gemm(o) => o.scale_factor = scale_factor,
+            Op::Embedding(o) => o.scale_factor = scale_factor,
+            Op::Elementwise(o) => o.scale_factor = scale_factor,
+            Op::ContextAttention(o) => o.scale_factor = scale_factor,
+            Op::GenerationAttention(o) => o.scale_factor = scale_factor,
+            Op::EncoderAttention(o) => o.scale_factor = scale_factor,
+            Op::ContextMla(o) => o.scale_factor = scale_factor,
+            Op::GenerationMla(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleContext(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleGeneration(o) => o.scale_factor = scale_factor,
+            Op::MlaBmm(o) => o.scale_factor = scale_factor,
+            Op::Moe(o) => o.scale_factor = scale_factor,
+            Op::MoeDispatch(o) => o.scale_factor = scale_factor,
+            Op::CustomAllReduce(o) => o.scale_factor = scale_factor,
+            Op::Nccl(o) => o.scale_factor = scale_factor,
+            Op::P2P(o) => o.scale_factor = scale_factor,
+            Op::Vision(o) => o.scale_factor = scale_factor,
+            Op::DsaContext(o) => o.scale_factor = scale_factor,
+            Op::DsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::MsaContext(o) => o.scale_factor = scale_factor,
+            Op::MsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Context(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Generation(o) => o.scale_factor = scale_factor,
+            Op::Mhc(o) => o.scale_factor = scale_factor,
+            Op::Mamba2(o) => o.scale_factor = scale_factor,
+            Op::Gdn(o) => o.scale_factor = scale_factor,
+            Op::WideEpContextMla(o) => o.scale_factor = scale_factor,
+            Op::WideEpGenerationMla(o) => o.scale_factor = scale_factor,
+            Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
+            Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
+            Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
+            Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
+            Op::Kda(o) => o.scale_factor = scale_factor,
+            Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
+            Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
+        }
+    }
+
     /// CP sequence-shard factor for the token-major families that carry one;
     /// 1 for every other variant (their constructors' CP audit gate refuses
     /// `seq_split > 1`, so 1 is exact, not a guess). Backs the Python-side
     /// `Operation._seq_split` default read.
     pub fn seq_split(&self) -> u32 {
         match self {
+            Op::TokenScale(o) => o.op.seq_split(),
             Op::Gemm(o) => o.seq_split,
             Op::Embedding(o) => o.seq_split,
             Op::Elementwise(o) => o.seq_split,
@@ -398,7 +486,10 @@ impl Op {
     /// `logits_gemm` in `_run_context_phase` to use `x=batch_size` instead
     /// of `x=batch_size * effective_isl`.
     pub fn is_logits_gemm(&self) -> bool {
-        matches!(self, Op::Gemm(_)) && self.name().contains("logits_gemm")
+        match self {
+            Op::TokenScale(o) => o.op.is_logits_gemm(),
+            _ => matches!(self, Op::Gemm(_)) && self.name().contains("logits_gemm"),
+        }
     }
 
     /// Query this op with the given runtime. Returns the scaled latency
@@ -409,6 +500,14 @@ impl Op {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         match self {
+            Op::TokenScale(op) => {
+                let scaled = RuntimeContext {
+                    batch_size: op.scale_tokens(ctx.batch_size)?,
+                    num_tokens: op.scale_tokens(ctx.num_tokens)?,
+                    ..*ctx
+                };
+                op.op.query(db, &scaled)
+            }
             Op::Gemm(op) => op.query(db, ctx.num_tokens, None),
             Op::Embedding(op) => op.query(db, ctx.num_tokens),
             Op::Elementwise(op) => op.query(db, ctx.num_tokens),
@@ -600,6 +699,70 @@ mod tests {
 
     fn empty_overlap(name: &str) -> Op {
         Op::Overlap(OverlapOp::new(name, vec![], vec![]))
+    }
+
+    #[test]
+    fn draft_token_scale_preserves_nonlinear_query_and_recursive_metadata() {
+        let (_tmp, db) = one_row_gemm_db();
+        for (numerator, denominator) in [(1, 4), (5, 6), (8, 6)] {
+            for leaf in [
+                silicon_leaf(),
+                Op::Overlap(OverlapOp::new("group", vec![silicon_leaf()], vec![])),
+            ] {
+                let mut wrapped = Op::TokenScale(TokenScaleOp {
+                    op: Box::new(leaf.clone()),
+                    numerator,
+                    denominator,
+                });
+                let query = RuntimeContext {
+                    batch_size: 32 * denominator,
+                    num_tokens: 32 * denominator,
+                    ..ctx()
+                };
+                let expected_query = RuntimeContext {
+                    batch_size: 32 * numerator,
+                    num_tokens: 32 * numerator,
+                    ..ctx()
+                };
+                let actual = wrapped.query(&db, &query).unwrap();
+                let expected = leaf.query(&db, &expected_query).unwrap();
+                assert_eq!(actual.latency_ms, expected.latency_ms);
+                assert_eq!(actual.energy_wms, expected.energy_wms);
+                assert_eq!(actual.source, expected.source);
+                assert_eq!(wrapped.weight_bytes(), leaf.weight_bytes());
+                wrapped.set_name("draft_renamed".into());
+                assert_eq!(wrapped.name(), "draft_renamed");
+                let bytes = bincode::serialize(&wrapped).unwrap();
+                assert_eq!(bincode::deserialize::<Op>(&bytes).unwrap(), wrapped);
+            }
+        }
+    }
+
+    #[test]
+    fn draft_token_scale_rejects_zero_and_overflow() {
+        for (numerator, denominator) in [(0, 4), (1, 0)] {
+            let wrapped = Op::TokenScale(TokenScaleOp {
+                op: Box::new(silicon_leaf()),
+                numerator,
+                denominator,
+            });
+            let json = serde_json::to_string(&wrapped).unwrap();
+            assert!(
+                serde_json::from_str::<Op>(&json)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("positive")
+            );
+            let bytes = bincode::serialize(&wrapped).unwrap();
+            assert!(bincode::deserialize::<Op>(&bytes).is_err());
+        }
+        let wrapped = TokenScaleOp {
+            op: Box::new(silicon_leaf()),
+            numerator: u32::MAX,
+            denominator: 1,
+        };
+        assert!(wrapped.scale_tokens(2).is_err());
+        assert_eq!(wrapped.scale_tokens(1).unwrap(), u32::MAX);
     }
 
     // Zero-valued composite provenance oracle (review #1552 round 4): the

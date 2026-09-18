@@ -3,9 +3,11 @@
 
 //! Runtime-neutral mock inference schedulers and attention-DP composition.
 
+pub(crate) mod belady;
 mod cache;
 mod common;
 mod config;
+pub(crate) mod g3_offload;
 pub mod generalized;
 mod handoff;
 mod host_offload;
@@ -20,12 +22,14 @@ pub(crate) use host_offload::{
     HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
 };
 
+pub use belady::KvEvictionPolicy;
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangSchedulePolicy, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    Backend, EngineConfig, G3OffloadConfig, G3Scope, NativeHostOffloadConfig, PreemptionMode,
+    SglangConfig, SglangSchedulePolicy, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
+pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, ForwardPassMetrics,
@@ -34,7 +38,10 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
-pub use timing::{TimingModel, TimingModelConfig};
+pub use timing::{
+    TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
+    TimingOperationEvidence, TimingPhaseEvidence,
+};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;

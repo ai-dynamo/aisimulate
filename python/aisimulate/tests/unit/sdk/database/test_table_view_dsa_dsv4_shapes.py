@@ -30,8 +30,8 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -98,7 +98,7 @@ def _write_parquet(systems_root: Path, rel: str, rows: list[dict], *, types: dic
 
 
 def _fetch(db: PerfDatabase, attribute: str):
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     return fetch_table_view(db, attribute)
 
@@ -501,7 +501,7 @@ def test_dsv4_sparse_kernel_view_missing_returns_none(systems_root: Path) -> Non
 def test_dsv4_retired_sparse_kernel_views_are_unknown_attributes(systems_root: Path) -> None:
     # hca_attn/csa_attn sidecars were retired (loaded-but-never-queried);
     # their attributes are gone from the registry and fail loudly.
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     with pytest.raises(PerfDataNotAvailableError, match="unknown table-view attribute"):
         _fetch(_build_db(systems_root), "_dsv4_sparse_kernel_data.csa_attn")

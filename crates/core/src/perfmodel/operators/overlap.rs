@@ -6,5 +6,5 @@
 //! sum-across-groups instead of sum-within / max-across) and had no
 //! production caller — the correct overlap semantics live on
 //! `operators::op::OverlapOp` (`latency = max(sum(group_a), sum(group_b))`,
-//! mirroring `aiconfigurator.sdk.operations.overlap.OverlapOp`). Deleted
+//! mirroring `aisimulate.sdk.operations.overlap.OverlapOp`). Deleted
 //! rather than fixed so nobody wires the wrong composition by accident.

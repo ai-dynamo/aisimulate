@@ -33,18 +33,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
-from vllm.config import set_current_vllm_config
-from vllm.forward_context import set_forward_context
-from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
-from vllm.models.deepseek_v4.attention import DeepseekV4Attention
-from vllm.models.deepseek_v4.nvidia.model import _select_dsv4_attn_cls
-from vllm.platforms import current_platform
-from vllm.utils.deep_gemm import fp8_fp4_paged_mqa_logits, get_paged_mqa_logits_metadata
-from vllm.utils.platform_utils import num_compute_units
-from vllm.utils.torch_utils import set_default_torch_dtype
-from vllm.v1.worker.workspace import init_workspace_manager
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import (
     _DSV4_DEFAULT_MODELS,
     _DSV4_MODULE_BATCH_SIZES,
@@ -69,8 +57,23 @@ from collector.vllm.utils import (
     enable_engine_fused_ops,
     setup_distributed,
 )
+from vllm.config import set_current_vllm_config
+from vllm.forward_context import set_forward_context
+from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+from vllm.models.deepseek_v4.attention import DeepseekV4Attention
+from vllm.models.deepseek_v4.nvidia.model import _select_dsv4_attn_cls
+from vllm.platforms import current_platform
+from vllm.utils.deep_gemm import fp8_fp4_paged_mqa_logits, get_paged_mqa_logits_metadata
+from vllm.utils.platform_utils import num_compute_units
+from vllm.utils.torch_utils import set_default_torch_dtype
+from vllm.v1.worker.workspace import init_workspace_manager
+from vllm.version import __version__ as vllm_version
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968046:
+# CSA/HCA context/generation: 32/32; auxiliary sparse kernels: 4/4. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
@@ -85,7 +88,7 @@ SPARSE_KERNEL_TO_PERF_FILE = {
     "paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE,
     "hca_attn": PerfFile.DSV4_HCA_ATTN_MODULE,
 }
-MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aiconfigurator" / "model_configs"
+MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
 DEFAULT_MAX_SEQ_LEN = 65536
 MAX_SEQ_LEN = int(os.environ.get("AIC_VLLM_DSV4_MAX_SEQ_LEN", DEFAULT_MAX_SEQ_LEN))

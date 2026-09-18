@@ -1,490 +1,236 @@
-# Dynamo Deployment with Aiconfigurator Guide
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
 
-> **Note:** This guide covers Dynamo platform deployments (`--deployment-target dynamo-j2` or `dynamo-python`). For llm-d platform deployments, see the [llm-d deployment examples in the README](../README.md#deploying-to-llm-d-platform). The separate FPM V1 resource-workload workflow is summarized in [Section 6](#6-fpm-v1-resource-workload-workflow).
+# Dynamo deployment with AISimulate
 
-This guide walks through   
-- installing aiconfigurator
-- building the Dynamo container  
-- generating configuration files (supports TRT-LLM, vLLM, and SGLang backends)
-- deploying Dynamo (single-node and two-node)  
-- benchmarking the service and comparison  
+Use this workflow to select a configuration, predict it, generate serving
+artifacts, and compare with a real benchmark. Run the simulation and generator
+steps from an AISimulate source checkout using the
+[installation guide](../../../docs/installation.md#use-current-source).
+The GPU deployment steps run on a separate serving host.
 
-Take [qwen3-32b-fp8](https://huggingface.co/Qwen/Qwen3-32B-FP8) model as an example.
+The unified `recommend` command writes concrete **prediction configurations**.
+Its numbered YAML files are not Kubernetes manifests. The generator remains
+available through the `aiconfigurator` namespace shipped in the same wheel;
+there is no separate standalone AIConfigurator installation in this workflow.
 
-> **Note:** This guide primarily uses TRT-LLM examples. For vLLM and SGLang examples with Dynamo, use the same workflow with `--backend vllm` or `--backend sglang`.
+## 1. Pin the example
 
-# All-in-one Automation process
+This recipe uses one aggregated worker, Qwen3-32B-FP8, H200 hardware,
+1 or 2 GPUs, 1,024 input tokens, 128 output tokens, concurrency 4, and prefix
+caching disabled. It intentionally uses a small search budget to demonstrate
+the workflow; it does not establish the best possible deployment.
 
-we're now supporting automate everything in one script, starting from configuring the deployment, generating the configs, preparing docker image and container, pulling model checkpoints, deploying the service, benchmarking and summarizing. Refer to [Automation](../tools/automation/README.md) for more details.
+| Version/identity | Choice |
+|---|---|
+| AISimulate | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
+| Prediction backend/data version | vLLM `0.24.0`. |
+| Generated backend configuration | vLLM `0.24.0`, taken from the selected candidate. |
+| Dynamo deployment target | `dynamo-j2`, Dynamo `1.3.0`. |
+| Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
-# Step-by-step Manual Deployment and Performance Alignment
+The Dynamo/backend pair is recorded in the generator's
+[version matrix](../src/aisimulate/generator/facts/runtimes/dynamo.yaml).
+These pins make the intended environment explicit; local artifact generation
+is not a GPU deployment qualification. Before serving, verify the image's
+actual versions and the target machine's driver/GPU requirements using the
+[Dynamo 1.3.0 release](https://github.com/ai-dynamo/dynamo/releases/tag/v1.3.0).
+For another backend or release, update the prediction-data version, generated
+configuration version, and runtime image together. Do not assume a template
+version override makes a different runtime compatible.
 
-## Methodology
-First, we need to define the problem we want to solve clearly. For a given model, we need to 
-understand what's the constraint, we use `ISL`, `OSL` to define the target seqeunce length, and 
-`TTFT`, `TPOT` to set the SLA constraint. Let's define the problem:  
-```
-Can we find a config {parellel, concurrency} for given {ISL, OSL, Model, GPU}, which maximizes tokens/s/gpu, under TPOT and TTFT 
-constraints.
-```
-Let's take a look at the pareto frontier,
-```text
-  Pareto Frontier:
-              Qwen/Qwen3-32B Pareto Frontier: tokens/s/gpu vs tokens/s/user          
-    ┌──────────────────────────────────────────────────────────────────────────┐
-2250┤ •• disagg                                                                │
-    │ ff agg                                                                   │
-    │ xx disagg best                                                           │
-    │                                                                          │
-1875┤  ff                                                                      │
-    │   fff                                                                    │
-    │     ff                                                                   │
-    │      fff••                                                               │
-1500┤         f •••                                                            │
-    │         ff   ••••••••                                                    │
-    │          ffff       •                                                    │
-    │              f       •••••••                                             │
-1125┤               ff            •                                            │
-    │                ff            ••••                                        │
-    │                  ffff            ••••x                                   │
-    │                     fff              ••••                                │
- 750┤                        fff               •                               │
-    │                          ffffff           •                              │
-    │                                ffffff      ••                            │
-    │                                      fffffff ••••••                      │
- 375┤                                             ff    •                      │
-    │                                               fffffff•••••••••           │
-    │                                                      ffffffffff          │
-    │                                                                          │
-   0┤                                                                          │
-    └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
-     0                60                 120               180              240 
-tokens/s/gpu                        tokens/s/user                               
-```
-Here the `TPOT_limit=10ms`. All datapoints shown on the pareto frontier meet `TTFT_limit=1000ms`  
-Each point on the pareto frontier can represent a different config {parallel, concurrency}.  
-The pareto frontier means, no matter how you change your deployment parallel strategy and 
-benchmark with different concurrency, the datapoint will be under the frontier.  
-What we need is the highest point on the frontier which is left to `1000ms/TPOT_limit = 100 tokens/s/user`. 
-The point tagged as `x` is the one we find. This point indicates the `parellel strategy` as well as the `concurrency` level  
-We can find that, the config in this parallel strategy **is potentially only best for this given 
-concurrency instead of being generally better**.  
-Thus we need corresponding benchmark way to make it work. Set concurrency sweep from 1 to target_concurrency 
-predicted by aiconfigurator. E.g., [1 2 4 8 ... target_concurrency]
-Compare the result at target_concurrency with `TTFT, TPOT, tokens/s/gpu and previous baseline you have`
+## 2. Recommend and predict
 
-> In order to reduce the impact of first batch of requests, we use `concurrency * 10` as `num_requests`
-> In order to avoid undefined cache hit rate when benchmarking with random data, we deliberately disable
-cache reuse to make it fair.
-
-## Step-by-step Manual Deployment
-
-**Problem**:  
-16 H200 in total. QWen3 32B FP8.  
-ISL=4000, OSL=512, TTFT=300ms, TPOT=10ms, optimize tokens/s/gpu
-
-If you would like to deploy by your own, when running the `aiconfigurator cli exp|default`, engine configuration files and executable scripts are automatically generated under the `--save-dir`, in the `topx` folder. The directory structure is:
-
-```
-results/Qwen_Qwen3-32B_h200_sxm_trtllm_isl4000_osl1000_ttft1000_tpot20_904495
-├── agg
-│   ├── best_config_topn.csv
-│   ├── exp_config.yaml
-│   ├── pareto.csv
-│   ├── top1
-│   │   ├── agg_config.yaml
-│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   ├── generator_config.yaml
-│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   ├── k8s_deploy.yaml
-│   │   └── run_0.sh
-│   ...
-├── disagg
-│   ├── best_config_topn.csv
-│   ├── exp_config.yaml
-│   ├── pareto.csv
-│   ├── top1
-│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   ├── decode_config.yaml
-│   │   ├── generator_config.yaml
-│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   ├── k8s_deploy.yaml
-│   │   ├── prefill_config.yaml
-│   │   ├── run_0.sh
-│   │   └── run_1.sh  (for multi-node setups)
-│   ...
-└── pareto_frontier.png
-```
-
-Here, `agg_config.yaml`, `prefill_config.yaml`, and `decode_config.yaml` are TRTLLM engine configuration files, and `run_x.sh` are the executable scripts. `k8s_deploy.yaml` is for deployment in k8s. `bench_run.sh` and `k8s_bench.yaml` are benchmark helpers for running `aiperf` concurrency sweeps (see the [CLI User Guide](cli_user_guide.md#benchmark-artifacts) for details). In this guide, we're not using k8s.
-
-For multi-node setups, there will be multiple `run_x.sh` scripts (one per node), each invoking the same TRTLLM engine config file. By default, `run_0.sh` starts **both the frontend service and the workers, assuming ETCD and NATS are already running on node0, while other nodes only start the workers**. Therefore, in multi-node deployments, set the head node IP via **`--generator-set ServiceConfig.head_node_ip=<IP>`** (there is no standalone `--head_node_ip` CLI flag).
-
-Typically, the command is:
-
-````bash
-aiconfigurator cli default \
-  --system h200_sxm \
-  --model-path Qwen/Qwen3-32B \
-  --isl 5000 \
-  --osl 1000 \
-  --ttft 2000 \
-  --tpot 50 \
-  --save-dir results \
-  --total-gpus 16 \
-  --generator-set ServiceConfig.model_path=/workspace/model_hub/Qwen3-32B-FP8 \
-  --generator-set ServiceConfig.served_model_name=Qwen3-32B-FP8 \
-  --generator-set ServiceConfig.head_node_ip=x.x.x.x
-````
-
-To customize parameters per worker type, override the `Workers.<role>` keys with `--generator-set`. To set worker counts, use `WorkerConfig.*` (e.g., `WorkerConfig.prefill_workers=2`). For example:
-
-Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aiconfigurator/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`. 
+From the AISimulate repository root with its virtual environment active:
 
 ```bash
-aiconfigurator cli default \
-  --system h200_sxm \
-  --model-path Qwen/Qwen3-32B \
-  --isl 5000 \
-  --osl 1000 \
-  --ttft 2000 \
-  --tpot 50 \
-  --save-dir results \
-  --total-gpus 16 \
-  --generator-set ServiceConfig.model_path=/workspace/model_hub/Qwen3-32B-FP8 \
-  --generator-set ServiceConfig.served_model_name=Qwen3-32B-FP8 \
-  --generator-set Workers.prefill.kv_cache_free_gpu_memory_fraction=0.8 \
-  --generator-set ServiceConfig.head_node_ip=0.0.0.0
+mkdir -p deployment-study
+git rev-parse HEAD > deployment-study/aisimulate-source-sha.txt
+uv pip freeze --python python/aisimulate/.venv/bin/python > deployment-study/python-packages.txt
+aisimulate recommend --stack engine \
+  --config examples/cli/dynamo-deployment-recommend.yaml \
+  --output-dir deployment-study/recommendation
+
+aisimulate predict --stack engine \
+  --config deployment-study/recommendation/recommendations/0001.yaml \
+  --capture-per-request --output-dir deployment-study/prediction
 ```
 
-At runtime, copy the generated artifacts to each node, set up the engine configs directory, and execute the corresponding script:
+The [example YAML](../../../examples/cli/dynamo-deployment-recommend.yaml)
+fixes concurrency and compares two TP shapes under a two-GPU limit. Inspect
+`recommendation.json` for failures and selected candidate IDs. If no configuration
+is selected and there are zero resource-limited candidates, `recommend` exits `1`
+and produces no numbered YAML. Any resource-limited candidate makes the exit
+status `3`, including when the result is empty or some selected YAML files remain
+available. Inspect the ledger and [resource diagnostics](../../../docs/local-resources.md)
+before proceeding. Use a fresh output directory for
+another study, or apply the CLI's explicit `--overwrite` policy.
 
-```bash
-# Create the engine_configs directory expected by the run scripts
-mkdir -p /workspace/engine_configs
+## 3. Render the selected candidate
 
-# Copy engine config files to the expected location (artifacts are directly under top1/, no nested agg/ or disagg/)
-# For aggregated mode:
-# cp ${your_save_dir}/.../agg/top1/agg_config.yaml /workspace/engine_configs/
-# For disaggregated mode:
-cp ${your_save_dir}/.../disagg/top1/*_config.yaml /workspace/engine_configs/
+Save the following as `deployment-study/render.py`, and run it from the
+repository root with `python deployment-study/render.py`. It reads the first
+scalar selection and its matching workload from the durable ledger. For a
+Pareto run, choose an ID from `views.pareto_front` in `recommendation.json`
+and pass it explicitly, for example
+`python deployment-study/render.py --candidate-id candidate-000001` (replace
+the illustrative ID with your choice). Unknown and infeasible IDs are rejected.
 
-# Navigate to the generated top1 directory, then on node0:
-cd ${your_save_dir}/.../disagg/top1
-bash run_0.sh
+```python
+import argparse
+import json
+from dataclasses import replace
+from pathlib import Path
 
-# On other nodes
-bash run_1.sh
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import from_sweeper_candidate
+
+parser = argparse.ArgumentParser(description="Render a selected recommendation")
+parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")
+args = parser.parse_args()
+study = Path("deployment-study")
+result = json.loads((study / "recommendation/recommendation.json").read_text())
+candidate_id = args.candidate_id
+if candidate_id is None:
+    selected = result["views"]["top_n"]
+    if not selected:
+        parser.error("No scalar selection: choose a Pareto candidate with --candidate-id")
+    candidate_id = selected[0]
+candidate = next((row for row in result["candidates"] if row["candidate_id"] == candidate_id), None)
+if candidate is None:
+    parser.error(f"Unknown candidate ID: {candidate_id}")
+if candidate["status"] != "feasible":
+    parser.error("The selected candidate must be feasible")
+request = from_sweeper_candidate(
+    candidate,
+    workload=candidate["provenance"]["workload"],
+    deployment_target="dynamo-j2",
+    output_dir=str(study / "generated"),
+    generator_overrides={
+        "ServiceConfig": {
+            "model_path": "/workspace/models/Qwen3-32B-FP8",
+            "served_model_name": "Qwen/Qwen3-32B-FP8",
+            "head_node_ip": "127.0.0.1",
+        },
+    },
+)
+request = replace(request, backend=replace(request.backend, dynamo_version="1.3.0"))
+artifacts = generate_from_request(request)
+(study / "selected-candidate.json").write_text(json.dumps(candidate, indent=2) + "\n")
+print("Selected:", candidate_id)
+print("Generated:", sorted(artifacts))
 ```
 
-> Note: The generated configs are for deploying 1 replica instead of the cluster (defined as total_gpus). We'll bridge this gap in future.
+The bridge preserves evaluated parallelism, worker counts, token limits, and
+supported cache settings. Environment overrides must not silently replace
+those choices. It rejects combinations it cannot lower, including analytical
+AFD/EPD and heterogeneous P/D hardware. AFD predictions instead produce their
+own analytical artifacts; see [AFD topology](../../../docs/sweeper/afd-topology.md).
 
----
+The renderer currently reports that vLLM `0.24.0` uses the closest prior
+`cli_args.0.20.1.j2` flag template. Keep that warning with the generated artifacts
+and verify the emitted flags against the actual `0.24.0` runtime.
 
-## Prerequisites
+Inspect the returned filenames and generated scripts. For this vLLM example,
+`run_0.sh` launches the frontend and worker processes; `bench_run.sh` runs an
+AIPerf sweep. Run `bash -n` on both before copying them to the serving host.
+If you deliberately use the compatibility CLI's `generate` command instead,
+it creates a starting configuration without replay/SLA optimization; it does
+not recreate the selected recommendation. See the
+[legacy CLI guide](../../../docs/cli/legacy-aic-user-guide.md).
 
-* Docker with GPU support
+## 4. Launch on the serving host
 
----
-
-## 1. Environment Setup
-
-### 1.1 Install aiconfigurator
-
-Use a minimal Ubuntu base image with python installed.
+The generated scripts use Dynamo's default service discovery. On the serving
+host, start the dependencies from the pinned Dynamo source checkout:
 
 ```bash
-# Install Git LFS
-apt-get update && apt-get install -y git-lfs
-
-# Clone the repo
-git clone https://github.com/ai-dynamo/aiconfigurator.git
-cd aiconfigurator
-
-# Install build tools and aiconfigurator
-pip3 install "."
+git clone --branch v1.3.0 --depth 1 https://github.com/ai-dynamo/dynamo.git dynamo-1.3.0
+docker compose -f dynamo-1.3.0/dev/docker-compose.yml up -d
 ```
 
-### 1.2 Build the Dynamo Container
-In this example, we're using Dynamo 0.5.0, please switch to release/0.5.0 first.
+The release's [development Compose file](https://github.com/ai-dynamo/dynamo/blob/v1.3.0/dev/docker-compose.yml)
+starts etcd and NATS. This example uses the same host network for those services
+and the serving container. The pinned
+[Dynamo quickstart](https://github.com/ai-dynamo/dynamo/blob/v1.3.0/docs/getting-started/quickstart.mdx)
+also documents a file-discovery alternative, but switching to it requires
+matching frontend and worker arguments.
+
+Download the exact model revision you intend to benchmark into
+`/absolute/model-cache/Qwen3-32B-FP8` on the serving host. Retain its revision
+with the study and use that same model configuration for prediction. Copy
+`deployment-study` to the serving host, then adapt the two absolute host paths:
+
 ```bash
-# other version of trtllm can be used as well
-# currently dynamo is at version 0.4.0, indicated in the tag
-./container/build.sh \
-  --framework TRTLLM \
-  --tensorrtllm-pip-wheel tensorrt-llm==1.0.0rc6 \
-  --tag dynamo:0.4.0-trtllm-1.0.0rc6
+docker pull nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0
+docker image inspect nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0 \
+  --format '{{json .RepoDigests}}'
+docker run --rm -it --gpus all --network host --ipc host \
+  -v /absolute/deployment-study:/workspace/study \
+  -v /absolute/model-cache:/workspace/models:ro \
+  nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0 bash
 ```
 
-> Please refer to [Dynamo Getting Started](https://docs.nvidia.com/dynamo/latest/get_started.html) for detailed dynamo installation
-
-### 1.3 Download model checkpoint
-```bash
-HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download Qwen/Qwen3-32B-FP8 --local-dir /raid/hub/qwen3-32b-fp8
-```
-Please modify based on your own path '/raid/hub/qwen3-32b-fp8'
-
----
-
-## 2. Running etcd and NATS
-
-On **Node 0**, start etcd and NATS.io:
+Inside the container, check the versions before launch:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
----
-
-## 3. Single-Node Deployment
-
-### 3.1 Generate Configuration with aiconfigurator
-
-```bash
-aiconfigurator cli default \
-  --system h200_sxm \
-  --isl 5000 \
-  --osl 1000 \
-  --ttft 1000 \
-  --tpot 10 \
-  --save-dir ./results \
-  --model-path Qwen/Qwen3-32B \
-  --total-gpus 8 \
-  --generated-config-version 1.0.0rc4 \
-  --generator-set ServiceConfig.head_node_ip=0.0.0.0 \
-  --generator-set ServiceConfig.model_path=/workspace/model_hub/qwen3-32b-fp8 \
-  --generator-set ServiceConfig.served_model_name=Qwen/Qwen3-32B-FP8 \
-  --generator-set Workers.prefill.kv_cache_free_gpu_memory_fraction=0.9 \
-  --generator-set Workers.decode.kv_cache_free_gpu_memory_fraction=0.5 \
-  --generator-set Workers.agg.kv_cache_free_gpu_memory_fraction=0.7
-```
-We use 1.0.0rc3 (our latest data) for aiconfigurator and we can support generate configurations for running with trtllm 1.0.0rc4 worker.  
-*--model-path* is for aiconfigurator and *--served_model_name* is for dynamo deployment  
-> For other supported configurations, please run `aiconfigurator cli --help`.
-
-### 3.2 Verify Generated Configuration
-
-Engine configuration files and executable scripts are automatically generated under the `--save-dir`. The directory structure is:
-
-````
-${save_dir}/
-├── agg/
-│   ├── top1/
-│   │   ├── agg_config.yaml
-│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   ├── generator_config.yaml
-│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   ├── k8s_deploy.yaml
-│   │   └── run_0.sh
-│   ├── best_config_topn.csv
-│   ├── exp_config.yaml
-│   └── pareto.csv
-├── disagg/
-│   ├── top1/
-│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   ├── decode_config.yaml
-│   │   ├── generator_config.yaml
-│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   ├── k8s_deploy.yaml
-│   │   ├── prefill_config.yaml
-│   │   ├── run_0.sh
-│   │   └── run_1.sh  (for multi-node setups)
-│   ├── best_config_topn.csv
-│   ├── exp_config.yaml
-│   └── pareto.csv
-└── pareto_frontier.png
-````
-
-### 3.3 Launch the Dynamo Container
-
-```bash
-cd ..
-docker run --gpus all --net=host --ipc=host \
-  -v $(pwd):/workspace/mount_dir \
-  -v /raid/hub:/workspace/model_hub/ \
-  --rm -it dynamo:0.4.0-trtllm-1.0.0rc4
-```
-
-
-### 3.4 Deploy the service
-
-Inside the container:
-
-```bash
-# Create the engine_configs directory expected by the run scripts
-mkdir -p /workspace/engine_configs
-
-# Copy engine config files to the expected location (artifacts are directly under top1/, no nested agg/ or disagg/)
-# For disaggregated mode (recommended):
-cp /workspace/mount_dir/${your_save_dir}/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft1000_tpot10_*/disagg/top1/*_config.yaml /workspace/engine_configs/
-
-# For aggregated mode:
-# cp /workspace/mount_dir/${your_save_dir}/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft1000_tpot10_*/agg/top1/agg_config.yaml /workspace/engine_configs/
-
-# Navigate to the generated artifacts directory and launch dynamo
-cd /workspace/mount_dir/${your_save_dir}/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft1000_tpot10_*/disagg/top1
+python -c 'from importlib.metadata import version; print("Dynamo", version("ai-dynamo")); print("vLLM", version("vllm"))'
+cd /workspace/study/generated
 bash run_0.sh
 ```
 
-> **Tip:** If you see a Triton version mismatch error, reinstall Triton:
->
-> ```bash
-> pip uninstall -y triton
-> pip install triton==3.3.1
-> ```
+Keep this process running. In another shell on the same host, check the
+frontend at `http://127.0.0.1:8000/v1/models` before benchmarking. Model loading
+and frontend readiness do not establish SLA performance.
 
-### 3.5 Test the Service
+## 5. Benchmark and compare
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "model": "Qwen/Qwen3-32B-FP8",
-    "messages": [
-      { "role": "user", "content": "Introduce yourself" }
-    ],
-    "stream": true
-  }'
-```
-
-### 3.6 Benchmark
-
----
-
-## 4. Two-Node Deployment
-
-### 4.1 Generate Configuration for Two Nodes
+In a second shell with AIPerf installed, access the generated directory and
+model/tokenizer files. The runtime image may already contain AIPerf; otherwise
+use the installation instructions for the AIPerf release you select and record
+its version. Set the benchmark to the example's fixed concurrency:
 
 ```bash
-# ServiceConfig.head_node_ip (set via --generator-set below) must be the IP of node 0; etcd and NATS.io must already be running on node 0 (Step 2)
-aiconfigurator cli default \
-  --system h200_sxm \
-  --isl 5000 \
-  --osl 1000 \
-  --ttft 200 \
-  --tpot 8 \
-  --save-dir ./ \
-  --model-path Qwen/Qwen3-32B \
-  --total-gpus 16 \
-  --generator-set ServiceConfig.head_node_ip=NODE_0_IP \
-  --generated-config-version 1.0.0rc4 \
-  --generator-set ServiceConfig.model_path=/workspace/model_hub/qwen3-32b-fp8 \
-  --generator-set ServiceConfig.served_model_name=Qwen/Qwen3-32B-FP8 \
-  --generator-set Workers.prefill.kv_cache_free_gpu_memory_fraction=0.8 \
-  --generator-set Workers.decode.kv_cache_free_gpu_memory_fraction=0.5 \
-  --generator-set Workers.agg.kv_cache_free_gpu_memory_fraction=0.7
+AICONFIGURATOR_BENCH_CONCURRENCY=4 \
+  AICONFIGURATOR_BENCH_MULTI_ROUND=10 \
+  AICONFIGURATOR_BENCH_ENDPOINT_URL=http://127.0.0.1:8000 \
+  BENCH_ARTIFACT_DIR=/workspace/study/benchmark \
+  bash /workspace/study/generated/bench_run.sh
 ```
 
-> Note that even if `--total-gpus 16`, the optimal configuration generated by aiconfigurator may not require 16 GPUs. If only 8 GPUs are needed, it may produce just a `run_0.sh`, which can then be executed on each node.
+Inspect `bench_run.sh` first: it records token lengths and standard deviations,
+request count, prefix length, warmup count, endpoint type, and tokenizer. The
+overrides above request 40 measured requests (`4 × 10`) plus 8 warmup requests. Its
+warmup requests are additional to measured requests. Match these settings to
+the replay workload; record any warmup, tokenizer, startup, or cache-history
+differences rather than interpreting them as estimator error. Retain AIPerf's
+raw outputs and check completed-request counts before comparing latency.
 
-Refer to the single node example to run the container on both node 0 and node 1.
+Compare like-for-like TTFT, per-request TPOT, throughput, and GPU normalization.
+AIPerf's per-request average ITL corresponds to replay TPOT; replay's
+individual-token-gap ITL distribution is a different population. See
+[Understand your prediction](../../../docs/cli/understand-your-prediction.md)
+for definitions, incomplete requests, and goodput/SLA interpretation.
 
-### 4.2 Deploy on Node 0
-Inside the container:
-```bash
-# Create the engine_configs directory expected by the run scripts
-mkdir -p /workspace/engine_configs
+For a concurrency curve, change both the replay load and benchmark concurrency
+for each point. A candidate that wins at one concurrency may lose at another.
+A sampled Pareto front does not bound all possible hardware performance.
 
-# Copy engine config files to the expected location (artifacts are directly under top1/, no nested disagg/)
-cp /workspace/mount_dir/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft200_tpot8_*/disagg/top1/*_config.yaml /workspace/engine_configs/
+### Multi-node and Kubernetes variants
 
-# Navigate to the generated artifacts directory and launch dynamo on node 0 (includes frontend)
-cd /workspace/mount_dir/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft200_tpot8_*/disagg/top1
-bash run_0.sh
-```
+This worked example is single-node. For multi-node deployment, generate the
+intended topology, inspect every emitted `run_N.sh`, configure the real head
+node address, and follow the selected Dynamo release's networking and service
+discovery instructions. A GPU budget alone does not choose placement or prove
+that every GPU in the budget is used.
 
-### 4.3 Deploy on Node 1
-Inside the container:
-```bash
-# Navigate to the same top1 directory and launch worker on node 1
-cd /workspace/mount_dir/Qwen_Qwen3-32B_h200_sxm_trtllm_isl5000_osl1000_ttft200_tpot8_*/disagg/top1
-
-# Launch dynamo on node 1 (workers only)
-bash run_1.sh
-```
-
-### 4.4 Test the Service
-
-```bash
-curl http://NODE_0_IP:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "model": "Qwen/Qwen3-32B-FP8",
-    "messages": [
-      { "role": "user", "content": "Introduce yourself" }
-    ],
-    "stream": true
-  }'
-```
-
-
----
-
-## 5. Deploy on Kubernetes
-
-The generator can also emit a Kubernetes CR (`k8s_deploy.yaml`) for the K8S deployment.
-
-For deploying Dynamo on Kubernetes, please refer to this [dynamo/deploy](https://github.com/ai-dynamo/dynamo/tree/main/deploy)
- and make sure to install the CRDs and platform first.
-
-### 5.1 Generate Configuration for K8S
-
-This produces `disagg/k8s_deploy.yaml` (and for Agg, `agg/k8s_deploy.yaml`) under  `--save-dir`. 
-
-```bash
-# Example (Disagg)
-aiconfigurator cli default \
-  --system h200_sxm \
-  --isl 5000 \
-  --osl 1000 \
-  --ttft 200 \
-  --tpot 8 \
-  --save-dir ./ \
-  --model-path Qwen/Qwen3-32B \
-  --total-gpus 8 \
-  --generated-config-version 1.0.0rc6 \
-  --generator-set ServiceConfig.model_path=Qwen/Qwen3-32B-FP8 \
-  --generator-set ServiceConfig.served_model_name=Qwen/Qwen3-32B-FP8 \
-  --generator-set K8sConfig.k8s_image=nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.7.0 \
-  --generator-set K8sConfig.k8s_engine_mode=inline \
-  --generator-set K8sConfig.k8s_model_cache=model-cache \
-  --generator-set K8sConfig.k8s_namespace=dynamo-custom-ns \
-  --generator-set Workers.prefill.kv_cache_free_gpu_memory_fraction=0.8 \
-  --generator-set Workers.decode.kv_cache_free_gpu_memory_fraction=0.5 \
-  --generator-set Workers.decode.cache_transceiver_backend=default
-```
-
-Since different TensorRT-LLM versions can require different config fields, set `--generated-config-version` to match the runtime used to deploy. For the TensorRT-LLM version corresponding to an official Dynamo image, refer to this [pyproject](https://github.com/ai-dynamo/dynamo/blob/v0.5.0/pyproject.toml#L51), or check directly in the container via `python -c "import tensorrt_llm; print(tensorrt_llm.__version__)"`. For `nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.5.0`, use `--generated-config-version 1.0.0rc6`.
-
-
-### Apply (inline mode - default)
-
-`K8sConfig.k8s_engine_mode=inline`
-
-Inline mode embeds the engine configs into the Pod startup script; **no ConfigMap is needed**:
-
-```bash
-kubectl apply -f disagg/k8s_deploy.yaml
-# or
-kubectl apply -f agg/k8s_deploy.yaml
-```
-
-
-### Additional arguments specific to Kubernetes
-
-Use `--generator-set K8sConfig.<field>=value` (or place the same keys inside `--generator-config`). Defaults shown in **bold**.
-
-* `K8sConfig.k8s_engine_mode={inline|configmap}` - engine config delivery. **inline** by default.
-* `K8sConfig.k8s_model_cache=<claimName>` - optional model cache PVC mount (mounted at `/workspace/model_cache`). Leave it unset or empty to disable the mount. Specify the PVC name when you want pods to reuse an existing model cache; otherwise, if you directly set something like `--generator-set ServiceConfig.model_path=Qwen/Qwen3-32B-FP8`, the model is downloaded from Hugging Face and no PVC is required.
-* `K8sConfig.k8s_hf_home=<path>` - optional path for the `HF_HOME` environment variable in worker pods. When `k8s_model_cache` is configured but `k8s_hf_home` is not explicitly set, it automatically defaults to `/workspace/model_cache` to ensure HuggingFace libraries use the persistent volume. Set this to a custom path if you have a different volume mount structure.
-* `K8sConfig.k8s_namespace=<ns>` - target namespace. Default **dynamo**.
-* `K8sConfig.k8s_image=<image>` - runtime image. Default **nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.7.0**.
-* `K8sConfig.k8s_image_pull_secret=<secret>` - optional pull secret name.
-
-
----
+For Kubernetes, install the matching Dynamo platform/CRDs first. Set
+`K8sConfig.k8s_namespace`, model cache/PVC, and image explicitly, then inspect
+`k8s_deploy.yaml` against that release's CRD. The
+[generator overview](generator_overview.md) describes the available targets
+and overrides. Do not apply a numbered `recommendations/*.yaml` as a manifest.
 
 ## 6. FPM V1 Resource Workload Workflow
 
@@ -516,6 +262,6 @@ This standalone flow demonstrates deployment only: `run.sh` just launches the en
 
 For a multinode workload, the collector stages the complete runtime bundle on every Pod and starts the same scripts concurrently across them. `fpm_env.sh` derives rank and leader address from the selected controller's LWS or Grove environment (failing closed with exit 2), and `run.sh` appends the required model- or data-parallel coordination arguments. A multinode `--dump-config-to` path must contain `{node_rank}`; this substitution applies only to that option. Waiting for local result files and enforcing the schema-v2 completion contract belong to the collector's staged in-pod runtime, which consumes the `FPM_*` facts exported by `fpm_env.sh`. Strict plan/workload/repeat validation, result collection/aggregation/evidence, exit coordination, and cleanup remain collector responsibilities.
 
-Each collection still starts a new engine and reloads the model. The collector's staged runtime stops result-producing engines after their local completion gate, refuses to overwrite existing benchmark outputs, and coordinates headless followers and final cleanup. By default `/results` is backed by Pod-local `emptyDir`, and those results disappear when the Pod is deleted; a matching user-provided volume and mount are preserved. Persistent engines and reuse of a GPU-resident model are outside the V1 scope. A target cluster needs the controller selected by `K8sConfig.fpm_orchestrator`; any scheduler and queue required by that cluster must be supplied through the generic Pod-spec and label overlays. Multinode GB200 configurations that enable MNNVL also include the generated `ComputeDomain` in `k8s_deploy.yaml`; single-node output never emits one. See the [CLI User Guide](cli_user_guide.md#fpm-v1-resource-workload-and-run-script) for the full input example.
+Each collection still starts a new engine and reloads the model. The collector's staged runtime stops result-producing engines after their local completion gate, refuses to overwrite existing benchmark outputs, and coordinates headless followers and final cleanup. By default `/results` is backed by Pod-local `emptyDir`, and those results disappear when the Pod is deleted; a matching user-provided volume and mount are preserved. Persistent engines and reuse of a GPU-resident model are outside the V1 scope. A target cluster needs the controller selected by `K8sConfig.fpm_orchestrator`; any scheduler and queue required by that cluster must be supplied through the generic Pod-spec and label overlays. Multinode GB200 configurations that enable MNNVL also include the generated `ComputeDomain` in `k8s_deploy.yaml`; single-node output never emits one. See the [Legacy AIC CLI User Guide](../../../docs/cli/legacy-aic-user-guide.md#fpm-v1-resource-workload-and-run-script) for the full input example.
 
 The current vLLM template matrix tops out at `0.20.1`; reference `0.24.0`-only flags may be passed through, but their runtime compatibility is not yet validated by the generator.

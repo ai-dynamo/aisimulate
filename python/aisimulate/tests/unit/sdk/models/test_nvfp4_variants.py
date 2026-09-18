@@ -7,10 +7,10 @@ import dataclasses
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.task_v2 import Task
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
+from aisimulate.sdk import common, config
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.task_v2 import Task
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -48,7 +48,7 @@ def test_nvfp4_variant_is_registered_for_default_matrix(hf_id):
 
 @pytest.mark.parametrize("hf_id", NVFP4_VARIANTS)
 def test_nvfp4_variant_loads_offline_with_quant_metadata(hf_id, monkeypatch):
-    import aiconfigurator.sdk.utils as sdk_utils
+    import aisimulate.sdk.utils as sdk_utils
 
     def _no_network(*args, **kwargs):
         raise AssertionError("network path reached")
@@ -64,8 +64,8 @@ def test_nvfp4_variant_loads_offline_with_quant_metadata(hf_id, monkeypatch):
 
 
 def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
-    import aiconfigurator.sdk.utils as sdk_utils
-    from aiconfigurator_core.sdk.models.helpers import _get_model_info
+    import aisimulate.sdk.utils as sdk_utils
+    from aisimulate_core.sdk.models.helpers import _get_model_info
 
     hf_id = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
 
@@ -192,7 +192,7 @@ def test_qwen36_task_preserves_inferred_provenance_for_mixed_precision_split():
         model_path="nvidia/Qwen3.6-27B-NVFP4",
         system_name="gb300",
         backend_name="sglang",
-        backend_version="0.5.16",  # next slot; 0.5.12-era rows reach it via backward fill
+        backend_version="next",
         total_gpus=32,
     )
     model_config = task.build_model_config(role="agg")
@@ -227,7 +227,7 @@ def test_qwen36_task_preserves_explicit_gemm_override():
         model_path="nvidia/Qwen3.6-27B-NVFP4",
         system_name="gb300",
         backend_name="sglang",
-        backend_version="0.5.16",  # next slot; 0.5.12-era rows reach it via backward fill
+        backend_version="next",
         total_gpus=32,
         gemm_quant_mode=common.GEMMQuantMode.fp8_static,
     )
@@ -365,7 +365,7 @@ def test_minimax_m3_uses_mxfp8_lane_for_non_experts_and_nvfp4_for_experts():
     ("nvidia/DeepSeek-V4-Flash-NVFP4", "nvidia/DeepSeek-V4-Pro-NVFP4"),
 )
 def test_dsv4_nvfp4_experts_skip_native_mxfp4_backend_remap(hf_id):
-    from aiconfigurator.sdk.models.helpers import resolve_dsv4_moe_arch_mode
+    from aisimulate.sdk.models.helpers import resolve_dsv4_moe_arch_mode
 
     assert resolve_dsv4_moe_arch_mode(hf_id, "b200_sxm", "sglang") is None
     assert resolve_dsv4_moe_arch_mode(hf_id, "h200_sxm", "sglang") is None

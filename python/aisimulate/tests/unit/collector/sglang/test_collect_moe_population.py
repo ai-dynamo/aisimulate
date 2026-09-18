@@ -37,7 +37,13 @@ def _load_functions(*names: str, namespace: dict | None = None) -> dict:
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     from collector.helper import WORKER_RESTART
 
-    loaded = {"WORKER_RESTART": WORKER_RESTART, **(namespace or {})}
+    # Guard behavior has dedicated tests; return the 0.5.14 series here so
+    # the alignment tests exercise the legacy probed constraints.
+    loaded = {
+        "WORKER_RESTART": WORKER_RESTART,
+        "_raise_if_unverified_moe_lane": lambda _moe_type: "0.5.14",
+        **(namespace or {}),
+    }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE_PATH), "exec"), loaded)
     return loaded
 

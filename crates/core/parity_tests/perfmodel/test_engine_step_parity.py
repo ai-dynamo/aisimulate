@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/parity_tests/test_engine_step_parity.py
 
 """Smoke parity checks for the Rust engine step versus the frozen reference.
 
@@ -24,11 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.cli.api import cli_estimate
-from aiconfigurator.sdk import common, config, errors, perf_database, rust_engine_step
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.operations import util_empirical
+from aisimulate.legacy_cli.api import cli_estimate
+from aisimulate.sdk import common, config, errors, perf_database, rust_engine_step
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.operations import util_empirical
 
 pytestmark = pytest.mark.integration
 
@@ -429,6 +431,20 @@ SMOKE_CASES = [
         ),
         id="deepseek-r1-gb200-vllm-scan-coverage",
     ),
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.5-397B-A17B",
+            system_name="gb200",
+            backend_name="sglang",
+            backend_version="0.5.14",
+            tp_size=16,
+            moe_tp_size=16,
+            moe_ep_size=1,
+        ),
+        # Beyond-node TP on a 4-GPU-node system: pins the recorded
+        # multi-node custom-AR fan-out pricing (AIC-1808).
+        id="qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage",
+    ),
     # Kimi-K3 (review Blocker 1 anchor): hybrid KDA + MLA LatentMoE. The
     # case defaults (tp8/ep8) put KDA on the fused 12-head shard — the exact
     # config the per-key kda_fused_decode routing and the exact-first mla_bmm
@@ -478,6 +494,88 @@ SMOKE_CASES = [
             attention_backend="trtllm_mha",
         ),
         id="qwen35-27b-b200-sglang-lanes-trtllm-mha",
+    ),
+    # Qwen3.8-Max (Qwen3.5-family hybrid GDN + full-attention, 2.4T-A95B)
+    # on gb300/sglang/0.5.17 exercises the sparse 0.5.17 data identity:
+    # model-specific gemm/gdn/moe measurements with the approved shared-layer
+    # attention/communication/quantization tables. The native FP8 checkpoint
+    # needs tp=16 to fit its estimated weight footprint. Keep EP node-local
+    # on GB300's four-GPU node (the current engine rejects cross-node EP),
+    # while the wider aggregate batch exercises the IFB batch dimension at
+    # this model scale.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+            system_name="gb300",
+            backend_name="sglang",
+            backend_version="0.5.17",
+            tp_size=16,
+            moe_tp_size=4,
+            moe_ep_size=4,
+            agg_batch_size=32,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-sglang-0517-fp8-agg",
+    ),
+    # Simulation-only quantization override on the bf16 checkpoint. This
+    # covers the measured NVFP4 MoE rows and a non-trivial disaggregated
+    # node-local EP topology; it is not a declaration that the checkpoint has
+    # been validated for NVFP4 serving.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+            system_name="gb300",
+            backend_name="sglang",
+            backend_version="0.5.17",
+            moe_quant_mode="nvfp4",
+            moe_tp_size=2,
+            moe_ep_size=4,
+            disagg_prefill_num_workers=2,
+            disagg_decode_batch_size=8,
+            disagg_decode_num_workers=2,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-sglang-0517-nvfp4-disagg",
+    ),
+    # vLLM 0.27.1 sparse-data twin: model-specific GEMM/GDN/MoE silicon with
+    # attention, communication, and quantization supplied by the approved
+    # shared-layer chain. The native FP8 checkpoint needs TP16. The vLLM
+    # collector does not combine logical MoE TP and EP, so use its measured
+    # all-TP lane; the larger aggregate batch exercises the IFB surface.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+            system_name="gb300",
+            backend_name="vllm",
+            backend_version="0.27.1",
+            tp_size=16,
+            moe_tp_size=16,
+            moe_ep_size=1,
+            agg_batch_size=32,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-vllm-0271-fp8-agg",
+    ),
+    # The bf16 checkpoint needs two TP16 pipeline stages to satisfy the
+    # weight-memory bound. This is the second measured vLLM MoE lane and uses
+    # the same all-TP MoE topology with non-trivial disaggregated worker
+    # and decode-batch settings.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+            system_name="gb300",
+            backend_name="vllm",
+            backend_version="0.27.1",
+            tp_size=16,
+            pp_size=2,
+            moe_tp_size=16,
+            moe_ep_size=1,
+            disagg_prefill_num_workers=2,
+            disagg_decode_batch_size=8,
+            disagg_decode_num_workers=2,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-vllm-0271-bf16-disagg",
     ),
 ]
 
@@ -575,7 +673,10 @@ class _MemoizedCall:
 
 def _quiet_call(func, *args, **kwargs):
     """Keep interpolation loader chatter out of parity test output."""
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
         return func(*args, **kwargs)
 
 
@@ -1037,7 +1138,9 @@ def _comparison_metrics(
     return {name: (python_metrics[name], rust_metrics[name]) for name in rust_metrics}
 
 
-def _static_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _static_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "static")
 
 
@@ -1047,11 +1150,15 @@ def _mixed_step_comparison_metrics(
     return _comparison_metrics(case, "mixed")
 
 
-def _agg_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _agg_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "agg")
 
 
-def _disagg_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _disagg_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "disagg")
 
 
@@ -1133,12 +1240,12 @@ def _golden_python_metrics(
 
 def _prepare_rust_core(monkeypatch: pytest.MonkeyPatch) -> None:
     # The live path is the compiled-engine ``EngineHandle`` (Python builds the
-    # ``EngineSpec``, the PyO3 ``aiconfigurator_core`` extension executes it).
+    # ``EngineSpec``, the PyO3 ``aisimulate_core`` extension executes it).
     # The legacy ctypes dylib is gone, so the only requirement is that the
     # maturin-built extension is importable.
     pytest.importorskip(
-        "aiconfigurator_core",
-        reason="maturin-built aiconfigurator_core extension is required "
+        "aisimulate_core",
+        reason="maturin-built aisimulate_core extension is required "
         "(`uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml`)",
     )
     rust_engine_step._engine_handle_cache_clear()
@@ -1334,7 +1441,14 @@ class TestRustEngineHandleDatabasePolicyIdentity:
     """
 
     def _static_ctx_ms(self, model, view) -> float:
-        rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=1024, osl=8, prefix=0, engine_step_backend="rust")
+        rc = config.RuntimeConfig(
+            batch_size=1,
+            beam_width=1,
+            isl=1024,
+            osl=8,
+            prefix=0,
+            engine_step_backend="rust",
+        )
         ctx_latency, _gen, *_ = rust_engine_step.estimate_static_latency_breakdown_with_rust(
             model, view, rc, "static_ctx", 1, 1.0
         )
@@ -1864,7 +1978,7 @@ class TestRustTypedErrorsAcrossFfi:
     (`perf_database.has_perf_data_not_available_cause`, the support-matrix
     HYBRID-miss triage on `EmpiricalNotImplementedError`) could not recognize
     rust-path misses. The boundary now raises the canonical
-    `aiconfigurator.sdk.errors` classes for the typed variants."""
+    `aisimulate.sdk.errors` classes for the typed variants."""
 
     def test_silicon_data_gap_raises_typed_perf_data_miss(
         self,
@@ -1944,8 +2058,8 @@ class TestRustTypedErrorsAcrossFfi:
         assert not perf_database.has_perf_data_not_available_cause(excinfo.value)
         # Python classifies the same query point identically.
         database = _case_database(case)
-        from aiconfigurator_core.sdk.engine import _evaluate_single_op
-        from aiconfigurator_core.sdk.operations.mla import MLABmm
+        from aisimulate_core.sdk.engine import _evaluate_single_op
+        from aisimulate_core.sdk.operations.mla import MLABmm
 
         with pytest.raises(errors.MissingSystemFlopsError):
             # The retired query_mla_bmm shim's exact twin, through the
@@ -1967,8 +2081,8 @@ class TestRustTypedErrorsAcrossFfi:
         # demanding an fp8_tc_flops entry a100 must never define (the
         # support-matrix FP8 gate is keyed on that entry's presence).
         database = _quiet_call(perf_database.get_database, "a100_sxm", "trtllm", "1.0.0")
-        from aiconfigurator_core.sdk.engine import _evaluate_single_op
-        from aiconfigurator_core.sdk.operations.mla import GenerationMLA
+        from aisimulate_core.sdk.engine import _evaluate_single_op
+        from aisimulate_core.sdk.operations.mla import GenerationMLA
 
         def _gen_mla(kv_mode):
             # The retired query_generation_mla shim's exact twin (the
@@ -2182,7 +2296,144 @@ _FPM_MIXED_FROZEN = {
 _FPM_GENONLY_FROZEN = 4.5
 
 
+# Hybrid speculative fpm (verify-on-FPM): pinned when the config class
+# became reachable (AISimulate schema v18, FpmForwardOp.verify_width). The ngram scheme
+# is the pure verify-width channel (no draft ops): the decode query maps the
+# widened batch to the equivalent-AR point (tokens = c*w, total KV
+# unchanged) on the same synthetic fixture. Values pinned from the compiled
+# engine at introduction (append-only; there is no Python reference).
+_FPM_HYBRID_STATIC_GEN_FROZEN = 4.1246337890625  # (ngram k3, batch 1, isl 1024, osl 2)
+_FPM_HYBRID_MIXED_FROZEN = 18.187255859375  # (ctx 1024, gen 1, isl 1024, osl 2)
+
+
+class TestRustEngineStepFpmHybridParity:
+    """Hybrid (fpm target + speculative scheme) parity pins."""
+
+    def _build_ngram(self):
+        from aisimulate.sdk.config_builders import build_model_config
+        from aisimulate_core.sdk.speculation import SpeculationConfig
+
+        cfg = build_model_config(
+            tp_size=2,
+            pp_size=1,
+            attention_dp_size=1,
+            moe_tp_size=1,
+            moe_ep_size=2,
+            gemm_quant_mode="fp8_block",
+            moe_quant_mode="fp8_block",
+            kvcache_quant_mode="fp8",
+            fmha_quant_mode="bfloat16",
+            comm_quant_mode="half",
+            forward_model="fpm",
+        )
+        cfg.speculation = SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3})
+        model = get_model(_FPM_MODEL, cfg, "vllm")
+        database = _quiet_call(perf_database.get_database, "b200_sxm", "vllm", _FPM_VERSION)
+        return model, get_backend("vllm"), database
+
+    def test_hybrid_ngram_static_gen_pin(self, fpm_systems_root):
+        model, backend, database = self._build_ngram()
+        assert model.generation_ops[0]._verify_width == 4
+        rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=1024, osl=2)
+        summary = backend.run_static(model, database, rc, mode="static_gen")
+        value = sum(summary.get_generation_latency_dict().values())
+        if _FPM_HYBRID_STATIC_GEN_FROZEN is None:
+            print(f"\nPIN static_gen: {value!r}")
+        else:
+            allowed = max(abs(_FPM_HYBRID_STATIC_GEN_FROZEN) * PARITY_RTOL, 1e-9)
+            assert abs(value - _FPM_HYBRID_STATIC_GEN_FROZEN) <= allowed
+
+    def test_hybrid_ngram_mixed_pin(self, fpm_systems_root):
+        from aisimulate_core.sdk.backends.base_backend import MixedStepInput
+
+        model, backend, database = self._build_ngram()
+        rc = config.RuntimeConfig(batch_size=4, beam_width=1, isl=1024, osl=2)
+        est = backend.run_mixed(
+            model,
+            database,
+            rc,
+            MixedStepInput(context_tokens=1024, num_decode_requests=1),
+        )
+        value = est.latency_ms
+        if _FPM_HYBRID_MIXED_FROZEN is None:
+            print(f"\nPIN mixed: {value!r}")
+        else:
+            allowed = max(abs(_FPM_HYBRID_MIXED_FROZEN) * PARITY_RTOL, 1e-9)
+            assert abs(value - _FPM_HYBRID_MIXED_FROZEN) <= allowed
+
+
 class TestRustEngineStepFpmParity:
+    @pytest.mark.parametrize("database_mode", ["SILICON", "HYBRID"])
+    def test_auto_skips_absent_op_tables(self, fpm_systems_root, database_mode):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        cfg = ForwardPassPerfModelConfig(
+            model=_FPM_MODEL,
+            system="b200_sxm",
+            backend="vllm",
+            backend_version=_FPM_VERSION,
+            worker_type="decode",
+            tp=2,
+            moe_tp_size=1,
+            moe_ep_size=2,
+            gemm_quant_mode="fp8_block",
+            moe_quant_mode="fp8_block",
+            fmha_quant_mode="bfloat16",
+            kvcache_quant_mode="fp8",
+            comm_quant_mode="half",
+            systems_paths=(str(fpm_systems_root),),
+            database_mode=database_mode,
+        )
+        model = RustForwardPassPerfModel.best_available(cfg)
+        try:
+            provenance = model.diagnostics()["provenance"]
+            assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+            assert "gemm_perf.parquet" in provenance["selection_failures"][0]
+            # Exact measured fixture row: four decode requests, 4,100 total KV.
+            assert model.estimate_forward_pass_time_ms(
+                {
+                    "version": 1,
+                    "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                }
+            ) == pytest.approx(4.5)
+        finally:
+            model.close()
+        from dataclasses import replace
+
+        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+        with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
+            RustForwardPassPerfModel.best_available(replace(cfg, estimation_mode="op_level"))
+
+    def test_sol_does_not_require_op_tables(self, fpm_systems_root):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="Qwen/Qwen3-32B",
+                system="b200_sxm",
+                backend="vllm",
+                backend_version=_FPM_VERSION,
+                worker_type="decode",
+                tp=2,
+                systems_paths=(str(fpm_systems_root),),
+                database_mode="SOL",
+            )
+        )
+        try:
+            assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
+            assert (
+                model.estimate_forward_pass_time_ms(
+                    {
+                        "version": 1,
+                        "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                    }
+                )
+                > 0
+            )
+        finally:
+            model.close()
+
     """forward_model='fpm' regression vs the frozen Python reference.
 
     The Python FPM walk is gone (Phase 2 PR-3); the live side below is the
@@ -2190,7 +2441,7 @@ class TestRustEngineStepFpmParity:
     """
 
     def _build(self):
-        from aiconfigurator.sdk.config_builders import build_model_config
+        from aisimulate.sdk.config_builders import build_model_config
 
         cfg = build_model_config(
             tp_size=2,
@@ -2236,7 +2487,7 @@ class TestRustEngineStepFpmParity:
         # estimate hitting the fpm_forward table's exact row proves the
         # whole-model engine was selected through the supported predictor API.
         _prepare_rust_core(monkeypatch)
-        from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+        from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
         config = {
             "schema_version": 1,
@@ -2258,7 +2509,11 @@ class TestRustEngineStepFpmParity:
             "nextn": None,
             "forward_model": "fpm",
         }
-        model = RustForwardPassPerfModel.from_native(config)
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig.from_legacy_engine_config(config, "aggregated")
+        )
         decode_only = [
             {
                 "version": 1,
@@ -2275,7 +2530,7 @@ class TestRustEngineStepFpmParity:
         _prepare_rust_core(monkeypatch)
         import json as _json
 
-        from aiconfigurator.sdk import engine as sdk_engine
+        from aisimulate.sdk import engine as sdk_engine
 
         model, _backend, database = self._build()
         spec = _json.loads(
@@ -2312,7 +2567,13 @@ class TestRustEngineStepFpmParity:
             ("static_gen", 4, 1024, 2, 0),  # exact decode hit at B=4
             ("static_gen", 2, 1024, 2, 0),  # uncollected batch -> transfer (SOL)
             ("static_gen", 4, 9_000_000, 2, 0),  # out of domain -> both error
-            ("static_ctx", 16, 256, 1, 0),  # above the batch ceiling -> pure clamp (kv/T = 0)
+            (
+                "static_ctx",
+                16,
+                256,
+                1,
+                0,
+            ),  # above the batch ceiling -> pure clamp (kv/T = 0)
             ("static_ctx", 16, 320, 1, 256),  # high KV pressure -> SOL-rescaled clamp
         ],
     )
@@ -2331,7 +2592,12 @@ class TestRustEngineStepFpmParity:
             (0, 4, 1024, 2),  # gen-only keeps full decode
             (0, 600, 100, 2),  # gen-only across the decode regime boundary (eager side)
             (1024, 0, 1024, 2),  # prefill-only chunk
-            (4096, 0, 256, 1),  # 16 whole prefills: certified batch clamp to the ceiling
+            (
+                4096,
+                0,
+                256,
+                1,
+            ),  # 16 whole prefills: certified batch clamp to the ceiling
         ],
     )
     def test_fpm_mixed_step_parity(self, fpm_systems_root, monkeypatch, ctx_tokens, gen_tokens, isl, osl):

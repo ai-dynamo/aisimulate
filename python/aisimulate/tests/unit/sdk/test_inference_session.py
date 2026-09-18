@@ -16,18 +16,18 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.inference_session import DisaggInferenceSession, InferenceSession
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.performance_result import MoECommFallback
-from aiconfigurator.sdk.step_estimate import MixedStepInput, StepEstimate
+from aisimulate.sdk import common
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.inference_session import DisaggInferenceSession, InferenceSession
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.performance_result import MoECommFallback
+from aisimulate.sdk.step_estimate import MixedStepInput, StepEstimate
 
 pytestmark = pytest.mark.unit
 
 
 def test_step_estimate_preserves_existing_positional_field_order() -> None:
-    assert [field.name for field in fields(StepEstimate)][:-1] == [
+    original_fields = [
         "latency_ms",
         "energy_wms",
         "component_latency_ms",
@@ -37,8 +37,25 @@ def test_step_estimate_preserves_existing_positional_field_order() -> None:
         "context_tokens",
         "num_decode_requests",
         "num_decode_query_tokens",
+        "moe_comm_fallbacks",
     ]
-    assert fields(StepEstimate)[-1].name == "moe_comm_fallbacks"
+    assert [field.name for field in fields(StepEstimate)][: len(original_fields)] == original_fields
+    original_values = (
+        12.5,
+        50.0,
+        {"context": 4.0},
+        {"context": 16.0},
+        {"gemm": 3.0},
+        {"gemm": "silicon"},
+        4096,
+        7,
+        14,
+        (MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
+    )
+    estimate = StepEstimate(*original_values)
+    assert tuple(getattr(estimate, name) for name in original_fields) == original_values
+    assert estimate.per_op_energy_wms == {}
+    assert estimate.covered_latency_ms == 0.0
 
 
 def test_inference_session_exposes_structured_mixed_step() -> None:
@@ -189,7 +206,7 @@ def _patch_get_model(monkeypatch):
         return m
 
     monkeypatch.setattr(
-        "aiconfigurator.sdk.inference_session.models.get_model",
+        "aisimulate.sdk.inference_session.models.get_model",
         _fake_get_model,
     )
 
@@ -237,6 +254,78 @@ def _run(
         num_gpu_list=None,
         require_same_tp=require_same_tp,
     )
+
+
+def test_legacy_disagg_sweep_uses_nested_qwen35_vision_config(monkeypatch, model_config):
+    vision_config = common.VisionEncoderConfig(
+        depth=27,
+        hidden_size=1152,
+        num_heads=16,
+        intermediate_size=4304,
+        patch_size=16,
+        temporal_patch_size=2,
+        spatial_merge_size=2,
+        out_hidden_size=5120,
+    )
+    qwen_config = common.Qwen35Config(
+        layer_types=("full_attention",),
+        linear_num_key_heads=16,
+        linear_key_head_dim=128,
+        linear_num_value_heads=48,
+        linear_value_head_dim=128,
+        linear_conv_kernel_dim=4,
+        vision_config=vision_config,
+    )
+    monkeypatch.setattr(
+        "aisimulate_core.sdk.utils.get_model_config_from_model_path",
+        lambda _model_path: {"extra_params": qwen_config},
+    )
+
+    prefill_backend = _build_mock_backend()
+    decode_backend = _build_mock_backend()
+    original_run_static = prefill_backend.run_static
+    prefill_batch_sizes: list[int] = []
+
+    def _record_prefill(model, database, runtime_config, mode, *args, **kwargs):
+        if mode == "static_ctx":
+            prefill_batch_sizes.append(runtime_config.batch_size)
+        return original_run_static(model, database, runtime_config, mode, *args, **kwargs)
+
+    prefill_backend.run_static = _record_prefill
+    session = DisaggInferenceSession(
+        prefill_database=MagicMock(),
+        prefill_backend=prefill_backend,
+        decode_database=MagicMock(),
+        decode_backend=decode_backend,
+    )
+
+    result = session.find_best_disagg_result_under_constraints(
+        model_path="Qwen/Qwen3.5-27B",
+        runtime_config=RuntimeConfig(
+            isl=4000,
+            osl=500,
+            ttft=2000.0,
+            tpot=30.0,
+            image_height=448,
+            image_width=448,
+            num_images_per_request=1,
+        ),
+        prefill_model_config=model_config,
+        prefill_parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+        prefill_max_num_tokens=8000,
+        prefill_num_worker_list=[1],
+        decode_model_config=model_config,
+        decode_parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+        decode_max_num_tokens=1,
+        decode_num_worker_list=[1],
+        num_gpu_list=None,
+        require_same_tp=False,
+    )
+
+    assert result is not None
+    # 4,000 text + 196 post-merge image tokens means an 8,000-token budget
+    # fits one prefill request, not the two admitted by the old top-level read.
+    assert prefill_batch_sizes == [1]
 
 
 class TestRequireSameTPFiltering:
@@ -419,7 +508,7 @@ class TestRateMatchingDegradationFactors:
             captured.update(kwargs)
             return {"best_config_df": pd.DataFrame()}
 
-        monkeypatch.setattr("aiconfigurator.sdk.picking.pick_autoscale", fake_pick_autoscale)
+        monkeypatch.setattr("aisimulate.sdk.picking.pick_autoscale", fake_pick_autoscale)
         disagg_session.set_rate_matching_degradation_factors(0.61, 0.73)
         summary = InferenceSummary(runtime_config=runtime_config)
 

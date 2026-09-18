@@ -38,9 +38,9 @@ from typing import ClassVar
 
 import pytest
 
-import aiconfigurator_core.sdk.operations as ops
-from aiconfigurator_core.sdk import common, config
-from aiconfigurator_core.sdk.models import attention_op_keys, get_model
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.models import attention_op_keys, get_model
 
 pytestmark = pytest.mark.unit
 
@@ -235,7 +235,10 @@ class TestDeepSeekSglangLargeEP:
 
         gen_dispatch, gen_moe, gen_combine = model.generation_ops[-3:]
         assert gen_dispatch._comm_backend == gen_combine._comm_backend == "deepep_ll"
+        assert gen_dispatch._comm_dtype == "fp8"
+        assert gen_combine._comm_dtype == "bfloat16"
         assert gen_dispatch._attention_tp_size == 1  # generation never divides
+        assert isinstance(gen_moe, ops.MoEExpertCompute)
         assert gen_moe._workload_distribution == "power_law_1.01"
         assert [op._scale_factor for op in model.generation_ops[-3:]] == [float(DS_LAYERS)] * 3
 
@@ -697,6 +700,7 @@ class TestMOEModelLargeEP:
         assert model.context_ops[7]._comm_backend == "deepep_ht"
         assert model.generation_ops[7]._comm_backend == "deepep_ll"
         assert isinstance(model.context_ops[8], ops.MoEExpertCompute)
+        assert isinstance(model.generation_ops[8], ops.MoEExpertCompute)
         assert model.context_ops[8]._scale_factor == QWEN3_LAYERS
         assert model.generation_ops[8]._scale_factor == float(QWEN3_LAYERS)
 

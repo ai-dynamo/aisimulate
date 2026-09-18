@@ -3,7 +3,7 @@
 
 //! Backend, database-mode, quant-mode, model-family, and perf-data-filename
 //! enums plus the `QuantMapping` payload shared by the quant-mode enums.
-//! Mirrors the enum surface of `src/aiconfigurator/sdk/common.py`.
+//! Mirrors the enum surface of `src/aisimulate/sdk/common.py`.
 //!
 //! HF-architecture-to-family routing lives in `models/registry.rs`, not
 //! here, because it carries AIC-specific lookup tables that depend on
@@ -48,9 +48,8 @@ impl fmt::Display for BackendKind {
 
 /// Performance database lookup mode.
 ///
-/// Mirrors `common.DatabaseMode`. SILICON is the only mode currently
-/// active in the engine-step path; the other variants exist so the schema
-/// does not regress when they are wired in.
+/// Mirrors `common.DatabaseMode` and is carried through every compiled-engine
+/// construction path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DatabaseMode {
@@ -58,12 +57,27 @@ pub enum DatabaseMode {
     Hybrid,
     Empirical,
     Sol,
+    /// Python-only per-call diagnostic retained on the wire for compatibility.
+    /// Engine builders reject this as a database's default mode.
     SolFull,
 }
 
 impl Default for DatabaseMode {
     fn default() -> Self {
         Self::Silicon
+    }
+}
+
+impl DatabaseMode {
+    /// Python `common.DatabaseMode` member name used by `compile_engine`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Silicon => "SILICON",
+            Self::Hybrid => "HYBRID",
+            Self::Empirical => "EMPIRICAL",
+            Self::Sol => "SOL",
+            Self::SolFull => "SOL_FULL",
+        }
     }
 }
 

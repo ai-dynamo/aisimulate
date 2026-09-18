@@ -20,6 +20,22 @@ description: >
   model path; shared mHC and MoE cases cover the V4 family.
 
 model_case_values:
+  gemm:
+    # Shared-expert MLP geometry: hidden=7168, intermediate=3072, TP=1/2/4/8.
+    # Keep up/gate and down projections as separate correlated rows. In
+    # particular (N,K)=(7168,384) is absent from the generic feature grid.
+    - model_path: deepseek-ai/DeepSeek-V4-Pro
+      model_aliases:
+        - sgl-project/DeepSeek-V4-Pro-FP8
+        - nvidia/DeepSeek-V4-Pro-NVFP4
+      output_feature_sizes: [768, 1536, 3072, 6144]
+      input_feature_sizes: [7168]
+    - model_path: deepseek-ai/DeepSeek-V4-Pro
+      model_aliases:
+        - sgl-project/DeepSeek-V4-Pro-FP8
+        - nvidia/DeepSeek-V4-Pro-NVFP4
+      output_feature_sizes: [7168]
+      input_feature_sizes: [384, 768, 1536, 3072]
   moe:
     - model_path: deepseek-ai/DeepSeek-V4-Flash
       hidden_size: 4096

@@ -2,21 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cell::RefCell;
+use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, EngineConfig, NativeHostOffloadConfig, SglangConfig, TimingModel, TimingModelConfig,
+    Backend, Command, Engine, EngineConfig, EngineFactory, NativeHostOffloadConfig,
+    PassCompletionEffects, Request, SglangConfig, TimingModel, TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
     ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRoleConfig,
-    ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, ReplayTopology,
-    Replayer, WorkerPoolSpec, WorkerStage, WorkerTopology, run_engine_replay,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRequestPool,
+    ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
+    ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology, run_engine_replay,
     run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
 use anyhow::Result;
+use uuid::Uuid;
 
 fn assert_deterministic(first: &ReplayReport, second: &ReplayReport) {
     let mut first = first.clone();
@@ -58,6 +62,7 @@ fn request(
         output_tokens,
         output_token_ids: None,
         dp_rank: None,
+        prefill_dp_rank: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
@@ -131,6 +136,93 @@ fn spec(config: ReplayEngineConfig) -> ReplaySpec {
     }
 }
 
+#[test]
+fn every_backend_stops_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for speculative in [false, true] {
+            for planned in [false, true] {
+                for (prompt, output, expected) in [(3, 10, 5), (7, 10, 1), (3, 2, 2), (3, 0, 0)] {
+                    let mut config = engine_config(TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    });
+                    config.rank.backend = backend;
+                    config.rank.max_model_len = Some(8);
+                    config.rank.sglang.chunked_prefill_size = 4;
+                    if speculative {
+                        config.rank.aic_nextn = Some(2);
+                        config.rank.aic_nextn_accept_rates = Some("1,1".to_string());
+                    }
+                    let mut replay = spec(config);
+                    let mut req = request("limited", 0.0, prompt, output);
+                    if planned {
+                        req.output_token_ids = Some((100..100 + output as u32).collect());
+                    }
+                    replay.requests = vec![req];
+                    let report = run_engine_replay(replay).unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+                    assert_eq!(
+                        report.per_request[0].output_length, expected,
+                        "{backend:?}, speculative={speculative}, planned={planned}, prompt={prompt}"
+                    );
+                    assert_eq!(report.request_counts.total_output_tokens, expected);
+                    assert_eq!(report.per_request[0].requested_output_length, output);
+                }
+            }
+        }
+    }
+}
+
+#[rstest::rstest]
+fn backends_reserve_only_context_capped_output(
+    #[values(Backend::Trtllm, Backend::Sglang)] backend: Backend,
+) {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    });
+    config.rank.backend = backend;
+    config.rank.max_model_len = Some(8);
+    config.rank.num_gpu_blocks = 5;
+    config.rank.enable_prefix_caching = false;
+    let mut replay = spec(config);
+    replay.requests = vec![request("a", 0.0, 4, 100), request("b", 0.0, 4, 100)];
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert_eq!(report.request_counts.total_output_tokens, 8);
+    assert_eq!(report.per_request[0].first_admit_ms, Some(0.0));
+    assert_eq!(
+        report.per_request[0].first_admit_ms,
+        report.per_request[1].first_admit_ms
+    );
+}
+
+#[test]
+fn disaggregated_backends_stop_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for prompt in [3, 7] {
+            let timing = TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            };
+            let mut replay = disaggregated_spec(backend, timing.clone(), timing);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().rank.max_model_len = Some(8);
+            config.decode.as_mut().unwrap().rank.max_model_len = Some(8);
+            replay.engine = serde_json::to_value(config).unwrap();
+            replay.requests = vec![request("limited", 0.0, prompt, 10)];
+            let report = run_engine_replay(replay).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+            assert_eq!(
+                report.per_request[0].output_length,
+                8 - prompt,
+                "{backend:?}"
+            );
+        }
+    }
+}
+
 fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: 1,
@@ -165,9 +257,152 @@ fn disaggregated_spec(
 }
 
 #[test]
-fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
-    for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-        let mut spec = disaggregated_spec(
+fn disaggregated_replay_supports_attention_dp_for_each_backend() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for (prefill_dp, decode_dp) in [(2, 1), (1, 2), (2, 4), (2, 2)] {
+            let mut spec = disaggregated_spec(
+                backend,
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+            );
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(spec.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().dp_size = prefill_dp;
+            config.decode.as_mut().unwrap().dp_size = decode_dp;
+            spec.engine = serde_json::to_value(config).unwrap();
+            spec.requests = (0..8)
+                .map(|index| request(&format!("request-{index}"), 0.0, 4, 2))
+                .collect();
+
+            let report = run_engine_replay(spec).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 8);
+            assert_eq!(report.per_request.len(), 8);
+            for record in &report.per_request {
+                let prefill = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Prefill)
+                    .unwrap();
+                let decode = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Decode)
+                    .unwrap();
+                assert!(prefill.dp_rank.unwrap() < prefill_dp);
+                assert!(decode.dp_rank.unwrap() < decode_dp);
+                assert_eq!(prefill.logical_worker_id, Some(0));
+                assert_eq!(decode.logical_worker_id, Some(0));
+            }
+        }
+    }
+}
+
+#[test]
+fn disaggregated_replay_honors_authored_prefill_and_decode_dp_ranks() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(3),
+        prefill_dp_rank: Some(1),
+        ..request("p1-to-d3", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let record = &report.per_request[0];
+    let prefill = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Prefill)
+        .unwrap();
+    let decode = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Decode)
+        .unwrap();
+    assert_eq!(prefill.dp_rank, Some(1));
+    assert_eq!(decode.dp_rank, Some(3));
+}
+
+#[test]
+fn disaggregated_replay_uses_decode_dp_rank_as_prefill_fallback() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 2;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(1),
+        ..request("legacy-rank-fallback", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let routes = &report.per_request[0].routing_history;
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Prefill)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Decode)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+}
+
+#[test]
+fn aggregated_replay_rejects_prefill_dp_rank() {
+    let mut replay = spec(engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    }));
+    replay.requests[0].prefill_dp_rank = Some(0);
+
+    let error = run_engine_replay(replay).unwrap_err();
+    assert!(error.to_string().contains("cannot specify prefill_dp_rank"));
+}
+
+#[test]
+fn disaggregated_replay_validates_authored_rank_per_role() {
+    for (prefill_dp_rank, decode_dp_rank, expected) in [
+        (Some(2), Some(0), "prefill placement"),
+        (Some(0), Some(4), "decode placement"),
+    ] {
+        let mut replay = disaggregated_spec(
             Backend::Vllm,
             TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
@@ -178,30 +413,379 @@ fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
                 decode_ms: 1.0,
             },
         );
-        let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
-        match stage {
-            WorkerStage::Prefill => config.prefill.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Decode => config.decode.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Aggregated => unreachable!(),
-        }
-        spec.engine = serde_json::to_value(config).unwrap();
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        config.prefill.as_mut().unwrap().dp_size = 2;
+        config.decode.as_mut().unwrap().dp_size = 4;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![ReplayRequest {
+            dp_rank: decode_dp_rank,
+            prefill_dp_rank,
+            ..request("out-of-range", 0.0, 4, 2)
+        }];
 
-        let error = run_engine_replay(spec).unwrap_err();
-        assert!(matches!(
-            error,
-            aisimulate_core::replay::ReplayError::InvalidSpec(_)
-        ));
-        let role_name = match stage {
-            WorkerStage::Prefill => "prefill",
-            WorkerStage::Decode => "decode",
-            WorkerStage::Aggregated => unreachable!(),
-        };
+        let error = run_engine_replay(replay).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+}
+
+#[test]
+fn sglang_disaggregated_attention_dp_uses_per_rank_prefill_chunks() {
+    let run = |prefill_dp| {
+        let mut replay = disaggregated_spec(
+            Backend::Sglang,
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+        );
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        let prefill = config.prefill.as_mut().unwrap();
+        prefill.dp_size = prefill_dp;
+        prefill.rank.sglang.chunked_prefill_size = 16;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![request("long-prompt", 0.0, 16, 1)];
+        run_engine_replay(replay).unwrap()
+    };
+
+    let dp1 = run(1);
+    let dp4 = run(4);
+    let dp1_source_held_ms = dp1.per_request[0].source_held_ms.unwrap();
+    let dp4_source_held_ms = dp4.per_request[0].source_held_ms.unwrap();
+    assert!(
+        dp4_source_held_ms >= dp1_source_held_ms + 3.0,
+        "DP4 should execute four 4-token prefill chunks: dp1={dp1_source_held_ms}, dp4={dp4_source_held_ms}"
+    );
+}
+
+// Independently authored scheduling sequences for the behavior documented at
+// https://github.com/sgl-project/sglang/blob/20621aa14bda7726a8a968f326198eac61717fef/python/sglang/srt/managers/scheduler.py
+// (prefill_decode_interval). No upstream implementation or tests are copied.
+fn sglang_interval_config(interval: usize) -> EngineConfig {
+    EngineConfig {
+        num_gpu_blocks: 1024,
+        block_size: 1,
+        max_num_seqs: 16,
+        max_num_batched_tokens: 128,
+        prefill_decode_interval: interval,
+        enable_prefix_caching: false,
+        sglang: SglangConfig {
+            chunked_prefill_size: 4,
+            // A zero ratio cannot decay: an empty interval round must carry
+            // its own retry signal to avoid the replay livelock guard.
+            schedule_conservativeness: 0.0,
+            ..SglangConfig::default()
+        },
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 7.0,
+            decode_ms: 2.0,
+        },
+        ..EngineConfig::for_backend(Backend::Sglang)
+    }
+}
+
+fn sglang_interval_engine(mut config: EngineConfig, dp_size: u32) -> Engine {
+    // The public chunk limit is divided among attention-DP ranks. Keep each
+    // rank's four-token chunk constant across the scheduling scenarios.
+    config.sglang.chunked_prefill_size *= dp_size as usize;
+    EngineFactory::new(config)
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::new(dp_size).unwrap())
+        .unwrap()
+}
+
+fn submit_interval_request(
+    engine: &mut Engine,
+    dp_rank: u32,
+    id: u128,
+    input_tokens: usize,
+    output_tokens: usize,
+    now_ms: f64,
+) {
+    engine
+        .apply_command_effects(
+            SchedulerCommand::new(
+                dp_rank,
+                Command::Submit(Request {
+                    request_id: Uuid::from_u128(id),
+                    tokens: vec![id as u32; input_tokens],
+                    max_output_tokens: output_tokens,
+                    output_token_ids: None,
+                }),
+            ),
+            now_ms,
+        )
+        .unwrap();
+}
+
+struct IntervalRound {
+    duration_ms: f64,
+    retry: SameTimestampRetry,
+    ranks: Vec<PassCompletionEffects>,
+}
+
+fn step_interval_engine(engine: &mut Engine, now_ms: &mut f64) -> IntervalRound {
+    let started = engine.execute_pass(*now_ms).unwrap().unwrap();
+    let completed = engine
+        .complete_pass(started.pass_id, started.end_ms)
+        .unwrap();
+    *now_ms = started.end_ms;
+    IntervalRound {
+        duration_ms: started.end_ms - started.started_at_ms,
+        retry: started.same_timestamp_retry,
+        ranks: completed
+            .effects
+            .by_rank
+            .into_iter()
+            .enumerate()
+            .map(|(rank, effects)| {
+                assert_eq!(effects.dp_rank, rank as u32);
+                effects.effects
+            })
+            .collect(),
+    }
+}
+
+fn assert_interval_work(round: &IntervalRound, rank: usize, prefill: u32, decode: u32) {
+    let fpm = &round.ranks[rank].forward_pass_metrics;
+    assert_eq!(
+        (fpm.num_prefill_requests, fpm.num_decode_requests),
+        (prefill, decode),
+        "rank {rank}: {fpm:?}"
+    );
+}
+
+#[test]
+fn sglang_interval_default_zero_preserves_consecutive_prefill_chunks() {
+    assert_eq!(
+        EngineConfig::for_backend(Backend::Sglang).prefill_decode_interval,
+        0
+    );
+    let mut engine = sglang_interval_engine(sglang_interval_config(0), 1);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 12, 1, now_ms);
+
+    for chunk in 0..3 {
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&round, 0, 1, 0);
+        assert_eq!(round.ranks[0].forward_pass_metrics.sum_prefill_tokens, 4);
+        assert_eq!(round.duration_ms, 7.0);
+        assert_eq!(round.ranks[0].outputs.len(), usize::from(chunk == 2));
+    }
+    assert!(!engine.is_ready());
+}
+
+#[test]
+fn sglang_interval_blocks_exactly_n_rounds_and_gives_running_decode_a_turn() {
+    for interval in [0, 1, 2, 3] {
+        let mut engine = sglang_interval_engine(sglang_interval_config(interval), 1);
+        let mut now_ms = 0.0;
+        submit_interval_request(&mut engine, 0, 1, 4, 100, now_ms);
+        assert_interval_work(&step_interval_engine(&mut engine, &mut now_ms), 0, 1, 0);
+        submit_interval_request(&mut engine, 0, 2, 4, 1, now_ms);
+
+        for _ in 0..interval {
+            let round = step_interval_engine(&mut engine, &mut now_ms);
+            assert_interval_work(&round, 0, 0, 1);
+            assert_eq!(round.duration_ms, 2.0);
+            assert_eq!(round.ranks[0].outputs.len(), 1);
+            assert_eq!(round.ranks[0].outputs[0].request_id, Uuid::from_u128(1));
+            assert_eq!(round.ranks[0].metrics.waiting_requests, 1);
+        }
+
+        // Pure decode rounds did not arm the interval again. Admission resumes
+        // immediately after the Nth blocked round, without a periodic phase.
+        let resumed = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&resumed, 0, 1, 0);
+        assert_eq!(resumed.ranks[0].outputs[0].request_id, Uuid::from_u128(2));
+        assert_eq!(now_ms, 14.0 + 2.0 * interval as f64);
+    }
+}
+
+#[test]
+fn sglang_interval_gates_every_long_prompt_chunk_without_running_decode() {
+    let mut engine = sglang_interval_engine(sglang_interval_config(2), 1);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 12, 1, now_ms);
+
+    for chunk in 0..3 {
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&round, 0, 1, 0);
+        assert_eq!(round.ranks[0].forward_pass_metrics.sum_prefill_tokens, 4);
+        assert_eq!(round.ranks[0].outputs.len(), usize::from(chunk == 2));
+        if chunk == 2 {
+            break;
+        }
+        for remaining in [1, 0] {
+            let blocked = step_interval_engine(&mut engine, &mut now_ms);
+            assert_interval_work(&blocked, 0, 0, 0);
+            assert_eq!(blocked.duration_ms, 0.0);
+            assert_eq!(blocked.retry, SameTimestampRetry::Countdown { remaining });
+            assert!(blocked.ranks[0].outputs.is_empty());
+        }
+    }
+    // Scheduler-only rounds contribute no fabricated GPU latency.
+    assert_eq!(now_ms, 21.0);
+}
+
+#[test]
+fn sglang_interval_counts_speculative_rounds_instead_of_output_tokens() {
+    let mut config = sglang_interval_config(2);
+    config.aic_nextn = Some(2);
+    config.aic_nextn_accept_rates = Some("1,1".to_string());
+    let mut engine = sglang_interval_engine(config, 1);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 4, 100, now_ms);
+    step_interval_engine(&mut engine, &mut now_ms);
+    submit_interval_request(&mut engine, 0, 2, 4, 1, now_ms);
+
+    for _ in 0..2 {
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&round, 0, 0, 1);
+        assert_eq!(round.ranks[0].outputs.len(), 3);
         assert!(
-            error
-                .to_string()
-                .contains(&format!("{role_name} dp_size=1"))
+            round.ranks[0]
+                .outputs
+                .iter()
+                .all(|output| output.request_id == Uuid::from_u128(1))
         );
     }
+    let resumed = step_interval_engine(&mut engine, &mut now_ms);
+    assert_interval_work(&resumed, 0, 1, 0);
+    assert_eq!(resumed.ranks[0].outputs[0].request_id, Uuid::from_u128(2));
+}
+
+#[test]
+fn sglang_interval_globally_rearms_a_rank_that_only_decoded() {
+    let mut engine = sglang_interval_engine(sglang_interval_config(2), 2);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 4, 100, now_ms);
+    step_interval_engine(&mut engine, &mut now_ms);
+    for _ in 0..2 {
+        step_interval_engine(&mut engine, &mut now_ms);
+    }
+
+    submit_interval_request(&mut engine, 1, 2, 4, 100, now_ms);
+    let extended = step_interval_engine(&mut engine, &mut now_ms);
+    assert_interval_work(&extended, 0, 0, 1);
+    assert_interval_work(&extended, 1, 1, 0);
+    submit_interval_request(&mut engine, 0, 3, 4, 1, now_ms);
+    for _ in 0..2 {
+        let blocked = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&blocked, 0, 0, 1);
+        assert_interval_work(&blocked, 1, 0, 1);
+        assert_eq!(blocked.ranks[0].metrics.waiting_requests, 1);
+    }
+    let resumed = step_interval_engine(&mut engine, &mut now_ms);
+    assert_interval_work(&resumed, 0, 1, 0);
+    assert_interval_work(&resumed, 1, 0, 1);
+    assert_eq!(resumed.ranks[0].outputs[0].request_id, Uuid::from_u128(3));
+}
+
+#[test]
+fn sglang_interval_arms_idle_dp_sibling_and_counts_its_idle_rounds() {
+    // Exercise both positions so rank iteration order cannot hide a local arm.
+    for prefill_rank in [0, 1] {
+        let idle_rank = 1 - prefill_rank;
+        let mut engine = sglang_interval_engine(sglang_interval_config(2), 2);
+        let mut now_ms = 0.0;
+        submit_interval_request(&mut engine, prefill_rank, 1, 4, 100, now_ms);
+        let extended = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&extended, prefill_rank as usize, 1, 0);
+        assert_interval_work(&extended, idle_rank as usize, 0, 0);
+
+        // One global scheduler round elapses while the sibling is still idle.
+        let first_blocked = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&first_blocked, idle_rank as usize, 0, 0);
+        submit_interval_request(&mut engine, idle_rank, 2, 4, 1, now_ms);
+        let second_blocked = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&second_blocked, idle_rank as usize, 0, 0);
+        assert_interval_work(&second_blocked, prefill_rank as usize, 0, 1);
+        let resumed = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&resumed, idle_rank as usize, 1, 0);
+        assert_eq!(
+            resumed.ranks[idle_rank as usize].outputs[0].request_id,
+            Uuid::from_u128(2)
+        );
+    }
+}
+
+#[test]
+fn sglang_interval_drains_fully_idle_rounds_before_a_later_request_wave() {
+    let mut engine = sglang_interval_engine(sglang_interval_config(2), 2);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 4, 1, now_ms);
+    let prefill = step_interval_engine(&mut engine, &mut now_ms);
+    assert!(prefill.ranks[0].outputs[0].completed);
+
+    for _ in 0..2 {
+        assert!(engine.is_ready());
+        let idle = step_interval_engine(&mut engine, &mut now_ms);
+        assert_eq!(idle.duration_ms, 0.0);
+        assert_interval_work(&idle, 0, 0, 0);
+        assert_interval_work(&idle, 1, 0, 0);
+    }
+    assert!(!engine.is_ready());
+    assert_eq!(now_ms, 7.0);
+
+    now_ms = 50.0;
+    submit_interval_request(&mut engine, 1, 2, 4, 1, now_ms);
+    let next_wave = step_interval_engine(&mut engine, &mut now_ms);
+    assert_interval_work(&next_wave, 1, 1, 0);
+    assert_eq!(now_ms, 57.0);
+}
+
+#[test]
+fn sglang_interval_zero_duration_chunk_replay_makes_deterministic_progress() {
+    for dp_size in [1, 2] {
+        // The large interval exceeds replay's generic zero-time retry limit.
+        // Its finite countdown still must complete without weakening that guard.
+        for interval in [3, 1025] {
+            let mut rank = sglang_interval_config(interval);
+            rank.sglang.chunked_prefill_size *= dp_size as usize;
+            rank.timing_model = TimingModelConfig::Fixed {
+                prefill_ms: 0.0,
+                decode_ms: 0.0,
+            };
+            let mut replay = spec(ReplayEngineConfig {
+                dp_size,
+                rank,
+                ..ReplayEngineConfig::default()
+            });
+            replay.requests = vec![ReplayRequest {
+                dp_rank: Some(0),
+                ..request("only-chunked-prefill", 0.0, 12, 1)
+            }];
+            let first = run_canonical_engine_replay(replay.clone());
+            let second = run_canonical_engine_replay(replay);
+            assert_deterministic(&first, &second);
+            assert_eq!(first.request_counts.completed_requests, 1);
+            assert_eq!(first.throughput.duration_ms, 0.0);
+            assert_eq!(first.per_request[0].first_token_ms, Some(0.0));
+        }
+    }
+}
+
+#[test]
+fn sglang_interval_does_not_hide_an_impossible_request_after_countdown() {
+    let mut config = impossible_sglang_config();
+    config.rank.num_gpu_blocks = 2;
+    config.rank.prefill_decode_interval = 1025;
+    config.rank.sglang.schedule_conservativeness = 0.0;
+    let mut replay = spec(config);
+    replay.requests = vec![
+        request("fits-and-arms-interval", 0.0, 4, 1),
+        request("impossible", 0.0, 12, 2),
+    ];
+
+    let error = run_engine_replay(replay).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining"
+    );
 }
 
 #[test]
@@ -964,17 +1548,14 @@ fn role_specific_timing_models_support_external_and_builtin_mixes() {
 }
 
 #[test]
-fn native_trtllm_disaggregated_replay_is_an_explicit_error() {
+fn native_trtllm_disaggregated_replay_completes() {
     let spec = disaggregated_spec(
         Backend::Trtllm,
         TimingModelConfig::Polynomial,
         TimingModelConfig::Polynomial,
     );
-    let error = run_engine_replay(spec).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("offline disaggregated replay does not support TRT-LLM"),
-        "{error}"
-    );
+    let report = run_engine_replay(spec).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_input_tokens, 4);
+    assert_eq!(report.request_counts.total_output_tokens, 2);
 }

@@ -4,7 +4,7 @@
 //! Communication perf tables: custom_allreduce + NCCL + OneCCL.
 //!
 //! Mirrors the SILICON paths of
-//! `aiconfigurator.sdk.operations.communication.{CustomAllReduce, NCCL}._query_*_table`.
+//! `aisimulate.sdk.operations.communication.{CustomAllReduce, NCCL}._query_*_table`.
 //! P2P latency is computed analytically by the operator layer from
 //! `SystemSpec` fields, not from a CSV, so there's no `P2PTable` here.
 //!
@@ -70,6 +70,33 @@ struct NcclGrids {
     by_keys: BTreeMap<(String, String, u32), LeafAxisCurve<u64>>,
 }
 
+/// Select the recorded fan-out that can answer `requested` without looking
+/// ahead to a larger measurement. Within one node, retain the established
+/// exact-query behavior while the table still extends past the request. Once
+/// the request spans nodes, use the greatest recorded slice at or below it.
+fn measured_fanout_slice(
+    fanouts: impl Iterator<Item = u32>,
+    requested: u32,
+    per_node: u32,
+) -> Option<u32> {
+    let mut max_recorded = None;
+    let mut greatest_at_or_below = None;
+    for fanout in fanouts {
+        max_recorded = Some(max_recorded.map_or(fanout, |current: u32| current.max(fanout)));
+        if fanout <= requested {
+            greatest_at_or_below =
+                Some(greatest_at_or_below.map_or(fanout, |current: u32| current.max(fanout)));
+        }
+    }
+    max_recorded.map(|max_recorded| {
+        if requested <= per_node {
+            requested.min(max_recorded)
+        } else {
+            greatest_at_or_below.unwrap_or(per_node)
+        }
+    })
+}
+
 impl CommunicationTable {
     /// `data_root` is the legacy-shaped logical backend/version root used by
     /// the family-aware custom-allreduce resolver.
@@ -130,9 +157,9 @@ impl CommunicationTable {
     /// Raw custom-allreduce value (latency ms + power/energy), 1-D
     /// interpolated along `message_size`.
     ///
-    /// `tp_size_effective` is the per-node fan-out the caller wants to look
-    /// up. For TP > num_gpus_per_node the operator caps this to
-    /// `num_gpus_per_node` and applies a bandwidth scale separately.
+    /// `tp_size_effective` is the measured fan-out the caller selected. For
+    /// an unmeasured request, the scaled caller applies the remaining
+    /// bandwidth correction separately.
     pub fn query_custom_allreduce(
         &self,
         quant: CommQuantMode,
@@ -155,20 +182,23 @@ impl CommunicationTable {
 
     /// Resolve which measured TP slice backs a query for `tp_size`.
     ///
-    /// Caps the requested rank count to the largest measured slice for this
-    /// quant mode. If the table cannot be loaded, retain the legacy node cap
-    /// so the eventual query surfaces the original data error. This Rust
-    /// engine method is the single implementation; Python/SDK queries delegate
-    /// to the engine.
+    /// Within one node, retain the established exact-query behavior. Beyond
+    /// the node, select the greatest measured slice at or below the request so
+    /// sparse TP grids (for example 4, 8, 16) never look ahead to a missing
+    /// intermediate slice. If the table cannot be loaded, retain the legacy
+    /// node cap so the eventual query surfaces the original data error. This
+    /// Rust engine method is the single implementation; Python/SDK queries
+    /// delegate to the engine.
     pub fn measured_tp_slice(&self, quant: CommQuantMode, tp_size: u32, per_node: u32) -> u32 {
         if let Ok(grids) = self.load_custom_allreduce() {
-            if let Some(max_recorded) = grids
-                .by_keys
-                .keys()
-                .filter_map(|(name, measured_tp)| (name == quant.name()).then_some(*measured_tp))
-                .max()
-            {
-                return tp_size.min(max_recorded);
+            if let Some(measured) = measured_fanout_slice(
+                grids.by_keys.keys().filter_map(|(name, measured_tp)| {
+                    (name == quant.name()).then_some(*measured_tp)
+                }),
+                tp_size,
+                per_node,
+            ) {
+                return measured;
             }
         }
         tp_size.min(per_node)
@@ -180,8 +210,8 @@ impl CommunicationTable {
     ///   2. GB200 NVL72 (`num_gpus_per_node == 72`) with `tp > 4` -> reroute
     ///      to NCCL all_reduce at the RAW tp (custom AR is only collected up
     ///      to tp4 there);
-    ///   3. cap tp to the largest measured slice and interpolate the table;
-    ///   4. unmeasured overflow only: scale by the p2p-bandwidth ratio.
+    ///   3. select the greatest compatible measured slice and interpolate;
+    ///   4. any unmeasured remainder: scale by the p2p-bandwidth ratio.
     pub fn query_custom_allreduce_scaled(
         &self,
         spec: &SystemSpec,
@@ -196,10 +226,10 @@ impl CommunicationTable {
         if per_node == 72 && tp_size > 4 {
             return self.query_nccl_scaled(spec, quant, "all_reduce", tp_size, message_size);
         }
-        // Cap at the largest measured rank-count slice. On NVL systems (4
-        // GPUs per node), measured TP8/TP16 rows remain exact hits while a
-        // larger unmeasured request scales from TP16 instead of falling back
-        // non-monotonically to TP4. See issues #1416 and #1260.
+        // Select the greatest measured rank-count slice not above the request.
+        // On NVL systems (4 GPUs per node), measured TP8/TP16 rows remain
+        // exact hits, TP12 scales from TP8, and TP32 scales from TP16. See
+        // issues #1416 and #1260.
         let effective_tp = self.measured_tp_slice(quant, tp_size, per_node);
         let mut value = self.query_custom_allreduce(quant, effective_tp, message_size)?;
         // Only correct for bandwidth when the curve came from a SMALLER slice
@@ -219,9 +249,10 @@ impl CommunicationTable {
     }
 
     /// NCCL collective latency at a RAW num_gpus, mirroring the Python
-    /// DB-level `_query_nccl_table.get_silicon`: fan-out capped to the max
-    /// recorded `num_gpus` for the (dtype, operation) slice, with the
-    /// p2p-bandwidth correction applied beyond it.
+    /// DB-level `_query_nccl_table.get_silicon`: beyond-node fan-out selects
+    /// the greatest recorded `num_gpus` not above the request for the
+    /// (dtype, operation) slice, with the p2p-bandwidth correction applied to
+    /// any unmeasured remainder.
     pub fn query_nccl_scaled(
         &self,
         spec: &SystemSpec,
@@ -233,16 +264,26 @@ impl CommunicationTable {
         if num_gpus <= 1 {
             return Ok(LeafValue::latency_only(0.0));
         }
-        let max_recorded = self
-            .nccl_max_num_gpus(dtype, operation)?
+        let dtype_name = dtype.name();
+        let fanouts = [self.load_nccl(), self.load_oneccl()]
+            .into_iter()
+            .filter_map(Result::ok)
+            .flat_map(|grids| {
+                grids
+                    .by_keys
+                    .keys()
+                    .filter_map(|(key_dtype, key_op, measured)| {
+                        (key_dtype == dtype_name && key_op == operation).then_some(*measured)
+                    })
+            });
+        let effective = measured_fanout_slice(fanouts, num_gpus, spec.node.num_gpus_per_node)
             .unwrap_or(num_gpus);
-        let effective = num_gpus.min(max_recorded);
         let mut value = self.query_nccl(dtype, operation, effective, message_size)?;
-        if num_gpus > max_recorded {
-            let max_bw = spec.get_p2p_bandwidth(max_recorded);
+        if num_gpus > effective {
+            let max_bw = spec.get_p2p_bandwidth(effective);
             let req_bw = spec.get_p2p_bandwidth(num_gpus);
             let f_n = num_gpus as f64;
-            let f_m = max_recorded as f64;
+            let f_m = effective as f64;
             let scale = (f_n - 1.0) / f_n * f_m / (f_m - 1.0).max(1.0) * max_bw / req_bw;
             // Python scales latency AND energy by the fan-out correction.
             value.latency *= scale;
@@ -606,7 +647,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     fn b200_vllm_data_root() -> PathBuf {
@@ -868,6 +909,14 @@ mod tests {
             8
         );
         assert_eq!(
+            with_multinode.measured_tp_slice(CommQuantMode::Half, 6, 4),
+            4
+        );
+        assert_eq!(
+            with_multinode.measured_tp_slice(CommQuantMode::Half, 12, 4),
+            8
+        );
+        assert_eq!(
             with_multinode.measured_tp_slice(CommQuantMode::Half, 16, 4),
             16
         );
@@ -881,6 +930,24 @@ mod tests {
             .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, 8, 1024.0)
             .unwrap();
         assert_eq!(measured, LeafValue::latency_only(7.0));
+
+        let between_tp4_and_tp8 = with_multinode
+            .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, 6, 1024.0)
+            .unwrap();
+        let scale6 = 5.0 / 6.0 * 4.0 / 3.0 * spec.get_p2p_bandwidth(4) / spec.get_p2p_bandwidth(6);
+        assert!((between_tp4_and_tp8.latency - scale6).abs() < 1e-12);
+
+        let between_tp8_and_tp16 = with_multinode
+            .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, 12, 1024.0)
+            .unwrap();
+        let scale12 =
+            11.0 / 12.0 * 8.0 / 7.0 * spec.get_p2p_bandwidth(8) / spec.get_p2p_bandwidth(12);
+        assert!((between_tp8_and_tp16.latency - 7.0 * scale12).abs() < 1e-12);
+
+        let measured16 = with_multinode
+            .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, 16, 1024.0)
+            .unwrap();
+        assert_eq!(measured16, LeafValue::latency_only(11.0));
 
         // An unmeasured TP32 query scales from the largest measured TP16
         // slice. GB300's TP16 and TP32 bandwidths are equal, so the fixed
@@ -913,6 +980,19 @@ mod tests {
             (fallback8.latency - 1.0).abs() > 1e-3,
             "the no-TP8 query must not return the raw TP4 value unscaled"
         );
+        for tp in [6, 12] {
+            let fallback = without_tp8
+                .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, tp, 1024.0)
+                .unwrap();
+            let f_tp = tp as f64;
+            let expected = (f_tp - 1.0) / f_tp * 4.0 / 3.0 * spec.get_p2p_bandwidth(4)
+                / spec.get_p2p_bandwidth(tp);
+            assert!(
+                (fallback.latency - expected).abs() < 1e-12,
+                "legacy TP4 table must scale TP{tp} from TP4: expected {expected}, got {}",
+                fallback.latency
+            );
+        }
         assert_eq!(
             without_tp8
                 .query_custom_allreduce_scaled(&spec, CommQuantMode::Half, 16, 4096.0)
@@ -931,6 +1011,87 @@ mod tests {
                 .unwrap(),
             LeafValue::latency_only(4.0)
         );
+    }
+
+    #[test]
+    fn nccl_scaled_prefers_greatest_measured_fanout_not_above_request() {
+        let spec = SystemSpec::load(&systems_root().join("gb300.yaml")).expect("gb300.yaml parse");
+        assert_eq!(spec.node.num_gpus_per_node, 4);
+        let operations = [
+            ("all_reduce", 1.0),
+            ("all_gather", 2.0),
+            ("reduce_scatter", 3.0),
+            ("alltoall", 4.0),
+        ];
+        let mut nccl = BTreeMap::new();
+        for (operation, factor) in operations {
+            for (num_gpus, latency) in [(4, factor), (8, 7.0 * factor), (16, 11.0 * factor)] {
+                nccl.insert(
+                    ("half".to_string(), operation.to_string(), num_gpus),
+                    latency_curve(BTreeMap::from([(1024, latency)])),
+                );
+            }
+        }
+        let table = table_with_loaded_collectives(BTreeMap::new(), nccl, BTreeMap::new());
+        let fanout_scale = |measured: u32, requested: u32| {
+            let f_measured = measured as f64;
+            let f_requested = requested as f64;
+            (f_requested - 1.0) / f_requested * f_measured / (f_measured - 1.0)
+                * spec.get_p2p_bandwidth(measured)
+                / spec.get_p2p_bandwidth(requested)
+        };
+
+        for (operation, factor) in operations {
+            for (requested, measured, measured_latency) in [
+                (6, 4, factor),
+                (12, 8, 7.0 * factor),
+                (32, 16, 11.0 * factor),
+            ] {
+                let value = table
+                    .query_nccl_scaled(&spec, CommQuantMode::Half, operation, requested, 1024.0)
+                    .unwrap();
+                let expected = measured_latency * fanout_scale(measured, requested);
+                assert!(
+                    (value.latency - expected).abs() < 1e-12,
+                    "{operation} TP{requested} must scale from TP{measured}: expected {expected}, got {}",
+                    value.latency
+                );
+            }
+            assert_eq!(
+                table
+                    .query_nccl_scaled(&spec, CommQuantMode::Half, operation, 8, 1024.0)
+                    .unwrap(),
+                LeafValue::latency_only(7.0 * factor)
+            );
+            assert_eq!(
+                table
+                    .query_nccl_scaled(&spec, CommQuantMode::Half, operation, 16, 1024.0)
+                    .unwrap(),
+                LeafValue::latency_only(11.0 * factor)
+            );
+        }
+
+        let mut legacy_nccl = BTreeMap::new();
+        for (operation, factor) in operations {
+            legacy_nccl.insert(
+                ("half".to_string(), operation.to_string(), 4),
+                latency_curve(BTreeMap::from([(1024, factor)])),
+            );
+        }
+        let legacy = table_with_loaded_collectives(BTreeMap::new(), legacy_nccl, BTreeMap::new());
+        for (operation, factor) in operations {
+            for requested in [6, 12] {
+                let value = legacy
+                    .query_nccl_scaled(&spec, CommQuantMode::Half, operation, requested, 1024.0)
+                    .unwrap();
+                let expected = factor * fanout_scale(4, requested);
+                assert!(
+                    (value.latency - expected).abs() < 1e-12,
+                    "legacy {operation} TP{requested} must scale from TP4: expected {expected}, got {}",
+                    value.latency
+                );
+            }
+        }
     }
 
     #[test]
@@ -993,10 +1154,10 @@ mod tests {
     ///
     /// ```text
     /// PYTHONPATH=src python3 -c "
-    /// from aiconfigurator.sdk.perf_database import PerfDatabase
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.perf_database import PerfDatabase
+    /// from aisimulate.sdk import common
     /// db = PerfDatabase('b200_sxm','vllm','0.19.0',
-    ///                   systems_root='python/aisimulate/src/aiconfigurator_core/systems', database_mode='SOL')
+    ///                   systems_root='python/aisimulate/src/aisimulate_core/systems', database_mode='SOL')
     /// for msg in [384, 1073741824, 64]:
     ///     r = db.query_nccl(common.CommQuantMode.half, 8, 'all_gather', msg,
     ///                       database_mode=common.DatabaseMode.SILICON)

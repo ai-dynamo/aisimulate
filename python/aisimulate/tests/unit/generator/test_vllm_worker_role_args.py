@@ -10,7 +10,7 @@ import copy
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
+from aisimulate.generator.api import generate_backend_artifacts
 
 _VERSION_CASES = [
     pytest.param("0.9.0", "0.14.1", "legacy", id="dynamo-0.9"),

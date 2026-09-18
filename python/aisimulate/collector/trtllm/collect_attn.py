@@ -20,6 +20,13 @@ import os
 
 import tensorrt_llm
 import torch
+from collector.case_generator import (
+    get_attention_context_shape_sweeps,
+    get_attention_generation_shape_sweeps,
+    get_attention_head_configs,
+)
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.registry_types import PerfFile
 from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
 from tensorrt_llm._torch.attention_backend.interface import (
     AttentionRuntimeFeatures,
@@ -33,14 +40,6 @@ from tensorrt_llm.functional import PositionEmbeddingType
 from tensorrt_llm.llmapi import KvCacheConfig
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
-
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.registry_types import PerfFile
 
 __compat__ = "trtllm>=1.3.0rc20"
 

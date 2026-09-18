@@ -4,8 +4,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import LoadedOpData
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import LoadedOpData
 
 pytestmark = pytest.mark.unit
 

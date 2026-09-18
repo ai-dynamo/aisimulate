@@ -124,7 +124,7 @@ impl MoeExpertComputeOp {
     }
 
     /// Query the expert compute at the PER-ATTENTION-DP-RANK token count
-    /// `num_tokens` (Python `query`'s `x`).
+    /// `num_tokens` (Python `_engine_query`'s `x`).
     ///
     /// Mirrors moe_comm.py:1287-1320 in source order:
     /// 1. `num_tokens = kwargs.get("x") * self._attention_dp_size` (:1291).
@@ -307,7 +307,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     fn write_column<T: parquet::data_type::DataType>(
@@ -868,7 +868,7 @@ mod tests {
             .collect()
     }
 
-    /// OP-level parity against Python `MoEExpertCompute(...).query(db, x=...)` — not the
+    /// OP-level parity against Python `MoEExpertCompute(...)._engine_query(db, x=...)` — not the
     /// raw table query: what is under test is the op layer's
     /// `x * attention_dp_size` globalization, the `int(tokens * 0.8)` EPLB
     /// correction, the `num_slots` default, the `kernel_source=None`

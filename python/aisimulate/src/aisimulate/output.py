@@ -9,12 +9,15 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .replay.reporting import format_report_table
-from .sweeper.result import SweepResult
+from .detail import format_prediction_details
+from .power import format_power_summary
+
+if TYPE_CHECKING:
+    from .sweeper.result import SweepResult
 
 _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
 
@@ -29,7 +32,17 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in ("prediction.json", "recommendation.json", "requests.jsonl"):
+        for name in (
+            "prediction.json",
+            "recommendation.json",
+            "recommendation.csv",
+            "requests.jsonl",
+            "resource-plan.json",
+            "resource-runtime.json",
+            "execution-events.jsonl",
+            "afd-replay-spec.json",
+            "afd-qualification.json",
+        ):
             target = root / name
             if target.is_file() or target.is_symlink():
                 target.unlink()
@@ -64,6 +77,14 @@ def write_recommendation_result(root: Path, result: SweepResult) -> Path:
     return path
 
 
+def write_recommendation_csv(root: Path, result: SweepResult) -> Path:
+    """Write the complete candidate ledger as an analysis-friendly CSV."""
+
+    path = root / "recommendation.csv"
+    path.write_text(result.to_csv(), encoding="utf-8")
+    return path
+
+
 def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[Path]:
     directory = root / "recommendations"
     directory.mkdir(parents=True, exist_ok=True)
@@ -82,10 +103,62 @@ def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[
     return paths
 
 
-def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str:
+def format_prediction_stdout(
+    summary: dict[str, Any],
+    output_format: str,
+    *,
+    details: dict[str, Any] | None = None,
+    power_diagnostics: dict[str, Any] | None = None,
+    diagnostics_top_n: int = 12,
+) -> str:
+    from .replay.reporting import format_power_diagnostics, format_report_table
+
     if output_format == "json":
-        return json.dumps(summary, sort_keys=True, separators=(",", ":"))
-    return format_report_table(summary)
+        payload = summary if details is None else {"summary": summary, "details": details}
+        if power_diagnostics is not None:
+            payload = {
+                "summary": summary,
+                "power_diagnostics": power_diagnostics,
+                **({"details": details} if details is not None else {}),
+            }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    if details is not None:
+        rendered = (
+            format_prediction_stdout(summary, output_format)
+            + "\n\n"
+            + format_prediction_details(details, energy_top_n=diagnostics_top_n)
+        )
+        if power_diagnostics is not None and "energy" not in details["sections"]:
+            rendered += "\n\n" + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
+        return rendered
+    if power_diagnostics is not None:
+        return (
+            format_prediction_stdout(summary, output_format)
+            + "\n\n"
+            + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
+        )
+    if summary.get("metric_semantics") == "analytical_epd_overlay":
+        lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
+        for name in (
+            "mean_ttft_ms",
+            "mean_tpot_ms",
+            "mean_e2e_latency_ms",
+            "output_throughput_tok_s",
+            "completed_requests",
+            "duration_ms",
+            "gpu_hours",
+            "encoder_gpus",
+            "total_gpus",
+        ):
+            lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append(format_power_summary(summary))
+        lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
+        return "\n".join(lines)
+
+    table = format_report_table(summary)
+    if summary.get("agentic_qualification") == "functional_only":
+        return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
+    return table
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:
@@ -97,5 +170,6 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())
-        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']} config={row['config_path']}")
+        power = " " + format_power_summary(row)
+        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}{power} config={row['config_path']}")
     return "\n".join(lines)

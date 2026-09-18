@@ -12,7 +12,7 @@ add`/`git rm`), and exercises: donor-table derivation for
 both fail-closed abort paths, determinism/idempotency, the plan/execute/verify
 CLI modes, and — per the design's schema lock — that every generated file
 round-trips through the REAL loader parser
-(`aiconfigurator_core.sdk.perf_database._parse_reuse_yaml` /
+(`aisimulate_core.sdk.perf_database._parse_reuse_yaml` /
 `_load_collection_meta_yaml`), not a reimplementation of it.
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk.perf_database import (
+from aisimulate_core.sdk.perf_database import (
     _collection_meta_has_partial_table,
     _load_collection_meta_yaml,
     _parse_reuse_yaml,

@@ -55,9 +55,7 @@ def _prefix_extended_header_paths(patch: bytes, target: str) -> bytes:
     return b"".join(rewritten)
 
 
-def _manual_changes(
-    config: dict[str, object], source: Path, from_ref: str, to_ref: str
-) -> list[dict[str, object]]:
+def _manual_changes(config: dict[str, object], source: Path, from_ref: str, to_ref: str) -> list[dict[str, object]]:
     changes: list[dict[str, object]] = []
     for mapping in config.get("manual", []):
         upstream = str(mapping["source"]).strip("/")
@@ -157,13 +155,9 @@ def render(
 
 def main() -> None:
     config = tomllib.loads(LEDGER.read_text())
-    parser = argparse.ArgumentParser(
-        description="Create a binary-safe, path-rewritten AIC synchronization patch."
-    )
+    parser = argparse.ArgumentParser(description="Create a binary-safe, path-rewritten AIC synchronization patch.")
     parser.add_argument("--source", type=Path, required=True, help="AIC git checkout")
-    parser.add_argument(
-        "--from-ref", default=config["upstream"]["last_synced"], help="old AIC ref"
-    )
+    parser.add_argument("--from-ref", default=config["upstream"]["last_synced"], help="old AIC ref")
     parser.add_argument("--to-ref", required=True, help="new AIC ref")
     parser.add_argument("--output", type=Path, help="write patch here (default: stdout)")
     parser.add_argument(

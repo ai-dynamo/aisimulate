@@ -44,6 +44,21 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: crate::engine::belady::BeladyOracle) {
+        match &mut self.core {
+            EngineCore::Vllm(core) => core.set_belady_oracle(oracle),
+            EngineCore::Sglang(core) => core.set_belady_oracle(oracle),
+        }
+    }
+
+    pub(crate) fn set_g3_offload(
+        &mut self,
+        registry: crate::engine::g3_offload::SharedG3Tier,
+        node: usize,
+    ) {
+        self.core.set_g3_offload(registry, node);
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
     }
@@ -56,10 +71,17 @@ impl SchedulerRank {
     ) -> Result<Self> {
         config.validate()?;
         ensure!(
+            config.g3_offload.is_none(),
+            "g3_offload is Replay-owned; construct it through ReplaySpec"
+        );
+        ensure!(
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
             "native_host_offload supports only dp_size=1 in the initial implementation"
         );
-        let args = core_args(config, timing);
+        let mut args = core_args(config, timing);
+        if config.backend == Backend::Sglang {
+            normalize_sglang_attention_dp(&mut args, identity.dp_size.get())?;
+        }
         let capture_kv_events = config.emit_kv_events;
         let core = match config.backend {
             Backend::Vllm | Backend::Trtllm => EngineCore::Vllm(VllmCore::new_with_worker_rank(
@@ -180,6 +202,16 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
+        if suppressed_pending_output
+            && let Some((request_id, _)) = pending_suppression
+            && !effects.retired_requests.contains(&request_id)
+        {
+            // A final output can be suppressed after the native scheduler has
+            // already retired its request. Replay still owns its accounting
+            // until the pass completion is observed, so publish the same
+            // retirement delta that completion would have carried.
+            effects.retired_requests.push(request_id);
+        }
         if effects.result != CoreCommandResult::Noop || suppressed_pending_output {
             self.apply_handoff_tracking_update(handoff_update);
         }
@@ -196,6 +228,23 @@ impl RankEngine for SchedulerRank {
 
     fn waiting_for_external_command(&self) -> bool {
         self.core.waiting_for_external_command()
+    }
+
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: std::num::NonZeroU32) {
+        self.core.prepare_group_pass(wave_step, dp_size.get());
+    }
+
+    fn prefill_in_pass(&self) -> bool {
+        self.core.prefill_in_pass()
+    }
+
+    fn model_work_in_pass(&self) -> bool {
+        self.core.model_work_in_pass()
+    }
+
+    fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        self.core
+            .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
     }
 
     fn execute_pass(
@@ -363,6 +412,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_model_len: config.max_model_len,
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
+        prefill_schedule_interval: config.prefill_schedule_interval,
+        prefill_decode_interval: config.prefill_decode_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
@@ -405,6 +456,37 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,
     }
+}
+
+/// Mirror SGLang's `handle_data_parallelism` launch-time DP-attention normalization before
+/// cloning the rank-local scheduler configuration. Replay's `dp_size` is specifically attention
+/// DP, so every SGLang rank receives the same normalized per-rank controls exactly once during
+/// construction.
+fn normalize_sglang_attention_dp(args: &mut MockEngineArgs, dp_size: u32) -> Result<()> {
+    if dp_size == 1 {
+        return Ok(());
+    }
+    let sglang = args
+        .sglang
+        .as_mut()
+        .expect("materialized SGLang engine arguments must include scheduler controls");
+    let dp_size = usize::try_from(dp_size).expect("u32 always fits usize on supported platforms");
+    let chunked_prefill_size = sglang
+        .chunked_prefill_size
+        .expect("materialized SGLang chunked-prefill size");
+    let per_rank_chunked_prefill_size = chunked_prefill_size / dp_size;
+    ensure!(
+        per_rank_chunked_prefill_size > 0,
+        "SGLang attention DP size {dp_size} reduces chunked_prefill_size={chunked_prefill_size} to zero"
+    );
+    sglang.chunked_prefill_size = Some(per_rank_chunked_prefill_size);
+    sglang.schedule_conservativeness = Some(
+        sglang
+            .schedule_conservativeness
+            .expect("materialized SGLang schedule conservativeness")
+            * 0.3,
+    );
+    Ok(())
 }
 
 fn core_request(request: Request) -> DirectRequest {
@@ -584,6 +666,107 @@ mod tests {
         HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
         TimingModelConfig,
     };
+
+    #[test]
+    fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .sglang(Some(SglangArgs {
+                chunked_prefill_size: Some(16),
+                schedule_conservativeness: Some(2.0),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+
+        let mut dp1 = args.clone();
+        normalize_sglang_attention_dp(&mut dp1, 1).unwrap();
+        let dp1 = dp1.sglang.unwrap();
+        assert_eq!(dp1.chunked_prefill_size, Some(16));
+        assert_eq!(dp1.schedule_conservativeness, Some(2.0));
+
+        let mut dp4 = args;
+        normalize_sglang_attention_dp(&mut dp4, 4).unwrap();
+        let dp4 = dp4.sglang.unwrap();
+        assert_eq!(dp4.chunked_prefill_size, Some(4));
+        assert_eq!(dp4.schedule_conservativeness, Some(0.6));
+    }
+
+    #[test]
+    fn sglang_attention_dp_normalizes_memory_pressure_admission() {
+        let second_request_admitted = |dp_size| {
+            let config = EngineConfig {
+                backend: Backend::Sglang,
+                num_gpu_blocks: 8,
+                block_size: 4,
+                max_num_seqs: 4,
+                max_num_batched_tokens: 64,
+                sglang: crate::engine::SglangConfig {
+                    chunked_prefill_size: 64,
+                    schedule_conservativeness: 1.0,
+                    ..Default::default()
+                },
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::default()
+            };
+            let mut rank = SchedulerRank::new(
+                RankIdentity {
+                    worker_id: 1,
+                    dp_rank: 0,
+                    dp_size: NonZeroU32::new(dp_size).unwrap(),
+                },
+                &config,
+            )
+            .unwrap();
+            let first = Uuid::from_u128(94_001);
+            rank.apply_command_effects(
+                Command::Submit(Request {
+                    request_id: first,
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 20,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: 0.0,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+            let first_pass = rank.execute_pass(0.0).unwrap();
+            let first_end_ms = first_pass.end_ms;
+            rank.complete_pass(first_pass.pending, first_end_ms)
+                .unwrap();
+
+            let second = Uuid::from_u128(94_002);
+            rank.apply_command_effects(
+                Command::Submit(Request {
+                    request_id: second,
+                    tokens: (10..22).collect(),
+                    max_output_tokens: 1,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: first_end_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+            rank.execute_pass(first_end_ms)
+                .unwrap()
+                .start_effects
+                .admissions
+                .iter()
+                .any(|admission| admission.request_id == second)
+        };
+
+        assert!(!second_request_admitted(1));
+        assert!(second_request_admitted(4));
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq)]
     struct CapturedHostEvent {
@@ -818,6 +1001,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Applied);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 
@@ -868,6 +1052,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Noop);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 

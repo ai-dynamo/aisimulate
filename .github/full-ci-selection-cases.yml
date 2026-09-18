@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance:
+  description: >-
+    Expected path-to-component mappings derived from the files installed,
+    executed, or compared by the Full CI jobs in .github/workflows/ci.yml.
+  conservative_rules:
+    - Rust changes include compiled Python, collector installation, prediction, parity, and release consumers.
+    - Collector and performance-data changes include their prediction and parity consumers.
+    - Unknown, dependency, test-configuration, and CI-contract changes run every component.
+
+cases:
+  - id: documentation
+    paths: [README.md, docs/architecture.md]
+    run_all: false
+    selected: []
+
+  - id: python-application
+    paths: [python/aisimulate/src/aisimulate/traffic.py]
+    run_all: false
+    selected:
+      - platform_wheels
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - release_artifact_contract
+
+  - id: prediction
+    paths: [python/aisimulate/src/aisimulate/generator/base.py]
+    run_all: false
+    selected:
+      - platform_wheels
+      - prediction_regression
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - engine_golden_regression
+      - release_artifact_contract
+
+  - id: collector-data
+    paths: [python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet]
+    run_all: false
+    selected:
+      - platform_wheels
+      - collector_data
+      - prediction_regression
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - engine_golden_regression
+      - release_artifact_contract
+
+  - id: rust-source
+    paths: [crates/core/src/replay/event.rs]
+    run_all: false
+    selected:
+      - platform_wheels
+      - collector_data
+      - prediction_regression
+      - rust
+      - rust_feature_modes
+      - public_api_rust
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - engine_golden_regression
+      - release_artifact_contract
+
+  - id: rust-dependency
+    paths: [Cargo.lock]
+    run_all: false
+    selected:
+      - platform_wheels
+      - collector_data
+      - prediction_regression
+      - cargo_deny
+      - rust
+      - rust_feature_modes
+      - public_api_rust
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - engine_golden_regression
+      - release_artifact_contract
+
+  - id: package-content
+    paths: [THIRD_PARTY_NOTICES.md]
+    run_all: false
+    selected:
+      - platform_wheels
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - release_artifact_contract
+
+  - id: application-test
+    paths: [tests/test_runner.py]
+    run_all: false
+    selected: [application_tests]
+
+  - id: executable-example
+    paths: [examples/sweeper/run_sweep.py]
+    run_all: false
+    selected: [application_tests]
+
+  - id: rename-across-boundaries
+    paths: [docs/old-name.md, crates/core/src/replay/new_name.rs]
+    run_all: false
+    selected:
+      - platform_wheels
+      - collector_data
+      - prediction_regression
+      - rust
+      - rust_feature_modes
+      - public_api_rust
+      - application_wheel
+      - application_tests
+      - python_compatibility
+      - engine_golden_regression
+      - release_artifact_contract
+
+  - id: python-test-configuration
+    paths: [python/aisimulate/pytest.ini]
+    run_all: true
+
+  - id: ci-contract
+    paths: [.github/workflows/ci.yml]
+    run_all: true
+
+  - id: unknown-path
+    paths: [future/unclassified.file]
+    run_all: true
+
+  - id: empty-change-set
+    paths: []
+    run_all: true
+
+  - id: forced-lifecycle-run
+    paths: [README.md]
+    force_all: true
+    run_all: true

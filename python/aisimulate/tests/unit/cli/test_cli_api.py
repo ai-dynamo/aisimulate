@@ -10,9 +10,9 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli import CLIResult, cli_exp, cli_generate
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.errors import NoFeasibleConfigError
+from aisimulate.legacy_cli import CLIResult, cli_exp, cli_generate
+from aisimulate.sdk import common
+from aisimulate.sdk.errors import NoFeasibleConfigError
 
 pytestmark = pytest.mark.unit
 
@@ -21,8 +21,8 @@ class TestCLIEstimateUnit:
     """Unit tests for cli_estimate API internals."""
 
     def test_static_estimate_resolves_coverage_gated_moe_comm_before_model_build(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        import aiconfigurator.sdk.inference_session as inference_session
+        import aisimulate.legacy_cli.api as api
+        import aisimulate.sdk.inference_session as inference_session
 
         captured = {}
         database = object()
@@ -78,6 +78,11 @@ class TestCLIEstimateUnit:
             image_height=0,
             image_width=0,
             num_images=1,
+            video_height=0,
+            video_width=0,
+            video_frames=0,
+            num_videos=0,
+            num_video_tokens=0,
             enable_encoder_dp=True,
             batch_size=10,
             prefix=0,
@@ -112,8 +117,8 @@ class TestCLIEstimateUnit:
         }
 
     def test_systems_paths_are_scoped_to_call(self, tmp_path, monkeypatch):
-        import aiconfigurator.cli.api as api
-        import aiconfigurator.sdk.perf_database as perf_database
+        import aisimulate.legacy_cli.api as api
+        import aisimulate.sdk.perf_database as perf_database
 
         custom_systems = tmp_path / "systems"
         custom_systems.mkdir()
@@ -163,8 +168,8 @@ class TestCLIEstimateUnit:
         assert database_calls == [("h200_sxm", "trtllm", "estimate", [str(custom_systems)], True, "SOL")]
 
     def test_disagg_resolves_backend_version_per_system(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        import aiconfigurator.sdk.perf_database as perf_database
+        import aisimulate.legacy_cli.api as api
+        import aisimulate.sdk.perf_database as perf_database
 
         database_calls = []
 
@@ -208,8 +213,8 @@ class TestCLIEstimateUnit:
         assert ("h100_pcie", "trtllm", "estimate", True, "SOL") in database_calls
 
     def test_database_mode_and_transfer_policy_do_not_leak_between_calls(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        import aiconfigurator.sdk.perf_database as perf_database
+        import aisimulate.legacy_cli.api as api
+        import aisimulate.sdk.perf_database as perf_database
 
         class FakeDatabase:
             def __init__(self, mode, transfer_policy):
@@ -257,14 +262,14 @@ class TestCLIEstimateUnit:
 
     def test_estimate_accepts_attention_backend_parameter(self, monkeypatch):
         """Test that cli_estimate accepts attention_backend parameter without error."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured_kwargs = {}
 
         def fake_run_agg_estimate(**kwargs):
             captured_kwargs.update(kwargs)
             # Return minimal EstimateResult to avoid schema errors
-            from aiconfigurator.cli.api import EstimateResult
+            from aisimulate.legacy_cli.api import EstimateResult
 
             return EstimateResult(
                 ttft=100.0,
@@ -312,8 +317,8 @@ class TestCLIEstimateUnit:
         3. Raises _CaptureComplete to exit before the perf-database/InferenceSession boundary.
         Asserts BOTH the recorded kwarg value AND the captured config's field value.
         """
-        import aiconfigurator.cli.api as api
-        from aiconfigurator.sdk.config_builders import build_model_config as _real_build_model_config
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.sdk.config_builders import build_model_config as _real_build_model_config
 
         captured_kwargs: dict = {}
         captured_configs: list = []
@@ -340,6 +345,11 @@ class TestCLIEstimateUnit:
                 image_height=0,
                 image_width=0,
                 num_images=1,
+                video_height=0,
+                video_width=0,
+                video_frames=0,
+                num_videos=0,
+                num_video_tokens=0,
                 enable_encoder_dp=True,
                 batch_size=32,
                 ctx_tokens=1024,
@@ -372,9 +382,9 @@ class TestCLIDefaultNextn:
     """cli_default exposes MTP control with the same semantics as the CLI flags."""
 
     def test_nextn_without_accepted_fails_fast(self):
-        from aiconfigurator.cli import cli_default
+        from aisimulate.legacy_cli import cli_default
 
-        with patch("aiconfigurator.cli.api.build_default_tasks") as mock_build:
+        with patch("aisimulate.legacy_cli.api.build_default_tasks") as mock_build:
             with pytest.raises(ValueError, match="nextn_accepted"):
                 cli_default(
                     model_path="Qwen/Qwen3-32B",
@@ -384,10 +394,10 @@ class TestCLIDefaultNextn:
                 )
             mock_build.assert_not_called()
 
-    @patch("aiconfigurator.cli.api._execute_and_wrap_result")
-    @patch("aiconfigurator.cli.api.build_default_tasks")
+    @patch("aisimulate.legacy_cli.api._execute_and_wrap_result")
+    @patch("aisimulate.legacy_cli.api.build_default_tasks")
     def test_nextn_is_forwarded_to_build_default_tasks(self, mock_build, mock_execute):
-        from aiconfigurator.cli import cli_default
+        from aisimulate.legacy_cli import cli_default
 
         mock_build.return_value = {}
         mock_execute.return_value = MagicMock()
@@ -408,12 +418,12 @@ class TestCLIDefaultNextn:
 class TestCLIExpUnit:
     """Unit tests for cli_exp API (mocked)."""
 
-    @patch("aiconfigurator.cli.api._execute_tasks_internal")
-    @patch("aiconfigurator.cli.api.build_experiment_tasks")
+    @patch("aisimulate.legacy_cli.api._execute_tasks_internal")
+    @patch("aisimulate.legacy_cli.api.build_experiment_tasks")
     def test_cli_exp_dict_config_equivalent_to_example_yaml(self, mock_build, mock_execute):
         """cli_exp with dict config should work correctly (mocked).
 
-        Equivalent to exp_agg_simplified from src/aiconfigurator/cli/example.yaml:
+        Equivalent to exp_agg_simplified from src/aisimulate/legacy_cli/example.yaml:
             exp_agg_simplified:
               mode: "patch"
               serving_mode: "agg"
@@ -467,8 +477,8 @@ class TestCLIExpUnit:
         that mocks its builder's dependency -- instead of only inspecting the
         field on an unmocked, real end-to-end Task/ModelConfig construction.
         """
-        from aiconfigurator.cli.main import build_experiment_tasks
-        from aiconfigurator.sdk import config as sdk_config
+        from aisimulate.legacy_cli.main import build_experiment_tasks
+        from aisimulate.sdk import config as sdk_config
 
         captured_kwargs: list[dict] = []
         real_model_config = sdk_config.ModelConfig
@@ -539,7 +549,7 @@ class TestCLIGenerateEquivalence:
         cmd = [
             sys.executable,
             "-m",
-            "aiconfigurator.main",
+            "aisimulate.legacy_cli.entrypoint",
             "cli",
             "generate",
             "--model-path",
@@ -599,7 +609,7 @@ class TestCLISupportEquivalence:
         import subprocess
         import sys
 
-        from aiconfigurator.cli import cli_support
+        from aisimulate.legacy_cli import cli_support
 
         # Run via Python API
         api_result = cli_support("Qwen/Qwen3-32B", "h200_sxm")
@@ -608,7 +618,7 @@ class TestCLISupportEquivalence:
         cmd = [
             sys.executable,
             "-m",
-            "aiconfigurator.main",
+            "aisimulate.legacy_cli.entrypoint",
             "cli",
             "support",
             "--model-path",
@@ -637,7 +647,7 @@ class TestCLIRecommendUnit:
     """Unit tests for recommend API."""
 
     def test_requires_exactly_one_load_target(self):
-        from aiconfigurator.cli.api import cli_recommend
+        from aisimulate.legacy_cli.api import cli_recommend
 
         with pytest.raises(ValueError, match="Exactly one of"):
             cli_recommend(
@@ -654,7 +664,7 @@ class TestCLIRecommendUnit:
             )
 
     def test_calls_build_default_tasks_with_gpus_per_node(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         def fake_execute(tasks, mode, **kwargs):
             return ("agg", {"agg": pd.DataFrame({"x": [1]})}, {}, {}, {}, {})
@@ -677,7 +687,7 @@ class TestCLIRecommendUnit:
     def test_forwards_forward_model(self, monkeypatch):
         # `recommend --forward-model fpm` must reach task building — silently
         # dropping it would run op_level while the user believes fpm is active.
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         def fake_execute(tasks, mode, **kwargs):
             return ("agg", {"agg": pd.DataFrame({"x": [1]})}, {}, {}, {}, {})
@@ -695,7 +705,7 @@ class TestCLIRecommendUnit:
         assert mock_build.call_args.kwargs["forward_model"] == "fpm"
 
     def test_forwards_load_match_params(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         execute_kwargs = {}
 
@@ -719,7 +729,7 @@ class TestCLIRecommendUnit:
         assert execute_kwargs.get("target_concurrency") is None
 
     def test_concurrency_mode(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         execute_kwargs = {}
 
@@ -743,7 +753,7 @@ class TestCLIRecommendUnit:
         assert execute_kwargs["target_concurrency"] == 200.0
 
     def test_strict_sla_forwarded(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         execute_kwargs = {}
 
@@ -767,7 +777,7 @@ class TestCLIRecommendUnit:
         assert execute_kwargs["strict_sla"] is True
 
     def test_wideep_and_moe_backend_forwarded(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured_kwargs = {}
 
@@ -794,7 +804,7 @@ class TestCLIRecommendUnit:
 
     def test_dspark_nextn_auto_uses_explicit_acceptance(self, monkeypatch):
         """Explicit auto resolves DSPARK depth without inferring acceptance."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured = {}
 
@@ -823,7 +833,7 @@ class TestCLIRecommendUnit:
 
     def test_dspark_auto_requires_explicit_acceptance(self, monkeypatch):
         """DSPARK architectural depth never implies workload acceptance."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         monkeypatch.setattr(api, "_resolve_nextn_auto", lambda _: 0)
         monkeypatch.setattr(api, "_resolve_dspark_nextn", lambda _: 7)
@@ -839,7 +849,7 @@ class TestCLIRecommendUnit:
     @pytest.mark.parametrize("accepted", [3.0, 0.0])
     def test_dspark_omitted_depth_uses_explicit_acceptance(self, monkeypatch, accepted):
         """Measured acceptance opts an omitted DSPARK depth into architecture resolution."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured = {}
 
@@ -866,7 +876,7 @@ class TestCLIRecommendUnit:
 
     def test_dspark_explicit_zero_opts_out(self, monkeypatch):
         """Explicit nextn=0 remains disabled and bypasses DSPARK resolution."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured = {}
 
@@ -897,7 +907,7 @@ class TestCLIRecommendUnit:
 
     def test_omitted_speculation_remains_disabled(self, monkeypatch):
         """Existing callers that omit both inputs keep speculative decoding off."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured = {}
 
@@ -927,7 +937,7 @@ class TestCLIRecommendUnit:
 
     def test_non_dspark_model_unaffected(self, monkeypatch):
         """Non-DSPARK models are not touched by the DSPARK auto-detect path."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured = {}
 
@@ -954,7 +964,7 @@ class TestCLIRecommendUnit:
         assert captured["nextn_accepted"] is None
 
     def test_attention_backend_forwarded(self, monkeypatch):
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         captured_kwargs = {}
 
@@ -987,9 +997,9 @@ class TestCLIRecommendUnit:
         that mocks its builder's dependency -- instead of only inspecting the
         field on an unmocked, real end-to-end Task/ModelConfig construction.
         """
-        from aiconfigurator.cli.main import build_default_tasks
-        from aiconfigurator.sdk import config as sdk_config
-        from aiconfigurator.sdk.task_v2 import Task
+        from aisimulate.legacy_cli.main import build_default_tasks
+        from aisimulate.sdk import config as sdk_config
+        from aisimulate.sdk.task_v2 import Task
 
         captured_kwargs: list[dict] = []
         real_model_config = sdk_config.ModelConfig
@@ -1025,8 +1035,8 @@ class TestCLIRecommendUnit:
         )
 
     def test_escalates_on_oom(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        from aiconfigurator.sdk.errors import ExperimentOutcome, InsufficientMemoryError
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.sdk.errors import ExperimentOutcome, InsufficientMemoryError
 
         call_count = 0
 
@@ -1064,8 +1074,8 @@ class TestCLIRecommendUnit:
         assert call_count == 2
 
     def test_escalation_ceiling(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        from aiconfigurator.sdk.errors import ExperimentOutcome, InsufficientMemoryError
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.sdk.errors import ExperimentOutcome, InsufficientMemoryError
 
         def fake_build_default_tasks(**kwargs):
             from dataclasses import dataclass, field
@@ -1096,8 +1106,8 @@ class TestCLIRecommendUnit:
             )
 
     def test_no_escalation_on_non_retriable_failure(self, monkeypatch):
-        import aiconfigurator.cli.api as api
-        from aiconfigurator.sdk.errors import ExperimentOutcome, NoFeasibleConfigError
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.sdk.errors import ExperimentOutcome, NoFeasibleConfigError
 
         call_count = 0
 
@@ -1135,8 +1145,8 @@ class TestCLIRecommendUnit:
 
     def test_partial_failure_triggers_escalation(self, monkeypatch):
         """agg succeeds at first budget, disagg OOMs → retry at larger budget."""
-        import aiconfigurator.cli.api as api
-        from aiconfigurator.sdk.errors import ExperimentOutcome, InsufficientMemoryError
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.sdk.errors import ExperimentOutcome, InsufficientMemoryError
 
         call_count = 0
 
@@ -1200,7 +1210,7 @@ class TestCLIRecommendUnit:
     def test_save_dir_passes_total_gpus_needed_to_save_results(self, monkeypatch, tmp_path):
         """save_results receives best_configs with total_gpus_needed so
         task_config_to_generator_config can use it for artifact sizing."""
-        import aiconfigurator.cli.api as api
+        import aisimulate.legacy_cli.api as api
 
         best_df = pd.DataFrame(
             {
@@ -1264,7 +1274,7 @@ def test_disagg_estimate_honors_explicit_free_gpu_memory_fraction():
     """
     import pytest
 
-    from aiconfigurator.cli.api import cli_estimate
+    from aisimulate.legacy_cli.api import cli_estimate
 
     common_kw = dict(
         model_path="Qwen/Qwen3-32B",

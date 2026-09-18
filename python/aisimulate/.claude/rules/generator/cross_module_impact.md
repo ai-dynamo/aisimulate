@@ -2,13 +2,13 @@
 description: >
   Cross-module impact map for generator changes.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Cross-Module Impact Map
 
 When modifying the generator, check this map to identify affected modules outside
-`src/aiconfigurator/generator/`.
+`src/aisimulate/generator/`.
 
 ## Dependency Directions
 
@@ -46,12 +46,12 @@ Collector (collector/)
 
 | Step | File(s) | Why |
 |---|---|---|
-| 1. Schema | `src/aiconfigurator/generator/config/deployment_config.yaml` | Define the param, default, backend support |
-| 2. Mapping | `src/aiconfigurator/generator/config/backend_config_mapping.yaml` | Map to backend CLI flag names |
-| 3. CLI | `src/aiconfigurator/cli/main.py` or CLI arg group | Expose via `--generator-set` (auto if in schema) |
-| 4. Bridge | `src/aiconfigurator/generator/module_bridge.py` | Pass from SDK search results if profiler-sourced |
+| 1. Schema | `src/aisimulate/generator/config/deployment_config.yaml` | Define the param, default, backend support |
+| 2. Mapping | `src/aisimulate/generator/config/backend_config_mapping.yaml` | Map to backend CLI flag names |
+| 3. CLI | `src/aisimulate/legacy_cli/main.py` or CLI arg group | Expose via `--generator-set` (auto if in schema) |
+| 4. Bridge | `src/aisimulate/generator/module_bridge.py` | Pass from SDK search results if profiler-sourced |
 | 5. Validator | `tools/generator_validator/` | Add to expected flags if new CLI flag |
-| 6. Docs | `docs/cli_user_guide.md` | Document the new parameter |
+| 6. Docs | `docs/cli/legacy-aic-user-guide.md` (repository root) | Document the new parameter |
 
 ### Renaming a Parameter
 
@@ -80,8 +80,8 @@ Collector (collector/)
 
 | Step | File(s) | Why |
 |---|---|---|
-| 1. Version matrix | `src/aiconfigurator/generator/config/backend_version_matrix.yaml` | Map Dynamo -> backend version |
-| 2. Templates | `src/aiconfigurator/generator/config/backend_templates/<backend>/` | Version-specific templates if CLI changed |
+| 1. Version matrix | `src/aisimulate/generator/config/backend_version_matrix.yaml` | Map Dynamo -> backend version |
+| 2. Templates | `src/aisimulate/generator/config/backend_templates/<backend>/` | Version-specific templates if CLI changed |
 | 3. Image defaults | `deployment_config.yaml` | Container image tag expressions |
 | 4. Support matrix | `tools/support_matrix/` | Update supported combinations |
 | 5. Validator | `tools/generator_validator/` | May need new backend image for validation |

@@ -113,9 +113,17 @@ def _source_payloads() -> set[str]:
     """Return package payloads that the sole wheel must own."""
     source_root = Path(__file__).resolve().parents[1] / "src"
     expected: set[str] = set()
-    for package in ("aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core"):
+    for package in ("aisimulate", "aisimulate_core"):
         _add_source_tree(expected, source_root / package, package)
-    expected.discard("aiconfigurator/sdk/config_adapter/README.md")
+    expected.discard("aisimulate/sdk/config_adapter/README.md")
+    collector_root = Path(__file__).resolve().parents[1] / "collector"
+    expected.update({"collector/__init__.py", "collector/model_cases.py"})
+    for pattern in ("cases/**/*.yaml", "fpm_forward/**/*.py", "fpm_forward/runtime/fpm_exec.sh"):
+        expected.update(
+            (Path("collector") / path.relative_to(collector_root)).as_posix()
+            for path in collector_root.glob(pattern)
+            if path.is_file()
+        )
     return expected
 
 
@@ -154,6 +162,9 @@ def _requirement_name(requirement: str) -> str:
 def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
     names, metadata = _wheel_files(wheel)
     payload = _payload_files(names)
+    legacy = sorted(name for name in names if name.startswith(("aiconfigurator/", "aiconfigurator_core/")))
+    if legacy:
+        raise RuntimeError(f"{wheel.name}: removed legacy import packages are still present: {legacy}")
     removed = _spica_entries(names)
     if removed:
         raise RuntimeError(f"{wheel.name}: removed Spica payload is still present: {removed}")
@@ -164,16 +175,14 @@ def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
     required = {
         "aisimulate/__init__.py",
         "aisimulate_core/__init__.py",
-        "aiconfigurator/__init__.py",
-        "aiconfigurator/cli/main.py",
-        "aiconfigurator/generator/api.py",
-        "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
-        "aiconfigurator_core/__init__.py",
-        "aiconfigurator_core/_aiconfigurator_core.py",
-        "aiconfigurator_core/_aiconfigurator_core.pyi",
-        "aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
-        "aiconfigurator_core/sdk/engine.py",
-        "aiconfigurator_core/systems/h100_sxm.yaml",
+        "aisimulate/legacy_cli/main.py",
+        "aisimulate/generator/api.py",
+        "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
+        "aisimulate_core/_native.py",
+        "aisimulate_core/_native.pyi",
+        "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+        "aisimulate_core/sdk/engine.py",
+        "aisimulate_core/systems/h100_sxm.yaml",
     }
     missing = sorted(required - payload)
     if missing:
@@ -188,7 +197,7 @@ def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
             name.startswith("aisimulate/_runtime.") and name.endswith((".so", ".pyd")) for name in payload
         ),
         "nested performance data": any(
-            name.startswith("aiconfigurator_core/systems/data/") and name.endswith(".parquet") for name in payload
+            name.startswith("aisimulate_core/systems/data/") and name.endswith(".parquet") for name in payload
         ),
         "Rust SBOM": any(".dist-info/sboms/" in name and name.endswith(".json") for name in names),
     }

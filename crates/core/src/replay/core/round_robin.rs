@@ -150,6 +150,13 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             events: PhantomData,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_starting_at(workers: Vec<WorkerTopology>, next: usize) -> Self {
+        let mut placement = Self::new(workers);
+        placement.next = next;
+        placement
+    }
 }
 
 impl<Request, Events> PlacementPolicy<Request> for PoolRoundRobinPlacement<Events>
@@ -170,17 +177,37 @@ where
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let active_count = self.workers.values().map(Vec::len).sum::<usize>();
+        let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
+        let active_count = match preferred_dp_rank {
+            Some(rank) => self
+                .workers
+                .values()
+                .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
+                .count(),
+            None => self.workers.values().map(Vec::len).sum::<usize>(),
+        };
         if active_count == 0 {
+            if let Some(rank) = preferred_dp_rank {
+                return Err(anyhow!(
+                    "preferred attention-DP rank {rank} is out of range for the active worker pool"
+                ));
+            }
             return Err(anyhow!("no active workers for round-robin placement"));
         }
         let index = self.next % active_count;
-        let scheduler_id = self
-            .workers
-            .values()
-            .flat_map(|ranks| ranks.iter().copied())
-            .nth(index)
-            .expect("active round-robin pool must contain a scheduler");
+        let scheduler_id = match preferred_dp_rank {
+            Some(rank) => self
+                .workers
+                .values()
+                .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
+                .nth(index),
+            None => self
+                .workers
+                .values()
+                .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
+                .nth(index),
+        }
+        .expect("active round-robin pool must contain a scheduler");
         self.next = index + 1;
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
@@ -253,7 +280,6 @@ impl AggregatedRoundRobin {
             return Err(anyhow!("no active workers for round-robin placement"));
         }
         let index = self.next_worker % active_workers.len();
-        self.next_worker = index + 1;
         let worker_id = active_workers
             .nth(index)
             .expect("active round-robin worker must exist at the selected index");
@@ -266,15 +292,21 @@ impl AggregatedRoundRobin {
             }
             Some(rank) => rank,
             None => {
-                let next_rank = self.next_rank_by_worker.entry(worker_id).or_default();
-                let rank = *next_rank % self.dp_size;
-                *next_rank = rank + 1;
-                rank
+                self.next_rank_by_worker
+                    .get(&worker_id)
+                    .copied()
+                    .unwrap_or_default()
+                    % self.dp_size
             }
         };
-        rank_id(worker_id, rank).ok_or_else(|| {
+        let scheduler_id = rank_id(worker_id, rank).ok_or_else(|| {
             anyhow!("logical worker {worker_id} does not expose preferred attention-DP rank {rank}")
-        })
+        })?;
+        self.next_worker = index + 1;
+        if preferred_rank.is_none() {
+            self.next_rank_by_worker.insert(worker_id, rank + 1);
+        }
+        Ok(scheduler_id)
     }
 
     pub(crate) fn worker_removed(&mut self, worker_id: usize) {
@@ -315,7 +347,10 @@ mod tests {
         }
     }
 
-    fn scheduler_id(policy: &mut PoolRoundRobinPlacement<()>, ordinal: u128) -> usize {
+    fn scheduler_id(
+        policy: &mut impl PlacementPolicy<TestRequest, Metadata = ()>,
+        ordinal: u128,
+    ) -> usize {
         let effects = PlacementPolicy::<TestRequest>::place(
             policy,
             &TestRequest(Uuid::from_u128(ordinal)),
@@ -367,6 +402,52 @@ mod tests {
     }
 
     #[test]
+    fn aggregated_rotation_preserves_position_and_ranks_after_topology_changes() {
+        let worker = |worker_id| WorkerTopology {
+            worker_id,
+            scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+        };
+        let mut policy =
+            AggregatedRoundRobinPlacement::<()>::new(2, vec![worker(1), worker(2), worker(3)]);
+        assert_eq!(
+            (1..=4)
+                .map(|ordinal| scheduler_id(&mut policy, ordinal))
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30, 11]
+        );
+        PlacementPolicy::<TestRequest>::worker_draining(&mut policy, worker(3), 0.0).unwrap();
+        assert_eq!(scheduler_id(&mut policy, 5), 21);
+        PlacementPolicy::<TestRequest>::worker_removed(&mut policy, worker(3), 0.0).unwrap();
+        PlacementPolicy::<TestRequest>::worker_ready(&mut policy, worker(3), 0.0).unwrap();
+        // The re-added worker starts again at rank zero; retained workers keep
+        // their independent rank rotations.
+        assert_eq!(scheduler_id(&mut policy, 6), 30);
+        assert_eq!(scheduler_id(&mut policy, 7), 10);
+        PlacementPolicy::<TestRequest>::worker_ready(&mut policy, worker(4), 0.0).unwrap();
+        assert_eq!(
+            (8..=10)
+                .map(|ordinal| scheduler_id(&mut policy, ordinal))
+                .collect::<Vec<_>>(),
+            vec![20, 31, 40]
+        );
+    }
+
+    #[test]
+    fn aggregated_failed_rank_lookup_does_not_advance_worker_or_rank() {
+        let mut counter = AggregatedRoundRobin::new(2);
+        assert!(
+            counter
+                .next([1, 2].into_iter(), Some(2), |_, _| None)
+                .is_err()
+        );
+        assert!(counter.next([1, 2].into_iter(), None, |_, _| None).is_err());
+        let rank_id = |worker, rank| Some(worker * 10 + rank as usize);
+        assert_eq!(counter.next([1, 2].into_iter(), None, rank_id).unwrap(), 10);
+        assert_eq!(counter.next([1, 2].into_iter(), None, rank_id).unwrap(), 20);
+        assert_eq!(counter.next([1, 2].into_iter(), None, rank_id).unwrap(), 11);
+    }
+
+    #[test]
     fn empty_pool_returns_an_error_instead_of_dividing_by_zero() {
         let mut policy = PoolRoundRobinPlacement::<()>::new(Vec::new());
         let error = PlacementPolicy::<TestRequest>::place(
@@ -379,6 +460,45 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("no active workers"));
+    }
+
+    #[test]
+    fn pool_round_robin_honors_authored_dp_rank_across_workers() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![
+            WorkerTopology {
+                worker_id: 0,
+                scheduler_ids: vec![10, 11],
+            },
+            WorkerTopology {
+                worker_id: 1,
+                scheduler_ids: vec![20, 21],
+            },
+        ]);
+        let place = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, rank| {
+            let effects = PlacementPolicy::<RankedTestRequest>::place(
+                policy,
+                &RankedTestRequest {
+                    id: Uuid::from_u128(ordinal),
+                    preferred_dp_rank: rank,
+                },
+                (),
+                None,
+                0.0,
+            )?;
+            let PlacementDecision::Immediate(placement) = effects.decision else {
+                panic!("round-robin placement must be immediate");
+            };
+            Ok::<_, anyhow::Error>(placement.scheduler_id)
+        };
+
+        assert_eq!(place(&mut policy, 1, 1).unwrap(), 11);
+        assert_eq!(place(&mut policy, 2, 1).unwrap(), 21);
+        assert!(
+            place(&mut policy, 3, 2)
+                .unwrap_err()
+                .to_string()
+                .contains("out of range")
+        );
     }
 
     #[test]

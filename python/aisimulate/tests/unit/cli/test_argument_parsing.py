@@ -9,10 +9,55 @@ Tests CLI argument validation, choices, and default values.
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aisimulate.legacy_cli import api
+from aisimulate.legacy_cli import main as cli_main
+from aisimulate.legacy_cli.api import EstimateResult
+from aisimulate.sdk import common
+from aisimulate.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
 
 pytestmark = pytest.mark.unit
+
+
+def test_token_only_video_estimate_summary_reports_workload(cli_args_factory, monkeypatch, capsys):
+    result = EstimateResult(
+        ttft=19.3,
+        tpot=0.0,
+        power_w=None,
+        isl=256,
+        osl=16,
+        batch_size=1,
+        ctx_tokens=256,
+        tp_size=8,
+        pp_size=1,
+        model_path="Qwen/Qwen3.5-27B",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="test",
+        raw={"encoder_latency": 2.627, "encoder_memory": 0.884},
+        mode="static_ctx",
+    )
+    monkeypatch.setattr(api, "cli_estimate", lambda **_kwargs: result)
+    args = cli_args_factory(
+        mode="estimate",
+        model_path="Qwen/Qwen3.5-27B",
+        system="h200_sxm",
+        extra_args=[
+            "--estimate-mode",
+            "static_ctx",
+            "--video-frames",
+            "8",
+            "--num-videos",
+            "1",
+            "--num-video-tokens",
+            "196",
+        ],
+    )
+
+    cli_main._run_estimate_mode(args)
+
+    output = capsys.readouterr().out
+    assert "Videos:           1 x 8 frames x 196 tokens/video" in output
+    assert "Encoder parallel: DP (data-parallel)" in output
 
 
 class TestCLIArgumentParsing:
@@ -352,7 +397,7 @@ class TestCLIArgumentParsing:
         assert args.nextn == "auto"
 
     def test_nextn_requires_explicit_acceptance(self, cli_parser):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [
@@ -372,7 +417,7 @@ class TestCLIArgumentParsing:
             _resolve_and_validate_nextn(args)
 
     def test_nextn_auto_requires_explicit_acceptance_when_resolved_positive(self, cli_parser, monkeypatch):
-        import aiconfigurator.cli.main as cli_main
+        import aisimulate.legacy_cli.main as cli_main
 
         args = cli_parser.parse_args(
             [
@@ -505,6 +550,42 @@ class TestCLIArgumentParsing:
         args = cli_parser.parse_args(["estimate", *common_args, "--disable-encoder-dp"])
         assert args.disable_encoder_dp is True
 
+    @pytest.mark.parametrize(
+        ("mode", "extra_args"),
+        [
+            ("default", ["--total-gpus", "8"]),
+            ("recommend", ["--target-request-rate", "1.0"]),
+            ("estimate", []),
+        ],
+    )
+    def test_video_input_flags(self, cli_parser, mode, extra_args):
+        args = cli_parser.parse_args(
+            [
+                mode,
+                "--model-path",
+                "Qwen/Qwen3.5-27B",
+                "--system",
+                "h200_sxm",
+                *extra_args,
+                "--video-height",
+                "448",
+                "--video-width",
+                "336",
+                "--video-frames",
+                "8",
+                "--num-videos",
+                "2",
+                "--num-video-tokens",
+                "560",
+            ]
+        )
+
+        assert args.video_height == 448
+        assert args.video_width == 336
+        assert args.video_frames == 8
+        assert args.num_videos == 2
+        assert args.num_video_tokens == 560
+
     def test_recommend_mode_parses_request_rate(self, cli_parser):
         args = cli_parser.parse_args(
             [
@@ -614,7 +695,7 @@ class TestCLIArgumentParsing:
         assert args.nextn is None
 
     def test_recommend_nextn_requires_explicit_acceptance(self, cli_parser):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [
@@ -635,7 +716,7 @@ class TestCLIArgumentParsing:
 
     @pytest.mark.parametrize("accepted", ["-0.1", "2.1", "nan", "inf", "-inf"])
     def test_recommend_nextn_rejects_out_of_range_or_non_finite_acceptance(self, cli_parser, accepted):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [

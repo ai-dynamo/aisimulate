@@ -1,6 +1,6 @@
 # AISimulate artifact contract
 
-AISimulate 0.12.0 has one product version and exactly two release artifacts:
+AISimulate 0.13.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -9,17 +9,22 @@ AISimulate 0.12.0 has one product version and exactly two release artifacts:
 
 The external public-API test fixture is `publish = false` and excluded from the
 product workspace. Imported AIConfigurator source does not retain another buildable `aiconfigurator`,
-`aiconfigurator-core`, or Python `aisimulate-core` manifest. The preserved
-`aiconfigurator`, `aiconfigurator_core`, and `aisimulate_core` namespaces all
-live inside the `aisimulate` wheel and therefore do not add artifacts.
+`aiconfigurator-core`, or Python `aisimulate-core` manifest. The
+`aisimulate` and `aisimulate_core` namespaces live inside the `aisimulate` wheel.
+The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
+Python import namespaces are removed. See the [migration guide](python-source-migration.md).
 
 `scripts/build_release_artifacts.py` validates the manifest set before it
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
-Both artifacts use version `0.12.0`. The wheel builds its native extension from
+Both artifacts use version `0.13.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
+
+For published versions, wheel platform tags, source installation, and internal
+nightly consumption, see the [installation guide](installation.md). The product
+version in a manifest does not establish publication on an index.
 
 ## Packaged license files
 
@@ -32,8 +37,8 @@ fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
 Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
-building: the wheel becomes `0.12.0.devYYYYMMDD` (PEP 440) and the crate
-`0.12.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
+`0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
 dotted date is a numeric identifier so pre-release versions order
 numerically). The wheel form follows the ai-dynamo/dynamo nightly
 convention. The release script accepts only this suffix pair and still
@@ -51,8 +56,8 @@ split the payload into another distribution.
 
 The combined artifacts deliberately retain stable source subtrees:
 
-- `python/aisimulate/src/aiconfigurator/` and
-  `python/aisimulate/src/aiconfigurator_core/` mirror AIC Python code and data;
+- `python/aisimulate/src/aisimulate/` and
+  `python/aisimulate/src/aisimulate_core/` mirror AIC Python code and data;
 - `crates/core/src/perfmodel/` mirrors the AIC Rust estimator;
 - AISimulate-owned facades and native integration stay outside those mirrors.
 

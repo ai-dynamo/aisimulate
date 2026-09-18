@@ -3,9 +3,6 @@
 
 import pandas as pd
 import pytest
-
-from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator.sdk.operations.util_empirical import note_provenance
 from tools.support_matrix import support_matrix as support_matrix_module
 from tools.support_matrix.support_matrix import (
     STATUS_FAIL,
@@ -15,6 +12,9 @@ from tools.support_matrix.support_matrix import (
     SupportMatrix,
     TestConstraints,
 )
+
+from aisimulate.sdk.errors import PerfDataNotAvailableError
+from aisimulate.sdk.operations.util_empirical import note_provenance
 
 pytestmark = pytest.mark.unit
 
@@ -54,7 +54,7 @@ def _patch_large_constraints(monkeypatch) -> None:
     )
 
 
-def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid(monkeypatch):
+def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid_with_image_workload(monkeypatch):
     calls: list[str] = []
 
     def fake_run_mode(**kwargs):
@@ -64,9 +64,13 @@ def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid(monkeypatch):
                 "Unsupported moe quant mode 'w4a16_nvfp4' for system='b200_sxm', backend='vllm', version='0.22.0'."
             )
         note_provenance("xprofile")
-        return pd.DataFrame({"x": [1.0]})
+        # Qwen3.6 implements its encoder (nested vision_config), so the rescue
+        # must carry the canonical image workload and positive encoder evidence.
+        assert kwargs["image_workload"] is not None
+        return pd.DataFrame({"encoder_latency": [1.25], "encoder_memory": [0.5]})
 
     monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    monkeypatch.setattr(support_matrix_module, "_encoder_perf_data_available", lambda *_args: True)
     _patch_large_constraints(monkeypatch)
 
     statuses, errors, commands, provenance = SupportMatrix.run_single_test(
@@ -84,6 +88,7 @@ def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid(monkeypatch):
     assert provenance == {"agg": "xprofile"}
     assert calls == ["SILICON", "HYBRID"]
     assert "--database-mode HYBRID" in commands["agg"]
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in commands["agg"]
 
 
 def test_dsv4_vllm_019_unsupported_mxfp8_quant_is_framework_incompatible(monkeypatch):
@@ -329,7 +334,7 @@ def test_l40s_sglang_fp8_attention_gap_is_hardware_incompatible(monkeypatch):
 def test_l40s_sglang_dsa_missing_data_gap_is_hardware_incompatible(monkeypatch):
     def fake_run_mode(**_kwargs):
         raise RuntimeError(
-            "File does not exist at src/aiconfigurator/systems/data/l40s/sglang/0.5.10/dsa_context_module_perf.parquet"
+            "File does not exist at src/aisimulate_core/systems/data/l40s/sglang/0.5.10/dsa_context_module_perf.parquet"
         )
 
     monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
@@ -347,7 +352,7 @@ def test_l40s_sglang_dsa_missing_data_gap_is_hardware_incompatible(monkeypatch):
     assert "SGLang DSA/NSA module collectors require SM90+" in errors["agg"]
 
 
-def test_kimi_moonshot_trtllm_b200_int4_wo_is_framework_incompatible(monkeypatch):
+def test_kimi_moonshot_trtllm_b200_is_encoder_unsupported_before_text_framework_gap(monkeypatch):
     def fake_run_mode(**_kwargs):
         raise ValueError(
             "Unsupported moe quant mode 'int4_wo' for system='b200_sxm', backend='trtllm', version='1.3.0rc10'."
@@ -364,11 +369,11 @@ def test_kimi_moonshot_trtllm_b200_int4_wo_is_framework_incompatible(monkeypatch
         system_spec=_b200_system_spec(),
     )
 
-    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
-    assert "Unsupported moe quant mode 'int4_wo'" in errors["agg"]
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+    assert errors["agg"].startswith("ENCODER_UNSUPPORTED:")
 
 
-def test_kimi_framework_gap_can_be_hybrid_estimable_without_becoming_silicon_pass(monkeypatch):
+def test_kimi_encoder_unsupported_cannot_be_hybrid_rescued_by_text_backbone(monkeypatch):
     calls: list[str] = []
 
     def fake_run_mode(**kwargs):
@@ -392,11 +397,12 @@ def test_kimi_framework_gap_can_be_hybrid_estimable_without_becoming_silicon_pas
         include_commands=True,
     )
 
-    assert statuses == {"agg": STATUS_HYBRID_PASS}
-    assert errors == {"agg": None}
-    assert sources == {"agg": "empirical"}
-    assert "--database-mode HYBRID" in commands["agg"]
-    assert calls == ["SILICON", "HYBRID"]
+    assert statuses == {"agg": STATUS_FAIL}
+    assert errors["agg"].startswith("ENCODER_UNSUPPORTED:")
+    assert sources == {"agg": ""}
+    assert "tools/support_matrix/generate_support_matrix.py" in commands["agg"]
+    assert "--expect-error-prefix ENCODER_UNSUPPORTED:" in commands["agg"]
+    assert calls == []
 
 
 def test_kimi_moonshot_trtllm_int4_wo_other_system_remains_fail(monkeypatch):

@@ -8,7 +8,7 @@ sglang's ``DeepEPMoE.run_moe_core`` — simulating an EP world of
 ``moe_ep_size`` ranks on one GPU by allocating only the rank-local expert
 shard, and emits the same unified ``moe_expert_compute_perf`` rows (one table,
 ``inference_phase`` column) consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
+``aisimulate_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
 
 DORMANT per plan decision D3: the pinned ``wideep_vllm`` runtime and empty
 registry serve standalone ``moe_a2a`` collection only. This module has no

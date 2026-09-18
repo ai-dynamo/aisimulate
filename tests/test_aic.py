@@ -5,12 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk import memory, perf_database
-from aisimulate import aic
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig
-from aisimulate.runner import _materialize_engine_role
-from aisimulate.sweeper import kv_estimate
+from aisimulate import capacity as aic
 
 pytestmark = [
     pytest.mark.unit,
@@ -39,6 +34,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
             "aic_attention_dp_size": 2,
             "aic_pp_size": 3,
             "aic_nextn": 3,
+            "cuda_graph_reserved_bytes": 14559947612,
             "systems_path": "/tmp/custom-systems.yaml",
             "block_size": 64,
             "max_num_seqs": 37,
@@ -51,6 +47,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["max_num_sequences"] == 37
+    assert calls[0]["cuda_graph_reserved_bytes"] == 14559947612
     assert "nextn" not in calls[0]
 
 
@@ -63,9 +60,16 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         calls.append((args, kwargs))
         return 123
 
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory, perf_database
 
     monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
+    version_calls = []
+
+    def latest(system, backend, *, systems_paths):
+        version_calls.append((system, backend, systems_paths))
+        return "test-current"
+
+    monkeypatch.setattr(perf_database, "get_latest_database_version", latest)
     blocks = aic.estimate_num_gpu_blocks(
         backend_name="vllm",
         system="h200_sxm",
@@ -78,17 +82,20 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         gemm_dtype="int4",
         fmha_dtype="auto",
         systems_path="/tmp/custom-systems.yaml",
+        cuda_graph_reserved_bytes=14559947612,
     )
 
     assert blocks == 123
     args, kwargs = calls[0]
     assert args == ("test-model", "h200_sxm", "vllm")
-    assert kwargs["backend_version"] == "0.19.0"
+    assert kwargs["backend_version"] == "test-current"
+    assert version_calls == [("h200_sxm", "vllm", "/tmp/custom-systems.yaml")]
     assert kwargs["memory_fraction_kind"] == "of_total"
     assert kwargs["memory_fraction_value"] == 0.9
     assert kwargs["pp_size"] == 3
     assert kwargs["max_batch_size"] == 17
     assert kwargs["systems_path"] == "/tmp/custom-systems.yaml"
+    assert kwargs["cuda_graph_reserved_bytes"] == 14559947612
     assert kwargs["gemm_quant_mode"] == "int4_wo"
     assert kwargs["fmha_quant_mode"] is None
     assert "nextn" not in kwargs
@@ -140,95 +147,94 @@ def test_materializer_preserves_explicit_zero_values(monkeypatch) -> None:
     assert calls[0]["free_gpu_memory_fraction"] == 0.0
 
 
-def _prediction_config(backend="vllm", mode="aggregated", **engine_overrides):
-    roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
-    return CorePredictionConfig.model_validate(
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("timing", ["default", "fixed", "polynomial"])
+def test_prediction_omitted_version_uses_current_database_for_capacity(monkeypatch, backend, timing):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import CorePredictionConfig
+    from aisimulate_core.sdk import perf_database
+
+    expected = perf_database.get_version_slots("h200_sxm", backend)["current"]
+    get_database = perf_database.get_database
+    versions = []
+
+    def recorded_database(*args, **kwargs):
+        database = get_database(*args, **kwargs)
+        versions.append(database.version)
+        return database
+
+    monkeypatch.setattr(perf_database, "get_database", recorded_database)
+    timing_config = {"type": timing}
+    if timing == "fixed":
+        timing_config.update(prefill_ms=1, decode_ms=1)
+    config = CorePredictionConfig.model_validate(
         {
             "engine": {
                 "model": "Qwen/Qwen3-32B-FP8",
                 "hardware": "h200_sxm",
                 "backend": backend,
-                "mode": mode,
                 "context_length": 4096,
-                "workers": {role: {} for role in roles},
-                **engine_overrides,
+                "workers": {"aggregated": {"parallelism": {"tensor": 2}, "timing": timing_config}},
             }
         }
     )
-
-
-@pytest.mark.parametrize(
-    ("backend", "mode"),
-    [
-        ("vllm", "aggregated"),
-        ("sglang", "aggregated"),
-        ("trtllm", "aggregated"),
-        ("vllm", "disaggregated"),
-        ("sglang", "disaggregated"),
-    ],
-)
-def test_prediction_pins_shipped_current_version_for_memory_and_timing(monkeypatch, backend, mode):
-    # Read the actual bundled slot policy: a hard-coded raw version must not
-    # become the implicit default again when maintained slots change.
-    slots = perf_database.get_version_slots("h200_sxm", backend)
-    expected = slots["current"]
-    config = _prediction_config(backend, mode)
-    memory_versions = []
-
-    def estimate(*args, **kwargs):
-        memory_versions.append(kwargs["backend_version"])
-        return 128
-
-    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
     deployment = prediction_to_replay_spec(config).backend_deployment
-    assert deployment.backend_version == expected
+    args = aic.materialize_aic_num_gpu_blocks(deployment.agg_engine_args)
+    assert args["num_gpu_blocks"] > 0
+    assert versions and set(versions) == {expected}
     assert config.engine.backend_version is None
-    roles = (
-        [("aggregated", deployment.agg_engine_args)]
-        if mode == "aggregated"
-        else [("prefill", deployment.prefill_engine_args), ("decode", deployment.decode_engine_args)]
-    )
-    for role, args in roles:
-        assert args["aic_backend_version"] == expected
-        assert deployment.performance_model_metadata[role]["config"]["backend_version"] == expected
-        lowered = _materialize_engine_role(backend, deployment.backend_version, deployment.parallel_config, args, role)
-        assert lowered["rank"]["timing_model"]["config"]["backend_version"] == expected
-    assert memory_versions == [expected] * len(roles)
+    if timing == "default":
+        assert args["timing_model"]["config"]["backend_version"] == expected
+    else:
+        assert args["timing_model"]["type"] == timing
 
 
 @pytest.mark.parametrize("version", ["current", "next", "0.24.0", "0.19.0"])
-def test_prediction_preserves_explicit_backend_version(monkeypatch, version):
+def test_capacity_preserves_explicit_backend_version(monkeypatch, version):
+    from aisimulate_core.sdk import memory, perf_database
+
     monkeypatch.setattr(
-        kv_estimate,
+        perf_database,
         "get_latest_database_version",
-        lambda *_args, **_kwargs: pytest.fail("an explicit version must not be replaced"),
+        lambda *_args, **_kwargs: pytest.fail("explicit versions must not be replaced"),
     )
-    deployment = prediction_to_replay_spec(_prediction_config(backend_version=version)).backend_deployment
-    assert deployment.backend_version == version
-    assert deployment.agg_engine_args["aic_backend_version"] == version
+    versions = []
+
+    def estimate(*args, **kwargs):
+        versions.append(kwargs["backend_version"])
+        return 128
+
+    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
+    assert (
+        aic.estimate_num_gpu_blocks(
+            backend_name="vllm",
+            backend_version=version,
+            system="h200_sxm",
+            model_path="test-model",
+            tp_size=1,
+            block_size=64,
+            max_num_batched_tokens=4096,
+        )
+        == 128
+    )
+    assert versions == [version]
 
 
-@pytest.mark.parametrize(("default_timing", "default_capacity"), [(True, False), (False, True), (False, False)])
-def test_prediction_only_resolves_version_when_a_database_is_needed(monkeypatch, default_timing, default_capacity):
-    calls = []
+def test_capacity_without_a_database_fails_before_estimation(monkeypatch):
+    from aisimulate_core.sdk import memory, perf_database
 
-    def latest(system, backend):
-        calls.append((system, backend))
-        return "0.24.0"
-
-    monkeypatch.setattr(kv_estimate, "get_latest_database_version", latest)
-    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", lambda *_args, **_kwargs: 128)
-    worker = {}
-    if not default_timing:
-        worker["timing"] = {"type": "fixed", "prefill_ms": 1, "decode_ms": 1}
-    if not default_capacity:
-        worker["kv_cache"] = {"capacity": {"type": "fixed", "blocks": 128}}
-    deployment = prediction_to_replay_spec(_prediction_config(workers={"aggregated": worker})).backend_deployment
-    needs_database = default_timing or default_capacity
-    assert calls == ([("h200_sxm", "vllm")] if needs_database else [])
-    assert deployment.backend_version == ("0.24.0" if needs_database else "")
-
-
-def test_prediction_without_a_database_fails_before_execution():
-    with pytest.raises(RuntimeError, match="no perf database.*unsupported-test-gpu"):
-        prediction_to_replay_spec(_prediction_config(hardware="unsupported-test-gpu"))
+    monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        memory,
+        "estimate_num_gpu_blocks",
+        lambda *_args, **_kwargs: pytest.fail("missing versions must fail before estimation"),
+    )
+    with pytest.raises(ValueError, match="no perf database.*unsupported-test-gpu.*vllm"):
+        aic.estimate_num_gpu_blocks(
+            backend_name="vllm",
+            system="unsupported-test-gpu",
+            model_path="test-model",
+            tp_size=1,
+            block_size=64,
+            max_num_batched_tokens=4096,
+        )

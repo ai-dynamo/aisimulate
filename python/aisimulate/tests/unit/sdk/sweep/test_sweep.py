@@ -13,15 +13,15 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import config, sweep
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk import common, config, sweep
+from aisimulate.sdk.errors import (
     InsufficientMemoryError,
     KVCacheCapacityError,
     NoFeasibleConfigError,
 )
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.sweep import (
+from aisimulate.sdk.perf_database import PerfDataNotAvailableError, has_perf_data_not_available_cause
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.sweep import (
     _DEFAULT_AGG_BATCH_SCHEDULE,
     _agg_ctx_tokens_list,
     _preferred_sweep_exception,
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.unit
 
 def _legacy_ctx_tokens_list(isl: int, ctx_stride: int, enable_chunked_prefill: bool) -> list[int]:
     """Wrap the legacy helper on BaseBackend for parity comparison."""
-    from aiconfigurator.sdk.backends.factory import get_backend
+    from aisimulate.sdk.backends.factory import get_backend
 
     legacy = get_backend("trtllm")  # any backend exposes the helper, it's on BaseBackend
     return legacy._get_ctx_tokens_list_for_agg_sweep(
@@ -87,7 +87,7 @@ def test_sweep_terminal_error_prefers_structured_perf_data_miss():
 
 
 def test_sweep_afd_forwards_max_a_batch_size(monkeypatch):
-    from aiconfigurator.sdk import pareto_analysis
+    from aisimulate.sdk import pareto_analysis
 
     captured = {}
     expected = object()
@@ -140,7 +140,7 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(sweep, "predict_agg_worker", MagicMock(side_effect=summaries))
 
-    with pytest.raises(expected_error):
+    with pytest.raises(expected_error) as exc_info:
         sweep.sweep_agg(
             model_path="test-model",
             runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
@@ -151,9 +151,82 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
             max_batch_size=1,
             ctx_stride=1024,
         )
+    assert not has_perf_data_not_available_cause(exc_info.value)
 
 
-def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch):
+def test_sweep_agg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(
+        sweep,
+        "predict_agg_worker",
+        MagicMock(side_effect=PerfDataNotAvailableError("missing B300 attention data")),
+    )
+
+    with pytest.raises(NoFeasibleConfigError) as exc_info:
+        sweep.sweep_agg(
+            model_path="test-model",
+            runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
+            database=MagicMock(),
+            backend_name="trtllm",
+            model_config=config.ModelConfig(),
+            parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+            max_batch_size=1,
+            ctx_stride=1024,
+        )
+
+    assert has_perf_data_not_available_cause(exc_info.value)
+
+
+def test_sweep_disagg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(
+        sweep,
+        "predict_disagg_worker",
+        MagicMock(side_effect=PerfDataNotAvailableError("missing B300 attention data")),
+    )
+
+    with pytest.raises(NoFeasibleConfigError) as exc_info:
+        sweep._get_disagg_worker_candidates(
+            model_path="test-model",
+            model_config=config.ModelConfig(),
+            parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+            b_list=[1],
+            runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
+            role="prefill",
+            database=MagicMock(),
+            backend_name="trtllm",
+            latency_correction=1.0,
+        )
+
+    assert has_perf_data_not_available_cause(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "visual_kwargs",
+    [
+        {
+            "image_height": 1024,
+            "image_width": 1024,
+            "num_images_per_request": 2,
+            "num_image_tokens": 333,
+        },
+        {
+            "video_height": 720,
+            "video_width": 1280,
+            "video_frames": 16,
+            "num_videos_per_request": 3,
+            "num_video_tokens": 448,
+        },
+        {
+            "video_frames": 16,
+            "num_videos_per_request": 3,
+            "num_video_tokens": 448,
+        },
+    ],
+)
+def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch, visual_kwargs):
     """Regression for NVBug 6401839: the agg per-batch RuntimeConfig must carry
     every multimodal field from the base runtime_config. The old field-by-field
     construction dropped image_height/width, num_images_per_request, and
@@ -170,8 +243,19 @@ def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch):
         summary.get_per_ops_source.return_value = {}
         return summary
 
+    model = MagicMock()
+    model.encoder_config = common.VisionEncoderConfig(
+        depth=27,
+        hidden_size=1152,
+        num_heads=16,
+        intermediate_size=4304,
+        patch_size=16,
+        temporal_patch_size=2,
+        spatial_merge_size=2,
+        out_hidden_size=5120,
+    )
     monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
-    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: model)
     monkeypatch.setattr(sweep, "predict_agg_worker", _record)
 
     base_rt = config.RuntimeConfig(
@@ -179,12 +263,9 @@ def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch):
         osl=256,
         ttft=1e9,
         tpot=1e9,
-        image_height=1024,
-        image_width=1024,
-        num_images_per_request=2,
-        num_image_tokens=333,
         seq_imbalance_correction_scale=1.5,
         engine_step_backend="rust",
+        **visual_kwargs,
     )
 
     sweep.sweep_agg(
@@ -200,10 +281,8 @@ def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch):
 
     assert captured, "expected at least one agg point to be evaluated"
     for point_rt in captured:
-        assert point_rt.image_height == 1024
-        assert point_rt.image_width == 1024
-        assert point_rt.num_images_per_request == 2
-        assert point_rt.num_image_tokens == 333
+        for field, value in visual_kwargs.items():
+            assert getattr(point_rt, field) == value
         # Non-multimodal fields must survive too (the deep-copy carries them all).
         assert point_rt.seq_imbalance_correction_scale == 1.5
         assert point_rt.engine_step_backend == "rust"
@@ -259,7 +338,7 @@ def test_sweep_agg_disables_gen_dedup_for_speculative_schedules(monkeypatch):
     distinguishes b=5 from the batch its capped key collides with). With an
     active profile every guard-passing point must therefore be evaluated,
     while an inactive profile must reproduce the legacy point set exactly."""
-    from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
+    from aisimulate.sdk.speculative import SpeculativeDecodingProfile
 
     def _run(profile):
         points: list[tuple[int, int]] = []
@@ -304,6 +383,55 @@ def test_sweep_agg_disables_gen_dedup_for_speculative_schedules(monkeypatch):
     assert (6, 1024) not in baseline
     assert (6, 1024) in speculative
     assert len(speculative) == len(set(speculative))
+
+
+def test_sweep_agg_uses_visual_effective_isl_for_context_budget(monkeypatch):
+    points: list[tuple[int, int]] = []
+
+    def _record(*, runtime_config, ctx_tokens, **_kwargs):
+        points.append((runtime_config.batch_size, ctx_tokens))
+        summary = MagicMock()
+        summary.check_oom.return_value = False
+        summary.check_kv_cache_oom.return_value = False
+        summary.get_result_dict.return_value = {"ttft": 1.0, "tpot": 1.0}
+        summary.get_per_ops_source.return_value = {}
+        return summary
+
+    monkeypatch.setattr(sweep, "predict_agg_worker", _record)
+    model = MagicMock()
+    model.encoder_config = common.VisionEncoderConfig(
+        depth=27,
+        hidden_size=1152,
+        num_heads=16,
+        intermediate_size=4304,
+        patch_size=16,
+        temporal_patch_size=2,
+        spatial_merge_size=2,
+        out_hidden_size=5120,
+    )
+    sweep._sweep_one_parallel_agg(
+        model=model,
+        backend=MagicMock(),
+        database=MagicMock(),
+        runtime_config=config.RuntimeConfig(
+            isl=256,
+            osl=16,
+            ttft=1e9,
+            tpot=1e9,
+            video_height=448,
+            video_width=448,
+            video_frames=8,
+            num_videos_per_request=1,
+        ),
+        top_k=0,
+        max_batch_size=1,
+        ctx_stride=512,
+        enable_chunked_prefill=False,
+        free_gpu_memory_fraction=None,
+        max_seq_len=None,
+    )
+
+    assert points == [(1, 1040)]  # 256 text + 784 post-merge video tokens
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +692,59 @@ def test_sweep_disagg_epd_composes_encoder_stage(monkeypatch):
     assert epd_row["request_latency"] == pytest.approx(108.0 + 8.0 * 99 + 90.0)
 
 
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("config_builder", [False, True])
+def test_sweep_disagg_epd_kimi_k3_keeps_both_language_workers_encoder_free(video, config_builder):
+    from aisimulate.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    visual_fields = (
+        dict(num_images_per_request=0, num_videos_per_request=1, video_frames=4, video_height=224, video_width=224)
+        if video
+        else dict(image_height=224, image_width=224, num_images_per_request=1)
+    )
+    template = config.ModelConfig(enable_encoder_dp=False)
+    model_config = (lambda _parallel: template) if config_builder else template
+    rows = sweep_disagg(
+        model_path="moonshotai/Kimi-K3",
+        runtime_config=config.RuntimeConfig(
+            isl=128, osl=2, ttft=1e6, tpot=1e6, engine_step_backend="rust", **visual_fields
+        ),
+        prefill_database=database,
+        prefill_backend_name="trtllm",
+        prefill_model_config=model_config,
+        prefill_parallel_config_list=[(16, 1, 1, 16, 1, 1)],
+        prefill_latency_correction=1.0,
+        decode_database=database,
+        decode_backend_name="trtllm",
+        decode_model_config=model_config,
+        decode_parallel_config_list=[(16, 1, 1, 16, 1, 1)],
+        decode_latency_correction=1.0,
+        prefill_max_num_tokens=192,  # 128 text tokens plus 64 pooled visual tokens.
+        decode_max_num_tokens=2,
+        prefill_num_worker_list=[1],
+        decode_num_worker_list=[1],
+        num_gpu_list=[36],
+        enable_epd=True,
+        encoder_tp_list=[4],
+        encoder_batch_list=[2],
+        max_encoder_workers=1,
+    )
+
+    # Actual native candidates must survive even though the 12-head vision
+    # tower cannot be sharded over the language workers' TP16 configuration.
+    assert not rows.empty
+    assert (rows["num_total_gpus"] == 36).all()
+    assert (rows["(e)tp"] == 4).all()
+    assert (rows["(p)tp"] == 16).all()
+    assert (rows["(d)tp"] == 16).all()
+    assert (rows["(e)workers"] == 1).all()
+    assert (rows["encoder_latency"] > 0).all()
+    assert (rows["ttft"] > rows["encoder_latency"]).all()
+    assert (rows["seq/s"] > 0).all()
+    assert template.language_only is False
+
+
 def test_sweep_agg_epd_language_only_pin_survives_config_builder(monkeypatch):
     """Task hands sweep_* a per-point ModelConfig builder, not an instance;
     the EPD language-only pin must apply to what the builder produces."""
@@ -806,7 +987,7 @@ def test_sweep_disagg_epd_encoder_pool_sizing_under_replica_budget(monkeypatch):
 def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
     """_get_encoder_worker_candidates drops (tp, batch) points that exceed the
     encoder system's GPU memory."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     enc_cfg = common.VisionEncoderConfig(
         depth=2,
@@ -854,10 +1035,54 @@ def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
     assert [r["bs"] for r in rows] == [1]
 
 
+@pytest.mark.parametrize("model_path", ["moonshotai/Kimi-K3", "Qwen/Qwen3-VL-8B-Instruct"])
+def test_encoder_worker_candidates_with_real_vision_config(model_path):
+    from aisimulate.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    rows = sweep._get_encoder_worker_candidates(
+        model_path=model_path,
+        tp_list=[1, 2, 4],
+        b_list=[1],
+        runtime_config=config.RuntimeConfig(
+            batch_size=1, isl=128, osl=2, image_height=224, image_width=224, engine_step_backend="rust"
+        ),
+        database=database,
+        backend_name="trtllm",
+        latency_correction=1.0,
+    )
+
+    assert [row["tp"] for row in rows] == [1, 2, 4]
+    for row in rows:
+        assert row["num_total_gpus"] == row["tp"]
+        assert row["bs"] == 1
+        assert row["encoder_latency"] > 0
+        assert row["seq/s"] > 0
+        assert 0 < row["memory"] < database.system_spec["gpu"]["mem_capacity"] / (1 << 30)
+
+
+def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
+    from aisimulate.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    with pytest.raises(ValueError, match="has no vision encoder"):
+        sweep._get_encoder_worker_candidates(
+            model_path="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            tp_list=[1],
+            b_list=[1],
+            runtime_config=config.RuntimeConfig(
+                batch_size=1, isl=128, osl=2, image_height=224, image_width=224, engine_step_backend="rust"
+            ),
+            database=database,
+            backend_name="trtllm",
+            latency_correction=1.0,
+        )
+
+
 def _encoder_candidates_env(monkeypatch, *, latency: float = 50.0):
     """Fixture env for _get_encoder_worker_candidates: real encoder ops,
     mocked perf query, nccl_mem table with keys {1, 2} only."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     enc_cfg = common.VisionEncoderConfig(
         depth=2,
@@ -940,7 +1165,7 @@ def test_encoder_zero_latency_fails_loud(monkeypatch):
 def test_encoder_batch_candidates_capped_at_sglang_max(monkeypatch):
     """The batch cap (8) holds at every entry: explicit candidates at the
     helper, Task validation, and the single-point arguments."""
-    from aiconfigurator.sdk.task_v2 import Task
+    from aisimulate.sdk.task_v2 import Task
 
     database = _encoder_candidates_env(monkeypatch)
     rows = sweep._get_encoder_worker_candidates(
@@ -1138,7 +1363,7 @@ def test_sweep_disagg_autoscale_forwards_degradation_factors(monkeypatch):
         captured.update(kwargs)
         return {"best_config_df": pd.DataFrame([{"selected": True}])}
 
-    monkeypatch.setattr("aiconfigurator.sdk.picking.pick_autoscale", fake_pick_autoscale)
+    monkeypatch.setattr("aisimulate.sdk.picking.pick_autoscale", fake_pick_autoscale)
 
     result = sweep_disagg(
         model_path="x",

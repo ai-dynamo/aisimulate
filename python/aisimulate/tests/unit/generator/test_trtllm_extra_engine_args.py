@@ -15,7 +15,7 @@ import shlex
 import pytest
 import yaml
 
-from aiconfigurator.generator.rendering.engine import render_backend_templates
+from aisimulate.generator.rendering.engine import render_backend_templates
 
 # Shared params dict that mirrors a typical CLI invocation:
 #   aiconfigurator cli default --backend trtllm --model-path Qwen/Qwen3-32B-FP8

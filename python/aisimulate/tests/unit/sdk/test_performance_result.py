@@ -11,7 +11,7 @@ propagation through ``+``, ``*``, ``/``, ``abs()``.
 
 import pytest
 
-from aiconfigurator.sdk.performance_result import PerformanceResult
+from aisimulate.sdk.performance_result import PerformanceResult
 
 
 def pr(latency, energy=0.0, source="silicon"):

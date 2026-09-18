@@ -1,11 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# Copyright contributors to the vLLM project. Modified for collector execution.
 
 # 0.27.0 audit (pod GB300 probe): DeepseekV2MLAAttention ctor params,
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 module qualification after inference-mode correction: job
+# 1968407 passed 30 representative MLA/DSA context/generation cases, including
+# cached-prefix cases and positive supported head-count controls. Known kernel
+# failures at smaller head counts remain observations, not removed cases.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.
@@ -48,20 +54,6 @@ import traceback
 from pathlib import Path
 
 import torch
-from vllm.config import set_current_vllm_config
-from vllm.forward_context import set_forward_context
-
-# ═══════════════════════════════════════════════════════════════════════
-# Config registry patch — vLLM 0.24.0 registers the GlmMoeDsaForCausalLM
-# model class but omits the config-type mapping for "glm_moe_dsa", so
-# AutoConfig.from_pretrained() fails.  The config layout is identical to
-# DeepSeek-V3 (GlmMoeDsaForCausalLM inherits DeepseekV2ForCausalLM), so
-# reusing DeepseekV3Config is safe.
-# ═══════════════════════════════════════════════════════════════════════
-from vllm.transformers_utils.config import _CONFIG_REGISTRY
-from vllm.v1.worker.workspace import init_workspace_manager
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
@@ -78,6 +70,19 @@ from collector.vllm.utils import (
     setup_distributed,
     with_exit_stack,
 )
+from vllm.config import set_current_vllm_config
+from vllm.forward_context import set_forward_context
+
+# ═══════════════════════════════════════════════════════════════════════
+# Config registry patch — vLLM 0.24.0 registers the GlmMoeDsaForCausalLM
+# model class but omits the config-type mapping for "glm_moe_dsa", so
+# AutoConfig.from_pretrained() fails.  The config layout is identical to
+# DeepSeek-V3 (GlmMoeDsaForCausalLM inherits DeepseekV2ForCausalLM), so
+# reusing DeepseekV3Config is safe.
+# ═══════════════════════════════════════════════════════════════════════
+from vllm.transformers_utils.config import _CONFIG_REGISTRY
+from vllm.v1.worker.workspace import init_workspace_manager
+from vllm.version import __version__ as vllm_version
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
@@ -87,11 +92,11 @@ if "glm_moe_dsa" not in _CONFIG_REGISTRY:
 # Local model config resolution — avoid HuggingFace Hub downloads
 # ═══════════════════════════════════════════════════════════════════════
 
-# Pre-cached HF configs live in src/aiconfigurator/model_configs/ as
+# Pre-cached HF configs live in src/aisimulate_core/model_configs/ as
 # "<org>--<model>_config.json".  vLLM's ModelConfig accepts a local
 # directory containing config.json, so we create a temp dir with a
 # symlink when the cached file exists.
-_MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aiconfigurator" / "model_configs"
+_MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 
 # Cache of model_name -> temp dir path (created once per process).
 _local_config_cache: dict[str, str] = {}
@@ -1060,19 +1065,24 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    return run_mla_module(
-        seq_len=seq_len,
-        batch_size=batch_size,
-        num_heads=num_heads,
-        kv_cache_dtype=kv_cache_dtype,
-        compute_dtype=compute_dtype,
-        gemm_type=gemm_type,
-        prefix_len=prefix_len,
-        perf_filename=perf_filename,
-        model_path=model_path,
-        attn_type=attn_type,
-        device=device,
-    )
+    # Serving executes model forward under inference mode (vLLM dd10e03f9,
+    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
+    # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
+    # mutates a cached workspace that may have been created by the dry run.
+    with torch.inference_mode():
+        return run_mla_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            prefix_len=prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            attn_type=attn_type,
+            device=device,
+        )
 
 
 def _cleanup():
