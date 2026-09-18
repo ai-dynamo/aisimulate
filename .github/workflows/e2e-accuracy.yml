@@ -50,6 +50,7 @@ jobs:
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
+            let nightlyAttempt = '';
             if (context.eventName === 'schedule') {
               sha = context.sha;
               branch = 'main';
@@ -75,20 +76,21 @@ jobs:
                 });
                 if (artifacts.some(artifact => artifact.name === 'nightly-build-metadata-amd64' && !artifact.expired)) {
                   nightlyRun = String(run.id);
+                  nightlyAttempt = String(run.run_attempt);
                   break;
                 }
               }
               core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
                 'No reusable wheel for this main SHA; build the exact revision.');
             }
-            const entries = [{branch, sha, nightly_run: nightlyRun}];
+            const entries = [{branch, sha, nightly_run: nightlyRun, nightly_attempt: nightlyAttempt}];
             if (context.eventName === 'schedule') {
               const branches = await github.paginate(github.rest.repos.listBranches, {
                 ...context.repo, per_page: 100,
               });
               for (const release of branches.filter(item => item.name.startsWith('release/'))
                 .sort((a, b) => a.name.localeCompare(b.name))) {
-                entries.push({branch: release.name, sha: release.commit.sha, nightly_run: ''});
+                entries.push({branch: release.name, sha: release.commit.sha, nightly_run: '', nightly_attempt: ''});
               }
             }
             if (entries.length > 256) throw new Error('Accuracy matrix exceeds the 256-job limit');
@@ -120,3 +122,4 @@ jobs:
       branch: ${{ matrix.branch }}
       artifact_key: ${{ matrix.artifact_key }}
       nightly_run: ${{ matrix.nightly_run }}
+      nightly_attempt: ${{ matrix.nightly_attempt }}

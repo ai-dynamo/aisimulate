@@ -79,7 +79,7 @@ jobs:
             echo "::error::provenance_artifact and wheel_subpath must be supplied together"
             exit 1
           fi
-          subpath="${INPUT_WHEEL_SUBPATH:-fpe/${EXPECTED_SHA}/${GITHUB_RUN_ID}/amd64}"
+          subpath="${INPUT_WHEEL_SUBPATH:-fpe/${EXPECTED_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/amd64}"
           echo "subpath=${subpath}" >> "${GITHUB_OUTPUT}"
       - uses: ./.github/actions/setup-manylinux-python-rust
         if: inputs.wheel_subpath == ''

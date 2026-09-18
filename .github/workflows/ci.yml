@@ -418,7 +418,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}/application-test/${{ matrix.arch }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
         run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download dist
       - name: Verify exact staged wheel
@@ -464,7 +464,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}/application-test/${{ matrix.arch }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
         run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download dist
       - name: Stage wheel in Artifactory
@@ -621,7 +621,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}/application-test/${{ matrix.arch }}
         run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload application-test-dist
 
   application-tests:
@@ -667,7 +667,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/application-test/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: ci/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}/application-test/${{ matrix.arch }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ github.sha }}
         run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download application-test-dist
       - name: Install the prebuilt application and test dependencies

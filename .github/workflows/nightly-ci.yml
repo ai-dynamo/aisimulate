@@ -24,7 +24,7 @@ name: Main branch nightly CI
 # The original run creation date and number are stable across retries.
 #
 # Handoff and staging: build jobs upload wheels to the internal PyPI repo under
-# nightly/<run_id>/handoff/<arch>/ with the narrow
+# nightly/<run_id>/<run_attempt>/handoff/<arch>/ with the narrow
 # `pr-wheel-staging` environment. Smoke and FPE jobs pull the exact wheel from
 # there and verify its source SHA and checksum. After those checks pass, the
 # stage job uploads the wheels to the final nightly/<run_id>/ path and the crate
@@ -140,20 +140,8 @@ jobs:
               }
             }
             core.setFailed('commit_sha is not on main or any release/* branch');
-      # Both scheduled and approved manual publication require completed migrations.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ steps.target.outputs.sha }}
-          persist-credentials: false
-      # Keep the checker/current policy trusted while also checking the exact
-      # publication target's migration declarations. Neither can bypass the other.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: release-policy
-          persist-credentials: false
-      - name: Require completed downstream API migrations
-        run: python3 release-policy/scripts/check_release_migrations.py --target-gates .github/release-gates.json
+      # Downstream migrations consume this development wheel before they can
+      # merge. Their completion is a stable-release prerequisite, not a nightly gate.
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
       - name: Compute unique nightly version
@@ -598,7 +586,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/handoff/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/${{ matrix.arch }}
           WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
         run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh upload "${DIST_DIR}"
 
@@ -655,7 +643,7 @@ jobs:
       PYTHON_SERIES_LIST: "3.11 3.12 3.13"
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
-      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
     steps:
       # Only the transfer helper is checked out. The package source tree stays
       # absent so it cannot shadow the wheel during the untrusted dependency
@@ -691,7 +679,7 @@ jobs:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
-          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/handoff/${{ matrix.arch }}
+          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/${{ matrix.arch }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
         run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${DIST_DIR}"
 
@@ -726,7 +714,7 @@ jobs:
           UV_TARGET: ${{ matrix.uv_target }}
         run: |
           set -euo pipefail
-          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
           wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
           [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
@@ -779,14 +767,17 @@ jobs:
   # ARTIFACTORY_* secrets. Scheduled runs additionally require FPE success.
   stage-artifactory:
     name: Stage and verify Artifactory wheel (${{ matrix.arch }})
-    needs: [changes-guard, build-artifacts, smoke-test, fpe-support-matrix, license-evidence]
+    needs: [changes-guard, manual-approval, build-artifacts, smoke-test, fpe-support-matrix, license-evidence]
     if: >-
       !cancelled() &&
       github.ref == 'refs/heads/main' &&
       needs.build-artifacts.result == 'success' &&
       needs.smoke-test.result == 'success' &&
       (github.event_name != 'schedule' || needs.fpe-support-matrix.result == 'success') &&
-      needs.license-evidence.result == 'success'
+      needs.license-evidence.result == 'success' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
     strategy:
       fail-fast: false
       matrix:
@@ -818,7 +809,7 @@ jobs:
       PYTHON_SERIES_LIST: "3.11 3.12 3.13"
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
-      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
     steps:
       - name: Checkout the Artifactory transfer helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -853,7 +844,7 @@ jobs:
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
         run: |
-          export ARTIFACTORY_SUBPATH="nightly/${GITHUB_RUN_ID}/handoff/${{ matrix.arch }}"
+          export ARTIFACTORY_SUBPATH="nightly/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/handoff/${{ matrix.arch }}"
           bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${STAGE_DIR}"
 
       - name: Verify checksums and assemble upload set
@@ -980,7 +971,7 @@ jobs:
           UV_TARGET: ${{ matrix.uv_target }}
         run: |
           set -euo pipefail
-          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
           wheel="$(basename "${FETCH_DIR}"/aisimulate-*.whl)"
           [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
@@ -1196,7 +1187,7 @@ jobs:
       expected_sha: ${{ needs.changes-guard.outputs.target-sha }}
       source_branch: ${{ needs.changes-guard.outputs.target-ref }}
       provenance_artifact: nightly-build-metadata-amd64
-      wheel_subpath: nightly/${{ github.run_id }}/handoff/amd64
+      wheel_subpath: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/amd64
 
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then

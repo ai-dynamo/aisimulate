@@ -20,6 +20,9 @@ on:
       nightly_run:
         required: true
         type: string
+      nightly_attempt:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -74,11 +77,13 @@ jobs:
         env:
           ARTIFACT_KEY: ${{ inputs.artifact_key }}
           NIGHTLY_RUN: ${{ inputs.nightly_run }}
+          NIGHTLY_ATTEMPT: ${{ inputs.nightly_attempt }}
         run: |
           if [ -n "${NIGHTLY_RUN}" ]; then
-            echo "subpath=nightly/${NIGHTLY_RUN}/handoff/amd64" >> "${GITHUB_OUTPUT}"
+            test -n "${NIGHTLY_ATTEMPT}"
+            echo "subpath=nightly/${NIGHTLY_RUN}/${NIGHTLY_ATTEMPT}/handoff/amd64" >> "${GITHUB_OUTPUT}"
           else
-            echo "subpath=fpm-accuracy/${GITHUB_RUN_ID}/${ARTIFACT_KEY}/amd64" >> "${GITHUB_OUTPUT}"
+            echo "subpath=fpm-accuracy/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${ARTIFACT_KEY}/amd64" >> "${GITHUB_OUTPUT}"
           fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.nightly_run != ''

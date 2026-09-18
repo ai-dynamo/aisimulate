@@ -2,7 +2,7 @@
   "pending_migrations": [
     {
       "pull_request": "https://github.com/ai-dynamo/dynamo/pull/14065",
-      "requirement": "Refresh and merge Dynamo's Planner and wheel-smoke migration to best_available(config), with required worker_type, nested estimator_config, and the released-wheel compatibility bridge. Validate against the canonical wheel before clearing this gate and releasing the API."
+      "requirement": "Publish a canonical nightly wheel, then validate and merge Dynamo's Planner and wheel-smoke migration to best_available(config), with required worker_type, nested estimator_config, and the released-wheel compatibility bridge. Clear this gate before a stable API release; it must not block development nightly publication."
     }
   ]
 }
