@@ -18,7 +18,7 @@ SETUPTOOLS = "setuptools>=84"
 ALLOWED_LICENSES = (
     "MIT;MIT License;MIT-CMU;MIT AND PSF-2.0;MIT OR AFL-2.1;Apache-2.0;"
     "Apache Software License;Apache-2.0 OR BSD-2-Clause;Apache Software License; BSD License;"
-    "BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;"
+    "BSD License;BSD-2-Clause;BSD-3-Clause;3-Clause BSD License;BSD-3-Clause AND ISC;"
     "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;MPL-2.0 AND MIT;"
     "PSF-2.0;Python Software Foundation License"
 )

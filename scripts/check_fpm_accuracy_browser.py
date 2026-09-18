@@ -33,6 +33,7 @@ async def check():
         shutil.copytree(ROOT / "pages/fpm-accuracy", site / "fpm-accuracy")
         shutil.copytree(ROOT / "pages/e2e-accuracy", site / "e2e-accuracy")
         data = json.loads((ROOT / "tests/fpm_accuracy/fixtures/summary.json").read_text())
+        data["rows"][0]["skipped_count"] = 7
         entries = []
         for branch in ("main", "release/0.12.0"):
             summary = copy.deepcopy(data)
@@ -78,6 +79,7 @@ async def check():
                     'a[href*="evaluation-detail"], a[href*="coverage.html"], a[href*="trends.html"]'
                 ).count()
                 assert "op-based" not in await page.locator("body").inner_text()
+                await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80/100 predicted")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80.0% coverage")
                 await page.locator('[data-model="Example/Alpha"]').click()

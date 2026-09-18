@@ -185,6 +185,32 @@ def _build_dataset(
     return HfDataset.from_local(root, revision=REVISION)
 
 
+@pytest.mark.parametrize(
+    ("relative", "field"),
+    [
+        ("catalog/index.json", "dataset_id"),
+        (f"{CONFIGURATION_PATH}/manifest.json", "snapshot_id"),
+        (f"{CONFIGURATION_PATH}/measurements/manifest.json", "snapshot_id"),
+        (f"{CONFIGURATION_PATH}/fpm/fpm.metadata.json", "parquet_sha256"),
+        (f"{CONFIGURATION_PATH}/fpm/fpm.metadata.json", "model_path"),
+    ],
+)
+def test_duplicate_hf_json_keys_fail_even_with_matching_hashes(tmp_path, relative, field):
+    _build_dataset(tmp_path, protocol_id=None, files=[])
+    path = tmp_path / relative
+    original = path.read_text()
+    path.write_text(original.replace(f'"{field}":', f'"{field}": "ambiguous", "{field}":', 1))
+    # Keep provenance valid so only strict parsing can reject the ambiguous bytes.
+    if relative.endswith("measurements/manifest.json"):
+        configuration = tmp_path / CONFIGURATION_PATH / "manifest.json"
+        manifest = json.loads(configuration.read_text())
+        manifest["measurements"]["manifest_sha256"] = _sha256(path)
+        _write_json(configuration, manifest)
+    with pytest.raises(DataError, match="duplicate JSON key"):
+        dataset = HfDataset.from_local(tmp_path, revision=REVISION)
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
 def _fpm_payload(*, rank: int = 0, counter: int = 1, wall_time: float = 0.01) -> dict[str, object]:
     return {
         "version": 1,

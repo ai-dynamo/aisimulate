@@ -19,6 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, snapshot_download
 
+from fpm_accuracy.contract import strict_json
 from fpm_accuracy.exceptions import ConfigurationError, DataError
 from fpm_accuracy.hf.models import (
     CaseStatus,
@@ -821,8 +822,8 @@ class HfDataset:
         if expected_sha256 is not None:
             self._verify_file(path, expected_sha256, description=relative)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            value = strict_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             raise DataError(f"cannot parse HF JSON {relative}: {exc}") from exc
         if not isinstance(value, Mapping):
             raise DataError(f"HF JSON {relative} must contain an object")

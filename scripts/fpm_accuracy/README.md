@@ -15,6 +15,9 @@ the worker schema and MoE mapping required for evaluation are retained.
 Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
 overview aggregates, without local reports, raw result exports, or history.
+The public `skipped_count` combines excluded and unavailable source observations;
+the Overview labels this count “excluded or unavailable.” It does not mean
+that all of these observations were deliberately filtered out.
 
 Native AISim imports remain deferred in the adapted adapters so parser and fake
 predictor tests work without an installed native extension. The real campaign
@@ -23,7 +26,10 @@ checks that the native SDK is installed before evaluating any case.
 Hub cache loading supports repository-local blobs and the marked cache-wide
 shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
 measurement and FPM bytes; arbitrary symlink targets outside these stores are
-rejected. Local dataset checkouts retain their strict root boundary.
+rejected. Local dataset checkouts retain their strict root boundary. Catalogs,
+configuration and measurement manifests, and FPM sidecars share the strict
+public-contract JSON parser: duplicate keys (including nested keys) and
+non-finite constants fail even when the pinned bytes match their hashes.
 
 Listener window and single-rank chronology keys use milliseconds so mixed
 streams preserve predict → score → tune ordering. Missing MoE parallelism
