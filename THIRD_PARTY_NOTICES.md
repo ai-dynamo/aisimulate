@@ -103,6 +103,28 @@ Apache-2.0 license text is reproduced in `LICENSE`. This section records
 cross-repository provenance for NVIDIA-authored predecessor code; it is not a
 claim that AIConfigurator is owned by an unaffiliated third party.
 
+## NVIDIA Dynamo Weka regression provenance
+
+The `weka_seam_rekey_never_uses_a_future_parent` regression in repository-root
+`crates/core/src/replay/loadgen/weka.rs` is adapted and modified from NVIDIA
+Dynamo's `lib/mocker/src/loadgen/tests.rs` at immutable commit
+`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISimulate's public
+graph loader and adds assertions that the later continuation was selected while
+the earlier fork retains its original parent.
+
+Upstream source:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License, Version 2.0. The upstream
+license at the identified revision is available at:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/LICENSE
+
+The full Apache-2.0 license text is reproduced in `LICENSE`. This section
+records provenance for NVIDIA-authored predecessor code; it is not a claim
+that Dynamo is owned by an unaffiliated third party.
+
 ## vLLM
 
 The inference-mode scope and MSA query-position metadata integration in
