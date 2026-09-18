@@ -2368,6 +2368,7 @@ def run_mla_module(
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
+    chunked_prefill_size: int | None = None,
 ):
     """Run MLA/DSA module benchmark — called inside a subprocess.
 
@@ -2381,6 +2382,8 @@ def run_mla_module(
     existing ``_dsa_skip_indexer_enabled`` call sites need no signature change.
     """
     global _SKIP_INDEXER_PASS
+    if chunked_prefill_size is not None and chunked_prefill_size <= 0:
+        raise ValueError("chunked_prefill_size must be positive for one-shot module collection")
     _SKIP_INDEXER_PASS = skip_indexer
     device = f"cuda:{gpu_id}"
     torch.cuda.set_device(device)
@@ -2514,7 +2517,7 @@ def run_mla_module(
             from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
         except ModuleNotFoundError:
             from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        _chunk_cap = _sglang_chunked_prefill_size()
+        _chunk_cap = _sglang_chunked_prefill_size() if chunked_prefill_size is None else chunked_prefill_size
         _before_chunk = len(cases)
         cases = [c for c in cases if c[0] * c[1] <= _chunk_cap]
         _dropped_chunk = _before_chunk - len(cases)
@@ -2565,6 +2568,7 @@ def run_mla_module(
             target_tp_size=target_tp_size,
             enable_piecewise_cuda_graph=enable_runner_piecewise_cuda_graph,
             max_total_tokens=max_total_tokens,
+            chunked_prefill_size=chunked_prefill_size,
         )
 
         if is_prefill and attn_type == "dsa":
@@ -2824,6 +2828,7 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="HuggingFace model path")
     parser.add_argument("--num-heads", type=int, default=None, help="Filter by head count")
     parser.add_argument("--kv-cache-dtype", choices=["bfloat16", "fp8"], default=None)
+    parser.add_argument("--chunked-prefill-size", type=int, default=None, help="Serving prefill chunk limit in tokens")
     parser.add_argument("--output-path", default=None, help="Output directory for perf files")
     parser.add_argument("--device", default="cuda:0", help="CUDA device")
     args = parser.parse_args()
@@ -2878,6 +2883,7 @@ def main():
                             gpu_id=gpu_id,
                             output_path=args.output_path,
                             ordinary_mla=args.ordinary_mla,
+                            chunked_prefill_size=args.chunked_prefill_size,
                         )
                     except Exception as e:
                         failed_dispatches += 1

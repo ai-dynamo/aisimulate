@@ -651,7 +651,10 @@ Other combinations fail during argument parsing, before collection starts.
 If any dispatch fails, the CLI reports its traceback, finishes the remaining
 dispatches, and exits with status 1 so partial collection is not reported as success.
 
-Pass the actual per-rank head count and `target_tp_size`. The runner can take
-`chunked_prefill_size` to reproduce the serving chunk limit. The existing
+Pass the actual per-rank head count and `target_tp_size`. Set
+`--chunked-prefill-size 16384` on the CLI, or `chunked_prefill_size=16384`
+on `run_mla_module()`, to reproduce a serving chunk limit of 16,384 tokens.
+Explicit limits must be positive for one-shot module collection.
+Omitting the option keeps SGLang's default. The existing
 wide-EP and DSA paths keep their separate behavior. The ordinary context table
 uses the existing consumer schema; this does not add mixed-precision modeling.

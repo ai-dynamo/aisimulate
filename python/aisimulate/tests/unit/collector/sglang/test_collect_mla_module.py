@@ -752,6 +752,52 @@ class TestOrdinaryMLAPrecision:
 
 @pytest.mark.unit
 class TestOrdinaryMLACli:
+    @pytest.mark.parametrize("chunk_size", [0, -1])
+    def test_nonpositive_chunk_size_is_rejected(self, chunk_size):
+        mod = _import_module()
+        with pytest.raises(ValueError, match="chunked_prefill_size must be positive"):
+            mod.run_mla_module(
+                "mla",
+                8,
+                "test",
+                "bfloat16",
+                "bfloat16",
+                "bfloat16",
+                True,
+                0,
+                ordinary_mla=True,
+                chunked_prefill_size=chunk_size,
+            )
+
+    @pytest.mark.parametrize("chunk_size", [None, 16384])
+    def test_cli_chunk_size_reaches_model_runner(self, monkeypatch, chunk_size):
+        mod = _import_module()
+        args = ["collect_mla_module", "--ordinary-mla", "--mode", "context", "--attn-type", "mla", "--model", "test"]
+        if chunk_size is not None:
+            args.extend(["--chunked-prefill-size", str(chunk_size)])
+        monkeypatch.setattr(sys, "argv", args)
+        monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 8)
+        monkeypatch.setattr(mod, "_get_precision_combos", lambda _mode: [("bfloat16", "bfloat16", "bfloat16")])
+        monkeypatch.setattr(
+            mod, "get_context_test_cases", lambda _type: [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]]
+        )
+        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_kwargs: cases)
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+
+        class RunnerReached(BaseException):
+            pass
+
+        captured = {}
+
+        def load_runner(**kwargs):
+            captured.update(kwargs)
+            raise RunnerReached
+
+        monkeypatch.setattr(mod, "load_model_runner", load_runner)
+        with pytest.raises(RunnerReached):
+            mod.main()
+        assert captured["chunked_prefill_size"] == chunk_size
+
     @pytest.mark.parametrize(
         "args",
         [
