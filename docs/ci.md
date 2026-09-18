@@ -606,32 +606,89 @@ each conditional/reusable job. Code review requirements remain independent.
 The additive [ruleset payload](../.github/required-main-checks.json) describes
 that policy. Use the [edit-once, administrator-apply procedure](../.github/required-main-checks.md)
 to maintain the file and synchronize the existing GitHub ruleset without
-entering the same rules twice. **Configuration checked September 18, 2026:**
-effective `main` rules include all three required CI statuses and strict branch
-currency, alongside review/CODEOWNER approval and conversation resolution.
-Complete bypass inspection requires ruleset write access; controlled-PR
-enforcement evidence remains separate. Recheck live rules before relying on
-enforcement; committing the JSON does not update GitHub settings.
+entering the same rules twice. Committing the JSON does not update GitHub
+settings, and Maintainer access alone cannot perform the administrator apply.
+
+### Read-only configuration verification
+
+Run the [verifier](../scripts/check_required_main_checks.py) from a checkout
+containing the intended payload, with Python 3.11+ and an authenticated `gh`:
 
 ```bash
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
-gh api repos/ai-dynamo/aisimulate/rulesets
+python3 scripts/check_required_main_checks.py \
+  --repository ai-dynamo/aisimulate --output main-rules-evidence.json
 ```
 
-After validating the workflow on `main`, a repository administrator can apply
-the payload. Inspect existing rules first: update a rule with the same name
-instead of creating duplicates, and preserve the existing review/CODEOWNER
-rules. If the CI rule does not exist, create it with:
+It uses only GET requests and emits a timestamped JSON snapshot, including on
+failure. Exit zero means the observed active configuration matches the payload:
+all required contexts have their expected app binding and strict branch
+currency, CI rulesets have no bypass actors, and human approval, CODEOWNER,
+conversation-resolution, deletion, and force-push protections remain present.
+Disabled or evaluate-only rulesets do not appear in the effective-rules API.
+Missing rules, malformed or unavailable API evidence, changing effective rules,
+and hidden bypass configuration fail closed. When GitHub omits bypass actors
+for the caller, rerun with administrator read access; absence is not proof of an
+empty bypass list. The verifier never uses a local payload as evidence of live
+activation and does not inspect or approve individual PRs.
 
-```bash
-gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
-  --input .github/required-main-checks.json
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
-```
+### Administrator activation handoff
 
-Confirm all three status contexts and strict branch currency in the effective
-rules. Maintainer access alone did not permit activation during rollout. Keep
-the trusted-copy Full CI backstop until enforcement is verified.
+1. Save the verifier's pre-activation snapshot and inspect all inherited and
+   repository rulesets:
+
+   ```bash
+   gh api --paginate --slurp \
+     'repos/ai-dynamo/aisimulate/rulesets?includes_parents=true&per_page=100'
+   ```
+
+2. Recheck the actual check names and GitHub Actions application ID from a
+   current successful workflow run on `main`. The payload currently binds all
+   three contexts to app `15368`. Confirm direct Fast and aggregate Full results
+   exist before requiring them; do not substitute conditional jobs.
+3. Resolve any existing repository ruleset named **AISimulate required CI
+   validation** by its ID. Inspect and save its complete definition before an
+   update; preserve unrelated rules and settings. If more than one matching
+   ruleset exists, reconcile it before proceeding. Never replace the inherited
+   review ruleset with the CI-only payload. When no CI ruleset exists, an
+   administrator can create the additive rule:
+
+   ```bash
+   gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
+     --input .github/required-main-checks.json
+   ```
+
+   For an existing CI ruleset, use the repository rules UI or an administrator's
+   reviewed update to that exact ID. Do not create a duplicate. Retain the
+   pre-activation definition and the resulting ruleset ID in the rollout record.
+4. Rerun the verifier and retain its successful post-activation JSON. Compare
+   the complete before/after effective rules to ensure existing protections
+   were preserved. A configuration pass is only the first acceptance step.
+
+### Controlled-PR rollout evidence
+
+Before closing [AIC-1911](https://linear.app/nvidia/issue/AIC-1911), an
+administrator must record the following on a disposable PR without merging it
+or bypassing rules. Capture PR URL, current base/head SHAs, relevant run URLs
+and attempts, the copied-branch SHA when used, and GitHub's required-check
+blocking state for each case. A generic `BLOCKED` result alone is insufficient:
+missing human approval can mask a missing CI requirement.
+
+| Case | Required observation |
+| --- | --- |
+| Push a new head after successful checks | Previous-head evidence does not satisfy the new head's pending checks. |
+| Full CI is absent | `Full CI Success` remains an unsatisfied required check. |
+| A required check fails or is canceled | The specific check blocks merge; an earlier success does not clear it. |
+| Trusted copy has an older SHA | The stale run is not current-head evidence; verify both SHAs explicitly. |
+| Head is behind the base | Strict branch currency prevents the CI requirement from passing until updated and revalidated. |
+| Current checks succeed | All three CI requirements pass, while human/CODEOWNER approval and conversations still gate merge independently. |
+
+Unexpected skips and missing evidence inside each workflow remain covered by
+[workflow regression tests](../tests/test_ci_workflow_contracts.py); do not
+manufacture green aggregate checks to exercise the rollout. This configuration
+verifier's tests are synthetic API cases, not controlled-PR enforcement proof.
+Link both the effective-rule snapshot and the controlled results in AIC-1911.
+Keep the trusted-copy Full CI backstop until enforcement is verified; this
+handoff does not authorize removing it.
 
 Release staging has a separate control: `automated-release` must exist with
 required reviewers before use, and Artifactory credentials belong in that
