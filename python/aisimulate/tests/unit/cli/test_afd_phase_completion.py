@@ -337,6 +337,93 @@ def test_run_afd_estimate_passes_prefix_and_nextn(monkeypatch):
     assert captured["speculative_profile"].expected_accepted_tokens == 0.85
 
 
+def test_run_afd_estimate_a_pool_is_top_level_system(monkeypatch):
+    """The A pool is definitionally the top-level system: it always uses the
+    shared database object, and only the F pool can be overridden. A pool on
+    the top-level system reuses the very same database object -- hetero
+    detection downstream is an identity check."""
+    databases = {}
+
+    class FakeDatabase:
+        def __init__(self, system):
+            self.system = system
+            self.version = "test-version"
+            self.system_spec = {
+                "node": {"num_gpus_per_node": 8},
+                "gpu": {"mem_capacity": 80 * (1 << 30)},
+            }
+
+    def fake_load_database(sys_name):
+        return databases.setdefault(sys_name, FakeDatabase(sys_name))
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_afd(self, runtime_config, **_kwargs):
+            summary = InferenceSummary(runtime_config)
+            summary.set_oom(False)
+            summary.set_result_dict(
+                {
+                    "phase": "decode",
+                    "ttft": 0.0,
+                    "tpot": 1.0,
+                    "request_latency": 9.0,
+                    "b_total": 1,
+                    "num_total_gpus": 16,
+                    "memory": 1.0,
+                    "seq/s": 1.0,
+                    "tokens/s": 9.0,
+                    "tokens/s/gpu": 0.5625,
+                    "tokens/s/user": 9.0,
+                    "power_w": 0.0,
+                }
+            )
+            return summary
+
+    monkeypatch.setattr("aiconfigurator.sdk.inference_session.AFDInferenceSession", FakeSession)
+    monkeypatch.setattr("aiconfigurator.cli.api.resolve_nvfp4_for_system", lambda *a, **k: None)
+
+    api._run_afd_estimate(
+        model_path="test-model",
+        system_name="top-sys",
+        backend_name="test-backend",
+        resolved_version="current",
+        isl=128,
+        osl=10,
+        tp_size=1,
+        a_tp_size=1,
+        n_a_nodes=1,
+        n_f_nodes=1,
+        a_batch_size=1,
+        f_moe_ep_size=1,
+        num_microbatches=None,
+        pipeline_model="serial",
+        comm_overhead_factor=1.0,
+        afd_phase="decode",
+        afd_combined_with_pd=False,
+        afd_boundary_on_attn=True,
+        gemm_quant_mode=None,
+        kvcache_quant_mode=None,
+        fmha_quant_mode=None,
+        moe_quant_mode=None,
+        comm_quant_mode=None,
+        load_database=fake_load_database,
+        get_backend=lambda _backend_name: SimpleNamespace(name=SimpleNamespace(value="test-backend")),
+        get_model=lambda *_args, **_kwargs: None,
+        free_gpu_memory_fraction=0.9,
+        max_seq_len=None,
+        afd_f_system_name="f-sys",
+    )
+
+    assert "a_system_name" not in captured
+    assert captured["f_system_name"] == "f-sys"
+    assert captured["database"] is databases["top-sys"]
+    assert captured["f_database"] is databases["f-sys"]
+
+
 def test_afd_prefill_uses_uncached_prefix_suffix_for_token_math(monkeypatch):
     """Prefill comm/compute math must size token volume by the uncached
     suffix ``isl - prefix``, not the raw ``isl``.
@@ -370,11 +457,11 @@ def test_afd_prefill_uses_uncached_prefix_suffix_for_token_math(monkeypatch):
             a_combine=FakeCommOp("afd_a_side_combine"),
         )
 
-    def fake_sum_latency(self, _ops, *, batch_size, seq_len, model, runtime_config, is_context):
+    def fake_sum_latency(self, _ops, *, batch_size, seq_len, model, runtime_config, is_context, **_kwargs):
         captured["sum_latency_seq_lens"].append(seq_len)
         return 2.0, {}
 
-    def fake_memory_summary(self, _memory, runtime_config, _free_gpu_memory_fraction):
+    def fake_memory_summary(self, _memory, runtime_config, _free_gpu_memory_fraction, **_kwargs):
         summary = InferenceSummary(runtime_config)
         summary.set_oom(False)
         summary.set_kv_cache_oom(False)
@@ -456,7 +543,7 @@ def test_afd_decode_mtp_widens_compute_and_communication_queries(monkeypatch, ca
         captured["batch_sizes"].append(batch_size)
         return 2.0, {}
 
-    def fake_memory_summary(self, _memory, runtime_config, _free_gpu_memory_fraction):
+    def fake_memory_summary(self, _memory, runtime_config, _free_gpu_memory_fraction, **_kwargs):
         summary = InferenceSummary(runtime_config)
         summary.set_oom(False)
         summary.set_kv_cache_oom(False)
@@ -964,6 +1051,46 @@ def test_cli_estimate_afd_rejects_invalid_engine_step_backend():
         api.cli_estimate(
             **_afd_cli_estimate_kwargs(engine_step_backend="python", afd_combined_with_pd=False),
         )
+
+
+def test_cli_estimate_afd_hetero_pools_resolve_own_latest_version(monkeypatch):
+    """A pinned ``backend_version`` applies to the top-level system only: a
+    hetero AFD pool resolves its own latest version (the pinned build may not
+    exist on the pool's hardware), matching ``Task._afd_pool_version``."""
+    import aiconfigurator.sdk.perf_database as perf_database
+
+    monkeypatch.setattr(
+        perf_database,
+        "get_latest_database_version",
+        lambda system, backend, systems_paths=None: f"latest-{system}",
+    )
+    loaded = []
+
+    def fake_get_database_view(system, backend, version, **_kwargs):
+        loaded.append((system, version))
+        return SimpleNamespace(system=system, version=version)
+
+    monkeypatch.setattr(perf_database, "get_database_view", fake_get_database_view)
+
+    captured = {}
+    afd_only = _estimate_result(raw={"phase": "decode", "num_total_gpus": 8, "memory": 1.0})
+    monkeypatch.setattr(api, "_run_afd_estimate", lambda **kwargs: captured.update(kwargs) or afd_only)
+
+    result = api.cli_estimate(
+        **_afd_cli_estimate_kwargs(
+            afd_combined_with_pd=False,
+            backend_version="9.9.9-pinned",
+            afd_f_system_name="pool-sys",
+        ),
+    )
+    assert result is afd_only
+
+    # The top-level loader still honors the pinned version...
+    captured["load_database"]("test-system")
+    assert ("test-system", "9.9.9-pinned") in loaded
+    # ...while a hetero pool resolves its own latest version.
+    captured["load_pool_database"]("pool-sys")
+    assert ("pool-sys", "latest-pool-sys") in loaded
 
 
 def test_cli_estimate_afd_combined_with_pd_false_skips_static(monkeypatch):
