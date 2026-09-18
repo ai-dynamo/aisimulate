@@ -750,11 +750,14 @@ def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_rese
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
-def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
+@pytest.mark.parametrize("dtype", [None, "gemm_dtype", "moe_dtype", "fmha_dtype", "kv_cache_dtype", "comm_dtype"])
+def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch, dtype):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
     engine_args.pop("num_gpu_blocks")
     engine_args["gpu_memory_utilization"] = 0.8
+    if dtype:
+        engine_args["aic_" + dtype] = "fp8"
     calls = []
 
     def estimate(**kwargs):
@@ -778,6 +781,9 @@ def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypa
     assert rank["timing_model"]["type"] == "fixed"
     assert "gpu_memory_utilization" not in rank
     assert calls[0]["gpu_memory_utilization"] == 0.8
+    if dtype:
+        assert calls[0][dtype] == "fp8"
+        assert "aic_" + dtype not in rank
 
 
 def test_runner_captures_requested_raw_and_per_request_report():
