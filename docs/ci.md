@@ -604,30 +604,82 @@ currency. Use the direct Fast result and Full aggregate rather than requiring
 each conditional/reusable job. Code review requirements remain independent.
 
 The additive [ruleset payload](../.github/required-main-checks.json) describes
-that policy. **Rollout status checked September 14, 2026:** effective `main`
-rules required review/CODEOWNER approval and conversation resolution, but did
-not yet contain the required CI statuses. Recheck live rules before relying on
-enforcement; committing the JSON does not activate it.
+that policy. Use the [edit-once, administrator-apply procedure](../.github/required-main-checks.md)
+to maintain the file and synchronize the existing GitHub ruleset without
+entering the same rules twice. Committing the JSON does not update GitHub
+settings, and Maintainer access alone cannot perform the administrator apply.
+
+### Read-only configuration verification
+
+Run the [verifier](../scripts/check_required_main_checks.py) from a checkout
+containing the intended payload, with Python 3.11+ and an authenticated `gh`:
 
 ```bash
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
-gh api repos/ai-dynamo/aisimulate/rulesets
+python3 scripts/check_required_main_checks.py \
+  --repository ai-dynamo/aisimulate --output main-rules-evidence.json
 ```
 
-After validating the workflow on `main`, a repository administrator can apply
-the payload. Inspect existing rules first: update a rule with the same name
-instead of creating duplicates, and preserve the existing review/CODEOWNER
-rules. If the CI rule does not exist, create it with:
+It uses only GET requests and emits a timestamped JSON snapshot, including on
+failure. Exit zero means the observed active configuration matches the payload:
+all required contexts have their expected app binding and strict branch
+currency, CI rulesets have no bypass actors, and human approval, CODEOWNER,
+conversation-resolution, deletion, and force-push protections remain present.
+Disabled or evaluate-only rulesets do not appear in the effective-rules API.
+Missing rules, malformed or unavailable API evidence, changing effective rules,
+and hidden bypass configuration fail closed. When GitHub omits bypass actors
+for the caller, rerun with administrator read access; absence is not proof of an
+empty bypass list. The verifier never uses a local payload as evidence of live
+activation and does not inspect or approve individual PRs.
 
-```bash
-gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
-  --input .github/required-main-checks.json
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
-```
+### Administrator activation handoff
 
-Confirm all three status contexts and strict branch currency in the effective
-rules. Maintainer access alone did not permit activation during rollout. Keep
-the trusted-copy Full CI backstop until enforcement is verified.
+When a PR changes the ruleset payload, its author fills in the ruleset handoff
+fields in the PR template, mentions or requests review from a named apply owner,
+and records that owner's acknowledgement before merge. The apply owner must
+have Admin or `edit repository rules` access; CODEOWNER approval and Maintain
+access do not prove that permission.
+
+After merge, that owner checks out the exact merged `main` commit and follows
+the [edit-once apply procedure](../.github/required-main-checks.md): save the
+read-only verifier's pre-apply JSON, preview the difference for existing ruleset
+`23671922`, apply it with a unique backup path, and save a passing post-apply
+verifier JSON. The synchronizer updates only that existing repository ruleset
+and never creates one. If the target is absent, mixed-purpose, has
+bypass actors, or hides bypass settings, it stops for explicit administrator
+reconciliation.
+
+Link the exact merged SHA, ruleset URL, complete backup, verifier snapshots, and
+command outcomes in the merged PR or AIC-1911. That record is how reviewers know
+the authorized owner accepted and completed the live apply. Until the passing
+post-apply evidence is linked, the repository file states intent but does not
+prove enforcement. Rerun controlled-PR rollout cases after a policy change; a
+configuration pass is only the first acceptance step.
+
+### Controlled-PR rollout evidence
+
+Before closing [AIC-1911](https://linear.app/nvidia/issue/AIC-1911), an
+administrator must record the following on a disposable PR without merging it
+or bypassing rules. Capture PR URL, current base/head SHAs, relevant run URLs
+and attempts, the copied-branch SHA when used, and GitHub's required-check
+blocking state for each case. A generic `BLOCKED` result alone is insufficient:
+missing human approval can mask a missing CI requirement.
+
+| Case | Required observation |
+| --- | --- |
+| Push a new head after successful checks | Previous-head evidence does not satisfy the new head's pending checks. |
+| Full CI is absent | `Full CI Success` remains an unsatisfied required check. |
+| A required check fails or is canceled | The specific check blocks merge; an earlier success does not clear it. |
+| Trusted copy has an older SHA | The stale run is not current-head evidence; verify both SHAs explicitly. |
+| Head is behind the base | Strict branch currency prevents the CI requirement from passing until updated and revalidated. |
+| Current checks succeed | All three CI requirements pass, while human/CODEOWNER approval and conversations still gate merge independently. |
+
+Unexpected skips and missing evidence inside each workflow remain covered by
+[workflow regression tests](../tests/test_ci_workflow_contracts.py); do not
+manufacture green aggregate checks to exercise the rollout. This configuration
+verifier's tests are synthetic API cases, not controlled-PR enforcement proof.
+Link both the effective-rule snapshot and the controlled results in AIC-1911.
+Keep the trusted-copy Full CI backstop until enforcement is verified; this
+handoff does not authorize removing it.
 
 Release staging has a separate control: `automated-release` must exist with
 required reviewers before use, and Artifactory credentials belong in that
