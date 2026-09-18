@@ -453,6 +453,21 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
 - `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/benchmark/one_batch.py`
+
+The original integration adapter
+`collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
+builder and request lifecycle. Its component boundaries are modified from
+the serving contracts above; it does not copy framework metadata builders.
+The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
+and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
+modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
+
+The measured operator databases and adjacent documentation under
+`src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings
+and geometry adapted from the same serving contracts. Their README identifies
+the immutable measurement archive and the source-audited indexer metadata
+correction; restoring the database does not change its measured timings.
 
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are

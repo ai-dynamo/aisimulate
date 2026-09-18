@@ -225,6 +225,12 @@ class DeepSeekV41Model(BaseModel):
                 is_context=context,
                 attn_ar_modeled=True,
             )
+            if ep == 1:
+                # The text TP baseline uses an explicit NCCL collective,
+                # consistently with attention/Engram and its measured comm
+                # table. Serving validation disables custom all-reduce.
+                combine = ops.NCCL(f"{phase}_moe_post_dispatch", 1, "all_reduce", h, mtp, common.CommQuantMode.half)
+
             # SGLang's qualified TP eager path executes forward_normal on
             # one stream. Dual-stream shared/routed work requires capture or
             # graph/SBO dispatch (sglang@1aa0e962 deepseek_v2.py:885-960,
