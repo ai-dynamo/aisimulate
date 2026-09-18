@@ -99,17 +99,13 @@ resolve it.
 
 ## 1. Check support and prepare the environment
 
-Use Python 3.11–3.13 and an AISimulate build containing
-[PR #284](https://github.com/ai-dynamo/aisimulate/pull/284). A package version
-alone does not establish that an unreleased feature is included. If you already
-have that build, activate its environment and continue with the checks below.
-For a source installation while the PR is open:
+Use Python 3.11–3.13 and install AISimulate from the latest `main`.
+For an existing checkout, run `git switch main` and start from the pull command:
 
 ```bash
-git clone https://github.com/ai-dynamo/aisimulate.git
+git clone --branch main https://github.com/ai-dynamo/aisimulate.git
 cd aisimulate
-git fetch origin pull/284/head
-git switch --detach FETCH_HEAD
+git pull --ff-only origin main
 uv sync --project python/aisimulate --extra dev
 source python/aisimulate/.venv/bin/activate
 ```
@@ -125,7 +121,6 @@ From the repository root, record the source and package in the activated session
 export AIS_REPO="$PWD"
 git rev-parse HEAD
 python -c 'from importlib.metadata import version; print(version("aisimulate"))'
-python -c 'from aisimulate_core.sdk import ForwardPassPerfModelConfig; assert "dcp" in ForwardPassPerfModelConfig.__dataclass_fields__'
 aisimulate predict --help
 ```
 
