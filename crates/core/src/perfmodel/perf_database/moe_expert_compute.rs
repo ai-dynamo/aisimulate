@@ -781,6 +781,7 @@ mod tests {
                 p2p_latency: 0.0,
                 num_gpus_per_rack: None,
                 inter_rack_bw: None,
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         }

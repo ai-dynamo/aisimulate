@@ -92,6 +92,32 @@ class AFDTransfer(PythonOperation):
     tokens and sends/receives them with the full ``hidden_size`` per
     token.  The per-link payload is therefore symmetric for both
     directions.
+
+    Hetero A/F hardware: the A→F link spans two device types, so its
+    throughput is set by the slower endpoint. Pass ``peer_database`` to
+    ``query()`` and the op prices the transfer at the **bottleneck** side
+    -- for a fixed payload that is the larger of the two latencies, which
+    is exactly ``min`` of the two bandwidths (each side's ``p2p_latency``
+    constant is already folded into ``query_p2p``).
+
+    Super-node topology: ``span_gpus`` is how many GPUs the A and F pools
+    occupy together. It selects the fabric tier -- a pool pair that fits
+    inside one scale-up domain is priced on NVLink/NVSwitch, one that
+    exceeds ``num_gpus_per_rack`` on the scale-out fabric. Leaving it
+    ``None`` keeps the flat ``inter_node_bw`` pricing.
+
+    The two knobs are orthogonal and compose: each side resolves its own
+    tier against its own system spec (rack width is a hardware fact, so
+    hetero pools can disagree on it), then bottleneck pricing picks the
+    slower of the two tier-resolved latencies.
+
+    Known conservatism: ``span_gpus`` is the pool pair's TOTAL span, and the
+    tier it selects is applied to every cross-pool link. A deployment that
+    spills just past a rack boundary has only a small fraction of pairs
+    actually crossing, yet all of them are priced on the scale-out fabric, so
+    multi-rack AFD reads worse than it is. Weighting by the crossing fraction
+    needs a rack-layout input and is tracked as a follow-up; the bias is
+    one-directional, so tiering never flatters going wide.
     """
 
     _VALID_DIRECTIONS = ("a2f", "f2a")
@@ -106,6 +132,8 @@ class AFDTransfer(PythonOperation):
         n_a_workers: int,
         n_f_workers: int,
         gpus_per_node: int = 8,
+        f_gpus_per_node: int | None = None,
+        span_gpus: int | None = None,
         num_experts: int = 0,
         topk: int = 0,
         comm_quant_mode: Optional[common.CommQuantMode] = None,
@@ -119,6 +147,12 @@ class AFDTransfer(PythonOperation):
         self._n_a_workers = max(int(n_a_workers), 1)
         self._n_f_workers = max(int(n_f_workers), 1)
         self._gpus_per_node = max(int(gpus_per_node), 1)
+        # F-node grouping is an F-pool hardware fact; under hetero A/F it
+        # differs from the A pool. Falls back to gpus_per_node.
+        self._f_gpus_per_node = max(int(f_gpus_per_node or gpus_per_node), 1)
+        # GPUs spanned by the A+F pools together, used to pick the fabric
+        # tier. None keeps the flat inter_node_bw pricing.
+        self._span_gpus = max(int(span_gpus), 1) if span_gpus else None
         self._num_experts = max(int(num_experts), 0)
         self._topk = max(int(topk), 0)
         self._comm_quant_mode = comm_quant_mode or common.CommQuantMode.half
@@ -131,8 +165,13 @@ class AFDTransfer(PythonOperation):
 
     @property
     def num_f_nodes(self) -> int:
-        """Physical F-node count: ``ceil(n_f_workers / gpus_per_node)``."""
-        return max((self._n_f_workers + self._gpus_per_node - 1) // self._gpus_per_node, 1)
+        """Physical F-node count: ``ceil(n_f_workers / f_gpus_per_node)``."""
+        return max((self._n_f_workers + self._f_gpus_per_node - 1) // self._f_gpus_per_node, 1)
+
+    @property
+    def span_gpus(self) -> int | None:
+        """GPUs spanned by the A+F pools, or ``None`` for flat pricing."""
+        return self._span_gpus
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         x = int(kwargs.get("x", 0))
@@ -147,8 +186,21 @@ class AFDTransfer(PythonOperation):
         if per_link_bytes <= 0:
             return PerformanceResult(0.0, 0.0, source="empirical")
         # pp_size=2 passes the twin's "pp_size=1 is a no-op" gate; a single
-        # P2P link is charged regardless of the actual pp depth.
-        result = _engine_comm_query(database, P2P("afd_p2p", 1.0, -(-per_link_bytes // 2), 2))
+        # P2P link is charged regardless of the actual pp depth. ``span_gpus``
+        # selects the fabric tier inside the engine -- None keeps the flat
+        # inter-node pricing, which is what a caller that does not care about
+        # tiers wants.
+        probe = P2P("afd_p2p", 1.0, -(-per_link_bytes // 2), 2, span_gpus=self._span_gpus)
+        result = _engine_comm_query(database, probe)
+        peer_database = kwargs.get("peer_database")
+        if peer_database is not None and peer_database is not database:
+            # Bottleneck pricing: same payload, so the slower side wins. The
+            # probe is reused verbatim -- only the database differs, so each
+            # side resolves its own fabric tier from its own system spec and
+            # the two evaluations stay comparable.
+            peer_result = _engine_comm_query(peer_database, probe)
+            if float(peer_result) > float(result):
+                result = peer_result
         lat = float(result) * self._comm_overhead_factor
         return PerformanceResult(
             lat * self._scale_factor,
@@ -182,6 +234,7 @@ class AFDFAllGather(PythonOperation):
         n_a_workers: int,
         n_f_workers: int,
         gpus_per_node: int = 8,
+        f_gpus_per_node: int | None = None,
         num_experts: int = 0,
         topk: int = 0,
         comm_quant_mode: Optional[common.CommQuantMode] = None,
@@ -196,6 +249,9 @@ class AFDFAllGather(PythonOperation):
         self._n_a_workers = max(int(n_a_workers), 1)
         self._n_f_workers = max(int(n_f_workers), 1)
         self._gpus_per_node = max(int(gpus_per_node), 1)
+        # F-node grouping / intra-node F-GPU count are F-pool hardware
+        # facts; under hetero A/F they differ from the A pool.
+        self._f_gpus_per_node = max(int(f_gpus_per_node or gpus_per_node), 1)
         self._num_experts = max(int(num_experts), 0)
         self._topk = max(int(topk), 0)
         self._comm_quant_mode = comm_quant_mode or common.CommQuantMode.half
@@ -205,14 +261,14 @@ class AFDFAllGather(PythonOperation):
     @property
     def num_f_nodes(self) -> int:
         return max(
-            (self._n_f_workers + self._gpus_per_node - 1) // self._gpus_per_node,
+            (self._n_f_workers + self._f_gpus_per_node - 1) // self._f_gpus_per_node,
             1,
         )
 
     @property
     def f_gpus_in_node(self) -> int:
         """Number of F-GPUs within a single node."""
-        return min(self._n_f_workers, self._gpus_per_node)
+        return min(self._n_f_workers, self._f_gpus_per_node)
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         f_local = self.f_gpus_in_node
@@ -267,6 +323,7 @@ class AFDFReduceScatter(PythonOperation):
         n_a_workers: int,
         n_f_workers: int,
         gpus_per_node: int = 8,
+        f_gpus_per_node: int | None = None,
         num_experts: int = 0,
         topk: int = 0,
         comm_quant_mode: Optional[common.CommQuantMode] = None,
@@ -281,6 +338,9 @@ class AFDFReduceScatter(PythonOperation):
         self._n_a_workers = max(int(n_a_workers), 1)
         self._n_f_workers = max(int(n_f_workers), 1)
         self._gpus_per_node = max(int(gpus_per_node), 1)
+        # F-node grouping / intra-node F-GPU count are F-pool hardware
+        # facts; under hetero A/F they differ from the A pool.
+        self._f_gpus_per_node = max(int(f_gpus_per_node or gpus_per_node), 1)
         self._num_experts = max(int(num_experts), 0)
         self._topk = max(int(topk), 0)
         self._comm_quant_mode = comm_quant_mode or common.CommQuantMode.half
@@ -289,12 +349,12 @@ class AFDFReduceScatter(PythonOperation):
 
     @property
     def num_f_nodes(self) -> int:
-        return max((self._n_f_workers + self._gpus_per_node - 1) // self._gpus_per_node, 1)
+        return max((self._n_f_workers + self._f_gpus_per_node - 1) // self._f_gpus_per_node, 1)
 
     @property
     def f_gpus_in_node(self) -> int:
         """Number of F-GPUs within a single node."""
-        return min(self._n_f_workers, self._gpus_per_node)
+        return min(self._n_f_workers, self._f_gpus_per_node)
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         f_local = self.f_gpus_in_node

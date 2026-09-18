@@ -115,6 +115,11 @@ pub struct NodeSpec {
     /// Inter-rack bandwidth, bytes/s. Optional.
     #[serde(default)]
     pub inter_rack_bw: Option<f64>,
+    /// Inter-rack point-to-point latency (seconds). Optional; falls back to
+    /// `p2p_latency` when unset, so systems without a rack tier keep the
+    /// pre-rack behavior.
+    #[serde(default)]
+    pub inter_rack_latency: Option<f64>,
 }
 
 /// Miscellaneous, mostly empirical, configuration.
@@ -173,6 +178,29 @@ impl SystemSpec {
             return node.inter_node_bw;
         }
         node.inter_rack_bw.unwrap_or(node.inter_node_bw)
+    }
+
+    /// Latency counterpart of [`Self::get_p2p_bandwidth`], mirroring Python's
+    /// `SystemSpec.get_p2p_latency`. Two tiers suffice: `p2p_latency` inside the
+    /// scale-up domain, the scale-out fabric's round trip across racks; no
+    /// declared rack tier always returns `p2p_latency`.
+    ///
+    /// The cross-rack clamp is load-bearing, not defensive: some shipped specs
+    /// raise `p2p_latency` by hand as a calibration knob (gb200/gb300 label
+    /// theirs a "nonofficial correction") while `inter_rack_latency` keeps the
+    /// textbook InfiniBand figure, inverting the pair. Clamp silently because
+    /// this crate has no logging dependency; the Python side warns on the same
+    /// yaml, and both must agree on the number.
+    pub fn get_p2p_latency(&self, num_gpus: u32) -> f64 {
+        let node = &self.node;
+        let per_rack = node.num_gpus_per_rack.unwrap_or(u32::MAX);
+        if num_gpus <= per_rack {
+            return node.p2p_latency;
+        }
+        match node.inter_rack_latency {
+            Some(inter_rack) if inter_rack >= node.p2p_latency => inter_rack,
+            _ => node.p2p_latency,
+        }
     }
 }
 
@@ -248,6 +276,7 @@ mod tests {
                 p2p_latency: 0.0,
                 num_gpus_per_rack: Some(72),
                 inter_rack_bw: Some(10.0),
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         };
@@ -286,6 +315,7 @@ mod tests {
                 p2p_latency: 0.0,
                 num_gpus_per_rack: Some(72),
                 inter_rack_bw: None, // unset
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         };

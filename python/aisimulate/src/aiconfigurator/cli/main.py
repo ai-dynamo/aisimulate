@@ -359,6 +359,69 @@ def _add_attention_backend_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+# AFD runs up to three pools: a static prefill pool (when combined with P/D),
+# the A (attention) pool and the F (FFN/MoE) pool. The A pool is always
+# --system (it is the primary side and owns the KV cache); only the static
+# prefill and F pools can be pinned to their own hardware. Anything left
+# unset inherits --system. All pools share the single --backend, and each
+# pool's DB version is resolved automatically.
+_AFD_POOL_FLAGS = (
+    ("prefill", "static prefill"),
+    ("f", "F (FFN/MoE)"),
+)
+# The single-point `estimate` mode has no static prefill pool of its own (the
+# complementary phase is a separate static estimate), so it exposes F only.
+_AFD_ESTIMATE_POOL_FLAGS = tuple(p for p in _AFD_POOL_FLAGS if p[0] != "prefill")
+_AFD_POOL_SUFFIXES = ("system_name",)
+
+
+def _add_afd_pool_arguments(parser, pools=_AFD_POOL_FLAGS, suffixes=_AFD_POOL_SUFFIXES):
+    """Register the per-pool hetero overrides for AFD mode.
+
+    Cross-pool A2F/F2A transfers are priced at the slower of the two
+    endpoints, i.e. bandwidth = min of both sides.
+    """
+    for pool, label in pools:
+        if "system_name" in suffixes:
+            parser.add_argument(
+                f"--afd-{pool}-system",
+                dest=f"afd_{pool}_system_name",
+                type=str,
+                default=None,
+                help=f"System (GPU type) for the AFD {label} pool. AFD mode only. "
+                f"Defaults to --system. Set it to model heterogeneous AFD, e.g. a high-FLOPS "
+                f"device for F while A (which owns the KV cache) stays on --system; "
+                f"cross-pool P2P bandwidth is then the min of both sides.",
+            )
+
+
+def _collect_afd_pool_kwargs(args, pools=_AFD_POOL_FLAGS, suffixes=_AFD_POOL_SUFFIXES) -> dict[str, str]:
+    """Collect the AFD per-pool overrides the user actually passed.
+
+    Only non-None values are returned, so an invocation without any pool flag
+    yields ``{}`` and every pool inherits --system / --backend.
+
+    The pool flags only mean something in AFD mode, so passing them elsewhere is
+    rejected rather than silently ignored. ``default`` mode names the selector
+    ``--serving-mode`` and ``estimate`` mode names it ``--estimate-mode``; both
+    are consulted.
+    """
+    collected: dict[str, str] = {}
+    for pool, _label in pools:
+        for suffix in suffixes:
+            field = f"afd_{pool}_{suffix}"
+            value = getattr(args, field, None)
+            if value is not None:
+                collected[field] = value
+    if not collected:
+        return collected
+    modes = [getattr(args, attr, None) for attr in ("serving_mode", "estimate_mode")]
+    if not any(mode in ("afd", "all") for mode in modes if mode is not None):
+        selector = "--estimate-mode" if getattr(args, "estimate_mode", None) is not None else "--serving-mode"
+        raise SystemExit(f"{sorted(collected)} only apply to AFD mode; pass {selector} afd, or drop these flags.")
+    return collected
+
+
 def _add_default_mode_arguments(parser):
     parser.add_argument(
         "--model-path",
@@ -446,6 +509,7 @@ def _add_default_mode_arguments(parser):
         help="[expert] Behavior when the AFD topology search exceeds --afd-max-candidates. "
         "Default: error; use truncate only as an explicit bounded-search opt-in.",
     )
+    _add_afd_pool_arguments(parser)
     parser.add_argument(
         "--perf-db-version",
         "--backend-version",
@@ -1291,6 +1355,10 @@ def _add_estimate_mode_arguments(parser):
         default=False,
         help="Assign boundary ops (add_norm_2, logits_gemm) to F-Worker. Default is A-Worker; pass this flag to flip.",
     )
+    _add_afd_pool_arguments(
+        parser,
+        pools=_AFD_ESTIMATE_POOL_FLAGS,
+    )
 
     # Quantization
     parser.add_argument(
@@ -1745,6 +1813,7 @@ def build_default_tasks(
     video_frames: int = 0,
     num_videos: int = 0,
     num_video_tokens: int = 0,
+    afd_pools: dict[str, str | None] | None = None,
 ) -> dict[str, Task]:
     """Build task configs for the selected default-mode serving modes.
 
@@ -1791,6 +1860,10 @@ def build_default_tasks(
             ``"all"`` also includes AFD, and an explicit mode builds only that mode.
         afd_max_a_batch_size: Maximum attention batch size considered by AFD.
         afd_max_candidates: Maximum AFD candidates to enumerate.
+        afd_pools: Per-pool hetero system overrides for AFD mode, as Task field
+            names (``afd_{prefill,f}_system_name``; the A pool is always
+            ``system``). Only the keys the user set are present; each missing
+            pool inherits ``system``. All pools share the single ``backend``.
         afd_candidate_overflow: Behavior when the AFD candidate limit is exceeded.
 
     Returns:
@@ -2013,14 +2086,23 @@ def build_default_tasks(
     afd_feasible = False
     if "afd" in modes_to_sweep:
         afd_gpus_per_node = _lookup_num_gpus_per_node(system)
+        # Hetero F pool: the A pool is the top-level system by definition,
+        # but F may sit on narrower nodes. Mirror Task._resolve_afd_search
+        # (minimum = a_gpus_per_node + f_gpus_per_node) so a feasible hetero
+        # budget is not rejected by a top-level 2 * gpus_per_node check.
+        # Homogeneous case degrades to the original 2 * afd_gpus_per_node.
+        f_sys = (afd_pools or {}).get("afd_f_system_name") or system
+        a_gpn = afd_gpus_per_node
+        f_gpn = _lookup_num_gpus_per_node(f_sys) or afd_gpus_per_node
         if afd_gpus_per_node is None:
             logger.warning("Skipping afd: could not resolve num_gpus_per_node for system %s.", system)
-        elif total_gpus < 2 * afd_gpus_per_node:
+        elif total_gpus < a_gpn + f_gpn:
             logger.warning(
                 "Skipping afd: the current node-granular topology requires one full A node "
-                "and one full F node (%d GPUs total at %d GPUs/node), got total_gpus=%d.",
-                2 * afd_gpus_per_node,
-                afd_gpus_per_node,
+                "(%d GPUs) plus one full F node (%d GPUs) = %d GPUs total, got total_gpus=%d.",
+                a_gpn,
+                f_gpn,
+                a_gpn + f_gpn,
                 total_gpus,
             )
         else:
@@ -2047,6 +2129,8 @@ def build_default_tasks(
                     afd_max_a_batch_size=afd_max_a_batch_size,
                     afd_max_candidates=afd_max_candidates,
                     afd_candidate_overflow=afd_candidate_overflow,
+                    # Per-pool hetero overrides; empty dict == fully homogeneous.
+                    **(afd_pools or {}),
                     **global_kwargs,
                 )
             except ValueError as exc:
@@ -2955,6 +3039,10 @@ def _run_estimate_mode(args):
             afd_phase=args.afd_phase,
             afd_combined_with_pd=getattr(args, "afd_combined_with_pd", True),
             afd_boundary_on_attn=not getattr(args, "boundary_on_ffn", False),
+            **_collect_afd_pool_kwargs(
+                args,
+                pools=_AFD_ESTIMATE_POOL_FLAGS,
+            ),
         )
 
     result = cli_estimate(**estimate_kwargs)
@@ -3416,6 +3504,7 @@ def main(args):
             afd_max_a_batch_size=getattr(args, "afd_max_a_batch_size", 1024),
             afd_max_candidates=getattr(args, "afd_max_candidates", 10_000),
             afd_candidate_overflow=getattr(args, "afd_candidate_overflow", "error"),
+            afd_pools=_collect_afd_pool_kwargs(args),
             enable_wideep=getattr(args, "enable_wideep", False),
             moe_backend=getattr(args, "moe_backend", None),
             attention_backend=getattr(args, "attention_backend", None),

@@ -80,7 +80,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19 (AFD super-node fabric tiering): `P2POp` gained `span_gpus` — a
+//   positional bincode op-layout change (the serde default covers JSON
+//   only, same class as v12/v14).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
