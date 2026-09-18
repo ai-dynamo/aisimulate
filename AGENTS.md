@@ -10,9 +10,12 @@ self-service guide. Use the checkout's `aisimulate onboard` CLI and current help
 Follow its six stages: inspect the model and target; choose the deployment and
 workload; derive, review and save the profile; plan collection; collect and verify
 data; run prediction/recommendation and report. Start by asking only for a missing
-model/config location and target hardware. Reuse supplied facts and inspect the
-config/profile before asking for derivable metadata; defer other questions to
-their stage and help the user choose deployment settings.
+Hugging Face model ID (`organization/model-name`) and target GPU platform. Accept
+an already supplied local config, profile or checkpoint path instead of requiring
+a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
+the config using available Hub access as described in stage 1. Reuse supplied
+facts and inspect the config/profile before asking for derivable metadata; defer
+other questions to their stage and help the user choose deployment settings.
 
 Report the current stage, its result or blocker, and the next action. Resume from
 validated artifacts and accepted decisions instead of repeating the intake.

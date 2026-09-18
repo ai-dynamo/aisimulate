@@ -28,11 +28,13 @@ At each transition or blocker, give a short update: **Stage N/6 — name; result
 
 ### 1. Inspect the model and target
 
-Start with only the missing **model/config location** and **target GPU platform**, not a complete configuration questionnaire. If neither is known, a first response can be:
+Start with only the missing **Hugging Face model ID** (`organization/model-name`) and **target GPU platform**. If neither is known, a first response can be:
 
-> Stage 1/6 — Inspect the model and target. Share your model's config.json location (or model identifier) and target GPU platform. I'll inspect the configuration first, then guide you through the remaining deployment and resource choices.
+> Stage 1/6 — Inspect the model and target. What is your Hugging Face model ID (`organization/model-name`) and target GPU platform? I'll retrieve and inspect the configuration first. If your model isn't on Hugging Face, share a local config or checkpoint path instead.
 
-Omit facts already supplied from this request. If the config/profile is accessible, inspect it before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. A model identifier can start discovery, but resolve a local config/profile before CLI setup: the CLI does not download it or the checkpoint. This route does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
+Omit facts already supplied from this request. Accept a supplied local config, complete FPM profile or checkpoint path without requiring a Hub ID; do not ask for both an ID and a config upfront. With a Hugging Face ID, use available authorized Hub access to retrieve only `config.json` at this stage. Honor any supplied revision and record the repository ID and resolved commit. If no revision was supplied, report the resolved commit for the deployment choice in stage 2. If the config cannot be retrieved, explain the specific gap and ask for a local config. The agent retrieves the file; AISimulate's CLI consumes a local config/profile and does not download it or the checkpoint.
+
+Inspect the accessible config/profile before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. For CLI setup, `--model` identifies the selected Hugging Face repository or actual checkpoint path, `--model-config` names the local JSON file, and `--model-revision` pins the checkpoint separately. A config file hash is not a checkpoint revision. This route does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
 
 The agent handles checkout and environment checks: record the branch/commit, follow [development setup](../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help` and `aisimulate onboard init --help`. Check later subcommands before using them. Report missing commands/options as a version mismatch, rather than asking the user to supply unsupported inputs.
 
