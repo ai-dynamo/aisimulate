@@ -307,12 +307,12 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   keep the crate and wheel versions aligned at the coordinated minor release.
 - Publication is blocked by [the release gate](../.github/release-gates.json)
   until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Scheduled
-  nightly CI runs `scripts/check_release_migrations.py` before staging and the
-  downstream publish trigger. Approved manual dispatch may stage a selected
-  main/release commit for validation; it cannot trigger public publication.
-  Manual releases must run the same migration check. Clear the pending entry in
-  a reviewed change only after the migration evidence is available.
+  merged, and its Planner/wheel smoke validated against this API. Both scheduled
+  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
+  before staging and the downstream publish trigger. Manual dispatch may select
+  a main/release commit, but must pass the same migration gate before publication.
+  Clear the pending entry in a reviewed change only after the migration evidence
+  is available.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.
