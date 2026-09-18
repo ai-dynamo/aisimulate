@@ -1306,6 +1306,15 @@ def _materialize_engine_role(
             raise ValueError(
                 f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
             )
+        if target in {"cp_size", "dcp_size"}:
+            # Same contract as tp / attention_dp: a directly supplied deployment
+            # must not price one CP topology while parallel_config reports another.
+            _require_parallel_match(
+                parallel_config,
+                f"{parallel_prefix}{'cp' if target == 'cp_size' else 'dcp'}",
+                value,
+                f"engine provider {role} {target}",
+            )
         aic_timing_overrides[target] = value
 
     timing_model = rank.get("timing_model")

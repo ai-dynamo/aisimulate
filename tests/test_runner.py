@@ -1125,6 +1125,25 @@ def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize(("field", "alias"), [("dcp", "aic_dcp_size"), ("cp", "aic_cp_size")])
+def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_args(field, alias):
+    # Same contract as tp / attention_dp: capacity and timing must not price one
+    # CP topology while parallel_config reports another.
+    engine_args = _engine_args()
+    engine_args[alias] = 4
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, field: 2, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(ValueError, match=f"parallel_config.{field}=2 conflicts"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_runner_rejects_parallel_config_that_conflicts_with_engine_args():
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",

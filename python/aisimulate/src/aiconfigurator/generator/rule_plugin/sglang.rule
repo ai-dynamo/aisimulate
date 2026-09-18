@@ -32,8 +32,12 @@ when ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_si
 agg_prefill_decode tensor_parallel_size = ((tensor_parallel_size or 1) * context_parallel_size) if ((context_parallel_size or 1) > 1 and not ModelConfig.is_moe) else (tensor_parallel_size if tensor_parallel_size is defined else none)
 
 # GPUs per worker follow the same TP/PP/DP product that SGLang expects
-# (prefill CP is already folded into TP above; decode CP adds no GPUs)
-agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
+# (prefill CP is already folded into TP above; decode CP adds no GPUs).
+# Guard: when the MoE fold above applied, tensor_parallel_size is already
+# moe_tp x moe_ep == the whole attention-group width (tp x dp x cp): SGLang's
+# --dp-size partitions that --tp, it does not multiply it, so DP must not be
+# counted again.
+agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (1 if (ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_size)) else (data_parallel_size or 1))
 
 agg_prefill_decode enable_attention_dp = ((data_parallel_size or 1) > 1) and ModelConfig.is_moe
 

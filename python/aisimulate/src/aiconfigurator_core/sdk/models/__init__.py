@@ -230,6 +230,11 @@ def get_model(
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
     model = cls.create(model_info, model_config, backend_name)
+    # Backend-specific defaults below construction (e.g. the DCP merge
+    # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
+    # the model; families whose constructors do not record it get it here.
+    if getattr(model, "_backend_name", None) is None:
+        model._backend_name = backend_name
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)

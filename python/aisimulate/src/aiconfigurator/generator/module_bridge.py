@@ -28,6 +28,11 @@ def _msa_sparse_implementation(task_config) -> str | None:
     )
 
 
+# Generator params owned by generator/context_parallel.py; a Workers.<role>
+# override touching any of them re-runs that validation on the merged payload.
+_CONTEXT_PARALLEL_KEYS = ("context_parallel_size", "decode_context_parallel_size", "cp_strategy", "dcp_comm_backend")
+
+
 def _task_model_family(task_config) -> str | None:
     """``Task.model_family`` when the task resolved a model; None for bare test doubles."""
     try:
@@ -208,6 +213,35 @@ def task_config_to_generator_config(
             worker_payload["attention_backend"] = attention_backend
 
         worker_payload = _deep_merge(worker_payload, extra_overrides)
+        if extra_overrides and any(key in extra_overrides for key in _CONTEXT_PARALLEL_KEYS):
+            # Workers.<role> overrides can change the CP knobs after the
+            # task-derived values were validated: re-validate the EFFECTIVE
+            # values (template floor, comm backend, dcp_comm needs dcp) and
+            # re-derive the worker's GPU count from them, unless the override
+            # pinned gpus_per_worker explicitly.
+            effective_cp = _safe_int(worker_payload.get("context_parallel_size", 1), 1)
+            effective_dcp = _safe_int(worker_payload.get("decode_context_parallel_size", 1), 1)
+            effective = context_parallel_params(
+                backend=task_config.primary_backend_name,
+                backend_version=getattr(task_config, "primary_backend_version", None),
+                context_parallel_size=effective_cp,
+                decode_context_parallel_size=effective_dcp,
+                dcp_comm_backend=worker_payload.get("dcp_comm_backend"),
+                architecture=getattr(task_config, "architecture", None),
+                model_family=_task_model_family(task_config),
+            )
+            for key in _CONTEXT_PARALLEL_KEYS:
+                worker_payload.pop(key, None)
+            worker_payload.update(effective)
+            if "cp_strategy" in extra_overrides and effective_cp > 1:
+                worker_payload["cp_strategy"] = extra_overrides["cp_strategy"]
+            if "gpus_per_worker" not in extra_overrides:
+                worker_payload["gpus_per_worker"] = (
+                    _safe_int(worker_payload.get("tensor_parallel_size"), tp)
+                    * _safe_int(worker_payload.get("pipeline_parallel_size"), pp)
+                    * _safe_int(worker_payload.get("data_parallel_size"), dp)
+                    * effective_cp
+                )
         effective_attention_backend = worker_payload.get("attention_backend")
         if effective_attention_backend is not None:
             # Task normalization promotes CLI strings to AttentionBackend

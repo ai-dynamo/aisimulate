@@ -269,6 +269,15 @@ def _afd_deployment(
     companion: ReplicaParallelConfig | None = None
     if companion_worker is not None:
         parallel = companion_worker.parallelism
+        # The AFD companion's ParallelShape, GPU accounting and provenance carry
+        # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
+        # than the topology reports. Fail closed until AFD models CP explicitly.
+        if parallel.prefill_context != 1 or parallel.decode_context != 1:
+            raise ValueError(
+                f"AFD companion ({companion_role}) workers do not support context parallelism: got "
+                f"parallelism.prefill_context={parallel.prefill_context}, "
+                f"parallelism.decode_context={parallel.decode_context}; set both to 1"
+            )
         companion = ReplicaParallelConfig(
             shape=ParallelShape(
                 tp=parallel.tensor,

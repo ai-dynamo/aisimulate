@@ -1113,6 +1113,14 @@ def estimate_kv_cache(
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
+        if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
+            # A context-parallel capability rejection must not degrade into the
+            # naive estimator, which knows neither knob and would return an
+            # unstriped (cp=dcp=1) capacity for a request that asked otherwise.
+            raise ValueError(
+                f"context parallelism is not supported for KV-cache estimation of this model/backend "
+                f"(model={model_path}, backend={backend}, cp_size={cp_size}, dcp_size={dcp_size}): {exc}"
+            ) from exc
         if not allow_naive_fallback:
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "

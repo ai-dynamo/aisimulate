@@ -897,6 +897,43 @@ def test_estimate_kv_cache_falls_back_when_breakdown_raises(monkeypatch):
     assert out["tolerance_adjusted"] is None
 
 
+def test_estimate_kv_cache_never_falls_back_after_a_context_parallel_capability_rejection(monkeypatch):
+    # get_model rejects dcp/cp>1 for families without the sharded path with
+    # NotImplementedError; the naive estimator knows neither knob, so falling
+    # back would silently return an unstriped capacity for a striped request.
+    def _unsupported(*args, **kwargs):
+        raise NotImplementedError("Decode context parallelism (dcp_size=2) is not supported")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_unsupported))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "_load_config", lambda *a, **k: dict(_RAW_UNSUPPORTED))
+    with pytest.raises(ValueError, match="context parallelism is not supported"):
+        memory.estimate_kv_cache(
+            "foo/bar-unknown-arch",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            gpu_memory_capacity_bytes_override=200 * _GIB,
+            dcp_size=2,
+            allow_naive_fallback=True,
+        )
+    # Without a CP knob the same rejection keeps the documented naive fallback.
+    out = memory.estimate_kv_cache(
+        "foo/bar-unknown-arch",
+        "h200_sxm",
+        "vllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        gpu_memory_capacity_bytes_override=200 * _GIB,
+        allow_naive_fallback=True,
+    )
+    assert out["source"] == "naive_fallback"
+
+
 def test_estimate_kv_cache_propagates_when_fallback_disabled(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("perf DB not available")

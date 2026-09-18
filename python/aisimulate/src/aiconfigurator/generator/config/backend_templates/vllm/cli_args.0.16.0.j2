@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 {%- if vllm['pipeline-parallel-size'] is defined -%}{%- set _ = args.append('--pipeline-parallel-size "' ~ vllm['pipeline-parallel-size'] ~ '"') -%}{%- endif -%}
 {%- if vllm['data-parallel-size'] is defined -%}{%- set _ = args.append('--data-parallel-size "' ~ vllm['data-parallel-size'] ~ '"') -%}{%- endif -%}
 {#- Guard: context-parallel flags appear only when the request carries the knob (>1);
-    generator/context_parallel.py version-gates them (PCP >= 0.12.0, DCP >= 0.10.2). No --dcp-comm-backend before 0.18.0. -#}
+    generator/context_parallel.py version-gates them (PCP and DCP >= 0.14.1, the first template that renders them). No --dcp-comm-backend before 0.18.0. -#}
 {%- if vllm['prefill-context-parallel-size'] is defined and vllm['prefill-context-parallel-size'] is not none -%}{%- set _ = args.append('--prefill-context-parallel-size "' ~ vllm['prefill-context-parallel-size'] ~ '"') -%}{%- endif -%}
 {%- if vllm['decode-context-parallel-size'] is defined and vllm['decode-context-parallel-size'] is not none -%}{%- set _ = args.append('--decode-context-parallel-size "' ~ vllm['decode-context-parallel-size'] ~ '"') -%}{%- endif -%}
 {%- if vllm['enable-expert-parallel'] -%}{%- set _ = args.append('--enable-expert-parallel') -%}{%- endif -%}

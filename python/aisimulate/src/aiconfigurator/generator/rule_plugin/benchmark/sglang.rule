@@ -23,7 +23,8 @@ when ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_si
 # why this is a per-role expression rather than a `when` block).
 agg_prefill_decode tensor_parallel_size = ((tensor_parallel_size or 1) * context_parallel_size) if ((context_parallel_size or 1) > 1 and not ModelConfig.is_moe) else (tensor_parallel_size if tensor_parallel_size is defined else none)
 
-agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
+# MoE fold already equals the attention-group width; --dp partitions --tp (see rule_plugin/sglang.rule).
+agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (1 if (ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_size)) else (data_parallel_size or 1))
 
 agg_prefill_decode enable_attention_dp = ((data_parallel_size or 1) > 1) and ModelConfig.is_moe
 

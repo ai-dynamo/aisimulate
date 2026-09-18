@@ -38,10 +38,15 @@ DSA_ARCHITECTURES: frozenset[str] = frozenset({"DeepseekV32ForCausalLM", "GlmMoe
 DSA_MODEL_FAMILIES: frozenset[str] = frozenset({"DEEPSEEKV32"})
 
 _MIN_VERSIONS: dict[tuple[str, str], Version] = {
-    # vLLM: DCP landed in v0.10.2 (#23734), PCP in v0.12.0 (#28718), the
-    # DCP communication backend selector in v0.18.0 (#34883).
-    ("vllm", "decode_context_parallel_size"): Version("0.10.2"),
-    ("vllm", "context_parallel_size"): Version("0.12.0"),
+    # vLLM: DCP landed in v0.10.2 (#23734) and PCP in v0.12.0 (#28718), but the
+    # generator only renders the flags from cli_args.0.14.1.j2 onwards (the
+    # 0.10.2 / 0.11.0 / 0.12.0 templates predate them and are frozen), and
+    # template selection is a floor match. The floor is therefore the first
+    # template that emits the flags, not the framework release, so a request
+    # can never resolve to a template that silently drops the knob. The DCP
+    # communication backend selector arrived in v0.18.0 (#34883).
+    ("vllm", "decode_context_parallel_size"): Version("0.14.1"),
+    ("vllm", "context_parallel_size"): Version("0.14.1"),
     ("vllm", "dcp_comm_backend"): Version("0.18.0"),
     # SGLang: --enable-prefill-cp/--cp-strategy in v0.5.14 (#27312) and
     # --dcp-size in v0.5.15 (#25090); the generator renders both from the

@@ -218,6 +218,17 @@ def test_fpm_forward_model_refuses_dcp_until_tables_carry_it():
         get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
 
 
+def test_get_model_records_the_backend_for_families_that_do_not():
+    # The DCP merge collective defaults per backend (a2a on sglang); dense
+    # families do not store backend_name themselves, so get_model must.
+    from aiconfigurator_core.sdk.models import get_model
+
+    for backend in ("vllm", "sglang"):
+        model = get_model("meta-llama/Meta-Llama-3.1-70B", config.ModelConfig(tp_size=8), backend)
+        assert model._backend_name == backend
+        assert model._dcp_comm_style() == ("a2a" if backend == "sglang" else "ag_rs")
+
+
 def test_dcp_one_leaves_the_decode_graph_untouched():
     from aiconfigurator_core.sdk.models import get_model
 

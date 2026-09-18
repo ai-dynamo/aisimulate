@@ -71,8 +71,10 @@ def test_prefill_cp_grows_the_worker_and_decode_cp_does_not():
 @pytest.mark.parametrize(
     ("backend", "version", "kwargs", "expected"),
     [
-        ("vllm", "0.12.0", {"context_parallel_size": 2}, {"context_parallel_size": 2}),
-        ("vllm", "0.10.2", {"decode_context_parallel_size": 4}, {"decode_context_parallel_size": 4}),
+        # vLLM floors are the first cli_args template that renders the flags (0.14.1),
+        # not the framework release that introduced them.
+        ("vllm", "0.14.1", {"context_parallel_size": 2}, {"context_parallel_size": 2}),
+        ("vllm", "0.14.1", {"decode_context_parallel_size": 4}, {"decode_context_parallel_size": 4}),
         (
             "vllm",
             "0.18.0",
@@ -101,8 +103,8 @@ def test_minimum_versions_are_inclusive(backend, version, kwargs, expected):
 @pytest.mark.parametrize(
     ("backend", "version", "kwargs", "needle"),
     [
-        ("vllm", "0.11.0", {"context_parallel_size": 2}, ">= 0.12.0"),
-        ("vllm", "0.10.1", {"decode_context_parallel_size": 2}, ">= 0.10.2"),
+        ("vllm", "0.13.0", {"context_parallel_size": 2}, ">= 0.14.1"),
+        ("vllm", "0.12.0", {"decode_context_parallel_size": 2}, ">= 0.14.1"),
         ("vllm", "0.17.0", {"decode_context_parallel_size": 2, "dcp_comm_backend": "a2a"}, ">= 0.18.0"),
         ("sglang", "0.5.14", {"context_parallel_size": 2}, ">= 0.5.15"),
         ("sglang", "0.5.11", {"decode_context_parallel_size": 2}, ">= 0.5.15"),
@@ -254,7 +256,7 @@ def test_vllm_prefill_cp_gpu_mismatch_is_rejected():
 
 def test_vllm_too_old_for_prefill_cp_is_rejected():
     candidate = _agg_candidate(backend_version="0.11.0", tp=2, replicas=4, used_gpus=16, cp=2)
-    with pytest.raises(SweeperCandidateError, match=">= 0.12.0"):
+    with pytest.raises(SweeperCandidateError, match=">= 0.14.1"):
         from_sweeper_candidate(candidate, workload=_WORKLOAD, model_facts=ModelFacts(is_moe=False))
 
 
@@ -372,6 +374,71 @@ def test_candidates_without_cp_columns_are_unchanged():
 
 
 # --------------------------------------------------------------------------- #
+# SGLang GPU accounting under the MoE fold
+# --------------------------------------------------------------------------- #
+
+
+def _sglang_rule_params(*, is_moe: bool, rule: str | None = None, **agg) -> dict:
+    params = {
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "data_parallel_size": 1,
+        "moe_tensor_parallel_size": 1,
+        "moe_expert_parallel_size": 1,
+        "max_batch_size": 64,
+    }
+    params.update(agg)
+    payload = {
+        "params": {"agg": params},
+        "ModelConfig": {"is_moe": is_moe, "prefix": 0, "nextn": 0},
+        "SlaConfig": {"isl": 1024, "osl": 128},
+        "DynConfig": {"mode": "agg"},
+        "WorkerConfig": {"agg_workers": 1},
+        "BenchConfig": {},
+    }
+    if rule is not None:
+        payload["rule"] = rule
+    return payload
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_sglang_moe_fold_does_not_count_attention_dp_twice(rule):
+    from aiconfigurator.generator.rendering.rule_engine import apply_rule_plugins
+
+    # DeepSeek-style DEP on SGLang: attention tp=1 x dp=8, experts moe_ep=8.
+    # --tp is folded to moe_tp x moe_ep (8) and --dp partitions that --tp, so
+    # the worker is 8 GPUs, not 8 x 8.
+    moe = apply_rule_plugins(
+        _sglang_rule_params(is_moe=True, rule=rule, data_parallel_size=8, moe_expert_parallel_size=8),
+        "sglang",
+    )["params"]["agg"]
+    assert moe["tensor_parallel_size"] == 8
+    assert moe["gpus_per_worker"] == 8
+
+    # Dense attention-DP keeps the plain tp x pp x dp product.
+    dense = apply_rule_plugins(
+        _sglang_rule_params(is_moe=False, rule=rule, tensor_parallel_size=2, data_parallel_size=2),
+        "sglang",
+    )["params"]["agg"]
+    assert dense["tensor_parallel_size"] == 2
+    assert dense["gpus_per_worker"] == 4
+
+    # MoE without moe_tp/moe_ep configured (no fold) behaves like dense.
+    unfolded = apply_rule_plugins(
+        _sglang_rule_params(
+            is_moe=True,
+            rule=rule,
+            tensor_parallel_size=2,
+            data_parallel_size=2,
+            moe_tensor_parallel_size=None,
+            moe_expert_parallel_size=None,
+        ),
+        "sglang",
+    )["params"]["agg"]
+    assert unfolded["gpus_per_worker"] == 4
+
+
+# --------------------------------------------------------------------------- #
 # SDK result bridge path
 # --------------------------------------------------------------------------- #
 
@@ -477,6 +544,39 @@ def test_bridge_without_cp_is_unchanged():
     assert agg["gpus_per_worker"] == 2
     for key in ("context_parallel_size", "decode_context_parallel_size", "cp_strategy", "dcp_comm_backend"):
         assert key not in agg
+
+
+def test_bridge_revalidates_context_parallel_overrides_and_resizes_the_worker():
+    row = pd.Series({"workers": 1, "tp": 4, "pp": 1, "dp": 1, "bs": 64})
+    task = _task(primary_backend_version="0.5.17")
+
+    # A Workers.<role> override introducing decode CP is validated and does not
+    # change the GPU count; one introducing prefill CP grows the worker.
+    striped = task_config_to_generator_config(
+        task, row, generator_overrides={"Workers": {"agg": {"decode_context_parallel_size": 4}}}, num_gpus_per_node=8
+    )["params"]["agg"]
+    assert striped["decode_context_parallel_size"] == 4
+    assert striped["gpus_per_worker"] == 4
+
+    wider = task_config_to_generator_config(
+        task, row, generator_overrides={"Workers": {"agg": {"context_parallel_size": 2}}}, num_gpus_per_node=8
+    )["params"]["agg"]
+    assert (wider["context_parallel_size"], wider["cp_strategy"]) == (2, "zigzag")
+    assert wider["gpus_per_worker"] == 8
+
+    # Overrides cannot bypass the decision point: a comm backend without DCP,
+    # or a knob a too-old backend cannot launch, still fail loud.
+    with pytest.raises(ContextParallelUnsupportedError, match="needs decode_context_parallel_size > 1"):
+        task_config_to_generator_config(
+            task, row, generator_overrides={"Workers": {"agg": {"dcp_comm_backend": "a2a"}}}, num_gpus_per_node=8
+        )
+    with pytest.raises(ContextParallelUnsupportedError, match=">= 0.5.15"):
+        task_config_to_generator_config(
+            _task(primary_backend_version="0.5.11"),
+            row,
+            generator_overrides={"Workers": {"agg": {"decode_context_parallel_size": 4}}},
+            num_gpus_per_node=8,
+        )
 
 
 def test_bridge_rejects_cp_on_trtllm():

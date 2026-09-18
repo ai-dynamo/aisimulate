@@ -1315,6 +1315,39 @@ def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
     assert "cp_size" not in spec.performance_model_metadata["aggregated"]["config"]
 
 
+@pytest.mark.parametrize("knob", ["prefill_context", "decode_context"])
+def test_afd_companion_rejects_context_parallelism(knob: str) -> None:
+    # The companion's ParallelShape / GPU accounting carry tp/pp/dp/moe only, so
+    # a CP knob would price a wider worker than the topology reports.
+    from pathlib import Path
+
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    tiny_model = Path(__file__).resolve().parents[1] / "tests/e2e/configs/unified_cli/fixtures/tiny-model"
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "mode": "afd",
+                "model": str(tiny_model),
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 2048,
+                "afd": {
+                    "phase": "decode",
+                    "combined_with_pd": True,
+                    "n_a_nodes": 1,
+                    "n_f_nodes": 1,
+                    "tp_a": 8,
+                    "a_batch_size": 8,
+                },
+                "workers": {"prefill": {"parallelism": {knob: 2}}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="AFD companion .* do not support context parallelism"):
+        prediction_to_replay_spec(config)
+
+
 def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() -> None:
     from aisimulate.compiler import _deployment
 

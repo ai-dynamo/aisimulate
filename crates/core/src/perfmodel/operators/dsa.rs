@@ -218,18 +218,37 @@ impl DsaModuleOp {
         // already-scaled results is exact — Python `_amortize`).
         if self.cp_size > 1 {
             let full = self.query_context_cp(db, batch_size, isl, prefix, false)?;
-            if w >= 1.0 {
-                return Ok(full);
+            let mut result = if w >= 1.0 {
+                full
+            } else {
+                let skip = self.query_context_cp(db, batch_size, isl, prefix, true)?;
+                let mut blended = PerformanceResult::new(
+                    w * full.latency_ms + (1.0 - w) * skip.latency_ms,
+                    full.source,
+                );
+                if let Some(components) = blend_sol(w, full.sol, skip.sol) {
+                    blended = blended.with_sol(components);
+                }
+                blended
+            };
+            // A worker that carries both knobs (disaggregated roles do not
+            // cross-check them) still holds its cached context as 1/dcp
+            // stripes: the gather is owed on the CP path too. query_context_cp
+            // already applies scale_factor, so scale only the added gather.
+            let kv_elems = crate::operators::mla::MLA_LATENT_KV_ELEMS
+                * self.kv_cache_dtype.mapping().memory
+                / 2.0;
+            if let Some(gather) = crate::operators::attention::dcp_context_gather(
+                db,
+                &self.name,
+                kv_elems,
+                self.dcp_size,
+                batch_size,
+                prefix,
+            )? {
+                result = result.plus(gather.scaled(self.scale_factor));
             }
-            let skip = self.query_context_cp(db, batch_size, isl, prefix, true)?;
-            let mut result = PerformanceResult::new(
-                w * full.latency_ms + (1.0 - w) * skip.latency_ms,
-                full.source,
-            );
-            if let Some(components) = blend_sol(w, full.sol, skip.sol) {
-                result = result.with_sol(components);
-            }
-            return Ok(result);
+            return Ok(result.clamp_non_negative());
         }
         // Query at `isl` (new-token count) for the exact `prefix` slice — NOT
         // `isl + prefix`. The perf-DB layer resolves one 4-axis RAW grid via
