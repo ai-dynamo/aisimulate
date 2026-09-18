@@ -172,3 +172,45 @@ def test_source_detail_renders_executed_moe_comm_fallback_topology() -> None:
     assert "context_moe_dispatch" in report
     assert "MoE communication fallback provenance (executed)" in report
     assert "context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data" in report
+
+
+@pytest.mark.parametrize("covered,power_text", [(9.0, "100.0 W"), (8.9, "unavailable"), (0.0, "unavailable")])
+def test_default_agg_energy_detail_uses_scheduled_groups(covered, power_text):
+    from aiconfigurator.sdk.step_estimate import StepEstimate
+
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_aggregate_energy_breakdown(
+        {
+            "mix_step": StepEstimate(
+                latency_ms=10.0,
+                energy_wms=1000.0 if covered else 0.0,
+                covered_latency_ms=covered,
+                per_op_energy_wms={"mixed_gemm": 1000.0 if covered else 0.0},
+            ),
+            "genonly_step": StepEstimate(latency_ms=0.0, energy_wms=0.0),
+        }
+    )
+    result = _estimate_result(mode="agg", raw={}, summary=summary)
+    text = format_estimate_detail_report(result, detail="energy")
+    assert "Energy Breakdown (scheduled active work per GPU)" in text
+    assert "Mixed steps energy" in text
+    assert f"avg P = {power_text}" in text
+    assert "Decode-only steps energy" not in text
+    assert "Context energy" not in text
+    if covered:
+        assert "mixed_gemm" in text
+    else:
+        assert "<no energy data>" in text
+
+
+def test_default_agg_energy_detail_explains_zero_latency_groups():
+    from aiconfigurator.sdk.step_estimate import StepEstimate
+
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_aggregate_energy_breakdown(
+        {name: StepEstimate(latency_ms=0.0, energy_wms=0.0) for name in ("mix_step", "genonly_step", "encoder")}
+    )
+    result = _estimate_result(mode="agg", raw={}, summary=summary)
+    text = format_estimate_detail_report(result, detail="energy")
+    assert "Energy Breakdown (scheduled active work per GPU)" in text
+    assert "<no measurable energy data>" in text

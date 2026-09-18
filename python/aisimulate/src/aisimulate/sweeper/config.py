@@ -873,7 +873,7 @@ class Candidate(BaseModel):
     config: dict[str, Any]  # backend assignment plus namespaced adapter selections
     used_gpus: int
     score: float  # objective score, normalized so higher is better (pareto: the first objective's value)
-    metrics: dict[str, float]  # replay performance: throughput, ttft, itl, e2e, goodput
+    metrics: dict[str, float | None]  # replay performance: throughput, ttft, itl, e2e, goodput
     # Per-objective raw values (natural units/direction) under a pareto goal, keyed by
     # OptimizationTarget value (e.g. {"throughput_per_gpu": .., "throughput_per_user": ..});
     # None for a single-objective sweep. Drives Pareto dominance in score.pareto_front.

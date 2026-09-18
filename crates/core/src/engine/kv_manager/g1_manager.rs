@@ -8,6 +8,7 @@
 
 use uuid::Uuid;
 
+use crate::engine::belady::BeladyOracle;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
@@ -69,6 +70,10 @@ pub(crate) struct G1Manager {
 }
 
 impl G1Manager {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.inner.set_belady_oracle(oracle);
+    }
+
     pub(crate) fn new_with_event_sink(
         max_capacity: usize,
         block_size: usize,

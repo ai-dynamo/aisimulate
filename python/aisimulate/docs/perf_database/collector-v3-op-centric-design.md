@@ -483,6 +483,27 @@ every PR touching `data/`, `collector/`, or the manifest. Hard failures:
 
 The CI audit is the primary gate; loader strict mode is the backstop.
 
+### Power fields and imported data
+
+Power-carrying tables follow the same Collector V3 provenance, placement, reuse,
+and evidence rules. Their numeric storage checks run through the existing
+`parquet_diff.py` review helper and packaged-data unit test, which share
+`tools/perf_database/power_data.py::power_metric_issues`:
+
+- Power columns may be absent. When either is present, both `power` and
+  `power_limit` must be float64, with finite positive pairs or paired `0.0/0.0`
+  unavailable sentinels. Partial pairs, nulls, negatives, and non-finite values fail.
+- The storage check imposes no ratio cap between power and power limit. A
+  measurement-quality threshold requires evidence and review through the existing
+  policy in §9.
+
+The B200 TRT-LLM import records its source revision, attribution, row counts,
+and attention-merge details in the adjacent data README and existing third-party
+notices. Focused import tests pin file hashes and compare the two merged attention
+tables against upstream copies. Collection provenance remains in
+`collection_meta.yaml`; import checks do not approve reuse or qualify hardware
+accuracy.
+
 ## 9. Evidence policy
 
 Policy-as-code: `collector/evidence_policy.yaml` (thresholds; an authored

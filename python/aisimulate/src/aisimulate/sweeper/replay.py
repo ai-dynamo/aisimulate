@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
@@ -120,8 +121,23 @@ class ReplaySpec:
 class ReplayReport:
     """Runner output consumed by Sweeper scoring."""
 
-    metrics: dict[str, float]
+    metrics: dict[str, float | None]
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        power = normalize_power_summary(self.metrics)
+        for name, value in self.metrics.items():
+            if name in POWER_FIELDS:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"runner metric {name} must be finite") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"runner metric {name} must be finite")
+        object.__setattr__(self, "metrics", {**self.metrics, **power})
 
 
 @dataclass(frozen=True)

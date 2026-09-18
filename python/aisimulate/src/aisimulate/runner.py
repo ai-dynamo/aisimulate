@@ -17,6 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
+from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
 from .sweeper.afd_perfmodel import AFDLayerTimes
@@ -792,6 +793,7 @@ def _run_afd_replay(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
+    metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {
         "executor": "afd_foreground",
         "deployment_mode": deployment.deployment_mode,
@@ -816,6 +818,8 @@ def _run_afd_replay(
         metadata["native_report"] = native_report
     if include_report:
         metadata["afd_report"] = {"metrics": metrics, **summary}
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)
 
 
@@ -1559,12 +1563,20 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     """Normalize an execution report to Sweeper's stable scoring metric names."""
 
     payload = dict(report)
-    metrics: dict[str, float] = {}
+    metrics: dict[str, float | None] = {}
+    try:
+        power = normalize_power_summary(payload)
+    except ValueError as exc:
+        raise InvalidRunnerError(str(exc)) from exc
+    payload.update(power)
 
     def add(name: str, value: object) -> None:
         if isinstance(value, bool) or not isinstance(value, Real):
             return
-        number = float(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InvalidRunnerError(f"engine replay metric {name!r} is not finite") from exc
         if not math.isfinite(number):
             raise InvalidRunnerError(f"engine replay metric {name!r} is not finite")
         metrics[name] = number
@@ -1587,4 +1599,6 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     }
     if include_native_report:
         metadata["native_report"] = payload
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)

@@ -3,7 +3,11 @@
 
 """vLLM 0.24.0 dense-attention collector for CUDA backends."""
 
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
+# attention_context and attention_generation: 8/8 representative cases each. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import os
 

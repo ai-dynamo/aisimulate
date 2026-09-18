@@ -256,6 +256,7 @@ impl TestDisaggConfig {
         factory: ReplayEngineFactory,
     ) -> anyhow::Result<OfflineDisaggReplayConfig> {
         let engine = ReplayEngineConfig {
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
