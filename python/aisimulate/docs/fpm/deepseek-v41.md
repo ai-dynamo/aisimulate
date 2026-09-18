@@ -142,7 +142,7 @@ print(model.estimate_forward_pass_time_ms({
 
 The packaged `systems/dsv41_fpm_hf.json` pins the three principal #158 tables
 (GB300 TP4 `full` / `decoder_bounded`, and quarantined GB200 TP4 `full`) to
-[HF dataset commit 757ff1f99f716a1d21985723ae534cef4afbb5ab](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/757ff1f99f716a1d21985723ae534cef4afbb5ab).
+[HF dataset commit b35883ee5f8b4a82e24844a7e872056aff64287f](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/b35883ee5f8b4a82e24844a7e872056aff64287f).
 The dataset change is reviewed in [HF PR #11](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/11).
 Historical component tables and observations remain in that dataset revision;
 they are not substituted for the principal prediction tables.
