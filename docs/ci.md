@@ -633,36 +633,27 @@ activation and does not inspect or approve individual PRs.
 
 ### Administrator activation handoff
 
-1. Save the verifier's pre-activation snapshot and inspect all inherited and
-   repository rulesets:
+When a PR changes the ruleset payload, its author fills in the ruleset handoff
+fields in the PR template, mentions or requests review from a named apply owner,
+and records that owner's acknowledgement before merge. The apply owner must
+have Admin or `edit repository rules` access; CODEOWNER approval and Maintain
+access do not prove that permission.
 
-   ```bash
-   gh api --paginate --slurp \
-     'repos/ai-dynamo/aisimulate/rulesets?includes_parents=true&per_page=100'
-   ```
+After merge, that owner checks out the exact merged `main` commit and follows
+the [edit-once apply procedure](../.github/required-main-checks.md): save the
+read-only verifier's pre-apply JSON, preview the difference for existing ruleset
+`23671922`, apply it with a unique backup path, and save a passing post-apply
+verifier JSON. The synchronizer updates only that existing repository ruleset
+and never creates one. If the target is absent, mixed-purpose, has
+bypass actors, or hides bypass settings, it stops for explicit administrator
+reconciliation.
 
-2. Recheck the actual check names and GitHub Actions application ID from a
-   current successful workflow run on `main`. The payload currently binds all
-   three contexts to app `15368`. Confirm direct Fast and aggregate Full results
-   exist before requiring them; do not substitute conditional jobs.
-3. Resolve any existing repository ruleset named **AISimulate required CI
-   validation** by its ID. Inspect and save its complete definition before an
-   update; preserve unrelated rules and settings. If more than one matching
-   ruleset exists, reconcile it before proceeding. Never replace the inherited
-   review ruleset with the CI-only payload. When no CI ruleset exists, an
-   administrator can create the additive rule:
-
-   ```bash
-   gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
-     --input .github/required-main-checks.json
-   ```
-
-   For an existing CI ruleset, use the repository rules UI or an administrator's
-   reviewed update to that exact ID. Do not create a duplicate. Retain the
-   pre-activation definition and the resulting ruleset ID in the rollout record.
-4. Rerun the verifier and retain its successful post-activation JSON. Compare
-   the complete before/after effective rules to ensure existing protections
-   were preserved. A configuration pass is only the first acceptance step.
+Link the exact merged SHA, ruleset URL, complete backup, verifier snapshots, and
+command outcomes in the merged PR or AIC-1911. That record is how reviewers know
+the authorized owner accepted and completed the live apply. Until the passing
+post-apply evidence is linked, the repository file states intent but does not
+prove enforcement. Rerun controlled-PR rollout cases after a policy change; a
+configuration pass is only the first acceptance step.
 
 ### Controlled-PR rollout evidence
 

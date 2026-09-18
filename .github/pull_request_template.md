@@ -51,3 +51,13 @@ Use closing keywords for completed issues and plain links for related work.
 
 - Closes:
 - Related PRs or issues:
+
+<!--
+Required when .github/required-main-checks.json changes. Name the person or
+account with Admin or edit-repository-rules access; CODEOWNER approval alone
+does not establish that permission. Otherwise write N/A.
+-->
+
+- Ruleset apply owner: N/A
+- Ruleset owner acknowledgement: N/A
+- Post-merge apply and verifier evidence: N/A

@@ -145,11 +145,11 @@ def inspect_repository(repository: str, *, api=github_api) -> dict:
     return report
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default="ai-dynamo/aisimulate")
     parser.add_argument("--output", type=Path, help="Also save the JSON evidence snapshot to this file")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         report = inspect_repository(args.repository)
         rendered = json.dumps(report, indent=2) + "\n"

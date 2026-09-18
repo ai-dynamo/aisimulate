@@ -10,29 +10,45 @@ then apply that file to GitHub. The file is the intended configuration; GitHub's
 live ruleset is what enforces it. Committing or merging the file does not update
 GitHub settings automatically.
 
-As of September 18, 2026, repository ruleset
-[23671922](https://github.com/ai-dynamo/aisimulate/rules/23671922) is active for
-the default branch. Its visible CI requirements match the file. Check live
-settings each time; this snapshot does not establish hidden bypass settings or
-controlled-PR enforcement evidence. Existing organization rules independently
-require human/CODEOWNER approval and resolved conversations.
+Repository ruleset
+[23671922](https://github.com/ai-dynamo/aisimulate/rules/23671922) is the managed
+target. Do not infer its current state from this document or the JSON. Run the
+verifier with an account that can see bypass settings, and retain the resulting
+evidence for each change.
 
 ## Edit once, then apply
 
-1. Review and merge changes to the JSON through the normal PR process. Before
-   adding or renaming a required check, verify its actual workflow result name
-   and GitHub Actions application binding.
-2. An administrator checks out the reviewed commit and previews the difference:
+1. Review changes to the JSON through the normal PR process. Before adding or
+   renaming a required check, verify its actual workflow result name and GitHub
+   Actions application binding. In the PR template, name the person or account
+   that will apply the change and the issue or PR that will hold the evidence.
+   The apply owner must have Admin or `edit repository rules` access; a
+   CODEOWNER approval alone does not establish that permission.
+2. Mention or request review from the named apply owner. That owner acknowledges
+   the handoff in the PR before merge. Do not merge a ruleset-file change with
+   those fields unanswered: merging the file does not schedule or perform the
+   live update.
+3. After merge, the apply owner checks out the exact merged `main` commit and
+   records its SHA. First save a read-only snapshot and preview the difference:
 
    ```bash
+   ci_sha="$(git rev-parse HEAD)"
+   test "${ci_sha}" = "$(gh api repos/ai-dynamo/aisimulate/commits/main --jq .sha)"
+   python3 scripts/check_required_main_checks.py \
+     --repository ai-dynamo/aisimulate \
+     --output "main-rules-before-${ci_sha}.json"
    python3 scripts/sync_required_main_checks.py --ruleset-id 23671922
    ```
 
-3. After reviewing the diff, that administrator applies the same file:
+4. After reviewing the diff, the apply owner applies the same file and captures
+   a second verifier snapshot:
 
    ```bash
    python3 scripts/sync_required_main_checks.py --ruleset-id 23671922 \
-     --apply --backup main-ci-rules-before.json
+     --apply --backup "main-ci-rules-before-${ci_sha}.json"
+   python3 scripts/check_required_main_checks.py \
+     --repository ai-dynamo/aisimulate \
+     --output "main-rules-after-${ci_sha}.json"
    ```
 
    Use a new backup path for each update. The command saves the complete live
@@ -40,8 +56,12 @@ require human/CODEOWNER approval and resolved conversations.
    after the update. It updates the existing ruleset; it never creates another
    ruleset or changes organization rules. Do not simultaneously edit the same
    ruleset in the UI: GitHub provides no atomic compare-and-update guarantee.
+5. Link the merged commit SHA, ruleset URL, backup, before/after snapshots, and
+   command outcomes in the merged PR or its tracking issue. Mark the handoff
+   complete only after the post-apply verifier passes. If a command fails, leave
+   the handoff open and record the failure for the apply owner to resolve.
 
-The helper requires Python 3.10+ and an authenticated GitHub CLI (`gh`). Without
+The helpers require Python 3.11+ and an authenticated GitHub CLI (`gh`). Without
 `--apply`, it uses only GET requests. Exit 0 means the complete managed
 configuration matches, exit 1 means drift, and exit 2 means verification or
 application could not complete. Check ordering is ignored. Hidden bypass

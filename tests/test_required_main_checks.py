@@ -158,8 +158,14 @@ def test_github_api_uses_only_paginated_reads(monkeypatch):
 def test_cli_exit_code_and_saved_evidence(monkeypatch, tmp_path, capsys, success):
     report = _inspect(_rules() if success else [])
     output = tmp_path / "rules.json"
-    monkeypatch.setattr(checker, "inspect_repository", lambda repository: copy.deepcopy(report))
-    monkeypatch.setattr("sys.argv", ["check_required_main_checks.py", "--output", str(output)])
-    assert checker.main() == (0 if success else 1)
+    repositories = []
+
+    def inspect(repository):
+        repositories.append(repository)
+        return copy.deepcopy(report)
+
+    monkeypatch.setattr(checker, "inspect_repository", inspect)
+    assert checker.main(["--repository", "owner/repo", "--output", str(output)]) == (0 if success else 1)
+    assert repositories == ["owner/repo"]
     assert json.loads(output.read_text()) == report
     assert json.loads(capsys.readouterr().out) == report

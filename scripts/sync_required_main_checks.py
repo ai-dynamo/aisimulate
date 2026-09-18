@@ -133,13 +133,16 @@ def synchronize(repository: str, ruleset_id: int, desired: dict, *, apply=False,
         return 1
     if backup is None:
         raise ValueError("--apply requires --backup PATH to save the current complete ruleset")
-    # Exclusive creation prevents overwriting the administrator's earlier evidence.
-    with Path(backup).open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(current, indent=2) + "\n")
-    if api(endpoint) != current:
+    latest = api(endpoint)
+    inspect_target(latest, repository, ruleset_id, desired)
+    if normalized(latest) != before:
         raise ValueError("Ruleset changed during inspection; nothing applied. Inspect again before retrying.")
     if api(f"repos/{repository}")["default_branch"] != "main":
         raise ValueError("Default branch changed during inspection; nothing applied")
+    # Create the evidence only after every pre-write check. Exclusive creation
+    # prevents overwriting an administrator's earlier snapshot.
+    with Path(backup).open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(latest, indent=2) + "\n")
     try:
         api(endpoint, payload=desired)
         updated = api(endpoint)
@@ -154,7 +157,7 @@ def synchronize(repository: str, ruleset_id: int, desired: dict, *, apply=False,
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default="ai-dynamo/aisimulate")
     parser.add_argument(
@@ -164,7 +167,7 @@ def main() -> int:
     parser.add_argument(
         "--backup", type=Path, help="New file for the complete pre-update definition (required to apply)"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         return synchronize(
             args.repository,

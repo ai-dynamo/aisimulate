@@ -399,9 +399,27 @@ def test_ruleset_sync_refuses_concurrent_changes(ruleset_sync, tmp_path, change)
                 response["default_branch"] = "release"
         return response
 
+    backup = tmp_path / "before.json"
     with pytest.raises(ValueError, match="changed during inspection"):
-        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=tmp_path / "before.json", api=changing_api)
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=changing_api)
     assert all(payload is None for _, payload in calls)
+    assert not backup.exists()
+
+
+def test_ruleset_sync_ignores_changing_api_metadata_during_recheck(ruleset_sync, tmp_path):
+    desired, current, calls, api = ruleset_sync
+    current["enforcement"] = "evaluate"
+
+    def metadata_api(endpoint, **kwargs):
+        response = api(endpoint, **kwargs)
+        if kwargs.get("payload") is None and endpoint.endswith("/42"):
+            response["updated_at"] = f"read-{calls.count((endpoint, None))}"
+        return response
+
+    backup = tmp_path / "before.json"
+    assert rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=metadata_api) == 0
+    assert json.loads(backup.read_text())["updated_at"] == "read-2"
+    assert len([payload for _, payload in calls if payload is not None]) == 1
 
 
 @pytest.mark.parametrize("failure", ["write_denied", "readback_mismatch"])
@@ -458,3 +476,60 @@ def test_ruleset_sync_transport_only_puts_when_given_payload(monkeypatch, payloa
 
     monkeypatch.setattr(subprocess, "run", run)
     assert rules_sync.github_api("repos/owner/repo/rulesets/42", payload=payload) == {}
+
+
+@pytest.mark.parametrize(("result", "expected"), [(0, 0), (1, 1)])
+def test_ruleset_sync_cli_propagates_arguments_and_exit_status(monkeypatch, tmp_path, result, expected):
+    captured = {}
+    backup = tmp_path / "before.json"
+
+    def synchronize(repository, ruleset_id, desired, *, apply, backup):
+        captured.update(
+            repository=repository,
+            ruleset_id=ruleset_id,
+            desired=desired,
+            apply=apply,
+            backup=backup,
+        )
+        return result
+
+    monkeypatch.setattr(rules_sync, "synchronize", synchronize)
+    assert (
+        rules_sync.main(
+            [
+                "--repository",
+                "owner/repo",
+                "--ruleset-id",
+                "42",
+                "--apply",
+                "--backup",
+                str(backup),
+            ]
+        )
+        == expected
+    )
+    assert captured == {
+        "repository": "owner/repo",
+        "ruleset_id": 42,
+        "desired": json.loads(rules_sync.PAYLOAD.read_text()),
+        "apply": True,
+        "backup": backup,
+    }
+
+
+def test_ruleset_sync_cli_reports_failure_as_exit_two(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise ValueError("hidden bypass settings")
+
+    monkeypatch.setattr(rules_sync, "synchronize", fail)
+    with pytest.raises(SystemExit) as stopped:
+        rules_sync.main(["--ruleset-id", "42"])
+    assert stopped.value.code == 2
+    assert "Cannot synchronize CI rules: hidden bypass settings" in capsys.readouterr().err
+
+
+def test_pr_template_records_required_ruleset_handoff():
+    template = (ROOT / ".github/pull_request_template.md").read_text()
+    assert "Ruleset apply owner" in template
+    assert "Ruleset owner acknowledgement" in template
+    assert "Post-merge apply and verifier evidence" in template
