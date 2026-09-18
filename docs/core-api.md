@@ -89,6 +89,8 @@ limit for vLLM, TRT-LLM, and SGLang. Recipe adapters can map TRT-LLM
 - A prompt at or above the limit is rejected before prefill computation.
 - A decode destination rejects such a prompt before queuing the handoff or
   reserving KV blocks, even when destination admission is deferred.
+- Terminal rejection removes the request's outstanding Belady input demand
+  before subsequent cache admission and eviction.
 - Generation stops when prompt plus output reaches the limit, including
   speculative bursts and requests with explicit output token IDs. Reports
   retain the requested output length and count only tokens actually generated.

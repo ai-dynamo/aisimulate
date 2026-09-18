@@ -781,6 +781,9 @@ impl SglangCore {
         for signal in &rejected {
             self.source_holds.remove_request(signal.uuid);
         }
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests(rejected.iter().map(|signal| signal.uuid));
+        }
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);

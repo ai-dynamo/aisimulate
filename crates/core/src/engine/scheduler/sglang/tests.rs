@@ -83,7 +83,12 @@ fn rejects_prompt_at_or_above_max_model_len(
     let mut args = test_args(16, 4, 4);
     args.max_model_len = Some(8);
     let mut core = SglangCore::new(args);
-    let req = direct_request((0..prompt_len).collect(), 1);
+    let mut req = direct_request((0..prompt_len).collect(), 1);
+    let request_id = Uuid::from_u128(899);
+    req.uuid = Some(request_id);
+    let hashes = crate::engine::belady::input_sequence_hashes(&req.tokens, 4);
+    let oracle = BeladyOracle::new(vec![(request_id, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
     let handoff_id = HandoffId::from(Uuid::from_u128(900));
     let command = if handoff {
         SchedulerCommand::SubmitHandoffPrefill {
@@ -105,6 +110,9 @@ fn rejects_prompt_at_or_above_max_model_len(
         }]
     ));
     assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
     assert_eq!(pass.end_ms, 0.0);
     assert!(core.waiting.is_empty());
     assert!(core.running.is_empty());
