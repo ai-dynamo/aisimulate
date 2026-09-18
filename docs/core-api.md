@@ -94,7 +94,7 @@ explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
 (non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
 checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
 the unchanged timing graph. Other model layouts retain their prior weight
-accounting. See the [capacity reconciliation and replay evidence](sglang-kv-estimator-20260917.md).
+accounting.
 vLLM and TRT-LLM continue to deduct activation memory under their own budget
 semantics. No measured server capacity is required by this calculation.
 
