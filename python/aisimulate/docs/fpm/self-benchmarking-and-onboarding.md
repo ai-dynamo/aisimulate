@@ -38,28 +38,12 @@ starting at step 4 after checking its provenance and coverage.
 
 ## What self-collection covers
 
-An FPM predicts **engine iteration / forward-pass latency** for scheduled work.
-It supplies the cost of an iteration to the simulator; the simulator still
-decides which work runs, when it runs, and how requests progress.
-
-| Difference you want to model | What self-collection can supply | What still needs separate support |
-| --- | --- | --- |
-| Kernel implementation, fusion, quantization, CUDA Graph/eager behavior, engine-version changes | Measured iteration costs for the recorded configuration and shapes | A working benchmark path and matching profile identity |
-| TP/EP/DCP execution within a supported engine iteration | The observed compute and collective costs inside the measurement boundary | Correct topology, rank aggregation, cache state, and runtime/consumer support |
-| Batch size, new-token count, and context length | A measured latency surface and supported interpolation within its coverage | Coverage of the actual query shapes; mixed/ragged workload composition remains a modeling assumption |
-| **Pipeline parallelism (PP)** | A scalar forward latency is insufficient to establish pipeline behavior | Stage execution, microbatch flow, overlap, bubbles, and inter-stage communication/scheduling must be modeled separately. The current collection workflow requires PP=1. |
-| Request scheduling, routing, arrival patterns, or prefill/decode disaggregation | An iteration timing input to the serving simulation | Scheduler/router behavior, queues, placement, and P/D transfer models |
-| KV capacity, allocation, prefix reuse, eviction, or hybrid recurrent state | Timing measured under the recorded cache-state conditions | The corresponding memory and cache-lifecycle model; collecting timing does not implement those semantics |
-
-**Self-collection cannot add PP support by itself.** A PP=1 profile must not be
-scaled or relabeled as PP>1. Even measurements from a pipeline-enabled engine
-would require a supported stage/scheduling contract before Replay could use
-them to simulate pipeline throughput and latency.
-
-Likewise, TTFT, ITL, and end-to-end throughput are outputs of the serving
-simulation and workload, not direct guarantees from a forward-pass table.
-The measured timing boundary matters: record it, including rank aggregation;
-do not substitute client latency or pure kernel time for engine wall time.
+Self-collection supplies **engine-iteration latency** for the measured configuration
+and covered workload shapes. It cannot provide PP pipeline behavior, request
+scheduling/routing, prefill–decode transfers, or KV-cache capacity/lifecycle
+modeling; these require separate simulator support. The current collection
+workflow requires **PP=1**, and iteration timings alone do not establish TTFT,
+ITL, or end-to-end throughput accuracy.
 
 ## Current support and architecture readiness
 
