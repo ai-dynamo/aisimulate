@@ -339,6 +339,8 @@ def test_ruleset_sync_applies_exact_file_and_preserves_backup(ruleset_sync, tmp_
         ("id", 43),
         ("source_type", "Organization"),
         ("source", "other/repo"),
+        ("source", None),
+        ("source", 123),
         ("name", "Human review"),
         ("target", "tag"),
         ("conditions", {"ref_name": {"include": ["refs/heads/release"], "exclude": []}}),

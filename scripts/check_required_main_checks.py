@@ -101,6 +101,7 @@ def inspect_repository(repository: str, *, api=github_api) -> dict:
         "repository": repository,
         "branch": "main",
         "observed_at": datetime.now(UTC).isoformat(),
+        "verification_completed": False,
         "configuration_verified": False,
         "errors": [],
         "limitations": "Configuration snapshot only; controlled-PR evidence and human approval remain separate.",
@@ -125,20 +126,25 @@ def inspect_repository(repository: str, *, api=github_api) -> dict:
             (detail,) = api(f"repos/{repository}/rulesets/{ruleset_id}")
             report["ci_rulesets"].append(detail)
             if detail["id"] != ruleset_id or detail["enforcement"] != "active":
-                report["errors"].append(f"CI ruleset {ruleset_id} changed during inspection")
-            if detail.get("bypass_actors") != []:
+                raise ValueError(f"CI ruleset {ruleset_id} changed during inspection")
+            if detail.get("bypass_actors") is None:
+                raise ValueError(
+                    f"CI ruleset {ruleset_id} hides bypass actors; rerun with administrator read access"
+                )
+            if detail["bypass_actors"] != []:
                 report["errors"].append(
-                    f"CI ruleset {ruleset_id} has bypass actors or hides them; verify with administrator read access"
+                    f"CI ruleset {ruleset_id} has bypass actors; reconcile them explicitly"
                 )
         # Refuse a success assembled from different settings during a rollout.
         if pages != api(f"repos/{repository}/rules/branches/main?per_page=100"):
-            report["errors"].append("Effective rules changed during inspection; rerun the verifier")
+            raise ValueError("Effective rules changed during inspection; rerun the verifier")
         # Bypass actors are only exposed in source details, not effective rules.
         # Their second read must follow the effective-rule recheck as well.
         for detail in report["ci_rulesets"]:
             (current,) = api(f"repos/{repository}/rulesets/{detail['id']}")
             if current != detail:
-                report["errors"].append(f"CI ruleset {detail['id']} changed during inspection; rerun the verifier")
+                raise ValueError(f"CI ruleset {detail['id']} changed during inspection; rerun the verifier")
+        report["verification_completed"] = True
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
         report["errors"].append(f"Cannot verify configuration: {error}")
     report["configuration_verified"] = not report["errors"]
@@ -156,9 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             args.output.write_text(rendered, encoding="utf-8")
         print(rendered, end="")
-        return 0 if report["configuration_verified"] else 1
+        if report["configuration_verified"]:
+            return 0
+        return 1 if report["verification_completed"] else 2
     except (OSError, ValueError) as error:
-        parser.exit(1, f"Cannot verify configuration: {error}\n")
+        parser.exit(2, f"Cannot verify configuration: {error}\n")
 
 
 if __name__ == "__main__":

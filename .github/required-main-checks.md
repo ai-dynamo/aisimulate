@@ -32,6 +32,7 @@ evidence for each change.
    records its SHA. First save a read-only snapshot and preview the difference:
 
    ```bash
+   test -z "$(git status --porcelain=v1)"
    ci_sha="$(git rev-parse HEAD)"
    test "${ci_sha}" = "$(gh api repos/ai-dynamo/aisimulate/commits/main --jq .sha)"
    python3 scripts/check_required_main_checks.py \
@@ -61,14 +62,16 @@ evidence for each change.
    complete only after the post-apply verifier passes. If a command fails, leave
    the handoff open and record the failure for the apply owner to resolve.
 
-The helpers require Python 3.11+ and an authenticated GitHub CLI (`gh`). Without
-`--apply`, it uses only GET requests. Exit 0 means the complete managed
-configuration matches, exit 1 means drift, and exit 2 means verification or
-application could not complete. Check ordering is ignored. Hidden bypass
-settings, configured bypass actors, a different target, and unrelated rules in
-the selected ruleset stop the operation. A failed update/read-back can leave an
-applied change; inspect GitHub before retrying, using the saved definition for
-an administrator-reviewed recovery if needed.
+The helpers require Python 3.11+ and an authenticated GitHub CLI (`gh`). The
+verifier uses only GET requests: exit 0 means the complete observed policy
+matches, exit 1 means a complete observation found policy drift, and exit 2
+means verification could not complete. The synchronizer exits 0 for a match or
+verified apply, 1 for previewed drift, and 2 when verification or application
+cannot complete. Check ordering is ignored. Hidden bypass settings, configured
+bypass actors, a different target, and unrelated rules in the selected ruleset
+stop the operation. A failed update/read-back can leave an applied change;
+inspect GitHub before retrying, using the saved definition for an
+administrator-reviewed recovery if needed.
 
 ## Who applies it
 

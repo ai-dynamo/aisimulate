@@ -86,6 +86,7 @@ def inspect_target(current: dict, repository: str, ruleset_id: int, desired: dic
     if (
         current["id"] != ruleset_id
         or current["source_type"] != "Repository"
+        or not isinstance(current.get("source"), str)
         or current["source"].lower() != repository.lower()
         or current["name"] != desired["name"]
         or current["target"] != "branch"

@@ -50,6 +50,7 @@ def _inspect(rules, *, detail=None, changed_rules=None, changed_detail=None):
 
 def test_activated_configuration_preserves_checks_and_human_protections():
     report = _inspect(_rules())
+    assert report["verification_completed"]
     assert report["configuration_verified"]
     assert report["errors"] == []
     assert report["expected_checks"] == [
@@ -108,13 +109,17 @@ def test_weakened_review_policy_fails(parameter, value):
 @pytest.mark.parametrize("bypasses", [None, [{"actor_type": "OrganizationAdmin", "bypass_mode": "always"}]])
 def test_hidden_or_configured_ci_bypasses_fail(bypasses):
     detail = {"id": 42, "enforcement": "active", "bypass_actors": bypasses}
-    assert not _inspect(_rules(), detail=detail)["configuration_verified"]
+    report = _inspect(_rules(), detail=detail)
+    assert not report["configuration_verified"]
+    assert report["verification_completed"] is (bypasses is not None)
 
 
 def test_disabled_source_or_rules_changed_during_inspection_fails():
     detail = {"id": 42, "enforcement": "disabled", "bypass_actors": []}
-    assert not _inspect(_rules(), detail=detail)["configuration_verified"]
-    assert not _inspect(_rules(), changed_rules=[])["configuration_verified"]
+    disabled = _inspect(_rules(), detail=detail)
+    changed = _inspect(_rules(), changed_rules=[])
+    assert not disabled["configuration_verified"] and not disabled["verification_completed"]
+    assert not changed["configuration_verified"] and not changed["verification_completed"]
 
 
 def test_new_bypass_actor_fails_even_when_effective_rules_do_not_change():
@@ -125,7 +130,10 @@ def test_new_bypass_actor_fails_even_when_effective_rules_do_not_change():
     }
     report = _inspect(_rules(), changed_detail=after)
     assert not report["configuration_verified"]
-    assert report["errors"] == ["CI ruleset 42 changed during inspection; rerun the verifier"]
+    assert not report["verification_completed"]
+    assert report["errors"] == [
+        "Cannot verify configuration: CI ruleset 42 changed during inspection; rerun the verifier"
+    ]
 
 
 @pytest.mark.parametrize("response", [[], [None], [{}], [[None]], [{"default_branch": "other"}]])
@@ -141,6 +149,7 @@ def test_api_failure_preserves_negative_evidence():
 
     report = checker.inspect_repository("owner/repo", api=api)
     assert not report["configuration_verified"]
+    assert not report["verification_completed"]
     assert "Cannot verify configuration" in report["errors"][0]
 
 
@@ -168,4 +177,11 @@ def test_cli_exit_code_and_saved_evidence(monkeypatch, tmp_path, capsys, success
     assert checker.main(["--repository", "owner/repo", "--output", str(output)]) == (0 if success else 1)
     assert repositories == ["owner/repo"]
     assert json.loads(output.read_text()) == report
+    assert json.loads(capsys.readouterr().out) == report
+
+
+def test_cli_returns_two_when_verification_cannot_complete(monkeypatch, capsys):
+    report = _inspect(_rules(), changed_rules=[])
+    monkeypatch.setattr(checker, "inspect_repository", lambda repository: copy.deepcopy(report))
+    assert checker.main(["--repository", "owner/repo"]) == 2
     assert json.loads(capsys.readouterr().out) == report
