@@ -185,6 +185,13 @@ class KvCachePredictionConfig(StrictModel):
     g3_offload: G3OffloadConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
 
+    @field_validator("state_cache", mode="before")
+    @classmethod
+    def _accept_resolved_state_config(cls, value: Any) -> Any:
+        if isinstance(value, StateCacheConfig):
+            return value.model_dump()
+        return value
+
     @model_validator(mode="after")
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:

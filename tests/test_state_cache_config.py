@@ -550,3 +550,13 @@ def test_fractional_attention_geometry_rejected(gdn_model):
     (path / "config.json").write_text(json.dumps(geometry))
     with pytest.raises(ValueError, match="divide evenly"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+
+
+def test_existing_typed_state_config_remains_accepted():
+    cache = KvCachePredictionConfig(**{**KV, "state_cache": StateCacheConfig(**STATE)})
+    assert cache.state_cache.bytes_per_request == 1500
+    payload = _public()
+    payload["engine"]["workers"]["aggregated"]["kv_cache"] = cache
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == STATE
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "overridden"
