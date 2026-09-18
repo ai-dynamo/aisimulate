@@ -21,16 +21,17 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.12.0"
 # Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
 # PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-dev.YYYYMMDD` in
-# the crate (cargo rejects the PEP 440 spelling). The release contract still
+# the crate, optionally followed by a ten-digit run number in both formats.
+# Cargo rejects the PEP 440 spelling. The release contract still
 # anchors on VERSION; only this suffix pair is additionally accepted.
-DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}")
+DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}(?:[0-9]{10})?")
 
 EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
 }
 EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
-IGNORED_DISCOVERY_DIRS = {".git", ".venv", "dist", "target"}
+IGNORED_DISCOVERY_DIRS = {".git", ".venv", "dist", "target", "release-tooling"}
 
 
 def _toml(path: Path) -> dict[str, object]:
@@ -69,7 +70,7 @@ def check_manifests() -> tuple[str, str]:
     crate_version = str(crate["version"])
     dev_suffix = py_version.removeprefix(VERSION)
     assert py_version.startswith(VERSION) and (dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)), (
-        f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
+        f"wheel version must be {VERSION} or a supported numeric nightly version, got {py_version}"
     )
     expected_crate_version = f"{VERSION}-dev.{dev_suffix[len('.dev') :]}" if dev_suffix else VERSION
     assert crate_version == expected_crate_version, (
@@ -84,17 +85,17 @@ def check_manifests() -> tuple[str, str]:
     assert not any(str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies)
     assert app["scripts"] == {
         "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
+        "aisimulate": "aisimulate.supervision:main",
     }
     return py_version, crate_version
 
 
 def _run(
     *command: str,
-    cwd: Path = ROOT,
+    cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> None:
-    subprocess.run(command, cwd=cwd, env=env, check=True)
+    subprocess.run(command, cwd=cwd or ROOT, env=env, check=True)
 
 
 def build(output: Path, py_version: str, crate_version: str) -> None:
@@ -162,10 +163,23 @@ def verify_output(output: Path, py_version: str, crate_version: str) -> None:
 
 
 def main() -> None:
+    global ROOT, VERSION, EXPECTED_PYTHON_PROJECTS, EXPECTED_CRATE
     parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, help="Release source checkout")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+
+    if args.root is not None:
+        ROOT = args.root.resolve()
+        # A historical release has its own base version. Anchor the contract
+        # to its committed manifest, never to the stamped working copy.
+        manifest = subprocess.check_output(
+            ["git", "show", "HEAD:python/aisimulate/pyproject.toml"], cwd=ROOT, text=True
+        )
+        VERSION = str(tomllib.loads(manifest)["project"]["version"])
+    EXPECTED_PYTHON_PROJECTS = {ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate"}
+    EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 
     py_version, crate_version = check_manifests()
     if not args.check_only:

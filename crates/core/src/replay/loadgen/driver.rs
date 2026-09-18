@@ -11,13 +11,14 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::trace::validate_synthesizable_prompt;
+use super::trace::{synthesize_validated_trace_tokens, validate_synthesizable_prompt};
 use super::types::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
     AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
     ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use crate::engine::belady::{SequenceHash, input_sequence_hashes};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::{
     AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
@@ -283,6 +284,8 @@ struct TurnRuntime {
     priority: i32,
     strict_priority: u32,
     policy_class: Option<String>,
+    // Canonical capture assigns ordinals; Belady may instead reserve an opaque
+    // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
 }
 
@@ -1266,6 +1269,78 @@ impl WorkloadDriver {
         }
     }
 
+    /// Snapshot fixed input demand without executing any workload lifecycle.
+    /// Reserving opaque IDs is the only mutation: arrivals, outputs, cursors,
+    /// and readiness remain owned by the causal driver. Output plans are
+    /// intentionally excluded; this forecast is not actual future cache reuse.
+    pub(crate) fn prepare_belady_requests(
+        &mut self,
+        engine_block_size: usize,
+    ) -> Result<Vec<(Uuid, Vec<SequenceHash>)>> {
+        if !matches!(self.policy, SchedulingPolicy::Trace) || self.prompt_mode != PromptMode::Full {
+            bail!(
+                "belady requires a full-prompt, fixed-arrival trace driver; concurrency, agentic, and delta workloads are unsupported"
+            );
+        }
+        if usize::try_from(self.engine_block_size)? != engine_block_size {
+            bail!("belady workload engine block size must match the replay engine");
+        }
+        if !self.in_flight.is_empty()
+            || self.ready_sessions.len() != self.sessions.len()
+            || self.sessions.iter().any(|session| {
+                session.turns.len() != 1
+                    || session.next_turn_index != 0
+                    || session.in_flight.is_some()
+                    || session.next_ready_at_ms.is_none()
+                    || !session.cumulative_tokens.is_empty()
+            })
+        {
+            bail!("belady requires a pristine trace driver with one turn per session");
+        }
+        if self.sessions.iter().any(|session| {
+            let arrival = session.next_ready_at_ms.expect("validated ready session");
+            !arrival.is_finite() || arrival < 0.0
+        }) {
+            bail!("belady requires finite, nonnegative trace arrival times");
+        }
+
+        // Match ReadySession's arrival/source order, not UUID order. A future
+        // occurrence is global demand even if routing later selects a different
+        // worker; predicting that placement is deliberately outside this oracle.
+        let mut order = (0..self.sessions.len()).collect::<Vec<_>>();
+        order.sort_by(|&left, &right| {
+            self.sessions[left]
+                .next_ready_at_ms
+                .unwrap()
+                .total_cmp(&self.sessions[right].next_ready_at_ms.unwrap())
+                .then_with(|| left.cmp(&right))
+        });
+        let mut forecast = Vec::with_capacity(order.len());
+        for session_index in order {
+            let turn = &mut self.sessions[session_index].turns[0];
+            let request_id = *turn
+                .deterministic_request_id
+                .get_or_insert_with(Uuid::new_v4);
+            let PromptTokens::Deferred {
+                input_length,
+                hash_ids,
+            } = &turn.prompt_tokens
+            else {
+                unreachable!("full-prompt turns retain deferred input tokens");
+            };
+            // Use the same normalization as eventual admission, including when
+            // source trace blocks and native engine blocks have different sizes.
+            // Only this one expanded prompt is live; retain hashes in the oracle.
+            let tokens =
+                synthesize_validated_trace_tokens(*input_length, hash_ids, self.trace_block_size);
+            forecast.push((
+                request_id,
+                input_sequence_hashes(&tokens, engine_block_size),
+            ));
+        }
+        Ok(forecast)
+    }
+
     fn request_uuid(&self, _session_index: usize, _turn_index: usize) -> Uuid {
         if let Some(request_id) =
             self.sessions[_session_index].turns[_turn_index].deterministic_request_id
@@ -2083,6 +2158,128 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn belady_flat_trace() -> Trace {
+        Trace {
+            block_size: 5,
+            sessions: [10.0, 1.0, 1.0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, arrival)| SessionTrace {
+                    session_id: format!("s{index}"),
+                    first_arrival_timestamp_ms: Some(arrival),
+                    turns: vec![TurnTrace {
+                        input_length: 7 + index,
+                        max_output_tokens: 3,
+                        hash_ids: vec![11, 20 + index as u32],
+                        ..Default::default()
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn belady_forecast_preserves_causal_driver_and_actual_block_identities() {
+        let trace = belady_flat_trace();
+        let mut baseline = WorkloadDriver::new_trace(trace.clone(), 3)
+            .unwrap()
+            .with_deterministic_request_ids(1);
+        let mut prepared = WorkloadDriver::new_trace(trace, 3)
+            .unwrap()
+            .with_deterministic_request_ids(1);
+        let ready_before = prepared.ready_sessions.clone().into_sorted_vec();
+        let forecast = prepared.prepare_belady_requests(3).unwrap();
+        assert_eq!(
+            forecast.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [2, 3, 1].map(Uuid::from_u128)
+        );
+        assert_eq!(forecast, prepared.prepare_belady_requests(3).unwrap());
+        assert_eq!(
+            ready_before,
+            prepared.ready_sessions.clone().into_sorted_vec()
+        );
+        assert!(prepared.in_flight.is_empty());
+        assert!(prepared.sessions.iter().all(|session| {
+            session.next_turn_index == 0
+                && session.in_flight.is_none()
+                && matches!(
+                    session.turns[0].prompt_tokens,
+                    PromptTokens::Deferred { .. }
+                )
+        }));
+        assert!(prepared.pop_ready(0.0, usize::MAX).is_empty());
+        let mut observed = Vec::new();
+        for at_ms in [1.0, 10.0] {
+            let expected = baseline.pop_ready(at_ms, usize::MAX);
+            let actual = prepared.pop_ready(at_ms, usize::MAX);
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert_eq!(
+                    serde_json::to_value(&actual.request).unwrap(),
+                    serde_json::to_value(&expected.request).unwrap()
+                );
+                assert_eq!(actual.replay_hashes, expected.replay_hashes);
+                observed.push((
+                    actual.request_uuid,
+                    actual.replay_hashes.unwrap().sequence_hashes,
+                ));
+                prepared.on_complete(actual.request_uuid, at_ms).unwrap();
+                baseline.on_complete(expected.request_uuid, at_ms).unwrap();
+            }
+        }
+        assert_eq!(forecast, observed);
+        assert!(prepared.is_drained());
+    }
+
+    #[test]
+    fn belady_forecast_reserves_opaque_ids_without_changing_output_plans() {
+        let mut driver =
+            WorkloadDriver::new_trace_without_replay_hashes(belady_flat_trace(), 3, false).unwrap();
+        let output_plans = driver
+            .sessions
+            .iter()
+            .map(|session| session.turns[0].output_token_ids.clone())
+            .collect::<Vec<_>>();
+        let forecast = driver.prepare_belady_requests(3).unwrap();
+        assert_eq!(forecast, driver.prepare_belady_requests(3).unwrap());
+        assert_eq!(
+            output_plans,
+            driver
+                .sessions
+                .iter()
+                .map(|session| session.turns[0].output_token_ids.clone())
+                .collect::<Vec<_>>()
+        );
+        let first = driver.pop_ready(1.0, 1).pop().unwrap();
+        assert_eq!(first.request_uuid, forecast[0].0);
+        assert_eq!(
+            input_sequence_hashes(&first.request.tokens, 3),
+            forecast[0].1
+        );
+        assert!(first.replay_hashes.is_none());
+    }
+
+    #[test]
+    fn belady_forecast_rejects_nonstatic_or_already_started_drivers() {
+        let mut multi = WorkloadDriver::new_trace(two_session_trace(), 1).unwrap();
+        assert!(multi.prepare_belady_requests(1).is_err());
+        let trace = belady_flat_trace();
+        let mut delta = WorkloadDriver::new_trace_accumulating_deltas(trace.clone(), 3).unwrap();
+        assert!(delta.prepare_belady_requests(3).is_err());
+        let mut closed = WorkloadDriver::new_concurrency(trace.clone(), 3, 1).unwrap();
+        assert!(closed.prepare_belady_requests(3).is_err());
+        let mut driver = WorkloadDriver::new_trace(trace, 3).unwrap();
+        assert!(driver.prepare_belady_requests(4).is_err());
+        assert_eq!(driver.pop_ready(1.0, 1).len(), 1);
+        assert!(driver.prepare_belady_requests(3).is_err());
+        let mut agentic = WorkloadDriver::new_agentic_trace(
+            agentic_trace(vec![agentic_node("a", "p", 0.0, Vec::new())]),
+            1,
+        )
+        .unwrap();
+        assert!(agentic.prepare_belady_requests(1).is_err());
     }
 
     /// A: 2 turns (turn-1 has a 5ms think-time). B, C: 1 turn each. Used for the cap>1

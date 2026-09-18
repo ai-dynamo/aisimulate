@@ -261,7 +261,8 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert "trace_block_size" not in traffic
 
 
-def test_agentic_runner_reads_canonical_model_identity():
+@pytest.mark.parametrize("model_key", ["model", "model_path"])
+def test_agentic_runner_reads_canonical_model_identity(model_key):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
     engine_args.pop("aic_model_path")
@@ -271,7 +272,7 @@ def test_agentic_runner_reads_canonical_model_identity():
         backend_version="test",
         agg_engine_args=engine_args,
         num_workers=1,
-        performance_model_metadata={"aggregated": {"provider": "aic", "config": {"model": "test-model"}}},
+        performance_model_metadata={"aggregated": {"provider": "aic", "config": {model_key: "test-model"}}},
     )
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(
         _spec(
@@ -285,6 +286,24 @@ def test_agentic_runner_reads_canonical_model_identity():
         )
     )
     assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("payload", [{}, {"config": None}, {"config": []}, {"config": "invalid"}])
+def test_runner_rejects_nonmapping_aic_timing_before_materialization(nested_rank, payload, monkeypatch):
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("invalid timing reached capacity"))
+    runtime = RecordingRuntime()
+    args = _engine_args(timing={"type": "external", "provider": "aic", **payload})
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 def test_runner_rejects_agentic_execution_without_a_target_model():

@@ -54,8 +54,10 @@ def materialize_aic_num_gpu_blocks(
     lowered = dict(raw)
     timing = lowered.get("timing_model")
     if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
-        authored = timing.get("config", {})
-        if isinstance(authored, dict) and ("estimation_mode" in authored or "estimator_config" in authored):
+        authored = timing.get("config")
+        if not isinstance(authored, dict):
+            raise ValueError("external AIC timing config must be a mapping")
+        if "estimation_mode" in authored or "estimator_config" in authored:
             from aiconfigurator_core.sdk import RustForwardPassPerfModel
 
             memory_fields = {

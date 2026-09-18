@@ -14,7 +14,8 @@ from aisimulate.sweeper.parallel_enum import (
 )
 
 
-def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["resolved", "custom", "legacy_custom"])
+def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch, source):
     from aisimulate.sweeper import kv_load
 
     roots = [tmp_path / "first", tmp_path / "second"]
@@ -33,7 +34,16 @@ def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch):
     capacities = []
     try:
         for root in [roots[0], roots[1], roots[0]]:
-            sample["forward_pass_estimators"] = {"agg": {"config": {"systems_paths": [str(root)]}}}
+            if source == "resolved":
+                sample["forward_pass_estimators"] = {"agg": {"config": {"systems_paths": [str(root)]}}}
+                sample["agg_timing_model"] = {
+                    "type": "external",
+                    "provider": "aic",
+                    "config": {"systems_paths": ["must-not-be-used"]},
+                }
+            else:
+                config = {"systems_paths": [str(root)]} if source == "custom" else {"systems_path": str(root)}
+                sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": config}
             result = resolve_kv_load(
                 sample,
                 workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, request_count=1),
@@ -46,6 +56,39 @@ def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch):
         assert calls == [[str(roots[0])], [str(roots[1])]]
     finally:
         kv_load._per_rank_capacity_tokens.cache_clear()
+
+
+@pytest.mark.parametrize("custom_role", ["prefill", "decode"])
+def test_mixed_timing_capacity_uses_each_roles_own_root(tmp_path, monkeypatch, custom_role):
+    from aisimulate.sweeper import kv_load
+
+    sample = _sample("disagg")
+    roots = {role: tmp_path / role for role in ("prefill", "decode")}
+    for root in roots.values():
+        root.mkdir()
+    canonical_role = "prefill" if custom_role == "decode" else "decode"
+    sample["forward_pass_estimators"] = {canonical_role: {"config": {"systems_paths": [str(roots[canonical_role])]}}}
+    sample[f"{custom_role}_timing_model"] = {
+        "type": "external",
+        "provider": "aic",
+        "config": {"systems_paths": [str(roots[custom_role])]},
+    }
+    seen = []
+
+    def capacity(*args, systems_paths, **kwargs):
+        seen.append(systems_paths)
+        return 6400
+
+    monkeypatch.setattr(kv_load, "_per_rank_capacity_tokens", capacity)
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, request_count=1),
+        parallel_config=DisaggParallelConfig(prefill=parallel, decode=parallel),
+        ratio=1.0,
+        backend_version="v",
+    )
+    assert seen == [(str(roots["prefill"]),), (str(roots["decode"]),)]
 
 
 def _sample(mode: str) -> dict:

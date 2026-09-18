@@ -457,6 +457,8 @@ def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
         )
     with pytest.raises(ValueError, match="unknown estimator override"):
         SearchSpace(**common, role_estimator_controls={"agg": {"estimation_mod": "op_level"}})
+    with pytest.raises(ValueError, match="unknown estimator role 'aggregated'; expected agg, prefill, or decode"):
+        SearchSpace(**common, role_estimator_controls={"aggregated": {"estimation_mode": "op_level"}})
     with pytest.raises(ValueError, match="estimator settings require default timing"):
         SearchSpace(
             **common,
@@ -471,6 +473,50 @@ def test_raw_config_rejects_trailing_json():
     payload = json.dumps(request(estimation_mode="fpm_regression").to_dict()) + " {}"
     with pytest.raises(ValueError, match="trailing characters"):
         aiconfigurator_core.RustForwardPassPerfModel.normalize_config(payload)
+
+
+@pytest.mark.parametrize("deployment_mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"estimation_mode": "fpm_regression"},
+        {"estimation_mode": "fpm_interpolation"},
+        {"fallback_policy": "allow"},
+        {"estimator_config": {"correction": {"enabled": False}}},
+        {"systems_paths": ["default"]},
+        {"database_mode": "HYBRID"},
+        {"transfer_policy": "conservative"},
+    ],
+)
+def test_afd_rejects_role_estimator_controls(deployment_mode, controls):
+    from aisimulate.sweeper.config import SearchSpace
+
+    with pytest.raises(ValueError, match="role_estimator_controls require regular language workers"):
+        SearchSpace(
+            model_name="m",
+            hardware_sku="h200_sxm",
+            deployment_mode=[deployment_mode],
+            afd_batch_size_candidates=[1],
+            role_estimator_controls={"decode": controls},
+        )
+
+
+@pytest.mark.parametrize("deployment_mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
+def test_afd_saved_search_preserves_legacy_selection(deployment_mode, forward_model):
+    from aisimulate.sweeper.config import SearchSpace
+
+    space = SearchSpace(
+        model_name="m",
+        hardware_sku="h200_sxm",
+        deployment_mode=[deployment_mode],
+        afd_batch_size_candidates=[1],
+        prefill_forward_model=forward_model,
+    )
+    for _ in range(2):
+        assert space.prefill_forward_model == forward_model
+        assert space.role_estimator_controls == {}
+        space = SearchSpace.model_validate_json(space.model_dump_json())
 
 
 @pytest.mark.parametrize(

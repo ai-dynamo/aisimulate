@@ -14,6 +14,8 @@ assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: ent
 const sha = "a".repeat(40);
 const nightlyWorkflow = readFileSync(new URL("../.github/workflows/nightly-ci.yml", import.meta.url), "utf8");
 const nightlyScripts = [...nightlyWorkflow.matchAll(/          script: \|\n((?:(?:            .*)?\n)+)/g)].map(match => match[1]);
+const nightlyDecision = nightlyScripts.find(script => script.includes("core.setOutput('should-build'"));
+assert.ok(nightlyDecision, "nightly build decision script must exist");
 
 async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/main", requested = sha,
   branches = ["main", "release/0.12.0", "feature/test"], statuses = { main: "ahead" }, apiError } = {}) {
@@ -101,7 +103,7 @@ test("only successful scheduled nightlies can suppress another scheduled build",
           return { data: { workflow_runs: [{ head_sha: previous, html_url: "https://example.invalid/run" }] } };
         } } } },
       });
-      await vm.runInContext(`(async () => { ${nightlyScripts[1]} })()`, sandbox);
+      await vm.runInContext(`(async () => { ${nightlyDecision} })()`, sandbox);
       assert.equal(queries, event === "schedule" ? 1 : 0);
       assert.equal(outputs["should-build"], event === "schedule" && previous === sha ? "false" : "true");
     }

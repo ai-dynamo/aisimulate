@@ -184,6 +184,24 @@ def test_afd_legacy_fpm_does_not_bypass_estimator_policy_validation(mode):
         CorePredictionConfig.model_validate(raw)
 
 
+@pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
+def test_afd_recommendation_preserves_legacy_companion_selection(forward_model):
+    from aisimulate.recommend import recommendation_to_sweeper
+    from aisimulate.sweeper.config import SmartSearchConfig
+
+    raw = _pure_prediction()
+    raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
+    raw["engine"]["afd"].pop("n_a_nodes")
+    raw["engine"]["afd"].pop("n_f_nodes")
+    raw["engine"]["workers"] = {"prefill": {"timing": {"forward_model": forward_model}}}
+    config = CoreRecommendationConfig.model_validate({**raw, "optimization": {}})
+    search = recommendation_to_sweeper(config, stack="engine")
+    for _ in range(2):
+        assert search.search_space.prefill_forward_model == forward_model
+        assert search.search_space.role_estimator_controls == {}
+        search = SmartSearchConfig.model_validate_json(search.model_dump_json())
+
+
 @pytest.mark.parametrize(
     ("afd", "match"),
     [

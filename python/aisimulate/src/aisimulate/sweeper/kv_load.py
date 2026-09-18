@@ -80,14 +80,25 @@ def _role_capacity_tokens(
     if fixed_blocks is not None:
         per_rank_tokens = int(fixed_blocks) * block_size
     else:
-        resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config", {})
+        resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config")
+        if resolved is None:
+            timing = sample.get(f"{role}_timing_model")
+            if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+                resolved = timing.get("config")
+                if not isinstance(resolved, dict):
+                    raise ValueError(f"{role} external AIC timing config must be a mapping")
+            else:
+                resolved = {}
+        roots = resolved.get("systems_paths")
+        if not roots and resolved.get("systems_path"):
+            roots = [resolved["systems_path"]]
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
-            model_name=str(resolved.get("model", sample["model_name"])),
+            model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
             hardware_sku=str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
             backend=str(resolved.get("backend", sample["backend"])),
             backend_version=resolved.get("backend_version", backend_version),
-            systems_paths=resolve_systems_paths(resolved.get("systems_paths")),
+            systems_paths=resolve_systems_paths(roots),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),

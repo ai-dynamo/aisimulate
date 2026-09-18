@@ -173,8 +173,11 @@ aisimulate predict \
 ```
 
 Check `budget-selected/prediction.json` for latency and throughput under the saved workload.
-If the search finds no feasible candidate, it writes `recommendation.json`, exits with status 1,
-and produces no selected YAML; inspect that report before running the prediction command.
+If the completed search selects no configuration and has zero resource-limited candidates, it writes
+`recommendation.json`, exits with status 1, and produces no selected YAML. Resource-limited
+candidates instead produce exit 3, including when fitting candidates and selected YAML remain
+available. Inspect the ledger and [resource diagnostics](../local-resources.md) before predicting
+a selected configuration or treating the search as complete.
 
 **What changed:** eight GPUs is a ceiling, so the winner may use fewer. This example evaluates
 eight random trials to keep the walkthrough bounded; increase the trial budget for your search.
@@ -233,7 +236,7 @@ required result, keep the AIC command above.
 - [4.3 Traces and multi-turn sessions](#43-replay-traces-and-multi-turn-sessions)
 - [4.4 Cache capacity and host offload](#44-model-cache-capacity-and-host-offload)
 - [4.5 Dynamo routing and planning](#45-include-dynamo-routing-and-planning)
-- [4.6 Op-level and FPM timing](#46-select-op-level-or-whole-forward-fpm-timing)
+- [4.6 Select and configure performance estimators](#46-select-and-configure-performance-estimators)
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
@@ -367,6 +370,7 @@ configured GPU/host KV capacity. Whether offload is exercised depends on cache p
 
 **What changed:** AIC's `--prefix 512` assumes 512 tokens are already cached. AISimulate models prefix
 reuse from the workload and cache state; the command above does not recreate that fixed hit count.
+The fixed-count option is [intentionally not migrated](#fixed-cached-prefix-counts).
 Host offload is an additional serving feature with no matching AIC CLI flag. This vLLM example uses
 prefix caching and attention DP=1, as required by the
 [host-offload contract](user-guide.md#native-vllm-host-offload-prediction). Host capacity and bandwidth
@@ -374,6 +378,38 @@ stay fixed during recommendation. Recommendation requires concrete aggregated vL
 parallelism preset (`preset: false`), and fixed `attention_data: 1`; other supported fields, such as
 `tensor` and `replicas`, may still be searched. Other `kv_cache` controls include block size, fixed
 GPU capacity, and CUDA-graph memory reservation.
+
+<a id="fixed-cached-prefix-counts"></a>
+
+#### 4.4.1 Fixed cached-prefix counts: intentionally not migrated
+
+AIC's `--prefix N` assumes the first `N` input tokens are already cached for every request.
+AISimulate intentionally does not expose an equivalent fixed-count option in `predict` or
+`recommend`. For serving prediction and configuration search, prefer prefix reuse derived from
+the workload and the simulated cache state.
+
+Replay drives request arrivals and worker placement. Each simulated worker's engine (Mocker)
+maintains its KV cache dynamically: it makes computed blocks available for reuse, matches later
+requests against available prefixes, and evicts eligible blocks when capacity is needed. A request
+that encounters a cold cache must compute its prefix; a later request sharing that prefix can
+reuse it if the matching blocks are still available on the worker that serves it. Cache hits
+therefore depend on request history, worker placement, cache capacity, and backend block rules.
+Assuming a fixed hit count for every request would bypass these effects and could overstate
+prefill savings.
+
+To model reuse, enable `engine.workers.<role>.kv_cache.prefix_caching` on a supported backend and
+supply shared prefixes through a [trace](user-guide.md#trace-source) or
+[synthetic sessions](user-guide.md#synthetic-session-source). For independent synthetic requests,
+set `traffic.source.cached_prefix_tokens` to share an exact number of input tokens, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). This also preserves a cold first
+request. Enabling caching alone does not create shared input. Session `shared_prefix_ratio` and
+`prefix_groups` describe workload sharing; they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
+prompt-lookup speculative decoding.
+
+Keep the bundled AIC compatibility CLI for controlled cached-prefix what-if estimates or
+comparisons that require the same fixed-token assumption. The [AIC example in section 5.6](#exact-cached-prefix-estimates)
+shows that workflow. Its fixed-count option is a deliberate compatibility boundary, not pending
+unified-CLI migration work.
 
 <a id="include-dynamo-routing-and-planning"></a>
 
@@ -400,7 +436,11 @@ scaling limits and the search's candidate GPU budget are separate controls.
 
 <a id="select-op-level-or-whole-forward-fpm-timing"></a>
 
-### 4.6 Select op-level or whole-forward FPM timing
+<a id="46-select-op-level-or-whole-forward-fpm-timing"></a>
+
+### 4.6 Select and configure performance estimators
+
+#### 4.6.1 Select an estimator
 
 **Before — AIC estimates a batch using collected whole-forward profiles:**
 
@@ -418,20 +458,144 @@ AIC_ALLOW_UNLISTED_VERSIONS=1 aiconfigurator cli estimate \
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 aisimulate predict \
   --config tests/e2e/configs/unified_cli/predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml \
-  --set engine.workers.aggregated.timing.forward_model=fpm \
+  --set engine.workers.aggregated.timing.estimation_mode=fpm_interpolation \
+  --set engine.workers.aggregated.timing.fallback_policy=deny \
   --output-dir ./minimax-fpm
 ```
 
 **Result to inspect:** `minimax-fpm/prediction.json` contains the serving prediction using
 whole-forward profiles.
 
-**What changed:** AIC's `--forward-model` becomes a per-role
-`engine.workers.<role>.timing.forward_model` setting. `op_level` remains the default. The AISimulate
-fixture uses four in-flight requests rather than fixing every scheduler batch to four. The AIC
-command pins FMHA precision to match the collected profile. Both commands pin vLLM 0.25.1, which
-requires the shown unlisted-version override. FPM requires
-`timing.type: default` and matching profile coverage; a missing profile fails explicitly. See the
-[FPM guide](../../python/aisimulate/docs/fpm/README.md).
+**What changed:** AIC's `--forward-model fpm` maps to the per-role
+`engine.workers.<role>.timing.estimation_mode: fpm_interpolation` setting. The defaults are
+`estimation_mode: auto` and `fallback_policy: deny`. Auto searches
+`op_level -> fpm_interpolation -> fpm_regression` during construction, including with deny.
+For an explicit mode, deny prevents switching estimators; allow tries that mode first, then the
+remaining estimators in the same global priority order. Invalid configuration does not trigger
+fallback. An untrained regression is not ready for offline simulation, and queries do not
+silently switch estimators after construction. Saved `timing.forward_model` inputs are migrated
+with their explicit mode and strict selection preserved; use `estimation_mode` in new configs.
+
+The AISimulate fixture uses four in-flight requests rather than fixing every scheduler batch to
+four. The AIC command pins FMHA precision to match the collected profile. Both commands pin
+vLLM 0.25.1, which requires the shown unlisted-version override. FPM requires
+`timing.type: default` and matching profile coverage; the explicit FPM/deny example fails when
+that profile is missing. See the [FPM guide](../../python/aisimulate/docs/fpm/README.md).
+
+#### 4.6.2 Configure data policies and estimator tuning
+
+**Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
+the bundled system definitions:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode agg --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 \
+  --database-mode HYBRID --transfer-policy conservative --systems-paths default \
+  --detail source
+```
+
+**Result to inspect:** the estimate and per-operation source breakdown show which data supplied
+the prediction. A policy choice does not guarantee coverage. `SOL` selects theoretical estimates;
+custom system directories can be added to `--systems-paths`. See
+[database modes](legacy-aic-user-guide.md#database-mode) and
+[system paths](legacy-aic-user-guide.md#systems-paths).
+
+**After — carry the policy into serving prediction and recommendation:**
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --set engine.estimation_mode=auto --set engine.fallback_policy=deny \
+  --output-dir ./policy-prediction
+
+aisimulate recommend --config budget-search.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --output-dir ./policy-search
+```
+
+Use an ordered list of existing directories plus `default` to search custom data before the
+bundled root. These controls require regular aggregated/disaggregated language workers with
+default timing in every role. AFD, analytical encoder pools, and fixed/polynomial providers keep
+their existing paths. Recommendation YAML pins each selected role's effective data root, version,
+policy, estimator mode, and full estimator configuration for a subsequent prediction.
+
+`engine.estimator_config` carries supported regression/correction controls; see the
+[canonical API](../core-api.md#estimator-controls). Shared role-based correction is deferred:
+current native correction stores and the latest role-bound regression routing remain unchanged.
+The unified CLI does not expose AIC's per-operation source breakdown shown above; keep the
+compatibility CLI or SDK for that diagnostic.
+
+<a id="preserve-pinned-engine-and-request-controls"></a>
+
+#### 4.6.3 Preserve pinned engine and request controls
+
+The unified `predict` and `recommend` configurations accept the following flat
+`engine` controls. They use the same canonical estimator interface as estimator
+selection and fallback policy.
+
+| AIC control | Unified configuration |
+| --- | --- |
+| `nextn`, `nextn_accepted` | `engine.nextn`, `engine.nextn_accepted` (both required for MTP) |
+| Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
+| EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
+| MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
+| Quantization overrides | `engine.gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` |
+| Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
+| Maximum sequence length | Existing `engine.context_length` |
+| GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
+
+`enable_wideep` is obsolete: topology now determines the MoE execution regime.
+The new model controls require default timing on every language role. AFD and
+analytical encoder configurations reject them. Backend/model compatibility is
+validated by the canonical constructor before simulation.
+
+This recommendation example preserves a token-exact shared prefix and explicit
+KV quantization while using the existing capacity field:
+
+```yaml
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  estimation_mode: op_level
+  fallback_policy: deny
+  kvcache_quant_mode: fp8
+  enable_chunked_prefill: true
+  workers:
+    aggregated:
+      kv_cache:
+        capacity:
+          memory_fraction: 0.85
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+    cached_prefix_tokens: 256
+  load:
+    type: concurrency
+    concurrency: 8
+  stop:
+    requests: 32
+optimization:
+  constraints:
+    max_candidate_gpus: 8
+```
+
+For MTP-capable models, specify both `engine.nextn: 2` and
+`engine.nextn_accepted: 1.25`. The accepted count is a workload assumption:
+replay uses one guaranteed accepted draft token and a 25% chance of a second.
+Saved candidate YAML retains these values and all engine model controls.
+A shared prefix does not mean a prewarmed cache; the first request remains cold.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -942,7 +1106,8 @@ in the package without a unified-CLI replacement.
 
 Migration prioritizes features that materially support serving prediction and deployment decisions.
 It does not aim to reproduce every AIC option. Some differences are deliberate product boundaries,
-including the [static estimate modes](#531-static-estimates), rather than planned migration work.
+including the [static estimate modes](#531-static-estimates) and
+[fixed cached-prefix counts](#fixed-cached-prefix-counts), rather than planned migration work.
 
 <a id="recommendation-runtime"></a>
 
@@ -1143,64 +1308,16 @@ alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
 
-### 5.6 Estimator controls and speculative decoding
+<a id="56-estimator-controls-and-speculative-decoding"></a>
 
-Backend version, estimator selection, database mode, transfer policy, and request-scoped system
-roots have unified mappings. Explicit quantization/kernel selectors and the remaining controls
-below continue to use AIC or the estimator SDK.
+### 5.6 Remaining estimator and speculative-decoding gaps
 
-**Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
-the bundled system definitions:
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode agg --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 \
-  --database-mode HYBRID --transfer-policy conservative --systems-paths default \
-  --detail source
-```
-
-**Result to inspect:** the estimate and per-operation source breakdown show which data supplied
-the prediction. A policy choice does not guarantee coverage. `SOL` selects theoretical estimates;
-custom system directories can be added to `--systems-paths`. See
-[database modes](legacy-aic-user-guide.md#database-mode) and
-[system paths](legacy-aic-user-guide.md#systems-paths).
-
-**After — carry the policy into serving prediction and recommendation:**
-
-```bash
-aisimulate predict --config prediction.yaml \
-  --set engine.database_mode=HYBRID \
-  --set engine.transfer_policy=conservative \
-  --set 'engine.systems_paths=[default]' \
-  --set engine.estimation_mode=auto --set engine.fallback_policy=deny \
-  --output-dir ./policy-prediction
-
-aisimulate recommend --config budget-search.yaml \
-  --set engine.database_mode=HYBRID \
-  --set engine.transfer_policy=conservative \
-  --set 'engine.systems_paths=[default]' \
-  --output-dir ./policy-search
-```
-
-Use an ordered list of existing directories plus `default` to search custom data before the
-bundled root. These controls require regular aggregated/disaggregated language workers with
-default timing in every role. AFD, analytical encoder pools, and fixed/polynomial providers keep
-their existing paths. Recommendation YAML pins each selected role's effective data root, version,
-policy, estimator mode, and full estimator configuration for a subsequent prediction.
-
-Auto searches `op_level -> fpm_interpolation -> fpm_regression` during construction. The default
-fallback policy is deny; auto selection still searches the full priority list. Deny prevents
-switching away from an explicitly requested estimator. An untrained regression remains unready,
-and queries do not silently switch estimators during execution. Existing saved timing configured
-with `forward_model` preserves its explicit mode and strict selection when migrated.
-
-`engine.estimator_config` carries supported regression/correction controls; see the
-[canonical API](../core-api.md#estimator-controls). Shared role-based correction is deferred:
-current native correction stores and the latest role-bound regression routing remain unchanged.
-These additions do not replace AIC's per-operation source breakdown in the preceding example.
+For supported estimator selection, fallback, database/transfer policies, system roots, and
+regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
+Unified prediction and recommendation also support pinned quantization/kernel controls and
+MTP with explicit accepted-token assumptions; see [section 4.6.3](#preserve-pinned-engine-and-request-controls).
+Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP, and
+per-operation source diagnostics continue to use the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
@@ -1217,11 +1334,17 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** the printed configuration and timing/source breakdown use the requested
-settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
-selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
+settings. Supported selectors depend on the backend and data. For serving simulation, pin the
+same supported quantization and kernel selectors through the unified `engine` fields in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). The static estimate and source
+breakdown above remain compatibility features; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
-**Specify an exact cached-prefix count.** `--prefix N` has no direct unified-CLI mapping. This
-assumes 256 of the 1,024 input tokens are already cached for each request:
+<a id="exact-cached-prefix-estimates"></a>
+
+**Specify an exact cached-prefix count with AIC.** `--prefix N` is
+[intentionally not migrated](#fixed-cached-prefix-counts): AISimulate prefers dynamic prefix reuse
+for serving simulation. Use the compatibility CLI when you need a fixed cached-token assumption.
+This example assumes 256 of the 1,024 input tokens are already cached for each request:
 
 ```bash
 aiconfigurator cli estimate \
@@ -1235,7 +1358,9 @@ aiconfigurator cli estimate \
 **Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
 assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
 reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
-workload sharing. Keep AIC when you require its exact cached-token assumption.
+workload sharing. `traffic.source.cached_prefix_tokens` likewise sets an exact shared prefix for
+synthetic requests, with a cold first request and reuse governed by cache state. Keep AIC when
+you require its fixed cached-token assumption.
 
 **Estimate speculative decoding.** For an n-gram example with three draft tokens and a caller-supplied
 average of 1.5 accepted tokens:
@@ -1254,7 +1379,9 @@ aiconfigurator cli estimate \
 using the supplied acceptance. `1.5` is an illustrative assumption, not predicted acceptance. MTP,
 EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK cost models, subject
 to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
-The unified CLI has no speculative configuration.
+The unified CLI supports MTP through `engine.nextn` and an explicit `engine.nextn_accepted`,
+as shown in [section 4.6.3](#preserve-pinned-engine-and-request-controls). It does not expose the
+other speculative schemes above, and it does not predict acceptance rates.
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
@@ -1382,66 +1509,3 @@ AIConfigurator repository is scheduled to archive after its final 0.12.0 release
 keeps the AIC compatibility command; removal is targeted for 0.13.0 after all remaining workflows
 have verified unified-CLI replacements. See the [release transition policy](../../README.md#aiconfigurator-repository-transition)
 and [repository history](../repository-history.md).
-
-### Preserve pinned engine and request controls
-
-The unified `predict` and `recommend` configurations accept the following flat
-`engine` controls. They use the same canonical estimator interface as estimator
-selection and fallback policy.
-
-| AIC control | Unified configuration |
-| --- | --- |
-| `nextn`, `nextn_accepted` | `engine.nextn`, `engine.nextn_accepted` (both required for MTP) |
-| Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
-| EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
-| MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
-| Quantization overrides | `engine.gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` |
-| Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
-| Maximum sequence length | Existing `engine.context_length` |
-| GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
-
-`enable_wideep` is obsolete: topology now determines the MoE execution regime.
-The new model controls require default timing on every language role. AFD and
-analytical encoder configurations reject them. Backend/model compatibility is
-validated by the canonical constructor before simulation.
-
-This recommendation example preserves a token-exact shared prefix and explicit
-KV quantization while using the existing capacity field:
-
-```yaml
-engine:
-  mode: aggregated
-  model: Qwen/Qwen3-32B
-  hardware: h200_sxm
-  backend: vllm
-  context_length: 4096
-  estimation_mode: op_level
-  fallback_policy: deny
-  kvcache_quant_mode: fp8
-  enable_chunked_prefill: true
-  workers:
-    aggregated:
-      kv_cache:
-        capacity:
-          memory_fraction: 0.85
-traffic:
-  source:
-    type: synthetic
-    input_tokens: 1024
-    output_tokens: 128
-    cached_prefix_tokens: 256
-  load:
-    type: concurrency
-    concurrency: 8
-  stop:
-    requests: 32
-optimization:
-  constraints:
-    max_candidate_gpus: 8
-```
-
-For MTP-capable models, specify both `engine.nextn: 2` and
-`engine.nextn_accepted: 1.25`. The accepted count is a workload assumption:
-replay uses one guaranteed accepted draft token and a 25% chance of a second.
-Saved candidate YAML retains these values and all engine model controls.
-A shared prefix does not mean a prewarmed cache; the first request remains cold.

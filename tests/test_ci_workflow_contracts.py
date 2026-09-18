@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -27,6 +28,7 @@ import yaml
 
 from scripts import build_manylinux_wheel as manylinux_builder
 from scripts import check_python_licenses as python_licenses
+from scripts import select_forward_perf as forward_perf
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
 from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
@@ -37,7 +39,7 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
-def test_release_migration_gate_blocks_scheduled_publication_until_reviewed_clearance(tmp_path):
+def test_release_migration_gate_blocks_publication_until_reviewed_clearance(tmp_path):
     from scripts.check_release_migrations import GATES, require_completed_migrations
 
     with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
@@ -58,10 +60,269 @@ def test_release_migration_gate_blocks_scheduled_publication_until_reviewed_clea
     index = next(i for i, step in enumerate(guard["steps"]) if "check_release_migrations.py" in step.get("run", ""))
     assert next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "target") < index
     assert index < next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "decide")
-    assert guard["steps"][index]["if"] == "github.event_name == 'schedule'"
-    assert "github.event_name == 'schedule'" in jobs["trigger-gitlab-security"]["if"]
+    assert "if" not in guard["steps"][index]
+    checkouts = [step for step in guard["steps"][:index] if step.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) == 2
+    assert checkouts[0]["with"]["ref"] == "${{ steps.target.outputs.sha }}"
+    assert "path" not in checkouts[0]["with"]
+    assert checkouts[1]["with"]["ref"] == "${{ github.sha }}"
+    assert checkouts[1]["with"]["path"] == "release-policy"
+    assert all("if" not in step and step["with"]["persist-credentials"] == "false" for step in checkouts)
+    assert guard["steps"][index]["run"] == (
+        "python3 release-policy/scripts/check_release_migrations.py --target-gates .github/release-gates.json"
+    )
+    assert "build-artifacts" in jobs["trigger-gitlab-security"]["needs"]
     assert "changes-guard" in jobs["build-artifacts"]["needs"]
     assert "needs.changes-guard.outputs.should-build == 'true'" in jobs["build-artifacts"]["if"]
+
+
+@pytest.mark.parametrize(
+    "current,target,expected",
+    [
+        ("clear", "clear", 0),
+        ("clear", "pending", 1),
+        ("pending", "clear", 1),
+        ("clear", "missing", 1),
+        ("clear", "malformed", 1),
+    ],
+)
+def test_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
+    from scripts import check_release_migrations as checker
+
+    paths = {}
+    for name, state in (("current", current), ("target", target)):
+        paths[name] = tmp_path / f"{name}.json"
+        if state == "missing":
+            continue
+        pending = [] if state == "clear" else [{"pull_request": "migration/pr/1", "requirement": "Migrate consumer"}]
+        document = {} if state == "malformed" else {"pending_migrations": pending}
+        paths[name].write_text(json.dumps(document))
+    monkeypatch.setattr(checker, "GATES", paths["current"])
+    assert checker.main(["--target-gates", str(paths["target"])]) == expected
+
+
+def test_forward_perf_selects_before_allocating_the_benchmark_runner():
+    workflow = _workflow("performance.yml")
+    assert workflow["on"]["push"] == {"branches": ["pull-request/*"]}
+    assert set(workflow["on"]) == {"push", "workflow_dispatch"}
+    selector = workflow["jobs"]["select"]
+    compare = workflow["jobs"]["compare"]
+    assert selector["runs-on"] == "ubuntu-latest"
+    assert "python scripts/select_forward_perf.py" in _run_commands(selector)
+    assert compare["needs"] == "select"
+    assert compare["if"] == "needs.select.outputs.run_comparison == 'true'"
+    assert set(selector["outputs"]) == {
+        "number",
+        "head_sha",
+        "base_ref",
+        "run_comparison",
+    }
+    checkout = next(step for step in compare["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ needs.select.outputs.head_sha }}"
+    assert "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" in _run_commands(compare)
+
+
+def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_comparison():
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")
+    assert "validate_head_controller=true" in revisions["run"]
+    assert "validate_head_controller=false" in revisions["run"]
+    base = next(step for step in steps if step.get("name") == "Run paired benchmark")
+    head = next(step for step in steps if step.get("name") == "Validate PR benchmark controller")
+    assert "!cancelled()" in head["if"]
+    assert "steps.build.outcome == 'success'" in head["if"]
+    assert "steps.revisions.outputs.validate_head_controller == 'true'" in head["if"]
+    assert next(step for step in steps if step.get("id") == "build")["name"] == "Build and install both revisions"
+    expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
+    expected = expected.replace(
+        "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+        "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+    )
+    expected = expected.replace('--output-dir "${RESULTS_DIR}"', '--output-dir "${RESULTS_DIR}/head-controller"')
+    assert head["run"] == expected
+    publish = next(step for step in steps if step.get("name") == "Publish PR controller validation")
+    assert publish["if"].startswith("always()")
+    assert "head-controller/summary.md" in publish["run"]
+    assert "head-controller/annotations.txt" in publish["run"]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("python/aisimulate/tools/forward_perf_gate/cases.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/measurement.py", True),
+        ("python/aisimulate/tools/prediction_regression_gate/grid.py", True),
+        ("python/aisimulate/tools/forward_perf_gate/README.md", False),
+    ],
+)
+def test_forward_perf_controller_change_detection(tmp_path, path, expected):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split("git worktree prune", 1)[0]
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "base", "base\n")
+    (tmp_path / path).parent.mkdir(parents=True)
+    head = _commit_file(tmp_path, path, "changed\n")
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-euc", detection],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": "python/aisimulate/tools/forward_perf_gate",
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=True,
+    )
+    assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
+    assert forward_perf.matches_path(path) is expected
+
+
+def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
+    pull = {
+        "head": {"sha": "a" * 40},
+        "base": {"sha": "b" * 40, "ref": "main"},
+        "changed_files": sum(map(len, pages)) if count is None else count,
+    }
+    calls = []
+
+    def api(endpoint):
+        calls.append(endpoint)
+        if "/files?" in endpoint:
+            return pages
+        if "/git/ref/" in endpoint:
+            return [{"object": {"sha": canonical}}]
+        return [after if after is not None and calls.count(endpoint) > 1 else pull]
+
+    return api, calls
+
+
+@pytest.mark.parametrize(
+    ("pages", "count", "expected"),
+    [
+        ([[{"filename": "crates/core/src/python.rs"}]], None, "true"),
+        ([[{"filename": "docs/ci.md"}]], None, "false"),
+        ([[{"filename": "python/aisimulate/tools/forward_perf_gate/README.md"}]], None, "false"),
+        # Full PR files still include the code change after a later docs-only push.
+        (
+            [[{"filename": "docs/ci.md"}], [{"filename": "crates/core/src/python.rs"}]],
+            None,
+            "true",
+        ),
+        (
+            [
+                [
+                    {
+                        "filename": "archive/old.py",
+                        "previous_filename": "python/aisimulate/src/aiconfigurator_core/foo.py",
+                    }
+                ]
+            ],
+            None,
+            "true",
+        ),
+        ([[]], 0, "true"),
+        ([[{"filename": "docs/ci.md"}]], 2, "true"),
+        ([[]], 3001, "true"),
+    ],
+)
+def test_forward_perf_uses_complete_pr_files(pages, count, expected):
+    api, calls = _forward_api(pages, count=count)
+    # Selection intentionally has no dependency on push.commits or push.before.
+    result = forward_perf.select_comparison("owner/repo", "push", "refs/heads/pull-request/236", "a" * 40, api=api)
+    assert result["run_comparison"] == expected
+    assert result["head_sha"] == "a" * 40
+    assert result["number"] == "236"
+    assert result["base_ref"] == "main"
+    assert calls[0] == calls[-1] == "repos/owner/repo/pulls/236"
+    assert any("/files?per_page=100" in call for call in calls) is (count != 3001)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("scripts/select_forward_perf.py", True),
+        ("Cargo.toml.bak", False),
+        ("crates/core/src/engine/nested/predict.rs", True),
+        ("crates/core/src/engine-other/predict.rs", False),
+        ("python/aisimulate/src/aiconfigurator_core/example.py", True),
+        ("python/aisimulate/src/aiconfigurator_core/unrelated/example.py", False),
+        ("python/aisimulate/src/aiconfigurator_core/systems/h100_sxm.yaml", True),
+        (
+            "python/aisimulate/src/aiconfigurator_core/systems/unrelated/nested.yaml",
+            False,
+        ),
+    ],
+)
+def test_forward_perf_path_matching_preserves_directory_boundaries(path, expected):
+    assert forward_perf.matches_path(path) is expected
+
+
+def test_forward_perf_manual_dispatch_forces_comparison_of_the_trusted_copy():
+    api, calls = _forward_api([[{"filename": "docs/ci.md"}]])
+    result = forward_perf.select_comparison(
+        "owner/repo", "workflow_dispatch", "refs/heads/main", "c" * 40, "236", api=api
+    )
+    assert result["run_comparison"] == "true"
+    assert result["head_sha"] == "a" * 40
+    assert not any("/files?" in call for call in calls)
+
+
+@pytest.mark.parametrize("change", ["head", "base_sha", "base_ref", "stale_push", "stale_manual"])
+def test_forward_perf_rejects_changed_or_stale_revisions(change):
+    after = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}}
+    if change == "head":
+        after["head"]["sha"] = "d" * 40
+    elif change == "base_sha":
+        after["base"]["sha"] = "d" * 40
+    elif change == "base_ref":
+        after["base"]["ref"] = "release/test"
+    api, _ = _forward_api(
+        [[{"filename": "docs/ci.md"}]],
+        after=after,
+        canonical="d" * 40 if change == "stale_manual" else "a" * 40,
+    )
+    with pytest.raises(ValueError, match="does not match|head or base changed"):
+        forward_perf.select_comparison(
+            "owner/repo",
+            "workflow_dispatch" if change == "stale_manual" else "push",
+            "refs/heads/pull-request/236",
+            "d" * 40 if change == "stale_push" else "a" * 40,
+            "236",
+            api=api,
+        )
+
+
+@pytest.mark.parametrize("fail_api", [False, True])
+def test_forward_perf_cli_reports_skip_or_api_failure(monkeypatch, tmp_path, fail_api):
+    api, _ = _forward_api([[{"filename": "docs/ci.md"}]])
+
+    def run(command, **kwargs):
+        assert command[:4] == ["gh", "api", "--paginate", "--slurp"]
+        assert kwargs["check"] is True
+        if fail_api and "/files?" in command[-1]:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout=json.dumps(api(command[-1])))
+
+    monkeypatch.setattr(forward_perf.subprocess, "run", run)
+    for name, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/pull-request/236",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert forward_perf.main() == int(fail_api)
+    if fail_api:
+        assert not (tmp_path / "output").exists()
+        assert not (tmp_path / "summary").exists()
+    else:
+        assert "run_comparison=false" in (tmp_path / "output").read_text()
+        assert "**SKIPPED**" in (tmp_path / "summary").read_text()
 
 
 def _fast_run(**overrides):
@@ -1887,11 +2148,12 @@ def test_nightly_failed_compliance_cannot_stage(result):
 
 
 @pytest.mark.parametrize("attempt", ["1", "2"])
-def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
+def test_manual_nightly_requires_current_approval_to_publish(attempt):
     context = {"github.event_name": "workflow_dispatch", "github.run_attempt": attempt}
     assert _nightly_condition("manual-approval", **context)
     assert not _nightly_condition("python-compliance", **context)
     assert not _nightly_condition("build-artifacts", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
     context.update(
         {
             "needs.manual-approval.result": "success",
@@ -1901,11 +2163,12 @@ def test_manual_nightly_requires_current_approval_but_never_publishes(attempt):
     assert _nightly_condition("build-artifacts", **context)
     assert _nightly_condition("python-compliance", **context)
     assert _nightly_condition("license-evidence", **context)
-    assert not _nightly_condition("fpe-support-matrix", **context)
-    assert not _nightly_condition("trigger-gitlab-security", **context)
+    assert _nightly_condition("fpe-support-matrix", **context)
+    assert _nightly_condition("trigger-gitlab-security", **context)
     context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
     assert not _nightly_condition("build-artifacts", **context)
     assert not _nightly_condition("python-compliance", **context)
+    assert not _nightly_condition("trigger-gitlab-security", **context)
 
 
 def test_nightly_compliance_requires_approval_dependency_and_respects_cancellation():
@@ -2161,13 +2424,21 @@ def test_nightly_license_matrix_covers_the_smoked_python_versions():
     assert upload["with"]["name"] == "nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}"
 
 
-@pytest.mark.parametrize("spdx,allowed", [("MIT", True), ("GPL-3.0-only", False)])
-def test_real_pip_licenses_enforces_the_policy(tmp_path, spdx, allowed):
+@pytest.mark.parametrize(
+    "metadata_field,spdx,allowed",
+    [
+        ("License", "MIT", True),
+        ("License", "GPL-3.0-only", False),
+        ("License-Expression", "BSD-3-Clause AND ISC", True),
+        ("License-Expression", "BSD-3-Clause AND GPL-3.0-only", False),
+    ],
+)
+def test_real_pip_licenses_enforces_the_policy(tmp_path, metadata_field, spdx, allowed):
     assert importlib.metadata.version("pip-licenses") == "5.5.5"
     metadata = tmp_path / "license_policy_fixture-1.0.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: license-policy-fixture\nVersion: 1.0\nLicense: {spdx}\n"
+        f"Metadata-Version: 2.4\nName: license-policy-fixture\nVersion: 1.0\n{metadata_field}: {spdx}\n"
     )
     result = subprocess.run(
         [
@@ -2212,7 +2483,7 @@ def test_python_license_gate_checks_target_environment_before_export(
         if command[1:4] == ["-m", "pip", "install"]:
             requirements = Path(command[command.index("-r") + 1]).read_text().splitlines()
             assert requirements == ["prettytable>=3", "wcwidth"]
-            assert command[-1] == "pip-licenses==5.5.5"
+            assert command[-2:] == ["pip-licenses==5.5.5", "setuptools>=84"]
             assert kwargs["check"]
             return SimpleNamespace(returncode=0)
         assert command[1:4] == ["-m", "piplicenses", "--with-system"]
@@ -2374,7 +2645,7 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
 @pytest.mark.parametrize("failure", [None, "missing-token", "http-error"])
 def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure):
     # Interface verified against release-automation commit
-    # 1aaaeae1f4a29345085b68bb460d09ee47cc4bb0: .gitlab-ci.yml forwarding
+    # cdabacabb50e589c08b97b776b5c2f2644b5473e: .gitlab-ci.yml forwarding
     # and projects/aisimulate.yml. This is an independent request fixture,
     # not a copy of the external pipeline implementation.
     capture = tmp_path / "request.json"
@@ -2407,7 +2678,8 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
             "CURL_EXIT_CODE": "22" if failure == "http-error" else "0",
             "GITLAB_TRIGGER_TOKEN": "" if failure == "missing-token" else "fixture-token",
             "GITLAB_PIPELINE_URL": endpoint,
-            "WHEEL_VERSION": "0.12.0.dev20260917",
+            "WHEEL_VERSION": "0.12.0.dev202609170000001234",
+            "TOOLING_SHA": "b" * 40,
             "GH_RUN_ID": "123456",
             "GH_SHA": "a" * 40,
             "SLACK_THREAD_TS": "1234567890.123456",
@@ -2428,11 +2700,145 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
         "variables[PROJECT]": "aisimulate",
         "variables[PIPELINE_TYPE]": "security",
         "variables[RELEASE_TYPE]": "nightly",
-        "variables[NIGHTLY_TAG]": "nightly-20260917-aaaaaaa",
-        "variables[WHEEL_VERSION]": "0.12.0.dev20260917",
+        "variables[NIGHTLY_TAG]": "nightly-202609170000001234-aaaaaaa",
+        "variables[WHEEL_VERSION]": "0.12.0.dev202609170000001234",
         "variables[GITHUB_RUN_ID]": "123456",
         "variables[COMMIT_SHA]": "a" * 40,
+        "variables[AISIMULATE_TOOLING_SHA]": "b" * 40,
         "variables[SLACK_THREAD_TS]": "1234567890.123456",
         "variables[SLACK_CHANNEL_ID]": "fixture-channel",
         "variables[DRY_RUN]": "false",
     }
+
+
+@pytest.mark.parametrize("attempt", ["1", "2"])
+@pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
+def test_manual_publish_rejects_failed_dependencies(attempt, gate, result):
+    assert not _nightly_condition(
+        "trigger-gitlab-security",
+        **{
+            "github.event_name": "workflow_dispatch",
+            "github.run_attempt": attempt,
+            "needs.manual-approval.result": "success",
+            "needs.manual-approval.outputs.approved-attempt": attempt,
+            f"needs.{gate}.result": result,
+        },
+    )
+
+
+def test_manual_publish_rejects_wrong_ref_disabled_trigger_and_cancellation():
+    approved = {
+        "github.event_name": "workflow_dispatch",
+        "needs.manual-approval.result": "success",
+        "needs.manual-approval.outputs.approved-attempt": "1",
+    }
+    assert not _nightly_condition("trigger-gitlab-security", cancelled=True, **approved)
+    for override in ({"github.ref": "refs/heads/release/0.12.0"}, {"vars.GITLAB_SECURITY_TRIGGER_ENABLED": "false"}):
+        assert not _nightly_condition("trigger-gitlab-security", **{**approved, **override})
+
+
+def _nightly_version(created, number):
+    script = next(
+        step["with"]["script"]
+        for step in _workflow("nightly-ci.yml")["jobs"]["changes-guard"]["steps"]
+        if step.get("id") == "version"
+    )
+    program = """
+const run = JSON.parse(process.argv[1]);
+const output = {};
+const core = {setOutput: (key, value) => { output[key] = value; }};
+const github = {rest: {actions: {getWorkflowRun: async () => ({data: run})}}};
+const context = {repo: {owner: 'fixture', repo: 'fixture'}, runId: 123};
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+new AsyncFunction('github', 'context', 'core', process.argv[2])(github, context, core)
+  .then(() => console.log(JSON.stringify(output)))
+  .catch(error => { console.error(error.message); process.exitCode = 1; });
+"""
+    return subprocess.run(
+        [shutil.which("node"), "-e", program, json.dumps({"created_at": created, "run_number": number}), script],
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
+    from packaging.version import Version
+
+    versions = []
+    for date, number in [
+        ("2026-09-17T23:59:59Z", 1234),
+        ("2026-09-17T23:59:59Z", 1235),
+        ("2026-09-18T00:00:00Z", 1236),
+    ]:
+        result = _nightly_version(date, number)
+        assert result.returncode == 0, result.stderr
+        value = json.loads(result.stdout)
+        assert value["dev-date"] == date[:10].replace("-", "")
+        versions.append(value["dev-version"])
+        assert json.loads(_nightly_version(date, number).stdout) == value
+    assert versions == ["202609170000001234", "202609170000001235", "202609180000001236"]
+    assert Version("0.12.0.dev20260917") < Version("0.12.0.dev" + versions[0])
+    assert [Version("0.12.0.dev" + v) for v in versions] == sorted(Version("0.12.0.dev" + v) for v in versions)
+    for number in (0, -1, 10000000000, "invalid"):
+        assert _nightly_version("2026-09-17T00:00:00Z", number).returncode != 0
+
+
+@pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
+@pytest.mark.parametrize("base_version", ["0.12.0", "0.11.0"])
+def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (REPOSITORY_ROOT / name).read_text().replace('version = "0.12.0"', f'version = "{base_version}"')
+        )
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "source"],
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    stamp = [sys.executable, str(REPOSITORY_ROOT / "scripts/apply_dev_version.py"), suffix, str(tmp_path)]
+    subprocess.run(stamp, check=True, capture_output=True)
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob("*.toml")}
+    subprocess.run(stamp, check=True, capture_output=True)
+    assert before == {str(p): p.read_bytes() for p in tmp_path.rglob("*.toml")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/build_release_artifacts.py"),
+            "--root",
+            str(tmp_path),
+            "--check-only",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{base_version}{suffix}" in (tmp_path / "python/aisimulate/pyproject.toml").read_text()
+    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "crates/core/Cargo.toml").read_text()
+
+
+def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
+    workflow = _workflow("fpe-support-matrix.yml")
+    assert workflow["env"]["FPE_SOURCE_SHA"] == "${{ inputs.expected_sha }}"
+    assert workflow["env"]["FPE_TOOLING_SHA"] == "${{ github.sha }}"
+    for job in workflow["jobs"].values():
+        checkouts = [s["with"] for s in job["steps"] if "actions/checkout@" in s.get("uses", "")]
+        assert checkouts == [
+            {"ref": "${{ github.sha }}", "persist-credentials": "false"},
+            {"ref": "${{ inputs.expected_sha }}", "path": "release-source", "persist-credentials": "false"},
+        ]
+    for job, action in [
+        ("prepare-wheel", "record-wheel"),
+        ("discover-shards", "discover"),
+        ("generate", "probe"),
+        ("build-web-matrix", "package"),
+    ]:
+        assert f"scripts/run_release_fpe.py {action}" in _run_commands(workflow["jobs"][job])
+    nightly = _workflow("nightly-ci.yml")["jobs"]
+    assert nightly["fpe-support-matrix"]["with"]["source_branch"] == "${{ needs.changes-guard.outputs.target-ref }}"
+    assert nightly["build-artifacts"]["env"]["DEV_DATE"] == "${{ needs.changes-guard.outputs.dev-version }}"
+    assert "release-tooling/scripts/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
+    assert "release-tooling/scripts/build_release_artifacts.py --root ." in _run_commands(nightly["build-artifacts"])

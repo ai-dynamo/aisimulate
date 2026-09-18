@@ -165,6 +165,24 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_worker.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/cli_args.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_host_resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: docs/local-resources.md
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_power_diagnostics.py
     owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
 
@@ -553,7 +553,7 @@ class SearchSpace(BaseModel):
     prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
-    prefill_forward_model: str = Field(default="op_level", exclude=True)
+    prefill_forward_model: str = "op_level"
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -567,7 +567,7 @@ class SearchSpace(BaseModel):
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
-    decode_forward_model: str = Field(default="op_level", exclude=True)
+    decode_forward_model: str = "op_level"
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -581,7 +581,7 @@ class SearchSpace(BaseModel):
     agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
-    agg_forward_model: str = Field(default="op_level", exclude=True)
+    agg_forward_model: str = "op_level"
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -595,6 +595,11 @@ class SearchSpace(BaseModel):
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
         if not isinstance(value, dict):
+            return value
+        modes = value.get("deployment_mode")
+        if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
+            "encoder"
+        ) is not None:
             return value
         value = dict(value)
         raw_controls = value.get("role_estimator_controls", {})
@@ -641,10 +646,25 @@ class SearchSpace(BaseModel):
             value = getattr(self, field_name)
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
-        for role in ("agg", "prefill", "decode"):
-            mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
-            setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
+        if not self._uses_legacy_estimator_provider():
+            for role in ("agg", "prefill", "decode"):
+                mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
+                setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
         return self
+
+    def _uses_legacy_estimator_provider(self) -> bool:
+        return bool(set(self.deployment_mode) & {"afd", "afd+pd"}) or self.encoder is not None
+
+    @model_serializer(mode="wrap")
+    def _serialize_estimator_selection(self, handler):
+        result = handler(self)
+        # Ordinary workers serialize only the canonical controls. Existing AFD
+        # and encoder providers still consume the legacy selector, including
+        # when a saved search is reloaded.
+        if not self._uses_legacy_estimator_provider():
+            for role in ("agg", "prefill", "decode"):
+                result.pop(f"{role}_forward_model", None)
+        return result
 
     @model_validator(mode="after")
     def _validate_role_hardware(self) -> SearchSpace:
@@ -772,8 +792,15 @@ class SearchSpace(BaseModel):
             "transfer_policy",
         }
         for role, controls in self.role_estimator_controls.items():
-            if role not in {"agg", "prefill", "decode"} or set(controls) - allowed:
+            if role not in {"agg", "prefill", "decode"}:
+                raise ValueError(f"unknown estimator role {role!r}; expected agg, prefill, or decode")
+            if set(controls) - allowed:
                 raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
+            if controls and self._uses_legacy_estimator_provider():
+                raise ValueError(
+                    "role_estimator_controls require regular language workers; "
+                    "AFD and encoder providers are unsupported"
+                )
             if controls and getattr(self, f"{role}_timing_model") is not None:
                 raise ValueError(f"{role} estimator settings require default timing")
             mode = controls.get("database_mode")

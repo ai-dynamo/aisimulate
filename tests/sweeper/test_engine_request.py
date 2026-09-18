@@ -207,7 +207,9 @@ def test_migration_example_parses_and_preserves_shared_prefix():
 
     text = (Path(__file__).parents[2] / "docs/cli/migrate-from-aiconfigurator.md").read_text()
     example = (
-        text.split("### Preserve pinned engine and request controls", 1)[1].split("```yaml", 1)[1].split("```", 1)[0]
+        text.split("#### 4.6.3 Preserve pinned engine and request controls", 1)[1]
+        .split("```yaml", 1)[1]
+        .split("```", 1)[0]
     )
     smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(yaml.safe_load(example)))
     assert smart.workload.cached_prefix_tokens == 256

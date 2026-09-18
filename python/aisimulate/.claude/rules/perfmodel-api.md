@@ -5,6 +5,7 @@ paths:
   - "crates/core/src/python.rs"
   - "crates/tests/public-api/**"
   - "python/aisimulate/src/aiconfigurator_core/**"
+  - "python/aisimulate/src/aiconfigurator/**"
   - "python/aisimulate/src/aisimulate/**"
   - "python/aisimulate/tests/**"
   - "tests/**"
