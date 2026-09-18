@@ -68,8 +68,7 @@ on SGLang 0.5.14 SM90 FA3, for the measured BF16 model with 512-rank KV and
 This mapping does not consult profile availability. Explicit FMHA overrides,
 FPM identities, Blackwell, and unaudited runtime/geometry combinations remain
 unchanged. Native compilation, KV memory construction, and the estimate-path
-FMHA resolver share this rule. See the
-[kernel evidence](../../../../collector/sglang/mla-precision-20260917.md).
+FMHA resolver share this rule.
 
 ### `create()` Classmethod
 

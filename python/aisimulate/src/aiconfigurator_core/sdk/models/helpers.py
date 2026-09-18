@@ -961,7 +961,7 @@ def resolve_sglang_mla_compute(
     # SGLang 4289f36ef960fad8268a6b94935686e792a81432:
     # flashattention_backend.py:861-872 excludes absorbed MLA (head_dim=576)
     # from FP8 Q casting; :1176-1181 casts KV to Q's BF16 dtype.
-    # Tensor/kernel measurements: collector/sglang/mla-precision-20260917.md.
+    # Tensor/kernel measurements are recorded in PR #262.
     model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
     logger.info("Resolved SGLang 0.5.14 SM90 MLA attention compute to bfloat16 (FA3 execution dtype)")
 
