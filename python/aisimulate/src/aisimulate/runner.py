@@ -271,6 +271,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_state_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
