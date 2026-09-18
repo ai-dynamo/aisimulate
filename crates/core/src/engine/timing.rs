@@ -225,6 +225,21 @@ pub struct TimingPhaseEvidence {
     pub operations: Vec<TimingOperationEvidence>,
 }
 
+/// Immutable provider evidence. Construction validates the public fields once;
+/// callers can borrow the result but cannot change its validated values.
+#[derive(Debug, Default)]
+pub(crate) struct ValidatedTimingPhase(TimingPhaseEvidence);
+
+impl ValidatedTimingPhase {
+    pub(crate) fn from_operations(operations: Vec<TimingOperationEvidence>) -> Result<Self> {
+        TimingPhaseEvidence::try_from_operations(operations).map(Self)
+    }
+
+    pub(crate) fn as_phase(&self) -> &TimingPhaseEvidence {
+        &self.0
+    }
+}
+
 impl TimingPhaseEvidence {
     /// Build phase totals from operation evidence, rejecting invalid public
     /// field values and canonicalizing uncovered latency before aggregation.
