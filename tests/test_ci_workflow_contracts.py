@@ -1111,6 +1111,105 @@ def _run_comparison_base(
     return result, output
 
 
+def _full_ci_concurrency_group(event: str, ref: str, run_id: str, pr_number: str = "") -> str:
+    configuration = _workflow("ci.yml")["concurrency"]
+    assert configuration["cancel-in-progress"] == "true"
+    prefix, expression = configuration["group"].split("${{", 1)
+    expression = expression.rsplit("}}", 1)[0]
+    values = {
+        "github.event_name": event,
+        "github.ref": ref,
+        "github.run_id": run_id,
+        "inputs.pr_number": pr_number,
+    }
+    expression = re.sub(r"(?:github|inputs)\.[\w_]+", lambda match: repr(values[match[0]]), expression)
+    expression = expression.replace("&&", " and ").replace("||", " or ").replace("!startsWith", "not startsWith")
+    return prefix + str(
+        eval(
+            " ".join(expression.splitlines()),
+            {"__builtins__": {}},
+            {"startsWith": str.startswith, "format": str.format},
+        )
+    )
+
+
+def test_full_ci_replaces_same_pr_across_trusted_and_manual_runs():
+    group = _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "101")
+    assert group == _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "102")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/pull-request/159", "103")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "104", "159")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/160", "105")
+    # The trusted ref remains authoritative even when a manual input disagrees.
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/pull-request/159", "106", "160")
+
+
+def test_full_ci_manual_callers_without_pr_number_replace_only_their_branch():
+    group = _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "101")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "102")
+    assert group != _full_ci_concurrency_group("workflow_dispatch", "refs/heads/other-feature", "103")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "104")
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/release/0.12.0", "refs/tags/v0.12.0"])
+@pytest.mark.parametrize("pr_number", ["", "159"])
+def test_full_ci_preserves_every_lifecycle_and_tag_run(event, ref, pr_number):
+    assert _full_ci_concurrency_group(event, ref, "101", pr_number) != _full_ci_concurrency_group(
+        event, ref, "102", pr_number
+    )
+
+
+@pytest.mark.parametrize(
+    ("ref", "number", "metadata", "status", "success", "calls_api"),
+    [
+        ("feature", "159", "open\t{sha}\tfeature\tai-dynamo/aisimulate", 0, True, True),
+        ("pull-request/159", "159", "open\t{sha}\tfeature\tcontributor/aisimulate", 0, True, True),
+        ("feature", "0159", "", 0, False, False),
+        ("feature", "0", "", 0, False, False),
+        ("feature", "159; echo invalid", "", 0, False, False),
+        ("main", "159", "", 0, False, False),
+        ("release/0.12.0", "159", "", 0, False, False),
+        ("feature", "159", "closed\t{sha}\tfeature\tai-dynamo/aisimulate", 0, False, True),
+        ("feature", "159", "open\tstale\tfeature\tai-dynamo/aisimulate", 0, False, True),
+        ("feature", "159", "open\t{sha}\tother-feature\tai-dynamo/aisimulate", 0, False, True),
+        ("feature", "159", "open\t{sha}\tfeature\tcontributor/aisimulate", 0, False, True),
+        ("pull-request/160", "159", "open\t{sha}\tfeature\tai-dynamo/aisimulate", 0, False, True),
+        ("feature", "159", "", 1, False, True),
+        ("feature", "159", "{}", 0, False, True),
+    ],
+)
+def test_full_ci_manual_pr_identity_fails_closed(tmp_path, ref, number, metadata, status, success, calls_api):
+    workflow = _workflow("ci.yml")
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "false"
+    assert workflow["permissions"] == {"contents": "read", "pull-requests": "read"}
+    step = next(step for step in workflow["jobs"]["verify-target"]["steps"] if step.get("id") == "manual-pr-target")
+    assert step["if"] == "github.event_name == 'workflow_dispatch' && inputs.pr_number != ''"
+    assert step["env"]["PR_NUMBER"] == "${{ inputs.pr_number }}"
+    gh = tmp_path / "gh"
+    gh.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" > "${GH_CALLED}"\nprintf "%s\\n" "${TEST_METADATA}"\nexit "${TEST_STATUS}"\n'
+    )
+    gh.chmod(0o755)
+    calls = tmp_path / "calls"
+    result = _run_workflow_script(
+        step["run"],
+        {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_REF": f"refs/heads/{ref}",
+            "RUN_SHA": "a" * 40,
+            "REPOSITORY": "ai-dynamo/aisimulate",
+            "PR_NUMBER": number,
+            "GH_CALLED": str(calls),
+            "TEST_METADATA": metadata.replace("{sha}", "a" * 40),
+            "TEST_STATUS": str(status),
+        },
+    )
+    assert (result.returncode == 0) is success, result.stderr
+    assert calls.exists() is calls_api
+    if calls_api:
+        assert calls.read_text().startswith("api -X GET repos/ai-dynamo/aisimulate/pulls/159 --jq ")
+
+
 def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
     fast_ci = _workflow("fast-ci.yml")
     assert "workflow_call" not in fast_ci["on"]

@@ -529,6 +529,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
 | `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
+| Full CI canceled after another PR run starts | A newer run replaced validation in the same PR/branch concurrency group; inspect the replacement run's SHA and results |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
 | Prediction Regression green with reported drift | Working-case regression checks passed; review the numerical changes in the report |
@@ -566,6 +567,18 @@ gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
 gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
+
+Full CI cancels older queued and running validation for the same trusted
+`pull-request/N` copy, including manual dispatches on that copy. For a manual
+run on the PR's source branch, add `-f pr_number=N` to the Full CI command to
+share the trusted copy's group. The workflow verifies that the selected branch
+and SHA belong to that open PR before allocating test runners. Without this
+optional input, manual source-branch runs replace only runs on the same branch;
+they do not deduplicate against the trusted copy. Different PRs remain independent.
+Main, `release/*`, and tag runs use unique groups, so later runs cannot cancel
+their validation or protected staging. Concurrency only applies to runs using
+the updated workflow; existing runs and older branches are not retroactively
+covered. A replacement still needs successful checks for its exact SHA.
 
 Standalone Fast CI accepts these manual inputs:
 
