@@ -897,6 +897,30 @@ def test_estimate_kv_cache_falls_back_when_breakdown_raises(monkeypatch):
     assert out["tolerance_adjusted"] is None
 
 
+@pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
+@pytest.mark.parametrize("bad", [0, -1, 1.9, 2.5, True])
+def test_estimate_kv_cache_rejects_malformed_context_parallel_sizes_before_any_build(monkeypatch, knob, bad):
+    # Validation runs before the int(...) coercion, the model build and the
+    # naive fallback: none of them may turn 1.9 / True into a cp=dcp=1 estimate.
+    def _never(*args, **kwargs):
+        raise AssertionError("model build must not be reached")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_never))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", classmethod(_never))
+    with pytest.raises(ValueError, match=f"{knob} must be a positive integer"):
+        memory.estimate_kv_cache(
+            "foo/bar",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=True,
+            **{knob: bad},
+        )
+
+
 def test_estimate_kv_cache_never_falls_back_after_a_context_parallel_capability_rejection(monkeypatch):
     # get_model rejects dcp/cp>1 for families without the sharded path with
     # NotImplementedError; the naive estimator knows neither knob, so falling

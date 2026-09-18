@@ -201,7 +201,10 @@ pub struct ContextAttentionOp {
     /// The new-token attention itself is unchanged: every rank computes it for
     /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
     /// (schema v19).
-    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
     pub dcp_size: u32,
 }
 
@@ -469,7 +472,10 @@ pub struct GenerationAttentionOp {
     /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
     /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
     /// bincode payloads are positional (schema v19).
-    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
     pub dcp_size: u32,
 }
 
@@ -1419,6 +1425,38 @@ mod tests {
             .join("../..")
             .join("python/aisimulate/src/aiconfigurator_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
+    }
+
+    /// The striped-KV context gather is owed only when something is striped
+    /// (dcp > 1) AND something is cached (prefix > 0); it is an all-gather over
+    /// `batch * prefix` tokens, so it grows with the cached context.
+    #[test]
+    fn dcp_context_gather_prices_only_striped_cached_context() {
+        let db = b200_vllm_db();
+        let kv_elems = 576.0;
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 1, 4, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 0, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        let small = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 4_096)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        let large = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 30_720)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        assert!(small.latency_ms > 0.0);
+        assert!(large.latency_ms > small.latency_ms);
     }
 
     /// The walk order Python serializes for a no-override op on

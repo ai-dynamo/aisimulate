@@ -577,6 +577,15 @@ def test_bridge_revalidates_context_parallel_overrides_and_resizes_the_worker():
             generator_overrides={"Workers": {"agg": {"decode_context_parallel_size": 4}}},
             num_gpus_per_node=8,
         )
+    # Malformed override values are rejected, never coerced into another topology.
+    for bad in ("invalid", 2.5, True, 0):
+        with pytest.raises(ContextParallelUnsupportedError, match="must be a positive integer"):
+            task_config_to_generator_config(
+                task,
+                row,
+                generator_overrides={"Workers": {"agg": {"decode_context_parallel_size": bad}}},
+                num_gpus_per_node=8,
+            )
 
 
 def test_bridge_rejects_cp_on_trtllm():

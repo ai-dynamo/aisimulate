@@ -55,6 +55,12 @@ def test_model_config_rejects_non_positive_dcp(bad):
         config.ModelConfig(dcp_size=bad)
 
 
+@pytest.mark.parametrize("bad", [0, -2, 1.5, True])
+def test_model_config_rejects_non_positive_or_fractional_cp(bad):
+    with pytest.raises(ValueError, match="cp_size must be a positive integer"):
+        config.ModelConfig(cp_size=bad)
+
+
 def test_build_model_config_carries_both_context_parallel_knobs():
     cfg = build_model_config(
         tp_size=1,

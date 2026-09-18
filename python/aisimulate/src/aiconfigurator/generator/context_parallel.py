@@ -82,6 +82,9 @@ def _parse_version(backend_version: str | None) -> Version | None:
 def _positive(value: Any, name: str) -> int:
     if value is None:
         return 1
+    if isinstance(value, bool):
+        # bool is an int subclass (True == 1); a flag is never a parallel size.
+        raise ContextParallelUnsupportedError(f"{name} must be a positive integer, got {value!r}")
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:

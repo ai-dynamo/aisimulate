@@ -70,7 +70,10 @@ pub struct DsaModuleOp {
     /// global top-k), so the sparse-attention term is an upper bound. Only the
     /// generation query reads it; context DSA CP is `cp_size`. Defaults to 1;
     /// appended at the struct tail (schema v19).
-    #[serde(default = "default_cp_size")]
+    #[serde(
+        default = "default_cp_size",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
     pub dcp_size: u32,
 }
 
@@ -85,6 +88,24 @@ pub struct DsaProjectionQuants {
 
 fn default_cp_size() -> u32 {
     1
+}
+
+/// Add the (optional) striped-KV context gather to an already-scaled CP
+/// composition: `None` (dcp = 1 or nothing cached) leaves the CP total
+/// untouched; `Some` adds exactly that one collective, scaled like the
+/// composition it joins. Kept separate so the arithmetic is testable without
+/// the sparse tables the CP path itself needs.
+fn compose_cp_result_with_dcp_gather(
+    result: PerformanceResult,
+    gather: Option<PerformanceResult>,
+    scale_factor: f64,
+) -> PerformanceResult {
+    match gather {
+        None => result,
+        Some(gather) => result
+            .plus(gather.scaled(scale_factor))
+            .clamp_non_negative(),
+    }
 }
 
 fn default_full_frac() -> f64 {
@@ -235,20 +256,9 @@ impl DsaModuleOp {
             // cross-check them) still holds its cached context as 1/dcp
             // stripes: the gather is owed on the CP path too. query_context_cp
             // already applies scale_factor, so scale only the added gather.
-            let kv_elems = crate::operators::mla::MLA_LATENT_KV_ELEMS
-                * self.kv_cache_dtype.mapping().memory
-                / 2.0;
-            if let Some(gather) = crate::operators::attention::dcp_context_gather(
-                db,
-                &self.name,
-                kv_elems,
-                self.dcp_size,
-                batch_size,
-                prefix,
-            )? {
-                result = result.plus(gather.scaled(self.scale_factor));
-            }
-            return Ok(result.clamp_non_negative());
+            let gather = self.dcp_context_gather(db, batch_size, prefix)?;
+            result = compose_cp_result_with_dcp_gather(result, gather, self.scale_factor);
+            return Ok(result);
         }
         // Query at `isl` (new-token count) for the exact `prefix` slice — NOT
         // `isl + prefix`. The perf-DB layer resolves one 4-axis RAW grid via
@@ -280,19 +290,31 @@ impl DsaModuleOp {
         // Decode CP on the same engine: gather the cached latent-KV stripes
         // (the indexer K cache rides along in the same pass and is ignored).
         let mut result = result;
+        if let Some(gather) = self.dcp_context_gather(db, batch_size, prefix)? {
+            result = result.plus(gather);
+        }
+        Ok(result.clamp_non_negative().scaled(self.scale_factor))
+    }
+
+    /// The cached latent-KV all-gather a striped (dcp > 1) worker pays before a
+    /// prefill can attend to its context; `None` when nothing is striped or
+    /// nothing is cached (see `attention::dcp_context_gather`).
+    fn dcp_context_gather(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        prefix: u32,
+    ) -> Result<Option<PerformanceResult>, AicError> {
         let kv_elems =
             crate::operators::mla::MLA_LATENT_KV_ELEMS * self.kv_cache_dtype.mapping().memory / 2.0;
-        if let Some(gather) = crate::operators::attention::dcp_context_gather(
+        crate::operators::attention::dcp_context_gather(
             db,
             &self.name,
             kv_elems,
             self.dcp_size,
             batch_size,
             prefix,
-        )? {
-            result = result.plus(gather);
-        }
-        Ok(result.clamp_non_negative().scaled(self.scale_factor))
+        )
     }
 
     /// Context-Parallel (CP) prefill — GLM-5/DSA sparse composition.
@@ -1176,6 +1198,37 @@ mod tests {
             g.entry(bs).or_default().insert((isl, step), lat);
         }
         g
+    }
+
+    /// The CP path owes the striped-KV context gather exactly once: `None`
+    /// (dcp = 1 or nothing cached) leaves the already-scaled CP total
+    /// untouched, `Some` adds that one collective scaled like the composition.
+    #[test]
+    fn cp_total_gains_exactly_one_scaled_dcp_gather() {
+        let cp_total = PerformanceResult::new(4575.0, Source::Estimated);
+        let unchanged = compose_cp_result_with_dcp_gather(cp_total.clone(), None, 0.5);
+        assert_eq!(unchanged.latency_ms, 4575.0);
+        assert_eq!(unchanged.source, Source::Estimated);
+
+        let gather = PerformanceResult::new(13.0, Source::Silicon);
+        let striped = compose_cp_result_with_dcp_gather(cp_total, Some(gather), 0.5);
+        assert!((striped.latency_ms - (4575.0 + 13.0 * 0.5)).abs() < 1e-9);
+    }
+
+    /// An explicit zero `dcp_size` in a serialized spec must fail at
+    /// deserialization instead of being normalized to non-DCP geometry.
+    #[test]
+    fn serialized_zero_dcp_size_is_rejected_and_positive_is_kept() {
+        let mut value = serde_json::to_value(glm_cp_op(1)).unwrap();
+        value["dcp_size"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<DsaModuleOp>(value.clone()).is_err());
+        value["dcp_size"] = serde_json::json!(4);
+        assert_eq!(
+            serde_json::from_value::<DsaModuleOp>(value)
+                .unwrap()
+                .dcp_size,
+            4
+        );
     }
 
     /// Composition parity with Python

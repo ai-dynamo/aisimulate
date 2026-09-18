@@ -219,17 +219,19 @@ def task_config_to_generator_config(
             # values (template floor, comm backend, dcp_comm needs dcp) and
             # re-derive the worker's GPU count from them, unless the override
             # pinned gpus_per_worker explicitly.
-            effective_cp = _safe_int(worker_payload.get("context_parallel_size", 1), 1)
-            effective_dcp = _safe_int(worker_payload.get("decode_context_parallel_size", 1), 1)
+            # Raw override values go straight to the decision point: it rejects
+            # non-integers (2.5, "invalid", bools) instead of coercing them into
+            # a different topology.
             effective = context_parallel_params(
                 backend=task_config.primary_backend_name,
                 backend_version=getattr(task_config, "primary_backend_version", None),
-                context_parallel_size=effective_cp,
-                decode_context_parallel_size=effective_dcp,
+                context_parallel_size=worker_payload.get("context_parallel_size", 1),
+                decode_context_parallel_size=worker_payload.get("decode_context_parallel_size", 1),
                 dcp_comm_backend=worker_payload.get("dcp_comm_backend"),
                 architecture=getattr(task_config, "architecture", None),
                 model_family=_task_model_family(task_config),
             )
+            effective_cp = effective.get("context_parallel_size", 1)
             for key in _CONTEXT_PARALLEL_KEYS:
                 worker_payload.pop(key, None)
             worker_payload.update(effective)

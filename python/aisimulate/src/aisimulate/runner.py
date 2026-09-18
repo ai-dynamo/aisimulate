@@ -1151,6 +1151,11 @@ def _materialize_engine_role(
         memory_diagnostics[role] = role_memory
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
+    # A nested canonical timing config carries the CP knobs too; check them
+    # against parallel_config BEFORE capacity materialization resolves them
+    # into AIC inputs, so a mismatch cannot size the KV cache for one topology
+    # while the deployment reports another.
+    _require_nested_context_parallel_match(role_config, parallel_config, role)
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
         role_config = materialize_aic_num_gpu_blocks(
@@ -1557,6 +1562,31 @@ def _sample_synthetic_lengths(
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
     return [rng.randint(lower, upper) for _ in range(count)]
+
+
+def _require_nested_context_parallel_match(
+    role_config: Mapping[str, JSONValue],
+    parallel_config: Mapping[str, JSONValue],
+    role: str,
+) -> None:
+    """Reject ``timing_model.config.cp_size/dcp_size`` that disagree with ``parallel_config``."""
+    timing = role_config.get("timing_model")
+    if not isinstance(timing, dict) or timing.get("type") != "external" or timing.get("provider") != "aic":
+        return
+    nested = timing.get("config")
+    if not isinstance(nested, dict):
+        return
+    prefix = "" if role == "aggregated" else f"{role}_"
+    for target, field in (("cp_size", "cp"), ("dcp_size", "dcp")):
+        value = nested.get(target)
+        if value is None:
+            continue
+        _require_parallel_match(
+            parallel_config,
+            f"{prefix}{field}",
+            _positive_int(value, f"engine provider {role} timing_model.config.{target}"),
+            f"engine provider {role} timing_model.config.{target}",
+        )
 
 
 def _require_parallel_match(

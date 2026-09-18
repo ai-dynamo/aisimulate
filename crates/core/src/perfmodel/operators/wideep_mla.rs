@@ -549,7 +549,10 @@ pub struct WideEpGenerationMlaOp {
     /// attention / large EP): `num_heads * dcp` gathered query heads over
     /// this rank's `ceil(s / dcp)` latent-KV stripe. Defaults to 1; appended
     /// at the struct tail (schema v19).
-    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
     pub dcp_size: u32,
 }
 

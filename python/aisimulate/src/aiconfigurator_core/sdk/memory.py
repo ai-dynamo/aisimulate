@@ -128,6 +128,18 @@ def _validate_tolerance(tolerance_fraction: float | None) -> None:
         raise ValueError(f"tolerance_fraction must be finite and in [0, 1), got {tolerance_fraction}")
 
 
+def _validate_context_parallel_sizes(cp_size: Any, dcp_size: Any) -> None:
+    """Reject non-positive, fractional and boolean CP / DCP sizes.
+
+    Runs FIRST in :func:`estimate_kv_cache`, before the ``int(...)`` coercion
+    and before any model build or fallback, so ``1.9``, ``True`` or ``0`` fail
+    loudly instead of sizing a different (cp=dcp=1) topology.
+    """
+    for name, value in (("cp_size", cp_size), ("dcp_size", dcp_size)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer, got {value!r}")
+
+
 def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
     """Validate the fixed, rank-local CUDA graph reservation."""
     if (
@@ -1083,6 +1095,7 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
+    _validate_context_parallel_sizes(cp_size, dcp_size)
     fraction = float(memory_fraction_value)
     is_of_free = memory_fraction_kind == "of_free"
 

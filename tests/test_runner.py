@@ -1144,6 +1144,39 @@ def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_arg
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize(("field", "target"), [("dcp", "dcp_size"), ("cp", "cp_size")])
+def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_parallel_config(field, target):
+    # The canonical timing config nests the knobs under timing_model.config;
+    # they are checked against parallel_config BEFORE capacity materialization
+    # could resolve them into AIC inputs.
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "test-model",
+            "system": "test-system",
+            "backend": "vllm",
+            "worker_type": "aggregated",
+            "tp": 2,
+            "attention_dp": 1,
+            target: 2,
+        },
+    }
+    engine_args = _engine_args(timing=timing)
+    engine_args.pop("num_gpu_blocks")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, field: 4, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(ValueError, match=f"parallel_config.{field}=4 conflicts"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_runner_rejects_parallel_config_that_conflicts_with_engine_args():
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
