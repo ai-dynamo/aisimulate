@@ -43,7 +43,9 @@ pub use common::{AicError, enums::DatabaseMode};
 pub use fpm::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
+    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType, LEARNED_AGGREGATE_FEATURE_NAMES,
+    LEARNED_FEATURE_COUNT, LEARNED_REQUEST_FEATURE_NAMES, LEARNED_SCHEMA_NAME,
+    LEARNED_SCHEMA_VERSION, LEARNED_SLOT_COUNT, learned_feature_names,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

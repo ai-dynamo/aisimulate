@@ -41,8 +41,10 @@ pub use perfmodel::{
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType, KvCacheEstimate,
     KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
-    QueuedRequestMetrics, ScheduledRequestMetrics, SpeculativeConfig,
+    KvCacheMemoryFraction, LEARNED_AGGREGATE_FEATURE_NAMES, LEARNED_FEATURE_COUNT,
+    LEARNED_REQUEST_FEATURE_NAMES, LEARNED_SCHEMA_NAME, LEARNED_SCHEMA_VERSION, LEARNED_SLOT_COUNT,
+    MemoryBreakdown, ParallelMapping, QuantizationConfig, QueuedRequestMetrics,
+    ScheduledRequestMetrics, SpeculativeConfig,
 };
 
 #[cfg(feature = "python")]
