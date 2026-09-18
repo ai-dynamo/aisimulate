@@ -10,6 +10,7 @@ areas:
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
       - AGENTS.md
+      - CLAUDE.md
       - CODE_OF_CONDUCT.md
       - DEVELOPMENT.md
       - LICENSE
@@ -204,6 +205,8 @@ shared:
   - glob: SECURITY.md
     owners: [infra, maintainers]
   - glob: AGENTS.md
+    owners: [infra, maintainers]
+  - glob: CLAUDE.md
     owners: [infra, maintainers]
   - glob: .coderabbit.yaml
     owners: [infra, maintainers]

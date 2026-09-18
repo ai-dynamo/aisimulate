@@ -2,6 +2,17 @@
 
 This file adds explicit repository-wide development guards.
 
+## FPM model onboarding
+
+When asked to onboard a model for FPM simulation on designated hardware, follow
+[Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
+self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
+Start with a local model config or supplied FPM identity/resource profile; this
+route requires neither an op-level model class nor per-operation silicon data.
+Review estimates and unresolved assumptions with the user, preserve their
+overrides and provenance, and report planning, collection, simulation and accuracy
+as separate stages. The guide covers terminal and headless agent workflows.
+
 ## Required First Step
 
 Before making any change under:

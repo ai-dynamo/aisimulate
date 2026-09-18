@@ -28,6 +28,7 @@
 /docs/                                               @ai-dynamo/access-aisimulate-maintain
 /LICENSE                                             @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                           @ai-dynamo/access-aisimulate-maintain
+/CLAUDE.md                                           @ai-dynamo/access-aisimulate-maintain
 /README.md                                           @ai-dynamo/access-aisimulate-maintain
 /SECURITY.md                                         @ai-dynamo/access-aisimulate-maintain
 /DEVELOPMENT.md                                      @ai-dynamo/access-aisimulate-maintain
@@ -105,6 +106,7 @@
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/CLAUDE.md                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /REVIEW.md                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /deny.toml                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
