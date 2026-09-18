@@ -663,6 +663,8 @@ jobs:
         if: matrix.shard.suite == 'contracts'
         run: |
           python -m pip install pip-licenses==5.5.5
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m pip check
           python scripts/check_prediction_numerics.py --fetch-baseline-only
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
@@ -670,7 +672,6 @@ jobs:
             python/aisimulate/tests/cross_package
           aiconfigurator version
           python -m pytest -q -c pytest.ini tests -n 4 \
-            --ignore=tests/fpm_accuracy \
             --ignore=tests/test_ci_workflow_contracts.py
       - name: Run unit tests
         if: matrix.shard.suite == 'unit'

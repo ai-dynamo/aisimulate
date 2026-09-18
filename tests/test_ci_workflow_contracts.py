@@ -685,7 +685,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     ]
     assert len(contract_steps) == 1
     contract_command = contract_steps[0]["run"]
-    assert "--ignore=tests/fpm_accuracy" in contract_command
+    assert "--ignore=tests/fpm_accuracy" not in contract_command
     assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
 
     recommendation_path = "tests/e2e/cli/test_cli_recommend.py"
