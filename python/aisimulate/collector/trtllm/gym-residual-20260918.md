@@ -100,8 +100,10 @@
   Mean prefill-step device intervals are **33.44 / 31.40 / 31.75 ms**.
   They can include host launch gaps and synchronization; they are not sums
   of GPU kernel durations. Frontend-only overhead cannot explain the full gap.
-- Resolution remains open. Next check: matched prefill/mixed-step operator
-  traces and graph/eager boundaries, followed by a model or data correction.
+- [Matched two-rank traces and CPU timing](gym-gpt-eager-20260918.md) now
+  support eager submission gaps and peer waiting as a missing boundary.
+  The user deferred the execution-mode/CPU-timing extension; the prediction
+  correction remains open.
   Adding a constant TTFT offset is not justified by this single point.
 - [Timing summary, per-request diagnostic durations and artifact hashes](gym-residual-gpt-20260918.json).
   Remote results: `${B200_ARTIFACT_ROOT}/results/trt-62-20260917/residual-20260918/gpt-ttft/`;
