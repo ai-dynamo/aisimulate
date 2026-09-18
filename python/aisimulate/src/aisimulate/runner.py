@@ -1324,6 +1324,30 @@ def _materialize_engine_role(
         if capacity_materialized:
             memory_fraction_overrides.clear()
 
+    speculation_raw = rank.pop("speculation", None)
+    speculation = None
+    if speculation_raw is not None:
+        from .config.engine import NgramSpeculationConfig
+
+        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
+        if backend != "vllm" or rank.get("native_host_offload") is not None:
+            raise ValueError("ngram speculation requires vllm without host_offload")
+        if any(
+            rank.get(key) is not None
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_mtp_seed"] = speculation.seed
+
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
         nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
@@ -1366,7 +1390,7 @@ def _materialize_engine_role(
             timing_config["kv_block_size"] = block_size
         timing_config.update(memory_fraction_overrides)
         timing_config.update(aic_timing_overrides)
-        if nextn is not None:
+        if nextn is not None and speculation is None:
             timing_config["nextn"] = nextn
         rank["timing_model"] = {
             "type": "external",
@@ -1407,13 +1431,23 @@ def _materialize_engine_role(
         ):
             timing_model = dict(timing_model)
             timing_config = dict(timing_model["config"])
+            if speculation is not None:
+                cost_config = speculation.cost_config()
+                if timing_config.get("nextn") not in (None, 0):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                if timing_config.get("speculation") not in (None, cost_config):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
+                if timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("ngram speculation requires op_level timing")
+                timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if configured_nextn is not None and configured_nextn != nextn:
+            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            timing_config["nextn"] = nextn
+            if speculation is None:
+                timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
 
