@@ -928,6 +928,9 @@ impl VllmCore {
                     RequestStatus::WaitingForRemoteKv,
                     waiting_order,
                 );
+                if policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len) {
+                    anyhow::bail!("destination prompt must be shorter than max_model_len");
+                }
                 if let Some(message) = policy::destination_capacity_error(
                     self.args.scheduling_policy(),
                     &request.sequence,
@@ -1146,14 +1149,11 @@ impl VllmCore {
             .num_gpu_blocks
             .saturating_mul(self.args.block_size)
             .saturating_sub(prompt_len);
-        let model_remaining = if self.args.scheduling_policy() == SchedulingPolicy::Vllm {
-            self.args
-                .max_model_len
-                .map(|limit| limit.saturating_sub(prompt_len))
-                .unwrap_or(usize::MAX)
-        } else {
-            usize::MAX
-        };
+        let model_remaining = self
+            .args
+            .max_model_len
+            .map(|limit| limit.saturating_sub(prompt_len))
+            .unwrap_or(usize::MAX);
         max_output_tokens.min(kv_remaining).min(model_remaining)
     }
 
@@ -1200,6 +1200,12 @@ impl VllmCore {
                 "planned output token count differs from max_output_tokens; using planned count"
             );
         }
+        max_output_tokens = policy::cap_output_for_model_len(
+            self.args.scheduling_policy(),
+            prompt_len,
+            max_output_tokens,
+            self.args.max_model_len,
+        );
         if let Some(clamped) = policy::normalize_max_output_tokens(
             self.args.scheduling_policy(),
             prompt_len,
@@ -1734,11 +1740,7 @@ impl VllmCore {
                     .get(&uuid)
                     .expect("waiting request missing from state");
                 (
-                    policy::should_reject_for_model_len(
-                        scheduling_policy,
-                        &request.sequence,
-                        self.args.max_model_len,
-                    ),
+                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len),
                     admission.stage_for(request.prompt_is_prebuilt()),
                 )
             };
