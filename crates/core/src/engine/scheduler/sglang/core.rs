@@ -39,8 +39,6 @@ use super::decode::{
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
-#[cfg(test)]
-use crate::engine::scheduler::accept_length_sample;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionInvariant, AdmissionStage, CapturedKvEventBuffer,
     DestinationHolds, EnginePassResult, KvEventVisibility, MockerMetrics, PendingDestinations,
@@ -988,9 +986,6 @@ impl SglangCore {
             (decode.end_ms - now_ms) / 1000.0,
         );
 
-        #[cfg(test)]
-        let (accept_length_output_tokens, accept_length_decode_forwards) =
-            accept_length_sample(&decode.output_signals);
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
         if !grouped {
             // Standalone core callers have a one-rank synchronization domain.
@@ -1026,10 +1021,7 @@ impl SglangCore {
                 .map(CapturedKvEventBuffer::drain)
                 .unwrap_or_default(),
             fpm: Some(fpm),
-            #[cfg(test)]
-            accept_length_output_tokens,
-            #[cfg(test)]
-            accept_length_decode_forwards,
+            decode_acceptance: decode.decode_acceptance,
         })
     }
 

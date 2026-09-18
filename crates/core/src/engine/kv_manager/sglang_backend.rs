@@ -208,6 +208,11 @@ impl SglangKvManager {
         enable_prefix_caching: bool,
         emit_token_ids: bool,
     ) -> Self {
+        let kv_event_publishers = if enable_prefix_caching {
+            kv_event_publishers
+        } else {
+            KvEventPublishers::default()
+        };
         let page_to_block_hash = if kv_event_publishers.is_empty() {
             Vec::new()
         } else {
