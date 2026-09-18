@@ -128,9 +128,26 @@ Manual dispatches and site-change triggers are listed below.
 | [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Schedules FPE support-matrix refreshes for discovered `release/*` branches |
 | [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
-| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
+| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Every trusted `pull-request/*` push; selects relevant PR files before benchmarking; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
 | [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one explicit SHA | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
 | [GitHub Pages](../.github/workflows/pages.yml) | FPE Support Matrix, Main branch nightly CI, Release branch nightly CI, or E2E Accuracy Matrix completion; relevant site changes on PRs/`main`; daily at 09:17 UTC; manual dispatch | Validates qualified FPE and accuracy snapshots, tests FPE branch selection in Chromium, and builds public pages; deployment is restricted to trusted `main` |
+
+Forward performance uses the same selection pattern as Full CI: a small
+GitHub-hosted job checks the complete PR file list before allocating the benchmark
+runner. This includes the first copied-branch push, whose event can contain no
+commits. The selector checks current and previous filenames, validates the PR
+head and base, and reports an explicit skip for unrelated changes. API failures
+or changed revisions fail selection; empty, incomplete, or oversized file lists
+run the benchmark conservatively. Manual dispatch forces a comparison after the
+same revision checks: the trusted copy must match the current PR head.
+
+If the PR changes the performance gate's Python files or the shared prediction
+grid, the benchmark job also runs the PR's controller against the same base and
+head installations. This validates new matrix cases before merge and reports
+them separately, alongside the normal comparison made with the base controller. It reuses the built
+packages and requires no additional runner or manual dispatch.
+Gate documentation-only changes do not select a benchmark or an additional
+controller run.
 
 Ownership checks, prediction performance, E2E accuracy, and Pages run independently
 of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.
@@ -454,7 +471,7 @@ their publication. Retried jobs preserve successful branches' original run-attem
 provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
 incomplete campaigns cannot publish. A release selector may still show a historical
 snapshot until that release has a qualified campaign. See the
-[accuracy campaign contract](../python/aisimulate/docs/e2e-accuracy/README.md)
+[accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
 ## Reading results and troubleshooting
@@ -622,3 +639,13 @@ an executed shard or an explicit exception; verify actual collection.
 - [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
   Model Data Quality Gate. Existing collector and prediction jobs alone do not
   establish that combined gate.
+
+## FPM accuracy
+
+`FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
+an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
+on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
+and publishes successful branch results independently; failed refreshes retain
+the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
+and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).

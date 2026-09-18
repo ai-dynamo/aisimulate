@@ -19,6 +19,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
@@ -38,11 +39,42 @@ def run_recommendation(
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
+    from .supervision import in_supervised_process, supervised_recommendation
+
+    kwargs = dict(
+        adapter_configs=adapter_configs,
+        stack=stack,
+        runner_factory=runner_factory,
+        providers=providers,
+        afd_performance_model=afd_performance_model,
+        show_progress=show_progress,
+    )
+    if not in_supervised_process():
+        return supervised_recommendation(config, kwargs)
+    return _run_recommendation(config, **kwargs)
+
+
+def _run_recommendation(
+    config: CoreRecommendationConfig,
+    *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    stack: str,
+    runner_factory: RunnerFactory,
+    providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
+    show_progress: bool = True,
+) -> SweepResult:
+    from .supervision import checkpoint
+
+    checkpoint("requested_config", config.model_dump(mode="json"))
+    budget = resolve_budget(config.execution.resources, discover_host())
     from .sweeper.search import Sweeper
 
+    runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
         workload=smart.workload.model_dump(mode="json"),
@@ -816,6 +848,7 @@ def _candidate_prediction(
                 "traffic": traffic,
                 "engine": engine,
                 "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
+                "execution": source.execution.model_dump(mode="python", exclude_none=True),
             }
         )
     except ValueError as exc:

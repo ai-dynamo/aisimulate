@@ -465,7 +465,7 @@ jobs:
           UV_TARGET: ${{ matrix.uv_target }}
         run: |
           set -euo pipefail
-          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
           wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
           [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {

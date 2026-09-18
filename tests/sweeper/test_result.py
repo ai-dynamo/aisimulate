@@ -170,7 +170,7 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert decoded["schema_version"] == RESULT_SCHEMA_VERSION
     assert decoded["provenance"]["search_strategy"] == "exhaustive"
     assert SweepResult.from_json(payload) == result
-    assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.0"
+    assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.1"
 
 
 def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
@@ -189,7 +189,7 @@ def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
 def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
     payload = json.loads(_complete_result().to_json())
     payload["schema_version"] = "2.0"
-    with pytest.raises(ValidationError, match="Input should be '1.0'"):
+    with pytest.raises(ValidationError, match="Input should be '1.1'"):
         SweepResult.model_validate(payload)
 
     payload = json.loads(_complete_result().to_json())
@@ -223,7 +223,7 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     rows = list(csv.DictReader(io.StringIO(result.to_csv())))
 
     assert len(rows) == 5
-    assert rows[0]["schema_version"] == "1.0"
+    assert rows[0]["schema_version"] == "1.1"
     assert rows[0]["is_top_n"] == "True"
     assert json.loads(rows[0]["config_json"])["backend"] == "trtllm"
     assert json.loads(rows[0]["prediction_config_json"])["engine"]["model"] == "example/model"
@@ -754,3 +754,58 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
         assert record["metrics"] == {}
         assert record["provenance"]["power"] == {}
     assert result.selected_candidates == []
+
+
+def test_resource_limited_records_roundtrip_without_claiming_evaluation():
+    payload = _complete_result().model_dump(mode="json")
+    payload["candidates"].append(
+        _record(
+            "candidate-000006", CandidateStatus.RESOURCE_LIMITED, reason_category=ReasonCategory.RESOURCE_LIMIT
+        ).model_dump(mode="json")
+    )
+    payload["counts"]["resource_limited"] = 1
+    result = SweepResult.model_validate(payload)
+    assert result.counts.evaluated == 4
+    assert len(result.candidates) == 6
+    assert SweepResult.from_json(result.to_json()) == result
+    assert result.candidates[-1].metrics == {}
+
+
+def test_previous_result_version_remains_readable():
+    payload = _complete_result().model_dump(mode="json")
+    payload["schema_version"] = "1.0"
+    payload["counts"].pop("resource_limited")
+    upgraded = SweepResult.model_validate(payload)
+    assert upgraded.counts.resource_limited == 0
+    assert upgraded.schema_version == "1.1"
+
+
+def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(monkeypatch):
+    from aisimulate.resource_scheduler import InterruptedEvaluation
+
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *a, **kw: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a: "1.0")
+
+    class ResourceFactory(_RunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def partial(specs, **kwargs):
+        yield 0, search_module._run_replay_detailed(specs[0], _Runner())
+        yield 1, InterruptedEvaluation("too large", True, {"required_bytes": 10**12})
+
+    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", partial)
+    result = Sweeper(runner_factory=ResourceFactory(), sampler_factory=_Sampler, show_progress=False).run(_config())
+    assert result.counts.feasible == 1
+    assert result.counts.resource_limited == 1
+    assert result.counts.evaluated == 1
+    assert len(result.selected_candidates) == 1
+    assert result.candidates[1].status is CandidateStatus.RESOURCE_LIMITED
+    assert result.candidates[1].metrics == {}
