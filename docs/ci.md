@@ -261,7 +261,10 @@ marked it N/A.
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
 eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
 short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
+records a full baseline commit that must resolve in the checkout. CI runs
+`scripts/check_prediction_numerics.py --fetch-baseline-only` before contract
+tests and native qualification so historical PR commits remain available after
+squash merges. This fetch preserves the recorded SHA and expected values. Tolerances
 are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
@@ -349,7 +352,7 @@ Main branch nightly CI builds the approved release surface: one `aisimulate` whe
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
 
