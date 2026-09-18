@@ -101,6 +101,179 @@ impl ReplayTelemetryObserver for FailingTelemetryObserver {
 }
 
 #[test]
+fn replay_accept_length_counts_decode_work_before_output_truncation() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for (rates, lengths, forwards, expected_average) in [
+            (None, vec![0], [0, 0], None),
+            (None, vec![1], [0, 0], None),
+            (None, vec![2], [1, 1], Some(1.0)),
+            (None, vec![7, 2], [7, 7], Some(1.0)),
+            (Some("1,1"), vec![1], [0, 0], None),
+            (Some("1,1"), vec![4], [1, 1], Some(3.0)),
+            (Some("1,1"), vec![7], [2, 2], Some(3.0)),
+            (Some("1,1"), vec![8], [2, 3], Some(3.0)),
+            (Some("1,0"), vec![7], [3, 3], Some(2.0)),
+            (Some("0,0"), vec![7], [6, 6], Some(1.0)),
+        ] {
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let requests = lengths
+                .iter()
+                .enumerate()
+                .map(|(index, &length)| {
+                    request(&format!("request-{index}"), index as f64 * 5.0, 4, length)
+                })
+                .collect();
+            let mut spec = aggregated_spec(backend, 1, 0.0, requests);
+            spec.max_sim_time_ms = Some(1_000.0);
+            if let Some(rates) = rates {
+                let mut engine: ReplayEngineConfig =
+                    serde_json::from_value(spec.engine.clone()).unwrap();
+                engine.rank.aic_nextn = Some(2);
+                engine.rank.aic_nextn_accept_rates = Some(rates.into());
+                spec.engine = serde_json::to_value(engine).unwrap();
+            }
+            let report = Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_telemetry_observer(
+                    1_000.0,
+                    Box::new(RecordingTelemetryObserver {
+                        samples: Arc::clone(&samples),
+                    }),
+                )
+                .unwrap()
+                .run()
+                .unwrap();
+            assert_eq!(report.request_counts.completed_requests, lengths.len());
+            let tokens = lengths.iter().sum::<usize>();
+            assert_eq!(report.request_counts.total_output_tokens, tokens);
+            let samples = samples.lock().unwrap();
+            let traffic = &samples.last().unwrap().traffic;
+            let expected_forwards = forwards[usize::from(backend == Backend::Sglang)];
+            assert_eq!(
+                traffic.accept_length_forward_count, expected_forwards,
+                "{backend:?}, {lengths:?}"
+            );
+            assert_eq!(
+                traffic.avg_accept_length, expected_average,
+                "{backend:?}, {lengths:?}, {rates:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn replay_accept_length_survives_rank_aggregation_and_prefill_handoffs() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for (dp_size, disaggregated) in [(1, false), (2, false), (2, true)] {
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let mut requests = vec![request("a", 0.0, 4, 4), request("b", 5.0, 4, 4)];
+            for (index, request) in requests.iter_mut().enumerate() {
+                request.dp_rank = Some(index as u32 % dp_size);
+            }
+            let mut spec = aggregated_spec(backend, 1, 0.0, requests);
+            spec.max_sim_time_ms = Some(1_000.0);
+            let mut engine: ReplayEngineConfig =
+                serde_json::from_value(spec.engine.clone()).unwrap();
+            engine.dp_size = dp_size;
+            engine.rank.aic_nextn = Some(2);
+            engine.rank.aic_nextn_accept_rates = Some("1,1".into());
+            spec.engine = serde_json::to_value(engine).unwrap();
+            if disaggregated {
+                spec.topology = ReplayTopology::Disaggregated {
+                    prefill: WorkerPoolSpec {
+                        initial_workers: 1,
+                        startup_delay_ms: 0.0,
+                    },
+                    decode: WorkerPoolSpec {
+                        initial_workers: 1,
+                        startup_delay_ms: 0.0,
+                    },
+                    handoff_latency_ms: 1.0,
+                };
+            }
+            let report = Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_telemetry_observer(
+                    5.0,
+                    Box::new(RecordingTelemetryObserver {
+                        samples: Arc::clone(&samples),
+                    }),
+                )
+                .unwrap()
+                .run()
+                .unwrap();
+            assert_eq!(report.request_counts.completed_requests, 2);
+            assert_eq!(report.request_counts.total_output_tokens, 8);
+            let samples = samples.lock().unwrap();
+            let mut forwards = 0;
+            for sample in samples.iter() {
+                let traffic = &sample.traffic;
+                assert_eq!(
+                    traffic.avg_accept_length,
+                    (traffic.accept_length_forward_count > 0).then_some(3.0),
+                    "{backend:?}, dp={dp_size}, pd={disaggregated}"
+                );
+                forwards += traffic.accept_length_forward_count;
+            }
+            // P/D uses the source output as a handoff signal; all four visible
+            // tokens are produced at decode. Aggregated prefill produces output.
+            assert_eq!(
+                forwards,
+                if disaggregated { 4 } else { 2 },
+                "{backend:?}, dp={dp_size}, pd={disaggregated}"
+            );
+        }
+    }
+}
+
+#[test]
+fn replay_accept_length_ignores_overlapping_prefill_and_rejection() {
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let mut spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![
+            request("decoding", 0.0, 4, 7),
+            request("prefill-only", 5.0, 4, 1),
+            request("rejected", 5.0, 65, 1),
+        ],
+    );
+    spec.max_sim_time_ms = Some(1_000.0);
+    let mut engine: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
+    engine.rank.max_model_len = Some(64);
+    engine.rank.aic_nextn = Some(2);
+    engine.rank.aic_nextn_accept_rates = Some("1,1".into());
+    spec.engine = serde_json::to_value(engine).unwrap();
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_telemetry_observer(
+            1_000.0,
+            Box::new(RecordingTelemetryObserver {
+                samples: Arc::clone(&samples),
+            }),
+        )
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert_eq!(report.request_counts.total_output_tokens, 8);
+    assert_eq!(
+        report
+            .per_request
+            .iter()
+            .filter(|request| request.terminal_status
+                == aisimulate_core::replay::ReplayTerminalStatus::Rejected)
+            .count(),
+        1
+    );
+    let samples = samples.lock().unwrap();
+    let traffic = &samples.last().unwrap().traffic;
+    assert_eq!(traffic.accept_length_forward_count, 2);
+    assert_eq!(traffic.avg_accept_length, Some(3.0));
+}
+
+#[test]
 fn telemetry_baseline_preserves_t0_activity_and_emits_a_positive_final_tail() {
     let samples = Arc::new(Mutex::new(Vec::new()));
     let observer = RecordingTelemetryObserver {

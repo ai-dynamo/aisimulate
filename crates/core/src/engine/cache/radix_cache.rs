@@ -811,9 +811,12 @@ impl RadixCache {
             let child_parent = child.parent;
             let original_ck = child.key[0];
             let suffix_key = child.key.split_off(split_pos);
-            let prefix_key = std::mem::replace(&mut child.key, suffix_key);
+            let mut prefix_key = std::mem::replace(&mut child.key, suffix_key);
             let suffix_value = child.value.split_off(split_pos);
-            let prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            let mut prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            // The short prefix must not retain the original edge's allocation.
+            prefix_key.shrink_to_fit();
+            prefix_value.shrink_to_fit();
             let suffix_ck = child.key[0];
             (
                 child_parent,
@@ -1261,6 +1264,33 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 5);
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[10, 20, 30, 40, 50, 60, 70, 80]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
+    }
+
+    #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
+        let mut cache = RadixCache::new(512, 1);
+        let tokens: Vec<u32> = (0..512).collect();
+        let indices: Vec<usize> = (0..512).collect();
+        cache.insert(&tokens, &indices);
+
+        for prefix_len in (1..512).step_by(4) {
+            assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
+        }
+        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
+
+        // Repeated splits must not leave each short prefix holding a copy of
+        // the original edge's capacity. Allow allocator slack, not exact sizes.
+        let (key_capacity, page_capacity) = cache.nodes.values().fold((0, 0), |sum, node| {
+            (sum.0 + node.key.capacity(), sum.1 + node.value.capacity())
+        });
+        assert!(
+            key_capacity <= 2 * tokens.len(),
+            "retained key capacity: {key_capacity}"
+        );
+        assert!(
+            page_capacity <= 2 * tokens.len(),
+            "retained page capacity: {page_capacity}"
+        );
     }
 
     #[test]

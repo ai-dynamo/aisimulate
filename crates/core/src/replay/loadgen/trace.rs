@@ -863,7 +863,7 @@ impl Trace {
         let Some(min_timestamp_ms) = self
             .sessions
             .iter()
-            .filter_map(|session| session.first_arrival_timestamp_ms)
+            .map(|session| session.first_arrival_timestamp_ms.unwrap_or(0.0))
             .min_by(|left, right| left.total_cmp(right))
         else {
             return Ok(self);
