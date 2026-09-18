@@ -44,8 +44,8 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
   push:
     branches: [main]
     paths:
@@ -76,8 +76,8 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
 
 permissions:
   # Build and validate repository content without Pages access.

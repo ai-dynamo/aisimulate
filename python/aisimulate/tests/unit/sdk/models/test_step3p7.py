@@ -16,11 +16,11 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.models import _architecture_to_model_family
-from aiconfigurator.sdk.models.base import _MODEL_REGISTRY
-from aiconfigurator.sdk.models.step3p7 import Step3p7Model
-from aiconfigurator.sdk.utils import _parse_hf_config_json
+from aisimulate.sdk import common, config
+from aisimulate.sdk.models import _architecture_to_model_family
+from aisimulate.sdk.models.base import _MODEL_REGISTRY
+from aisimulate.sdk.models.step3p7 import Step3p7Model
+from aisimulate.sdk.utils import _parse_hf_config_json
 
 pytestmark = pytest.mark.unit
 

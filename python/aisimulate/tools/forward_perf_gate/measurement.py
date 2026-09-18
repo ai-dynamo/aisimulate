@@ -11,11 +11,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from aiconfigurator.sdk import config, perf_database
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.models import get_model
+from aisimulate.sdk import config, perf_database
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.errors import PerfDataNotAvailableError
+from aisimulate.sdk.inference_session import InferenceSession
+from aisimulate.sdk.models import get_model
 
 _perf_counter_ns = time.perf_counter_ns
 
@@ -93,9 +93,9 @@ def clear_caches(case: BenchmarkCase) -> None:
 
 
 def ensure_rust_library_present() -> None:
-    # The compiled engine ships as the maturin-built ``aiconfigurator_core``
+    # The compiled engine ships as the maturin-built ``aisimulate_core``
     # extension; importing it is the availability check.
-    import aiconfigurator_core  # noqa: F401
+    import aisimulate_core  # noqa: F401
 
 
 def percentile(samples: list[float], value: float) -> float:

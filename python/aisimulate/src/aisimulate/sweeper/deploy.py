@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
 from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec

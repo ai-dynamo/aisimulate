@@ -32,7 +32,7 @@ sys.path.insert(0, str(REPO_ROOT))  # make `tools.` importable when run as a scr
 
 from tools.prediction_regression_gate import grid
 
-SAMPLE_PATH = REPO_ROOT / "src" / "aiconfigurator" / "systems" / "silicon_sample.csv"
+SAMPLE_PATH = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "silicon_sample.csv"
 REFS_PATH = Path(__file__).resolve().parent / "silicon_refs.csv"
 
 PARALLEL_FIELDS = ("tp_size", "pp_size", "attention_dp_size", "moe_tp_size", "moe_ep_size")

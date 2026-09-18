@@ -13,7 +13,7 @@ for family-placement checks -- same convention as
 `custom_allreduce_perf`/`comm`) are real catalog entries, not fixtures.
 
 Also runs the checks against the REAL data tree
-(`src/aiconfigurator_core/systems/data`) -- this is the CI-riding
+(`src/aisimulate_core/systems/data`) -- this is the CI-riding
 gate: it must pass on the tree as committed.
 """
 
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "tools" / "perf_database" / "check_collector_data.py"
 REAL_CATALOG = REPO_ROOT / "collector" / "op_backend_catalog.yaml"
-REAL_DATA_ROOT = REPO_ROOT / "src" / "aiconfigurator_core" / "systems" / "data"
+REAL_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 
 @pytest.fixture

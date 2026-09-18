@@ -18,7 +18,7 @@
 //!   so the Rust compute runs without holding the GIL.
 //! * **Rust → Python → Rust (embedded path).** [`AicEngineBuilder`] is the
 //!   Rust entry point. It crosses into Python once to run
-//!   `aiconfigurator_core.sdk.engine.compile_engine`, then build an [`Engine`]
+//!   `aisimulate_core.sdk.engine.compile_engine`, then build an [`Engine`]
 //!   from the returned bincode bytes. After that the `predict_*` hot path is
 //!   pure Rust with no GIL.
 //!
@@ -52,10 +52,10 @@ fn _build_smoke() -> u32 {
 }
 
 /// Cached handles to the canonical SDK exception classes
-/// (`aiconfigurator_core.sdk.errors` — the CORE namespace: the standalone
+/// (`aisimulate_core.sdk.errors` — the CORE namespace: the standalone
 /// compatibility namespace bundled in the `aisimulate` wheel). Filled lazily
 /// on first use so importing the
-/// extension never imports the sdk (the sdk imports aiconfigurator_core — an
+/// extension never imports the sdk (the sdk imports aisimulate_core — an
 /// eager import here would be a cycle), and left empty in pure-Rust contexts
 /// where the sdk is not installed (fallback to `PyValueError`).
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
@@ -72,7 +72,7 @@ fn sdk_error_type(
 ) -> Option<Py<PyType>> {
     cell.get_or_try_init(py, || -> PyResult<Py<PyType>> {
         Ok(py
-            .import("aiconfigurator_core.sdk.errors")?
+            .import("aisimulate_core.sdk.errors")?
             .getattr(name)?
             .downcast_into::<PyType>()?
             .unbind())
@@ -87,17 +87,17 @@ fn sdk_error_type(
 /// Typed mapping so Python-side classifiers keep working across the FFI:
 /// * missing-perf-data errors (`AicError::PerfDatabase` / `Io` — the
 ///   `is_missing_perf_data` set) raise the canonical
-///   `aiconfigurator_core.sdk.errors.PerfDataNotAvailableError`, so
+///   `aisimulate_core.sdk.errors.PerfDataNotAvailableError`, so
 ///   `perf_database.has_perf_data_not_available_cause` recognizes rust-path
 ///   data misses;
 /// * `AicError::EmpiricalNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.EmpiricalNotImplementedError` (the typed
+///   `aisimulate_core.sdk.errors.EmpiricalNotImplementedError` (the typed
 ///   HYBRID/EMPIRICAL coverage miss);
 /// * `AicError::MissingSystemFlops` raises
-///   `aiconfigurator_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
+///   `aisimulate_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
 ///   `*_tc_flops` resolution — a `ValueError` subclass on the Python side);
 /// * `AicError::SolNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.SolNotImplementedError` (the analytic SOL
+///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
 /// * everything else stays `PyValueError`.
 ///
@@ -151,7 +151,7 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// Discover the ordered roots using the same SDK/environment policy as the Python facade.
 pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
     Python::with_gil(|py| {
-        py.import("aiconfigurator_core.sdk.rust_engine_step")?
+        py.import("aisimulate_core.sdk.rust_engine_step")?
             .getattr("_resolve_forward_pass_systems_paths")?
             .call1((Vec::<String>::new(),))?
             .extract::<Vec<PathBuf>>()
@@ -172,7 +172,7 @@ pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicEr
 /// configs) runs in Python, so the Rust side only loads the perf database.
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
-/// `python/aisimulate/src/aiconfigurator_core/systems`.
+/// `python/aisimulate/src/aisimulate_core/systems`.
 pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
@@ -181,7 +181,7 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
         return Ok(PathBuf::from(p));
     }
     let installed_root = Python::with_gil(|py| -> PyResult<Option<PathBuf>> {
-        let Ok(perf_database) = py.import("aiconfigurator_core.sdk.perf_database") else {
+        let Ok(perf_database) = py.import("aisimulate_core.sdk.perf_database") else {
             return Ok(None);
         };
         let paths: Vec<String> = perf_database.call_method0("get_systems_paths")?.extract()?;
@@ -190,7 +190,7 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
     if let Some(p) = installed_root {
         return Ok(p);
     }
-    crate::repo_relative("python/aisimulate/src/aiconfigurator_core/systems").ok_or_else(|| {
+    crate::repo_relative("python/aisimulate/src/aisimulate_core/systems").ok_or_else(|| {
         PyValueError::new_err(
             "could not resolve systems path: pass systems_path, set \
              AICONFIGURATOR_SYSTEMS_PATH, install aisimulate, or run \
@@ -1372,7 +1372,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         ))
     })?;
     let spec_bytes: Vec<u8> = Python::with_gil(|py| -> PyResult<Vec<u8>> {
-        let engine_mod = py.import("aiconfigurator_core.sdk.engine")?;
+        let engine_mod = py.import("aisimulate_core.sdk.engine")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("backend_version", request.backend_version.as_deref())?;
         kwargs.set_item("tp_size", request.tp_size)?;
@@ -1422,7 +1422,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // is NOT fallback-safe) so they surface instead of silently degrading.
     .map_err(|error| {
         let invalid = Python::with_gil(|py| {
-            py.import("aiconfigurator_core.sdk.engine")
+            py.import("aisimulate_core.sdk.engine")
                 .and_then(|module| module.getattr("InvalidEngineConfigurationError"))
                 .is_ok_and(|kind| error.is_instance(py, &kind))
         });
@@ -1800,7 +1800,7 @@ impl PyForwardPassPerfModel {
 
 /// Register the AIConfigurator compatibility surface on the unified
 /// `aisimulate._runtime` extension. Python's
-/// `aiconfigurator_core._aiconfigurator_core` module is a pure-Python shim that
+/// `aisimulate_core._native` module is a pure-Python shim that
 /// re-exports these objects from that canonical extension.
 ///
 /// The removed `build_aic_engine` flat adapter is intentionally not exposed;
@@ -1836,7 +1836,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     /// `cargo test` runs without an embedding host, so the interpreter must
@@ -2168,7 +2168,7 @@ mod tests {
     fn aic_to_py_maps_typed_errors_to_sdk_classes() {
         py_init();
         Python::with_gil(|py| {
-            let sdk_available = py.import("aiconfigurator_core.sdk.errors").is_ok();
+            let sdk_available = py.import("aisimulate_core.sdk.errors").is_ok();
 
             let check = |err: AicError, sdk_name: &str| {
                 let pyerr = aic_to_py(err);

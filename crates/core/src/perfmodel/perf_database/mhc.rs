@@ -273,10 +273,10 @@ mod tests {
     ///
     /// ```text
     /// PYTHONPATH=src python3 -c "
-    /// from aiconfigurator.sdk.perf_database import PerfDatabase
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.perf_database import PerfDatabase
+    /// from aisimulate.sdk import common
     /// db = PerfDatabase('b200_sxm','sglang','0.5.10',
-    ///                   systems_root='python/aisimulate/src/aiconfigurator_core/systems', database_mode='SOL')
+    ///                   systems_root='python/aisimulate/src/aisimulate_core/systems', database_mode='SOL')
     /// for nt, op in [(3,'pre'), (3,'post'), (3,'both'), (8,'pre')]:
     ///     r = db.query_mhc_module(num_tokens=nt, hidden_size=7168, hc_mult=4,
     ///                             sinkhorn_iters=3, op=op,
@@ -297,7 +297,7 @@ mod tests {
         // Structural routing over the three op lanes and an off-grid token
         // count. Math on synthetic grids in perf_interp; values in goldens.
         let table = MhcTable::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.14",
+            "../../python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sglang/0.5.14",
         ));
         for &(op, nt) in &[("pre", 3u32), ("post", 3), ("both", 3), ("pre", 8)] {
             let got = table

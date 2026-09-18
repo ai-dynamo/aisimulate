@@ -3,16 +3,15 @@
 The core API is delivered through the repository's two release artifacts at
 the same version:
 
-- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
-  compatibility namespace `aiconfigurator_core`;
+- the `aisimulate` Python wheel, whose estimator API is `aisimulate_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
 The single wheel owns the application, estimator SDK, model and system data,
 and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
-Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available during the AIC 0.12.0 compatibility window.
+Rust-to-Python construction path. Legacy Python import namespaces are removed
+in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
 
 ## Stable Python facade
 
@@ -75,8 +74,7 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. Both
-`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 
@@ -351,18 +349,14 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   role/options signatures and separate estimator constructors. This is a source
   migration: use `ForwardPassPerfModelConfig::new(...)` in Rust or the SDK config
   class in Python, and use the explicit migration helper for saved EngineConfig
-  values. Downstream Dynamo callers must migrate before this API is released;
+  values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
-- Publication is blocked by [the release gate](../.github/release-gates.json)
-  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Both scheduled
-  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
-  before staging and the downstream publish trigger. Manual dispatch may select
-  a main/release commit, but both the workflow revision's policy and the selected
-  commit's migration declarations must pass before publication. The checker runs
-  from the workflow revision; missing or malformed target gates fail closed.
-  Clear the pending entry in a reviewed change only after the migration evidence
-  is available.
+- [The migration checklist](../.github/release-gates.json) and
+  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  pending entry in a reviewed change after downstream validation and merge.
+  There is currently no standalone stable-publication workflow in this repository;
+  that release process must invoke the checker for both its policy and target
+  declarations (`--target-gates`). Missing or malformed declarations fail closed.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.

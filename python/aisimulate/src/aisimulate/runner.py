@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
-from .aic import materialize_aic_num_gpu_blocks
+from .capacity import materialize_aic_num_gpu_blocks
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -184,7 +184,7 @@ class AICAFDCompanionPerformanceModel:
 
         estimator = self._estimator
         if estimator is None:
-            from aiconfigurator.cli.api import cli_estimate
+            from aisimulate.legacy_cli.api import cli_estimate
 
             estimator = cli_estimate
         prefix = f"{role}_"
@@ -240,7 +240,7 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aiconfigurator.cli.api.cli_estimate",
+                "source": "aisimulate.legacy_cli.api.cli_estimate",
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
                 "metric": metric,
@@ -1344,7 +1344,7 @@ def _materialize_engine_role(
         def resolved_version(value):
             if value not in {"current", "previous", "next"}:
                 return value
-            from aiconfigurator_core.sdk.perf_database import resolve_query_version
+            from aisimulate_core.sdk.perf_database import resolve_query_version
 
             from .sweeper.forward_pass_estimator import resolve_systems_paths
 

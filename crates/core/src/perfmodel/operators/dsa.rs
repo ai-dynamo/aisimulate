@@ -3,7 +3,7 @@
 
 //! DSA (Dynamic Sparse Attention) module operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.dsa.ContextDSAModule` /
+//! Mirrors `aisimulate.sdk.operations.dsa.ContextDSAModule` /
 //! `GenerationDSAModule`. The context lookup evaluates at `isl` (the
 //! new-token count) on the raw 4-axis `[heads][prefix][seq][batch]` grid via
 //! the perf_interp v2 engine (see `perf_database::dsa::query_context`).
@@ -1206,7 +1206,7 @@ mod tests {
     fn cp_missing_sparse_tables_fail_loud() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let db = PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0")
             .expect("b200_sxm/vllm/0.24.0 must load");
         let op = glm_cp_op(8);
@@ -1241,7 +1241,7 @@ mod tests {
     //
     // ```text
     // uv run --no-sync python - <<'PY'
-    // from aiconfigurator.sdk import perf_database, common
+    // from aisimulate.sdk import perf_database, common
     // db = perf_database.get_database("b200_sxm", <backend>, <version>,
     //                                 shared_layer=False)
     // r = db.query_context_dsa_module(  # or query_generation_dsa_module
@@ -1267,7 +1267,7 @@ mod tests {
     fn b200_db(backend: &str, version: &str, mode: DatabaseMode) -> PerfDatabase {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&systems_root, "b200_sxm", backend, version)
             .expect("b200_sxm db must load");
         db.database_mode = mode;
@@ -1280,7 +1280,7 @@ mod tests {
     fn b200_db_on(system: &str, backend: &str, version: &str, mode: DatabaseMode) -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&root, system, backend, version).expect("db loads");
         db.database_mode = mode;
         db
@@ -1289,7 +1289,7 @@ mod tests {
     fn sglang_db(system: &str, version: &str, mode: DatabaseMode) -> PerfDatabase {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&systems_root, system, "sglang", version)
             .unwrap_or_else(|e| panic!("{system} db must load: {e}"));
         db.database_mode = mode;
@@ -1574,7 +1574,7 @@ mod tests {
     fn dsa_sol_mode_returns_roofline_with_sol_source() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db =
             PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load");
         db.database_mode = DatabaseMode::Sol;

@@ -6,7 +6,6 @@
 from dataclasses import dataclass
 
 import pytest
-
 from collector import capabilities
 from collector.capabilities import case_dtypes, filter_cases, unsupported_reason
 

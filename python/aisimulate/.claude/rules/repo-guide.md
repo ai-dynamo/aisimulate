@@ -9,23 +9,23 @@ approval; new rule files MUST carry `paths:` frontmatter.
 
 | Path | What it is |
 |---|---|
-| `aic-core/src/aiconfigurator_core/sdk/` | performance modeling core (perf DB, interpolation, models) |
-| `src/aiconfigurator/sdk/` | upper-layer orchestration and legacy core import compatibility |
-| `src/aiconfigurator/generator/` | **the "generator"**: renders deployment configs (cli_args, k8s manifests, engine YAML) from task results |
+| `src/aisimulate_core/sdk/` | performance modeling core (perf DB, interpolation, models) |
+| `src/aisimulate/sdk/` | upper-layer orchestration and legacy core import compatibility |
+| `src/aisimulate/generator/` | **the "generator"**: renders deployment configs (cli_args, k8s manifests, engine YAML) from task results |
 | `collector/` | GPU perf data collection (standalone; NOT part of the wheel runtime) |
 | `tools/support_matrix/` | daily end-to-end support matrix generation/compare |
 | `aic-core/rust/aiconfigurator-core/` | Rust port of modeling operators |
 
 Disambiguation: `collector/case_generator.py` expands collection test cases —
-it has NOTHING to do with `src/aiconfigurator/generator/`. Do not apply
+it has NOTHING to do with `src/aisimulate/generator/`. Do not apply
 generator-module rules to it, and do not drift into deployment-config topics
-unless the task actually targets `src/aiconfigurator/generator/`.
+unless the task actually targets `src/aisimulate/generator/`.
 
 ## Governed areas
 
 - Performance models and their Rust/Python/CLI/Sweeper/Replay/Planner consumers
   → read [perfmodel-api.md](perfmodel-api.md) before extending or migrating an API.
-- Editing `src/aiconfigurator/generator/**` → generator rules auto-load; entry
+- Editing `src/aisimulate/generator/**` → generator rules auto-load; entry
   point `.claude/rules/generator-development.md`.
 - Editing `collector/**` → collector rules auto-load; read
   `.claude/rules/collector/layer_permissions.md` AND `failure_handling.md`;
@@ -42,7 +42,7 @@ finding even when the code works.
 ## Cross-cutting hard rules (apply to every task)
 
 1. **A task stays in its module.** Collector tasks touch `collector/` (+ its
-   tests) only; generator tasks touch `src/aiconfigurator/generator/` (+ its
+   tests) only; generator tasks touch `src/aisimulate/generator/` (+ its
    tests) only; SDK tasks do not reach into either. Cross-module contract
    changes (e.g. a new perf-data column and its SDK consumer) require explicit
    human approval and are never done "while you're at it".

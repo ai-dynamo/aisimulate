@@ -34,6 +34,13 @@ Both commands now come from AISimulate. Existing AIC flags and experiment YAML c
 `aiconfigurator`; there is no automatic converter to the new CLI input format. See the
 [Legacy AIC CLI User Guide](legacy-aic-user-guide.md) for the six-command reference.
 
+### 1.1 Migrate Python imports
+
+AISimulate 0.13.0 removes the legacy `aiconfigurator` and
+`aiconfigurator_core` Python packages. The `aiconfigurator` executable remains
+available. See [Python source migration](../python-source-migration.md) for
+replacement imports, the package layout, and downstream qualification requirements.
+
 ## 2. AIC to AISimulate command mapping
 
 The rows follow the legacy guide's command order. “Keep AIC” means use the compatibility command
@@ -1424,7 +1431,7 @@ you require its fixed cached-token assumption.
 `engine.nextn` and an explicit `engine.nextn_accepted`, as shown in
 [section 4.6.3](#preserve-pinned-engine-and-request-controls). Neither path predicts acceptance rates.
 EAGLE-3, DFlash, DSpark, and standalone draft models still use the compatibility CLI or SDK, subject to
-[scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
+[scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
@@ -1548,7 +1555,7 @@ aggregate-only SLA semantics, described in its feature guide.
 ### 6.2 Repository and release transition
 
 AISimulate is the home for ongoing development, issues, and releases. The standalone
-AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.12.0
-keeps the AIC compatibility command; removal is targeted for 0.13.0 after all remaining workflows
+AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.13.0
+keeps the AIC compatibility command; removal is targeted for 0.14.0 after all remaining workflows
 have verified unified-CLI replacements. See the [release transition policy](../../README.md#aiconfigurator-repository-transition)
 and [repository history](../repository-history.md).

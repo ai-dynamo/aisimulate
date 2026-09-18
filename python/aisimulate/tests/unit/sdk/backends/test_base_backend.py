@@ -6,11 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.performance_result import MoECommFallback
-from aiconfigurator.sdk.step_estimate import MixedStepInput, StepEstimate
+from aisimulate.sdk import common
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.performance_result import MoECommFallback
+from aisimulate.sdk.step_estimate import MixedStepInput, StepEstimate
 
 pytestmark = pytest.mark.unit
 
@@ -188,7 +188,7 @@ class TestAFDPartitionActivationScaling:
 
     @classmethod
     def _model(cls, *, nextn: int):
-        from aiconfigurator.sdk.models import get_model
+        from aisimulate.sdk.models import get_model
 
         model = get_model(cls.MODEL, ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1), "vllm")
         model.config.nextn = nextn
@@ -207,7 +207,7 @@ class TestAFDPartitionActivationScaling:
         )
 
     def _partition_activations(self, *, nextn: int, num_tokens: int) -> float:
-        from aiconfigurator.sdk.backends.factory import get_backend
+        from aisimulate.sdk.backends.factory import get_backend
 
         return get_backend("vllm").get_partition_memory_usage(
             self._model(nextn=nextn),
@@ -251,7 +251,7 @@ def test_run_static_latency_only_matches_run_static_latency(
     mode: str,
     latency_correction_scale: float,
 ) -> None:
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     def _fake_rust_breakdown(model_arg, database_arg, runtime_config_arg, mode_arg, stride_arg, scale_arg):
         # Mode- and scale-aware like the real bridge: the engine applies the
@@ -307,7 +307,7 @@ def test_run_static_can_route_to_rust_engine_step_backend(
     model,
     database,
 ) -> None:
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     calls = []
 
@@ -379,7 +379,7 @@ def test_run_static_declares_mtp_decode_share_per_mode(
     only static engine-step executor); memory sizing stays a Python
     ``_get_memory_usage`` call, which is the surface under test here.
     """
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     def _fake_rust_breakdown(model_arg, database_arg, runtime_config_arg, mode_arg, stride_arg, scale_arg):
         ctx = {"context_attention": 1.0}
@@ -467,7 +467,7 @@ def test_trtllm_budget_path_ignores_the_decode_share() -> None:
     forwarded and the legacy full ``(nextn+1)`` multiplier is retained on that
     path pending its own analysis (tracked in AIC-1755).
     """
-    from aiconfigurator.sdk.backends.factory import get_backend
+    from aisimulate.sdk.backends.factory import get_backend
 
     agg_extra = {"max_num_tokens": 8192, "max_seq_len": 4096, "free_gpu_memory_fraction": 0.9}
     kwargs = get_backend("trtllm")._memory_usage_kwargs_for_agg(
@@ -576,7 +576,7 @@ def test_run_mixed_returns_components_and_counts_speculative_query_tokens(
     model,
     database,
 ) -> None:
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     calls: list[dict] = []
 
@@ -631,7 +631,7 @@ def test_run_mixed_rust_path_returns_the_same_structured_contract(
     real energy, per-component splits, and the Python branch's per-op keys
     (raw non-attention names plus the two literal attention keys) — the
     synthetic "rust_engine_step_mixed" key no longer exists."""
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     model._nextn = 2
     monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args: True)
@@ -683,7 +683,7 @@ def test_get_genonly_step_latency_rust_path_returns_decode_breakdown_verbatim(
     verbatim — real op names, real per-op energy (no synthetic
     "rust_engine_step_generation" key) — without running the Python static
     step."""
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     calls = []
     breakdown = (
@@ -1016,7 +1016,7 @@ def test_run_mixed_derives_effective_multimodal_isl_for_direct_calls(
     run_static / run_agg model it. Text isl=8 plus 16 visual tokens gives
     effective isl 24 — the visual adjustment happens before the bridge call,
     not inside the engine."""
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     model.encoder_config = _vision_encoder_config()
 
@@ -1108,7 +1108,7 @@ def test_run_static_latency_only_zeroes_energy_with_paired_keys(
     """include_energy=False must zero the energy dicts while keeping their
     key sets identical to the latency dicts (the power coverage gate pairs
     latency and energy by name)."""
-    from aiconfigurator.sdk.backends import base_backend as base_backend_module
+    from aisimulate.sdk.backends import base_backend as base_backend_module
 
     monkeypatch.setattr(
         base_backend_module,
@@ -1189,7 +1189,7 @@ def test_step_requires_a_real_perf_database(
 def test_run_agg_retains_schedule_weighted_energy_for_publication(
     backend, model, database, monkeypatch, encoder_energy, expected_coverage, published
 ):
-    from aiconfigurator.cli.api import _apply_power_coverage_gate
+    from aisimulate.legacy_cli.api import _apply_power_coverage_gate
 
     monkeypatch.setattr(backend, "_mix_step_efficiency", lambda *_: 0.5)
     monkeypatch.setattr(
@@ -1239,7 +1239,7 @@ def test_run_agg_retains_schedule_weighted_energy_for_publication(
 def test_run_agg_zero_decode_steps_do_not_change_energy_coverage(
     backend, model, database, monkeypatch, covered, expected, published
 ):
-    from aiconfigurator.cli.api import _apply_power_coverage_gate
+    from aisimulate.legacy_cli.api import _apply_power_coverage_gate
 
     mixed = StepEstimate(latency_ms=10.0, energy_wms=1000.0 if covered else 0.0, covered_latency_ms=covered)
     unused_decode = StepEstimate(latency_ms=1000.0, energy_wms=1000000.0, covered_latency_ms=1000.0)

@@ -192,7 +192,7 @@ def test_kv_relative_capacity_cache_separates_model_controls(monkeypatch):
     ],
 )
 def test_core_rejects_invalid_identity_before_data_fallback(overrides):
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     with pytest.raises((ValueError, RuntimeError), match="(wideep_num_slots|moe_backend|EPLB)"):
         RustForwardPassPerfModel.best_available(
@@ -220,7 +220,7 @@ def test_migration_example_parses_and_preserves_shared_prefix():
 def test_kv_transfer_bytes_honor_explicit_quantization(tmp_path):
     import json
 
-    from aisimulate.aic import estimate_kv_bytes_per_token
+    from aisimulate.capacity import estimate_kv_bytes_per_token
 
     (tmp_path / "config.json").write_text(
         json.dumps(
@@ -270,7 +270,7 @@ def test_memory_preflight_preserves_same_model_controls(monkeypatch):
 
 
 def test_canonical_constructor_rejects_moe_controls_on_dense_model():
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     with pytest.raises((ValueError, RuntimeError), match="require an MoE model"):
         RustForwardPassPerfModel.best_available(

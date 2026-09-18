@@ -20,8 +20,8 @@ on sglang-adapted kernel legs only, mirroring ``operations/moe.py``).
 
 import pytest
 
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.operations import MoEExpertCompute
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.operations import MoEExpertCompute
 
 pytestmark = pytest.mark.unit
 

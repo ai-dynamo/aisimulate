@@ -12,13 +12,13 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.report_and_save import (
+from aisimulate.legacy_cli.report_and_save import (
     _check_power_data_available,
     _plot_worker_setup_table,
     log_final_summary,
 )
-from aiconfigurator.logging_utils import setup_logging, use_plain_cli_output
-from aiconfigurator.sdk.pareto_analysis import draw_pareto_to_string
+from aisimulate.logging_utils import setup_logging, use_plain_cli_output
+from aisimulate.sdk.pareto_analysis import draw_pareto_to_string
 
 pytestmark = pytest.mark.unit
 

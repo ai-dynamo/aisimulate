@@ -4,7 +4,6 @@
 import csv
 
 import pytest
-
 from collector.sglang.dsv4_megamoe.validate_perf import merge_perf_files, validate_perf_file
 
 pytestmark = pytest.mark.unit

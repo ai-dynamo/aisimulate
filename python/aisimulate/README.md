@@ -6,10 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # AISimulate application (AIConfigurator compatibility source)
 
 > This directory contains the complete AIConfigurator application migrated to
-> the standalone AISimulate repository. It builds the `aisimulate` 0.12.0
-> wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
-> `aiconfigurator` executable remain compatibility surfaces alongside the public
-> `aisimulate` prediction CLI. The original AIC
+> the standalone AISimulate repository. It builds the `aisimulate` 0.13.0
+> wheel, not a separate `aiconfigurator` wheel. The
+> `aiconfigurator` executable remains a compatibility surface alongside the public
+> `aisimulate` prediction CLI. Command removal is targeted for AISimulate 0.14.0,
+> after every remaining workflow has a verified unified-CLI replacement. The original AIC
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
@@ -76,13 +77,14 @@ pip3 install aisimulate
 One `aisimulate` wheel contains the compatibility CLI and application, the
 estimator SDK, model/system data, Replay, Sweeper, and the native extension.
 It installs no separate `aiconfigurator`, `aiconfigurator-core`, or Python
-`aisimulate-core` distribution. The `aiconfigurator`, `aiconfigurator_core`,
-and `aisimulate_core` import namespaces remain available from this wheel.
+`aisimulate-core` distribution. The canonical import namespaces are `aisimulate` and `aisimulate_core`.
+The removed `aiconfigurator` and `aiconfigurator_core` imports must be migrated;
+see the [Python source migration guide](../../docs/python-source-migration.md).
 
 `Task` and the orchestration APIs remain available:
 
 ```python
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk.task_v2 import Task
 ```
 
 When upgrading from standalone AIConfigurator, remove the old distributions so
@@ -184,7 +186,7 @@ The standard prediction CLI accepts the same value at
 You can also use `aiconfigurator` programmatically in Python:
 
 ```python
-from aiconfigurator.cli import cli_default, cli_exp, cli_generate, cli_recommend, cli_support
+from aisimulate.legacy_cli import cli_default, cli_exp, cli_generate, cli_recommend, cli_support
 
 # 1. Run default agg vs disagg comparison
 result = cli_default(model_path="Qwen/Qwen3-32B-FP8", total_gpus=32, system="h200_sxm")
@@ -225,7 +227,7 @@ an estimate. InferenceX DB records, DynamoGraphDeployments, and concrete
 ```python
 from pathlib import Path
 
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     adapt_config,
@@ -323,7 +325,7 @@ disagg Top Configurations: (Sorted by tokens/s/gpu)
 |  3   |  trtllm |    404.71    |     100.35    | 295.71 |     5268.25     | 140 (=140x1) |    32 (24=1x24)   |    1     | 24 (=5x2+7x2) |     5      |    2 (=2x1)    |    tp2pp1   |   1   |     7      |    2 (=2x1)    |    tp2pp1   |   20  |
 +------+---------+--------------+---------------+--------+-----------------+--------------+-------------------+----------+---------------+------------+----------------+-------------+-------+------------+----------------+-------------+-------+
 ********************************************************************************
-2026-02-08 23:10:21,413 - aiconfigurator.cli.main - INFO - All experiments completed in 6.50 seconds
+2026-02-08 23:10:21,413 - aisimulate.legacy_cli.main - INFO - All experiments completed in 6.50 seconds
 ```
 
 These results indicate that deploying Qwen3-32B-FP8 on h200_sxm in FP8 can achieve **1.67x** higher tokens/s/gpu for disaggregated versus aggregated deployment **under the SLA targets TTFT ≤ 300 ms and TPOT ≤ 10 ms**, with ISL:OSL of 4000:500 (with prefix len: 500).
@@ -339,14 +341,14 @@ You will get different results.
 
 The `default` mode will create two experiments, one is `agg` and another one is `disagg` and then compare the results.
 To further customize (including the search space and per-component quantization), parameters are defined in a YAML file.
-Built-in YAML files are under `src/aiconfigurator/cli/example.yaml` and `src/aiconfigurator/cli/exps/*.yaml`
+Built-in YAML files are under `src/aisimulate/legacy_cli/example.yaml` and `src/aisimulate/legacy_cli/exps/*.yaml`
 Refer to the YAML file and modify as needed. Pass your customized YAML file to `exp` mode:
 
 ```bash
 aiconfigurator cli exp --yaml-path customized_config.yaml
 ```
 We can use `exp` mode to compare multiple results, including disagg vs. agg, homogeneous vs. heterogeneous, and more than 2 experiments.
-We've crafted several examples in `src/aiconfigurator/cli/exps/*.yaml`
+We've crafted several examples in `src/aisimulate/legacy_cli/exps/*.yaml`
 For the full guide, refer to [Legacy AIC CLI User Guide](../../docs/cli/legacy-aic-user-guide.md).
 
 ### Deploying to llm-d Platform
@@ -449,7 +451,7 @@ Use `--generator-config path/to/file.yaml` to load a YAML payload with `ServiceC
 - `--generator-set ServiceConfig.model_path=Qwen/Qwen3-32B-FP8`
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
 
-Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aiconfigurator/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
+Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aisimulate/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
 
 ## Tuning with Advanced Features
 
@@ -554,7 +556,7 @@ For matched serving-accuracy results, use the
 TTFT and TPOT error separately from prediction coverage.
 
 The raw data is also available as
-[per-system CSV files](src/aiconfigurator_core/systems/support_matrix).
+[per-system CSV files](src/aisimulate_core/systems/support_matrix).
 
 You can also check support via the CLI:
 ```bash

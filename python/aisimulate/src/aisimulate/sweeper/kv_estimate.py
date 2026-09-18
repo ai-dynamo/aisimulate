@@ -26,8 +26,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from aiconfigurator_core.sdk.memory import estimate_kv_cache
-from aiconfigurator_core.sdk.perf_database import get_latest_database_version
+from aisimulate_core.sdk.memory import estimate_kv_cache
+from aisimulate_core.sdk.perf_database import get_latest_database_version
 
 from .forward_pass_estimator import resolve_systems_paths
 from .parallel_enum import ParallelShape
@@ -58,7 +58,7 @@ def resolve_backend_version(
 
     resolved_paths = list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None
     if requested_version is not None:
-        from aiconfigurator_core.sdk.perf_database import get_supported_databases
+        from aisimulate_core.sdk.perf_database import get_supported_databases
 
         available = get_supported_databases(**({"systems_paths": resolved_paths} if resolved_paths is not None else {}))
         versions = available.get(hardware_sku, {}).get(backend, [])

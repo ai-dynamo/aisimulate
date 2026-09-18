@@ -261,10 +261,23 @@ marked it N/A.
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
 eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
 short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
+records a full baseline commit that must resolve in the checkout. CI runs
+`scripts/check_prediction_numerics.py --fetch-baseline-only` before contract
+tests and native qualification so historical PR commits remain available after
+squash merges. This fetch preserves the recorded SHA and expected values. Tolerances
 are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
+fixture after removal of its invalid FP8-block rows. Installed-wheel checks
+resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports and verify their object identity. The AFD qualification golden retains
+all numerical values; its replay hash includes the empty
+`forward_pass_estimators` field added by the unified estimator schema.
+The heterogeneous prefill/decode CLI round trip verifies each role's system
+inside `timing_model.config`, along with the external AIC provider, and retains
+the recommendation-versus-replay metric checks.
 
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains
@@ -349,9 +362,17 @@ Main branch nightly CI builds the approved release surface: one `aisimulate` whe
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
+
+Development nightlies must be available before downstream consumers can validate
+and merge an API migration. Pending entries in
+[the stable-release migration checklist](../.github/release-gates.json) therefore
+do not block scheduled or approved manual nightlies. Build, compliance, wheel-smoke,
+FPE qualification, and security requirements continue to apply. Publish the nightly,
+validate and merge the downstream migration against that wheel, then complete the
+migration checklist before a stable release.
 
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal

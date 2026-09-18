@@ -12,7 +12,6 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-
 from collector.case_generator import (
     get_attention_head_configs,
     get_gemm_case_specs,
@@ -29,7 +28,7 @@ from collector.model_cases import (
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aiconfigurator" / "systems" / "support_matrix"
+SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "support_matrix"
 
 
 def _load_mla_adapter(module_path: str, globals_dict: dict):
@@ -1504,7 +1503,7 @@ def test_mla_module_targeted_artifacts_keep_requested_checkpoint(monkeypatch):
 def test_vllm_mla_module_artifacts_have_local_configs():
     from collector.case_generator import get_mla_module_model_specs
 
-    config_root = REPO_ROOT / "src" / "aiconfigurator" / "model_configs"
+    config_root = REPO_ROOT / "src" / "aisimulate_core" / "model_configs"
     for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=False):
         config_path = config_root / f"{spec.model_path.replace('/', '--')}_config.json"
         assert config_path.is_file(), f"{spec.model_path} would require a runtime Hub download"
@@ -1888,7 +1887,7 @@ def test_nemotron_super_fp8_vllm_moe_case_covers_missing_consumer_key(monkeypatc
     assert moe_model_allows_quantization("vllm", model_path, "fp8")
     assert not moe_model_allows_quantization("vllm", model_path, "bfloat16")
 
-    config_path = REPO_ROOT / "src/aiconfigurator/model_configs" / f"{model_path.replace('/', '--')}_config.json"
+    config_path = REPO_ROOT / "src/aisimulate_core/model_configs" / f"{model_path.replace('/', '--')}_config.json"
     assert config_path.is_file()
 
 

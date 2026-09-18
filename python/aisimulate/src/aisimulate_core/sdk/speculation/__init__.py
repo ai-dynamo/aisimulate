@@ -1,13 +1,55 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/speculation/__init__.py
 
-"""Identity-preserving facade for speculative decoding schemes."""
+"""Speculative-decoding schemes package.
 
-from aiconfigurator_core.sdk import speculation as _canonical
-from aiconfigurator_core.sdk.speculation import *  # noqa: F403
+Scheme modules register themselves via ``@register_spec_scheme("<kind>")``;
+``pkgutil.iter_modules`` imports every sibling module at package import time
+(the model-registry idiom), so **adding a scheme file is enough** — no edits
+here.
 
-__all__ = _canonical.__all__
+Historical source-reported accuracy (not remeasured for this AISimulate
+migration): Qwen3-8B x H100 x vLLM static-batch pure-decode rounds, with
+the source's zero-calibration contract:
 
+- The sequence-basis width channel has no fitted constants; deep-concurrency
+  pure-decode rounds under-predict by ~10-18% (the shared-KV floor misses
+  real wide-kernel inefficiencies). A bracket-blend calibration was
+  evaluated and REJECTED: its two fitted parameters did not transfer out of
+  the fitted domain (isl-1k deep-c +41-45% on long-context pure decode).
+  Structural fixes (a physically-bounded token-basis component for the
+  KV-read share) are follow-up work; do not reintroduce fitted patches.
+"""
 
-def __getattr__(name: str) -> object:
-    return getattr(_canonical, name)
+from __future__ import annotations
+
+import importlib
+import pkgutil
+
+from aisimulate_core.sdk.speculation.base import (
+    DraftOpSpec,
+    NullScheme,
+    SpecSchemeBase,
+    SpeculationConfig,
+    build_spec_scheme,
+    get_spec_scheme_cls,
+    register_spec_scheme,
+)
+
+_SKIP = {"base"}
+for _, _name, _ in pkgutil.iter_modules(__path__):
+    if _name not in _SKIP:
+        importlib.import_module(f".{_name}", __name__)
+del _SKIP
+
+__all__ = [
+    "DraftOpSpec",
+    "NullScheme",
+    "SpecSchemeBase",
+    "SpeculationConfig",
+    "build_spec_scheme",
+    "get_spec_scheme_cls",
+    "register_spec_scheme",
+]
