@@ -202,6 +202,25 @@ pool is rate-matched against the LM pools; result rows carry `(e)workers`/`(e)tp
 
 See the `vl_epd_agg` experiment in `src/aiconfigurator/cli/example.yaml` for a complete template.
 
+## AFD heterogeneous pools
+`serving_mode: afd` deploys up to three pools — a static prefill pool (when `afd_combined_with_pd: true`), the A
+(attention) pool and the F (FFN/MoE) pool. The A pool is always the top-level `system_name` (it is the primary side
+and owns the KV cache — the same anchoring hetero-disagg uses, where prefill ≡ top-level and only decode overrides);
+the other two pools can sit on their own hardware via `afd_prefill_system_name` and `afd_f_system_name`. Any pool
+left unset inherits the top-level `system_name`, so an AFD run that names no pool is identical to a homogeneous run.
+All pools share the single top-level `backend_name`; a pool on a different system resolves its own latest
+perf-database version.
+
+The A pool is bound by KV-cache bandwidth and capacity, the F pool by FLOPS, so pairing a high-HBM device for A with a
+high-FLOPS device for F can beat either device alone. Cross-pool A2F/F2A transfers are priced at the slower endpoint
+(bandwidth = `min` of both sides); node width and the HBM check are per pool.
+
+**Modeling only** — deployment artifact generation requires every AFD pool to share the top-level system, and fails
+fast otherwise.
+
+See `src/aiconfigurator/cli/exps/afd_hetero.yaml` for a complete template, and
+[Heterogeneous AFD pools](../../../docs/cli/legacy-aic-user-guide.md#heterogeneous-afd-pools) in the CLI guide.
+
 ## Practical suggestion
 In order to save search time, you need to reduce the search space by choosing fewer parallel options. Say for `*_num_gpu_candidates` here, it's DeepSeek V3 with 671B model 
 parameters. With fp8_block, the rough estimation of the model weights is 671GB. You can not hold it on 4/2/1 gpus, you can modify it to `[8]` only. 
