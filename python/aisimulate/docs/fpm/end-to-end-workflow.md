@@ -3,63 +3,122 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Collect FPM data and use it in AISimulate
+# Guide: self-benchmark and onboard a forward-pass performance model
 
-Use measured forward-pass data to construct a performance model and predict
-request-level serving behavior. Choose the path that matches your starting point:
+This guide explains how to collect engine forward-pass measurements, turn them
+into an FPM data profile, and use that profile in AISimulate. **Self-collection**
+means running the engine's self-benchmark on your target configuration.
+**Onboarding** means validating and loading its measured profile through the
+canonical performance-model API, then using it for prediction.
 
-| Starting point | Follow |
-| --- | --- |
-| Published self-benchmark data; no collection environment needed | [Check the package](#1-check-the-aisimulate-commands), then [Kimi K3 TP8+DCP8 quickstart](#use-an-existing-profile-kimi-k3-tp8dcp8) |
-| Your own schema-v6 Parquet/metadata pair | [Inspect the pair](#5-inspect-the-published-pair), [construct the model](#6-load-the-new-data-and-query-one-forward-pass), then [predict](#7-run-ais-predict-using-the-same-external-data); substitute your recorded identity |
-| New measurements to collect | [Prepare the environment](#1-check-the-aisimulate-commands), then follow steps 2–9 for MiniMax-M2.7 on four H200 GPUs |
+The procedure has seven steps. The model, hardware, and engine settings are
+inputs to that procedure. [Kimi K3 TP8+DCP8](#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
+and [MiniMax-M2.7 TP4](#example-b-collect-a-minimax-m27-tp4-profile) are worked
+examples at the end; their values are not defaults for other deployments.
 
-```text
-Existing measured pair ------------------------+
-                                               |
-GPU plan -> smoke -> self-benchmark -> publish -+-> SDK query -> AIS predict
-                                                                |
-                                                                v
-                                                 Independent accuracy check
-```
+## When self-collection is useful
 
-The data contract is `fpm_forward_perf.parquet` plus its matching
-`fpm_forward_perf.metadata.json`. The Rust performance model selects a matching
-cell and uses measured lookup/interpolation and, where supported, SOL transfer.
-An existing model architecture needs no new model class or parallelization
-mapping to consume another measured configuration. Place the pair in a systems
-root and pass its exact identity to
-`RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
-There is no separate FPM registration service or `train` command.
+Use self-collection when you need iteration latency for a specific engine
+configuration that the existing performance data does not represent well:
 
-Raw benchmark JSON is not a loadable FPM pair. Convert it to the
-[publication schema](../../collector/README.md#whole-forward-fpm-campaign)
-with its measurement provenance before step 5. Collector performs this
-conversion for the campaigns it runs in steps 2–4.
+- A custom engine build, newer kernel, quantization mode, or CUDA Graph policy
+  changes forward-pass execution time.
+- Your GPU/topology or workload shapes lack measured coverage.
+- You need the combined effect of operations, launch overhead, and communication
+  within the measured engine iteration, rather than composing their costs from
+  separate operation tables.
+- You want to calibrate a supported configuration against the runtime you will
+  deploy, while keeping the rest of AISimulate's serving simulation unchanged.
 
-A new architecture still requires a model definition; see
-[How to add a new model](../add_a_new_model.md).
-[Online telemetry regression](aic-fpm-regression-design.md), which learns from
-`tune_with_fpms`, is a separate workflow.
+For example, collecting Kimi TP8+DCP8 measures that configuration's prefill and
+decode costs, including DCP communication inside the timing boundary. A TP8
+profile without DCP is a different measurement identity and cannot substitute
+for those observations. If suitable measured data already exists, reuse it
+starting at step 4 after checking its provenance and coverage.
 
-## Scope and expected outcomes
+## What self-collection covers
 
-| Stage | Runs on | Expected result |
+An FPM predicts **engine iteration / forward-pass latency** for scheduled work.
+It supplies the cost of an iteration to the simulator; the simulator still
+decides which work runs, when it runs, and how requests progress.
+
+| Difference you want to model | What self-collection can supply | What still needs separate support |
 | --- | --- | --- |
-| Plan | Machine running Collector | Frozen model, topology, sampling policy, and phase cells; no Kubernetes workload |
-| Smoke | GPU cluster | Minimal prefill and decode execution passes; no formal database publication |
-| Collect and publish | Machine running Collector + GPU cluster | All planned cells pass; a matching Parquet/metadata pair is published; owned resources are removed |
-| SDK query | Machine running AISimulate | The new pair loads and returns a finite, positive forward latency in milliseconds |
-| AIS predict | Machine running AISimulate | `prediction.json` and, when requested, `requests.jsonl` for the configured traffic |
-| Accuracy validation | Machine running AISimulate + independent GPU run | Matched prediction/measurement errors and coverage, assessed against thresholds chosen for the target use case |
+| Kernel implementation, fusion, quantization, CUDA Graph/eager behavior, engine-version changes | Measured iteration costs for the recorded configuration and shapes | A working benchmark path and matching profile identity |
+| TP/EP/DCP execution within a supported engine iteration | The observed compute and collective costs inside the measurement boundary | Correct topology, rank aggregation, cache state, and runtime/consumer support |
+| Batch size, new-token count, and context length | A measured latency surface and supported interpolation within its coverage | Coverage of the actual query shapes; mixed/ragged workload composition remains a modeling assumption |
+| **Pipeline parallelism (PP)** | A scalar forward latency is insufficient to establish pipeline behavior | Stage execution, microbatch flow, overlap, bubbles, and inter-stage communication/scheduling must be modeled separately. The current collection workflow requires PP=1. |
+| Request scheduling, routing, arrival patterns, or prefill/decode disaggregation | An iteration timing input to the serving simulation | Scheduler/router behavior, queues, placement, and P/D transfer models |
+| KV capacity, allocation, prefix reuse, eviction, or hybrid recurrent state | Timing measured under the recorded cache-state conditions | The corresponding memory and cache-lifecycle model; collecting timing does not implement those semantics |
 
-The collection walkthrough uses vLLM with
-`tp=4, pp=1, dp=1, moe_tp=4, moe_ep=1, cp=1`, checkpoint-default quantization,
-and one worker replica. The dedicated Collector currently supports `PP=CP=1`;
-its topology presets do not collect DCP configurations. The DCP quickstart
-consumes an existing Dynamo self-benchmark profile.
+**Self-collection cannot add PP support by itself.** A PP=1 profile must not be
+scaled or relabeled as PP>1. Even measurements from a pipeline-enabled engine
+would require a supported stage/scheduling contract before Replay could use
+them to simulate pipeline throughput and latency.
 
-## 1. Check the AISimulate commands
+Likewise, TTFT, ITL, and end-to-end throughput are outputs of the serving
+simulation and workload, not direct guarantees from a forward-pass table.
+The measured timing boundary matters: record it, including rank aggregation;
+do not substitute client latency or pure kernel time for engine wall time.
+
+## Current support and architecture readiness
+
+| Backend | Self-benchmark collection status in this workflow |
+| --- | --- |
+| vLLM | Available for supported configurations; validate the exact model, engine build, and benchmark path before a campaign |
+| SGLang | Coming soon; not supported by this self-benchmark collection workflow today |
+| TensorRT-LLM | Coming soon; not supported by this self-benchmark collection workflow today |
+
+This table describes **self-benchmark collection**, not AISimulate's broader
+operation-level modeling support. The dedicated Collector currently uses
+`PP=CP=1`; its topology presets do not enumerate DCP. The Kimi DCP8 example
+imports a profile produced by an adapted vLLM/Dynamo self-benchmark path.
+
+**Self-benchmarking does not automatically support every model or architecture.**
+An engine being able to serve a model does not prove the benchmark can seed its
+state, schedule the requested work, and time it correctly. New architectures or
+engine versions can require changes in:
+
+- **Benchmark input and state preparation:** attention KV warmup, recurrent or
+  convolution state, per-request state allocation, and distributed cache layout.
+- **Scheduling and measurement hooks:** requested versus actually scheduled
+  token counts, graph paths, completion checks, and per-rank timing aggregation.
+- **AISimulate model construction:** architecture/configuration parsing, model
+  registration, resident weights, and memory/cache descriptions used by the
+  consumer. A collection plan's bootstrap template is not proof of consumer support.
+
+Kimi K3 is one such example: its MLA+KDA state and DCP layout needed benchmark
+adaptation. The published decode profile uses warmed MLA KV and random KDA
+state. That records a specific timing experiment; it does not establish full
+KDA-history or cache-lifecycle fidelity in Replay.
+
+Use a small smoke run to qualify those paths before collecting the full surface.
+If it fails or silently schedules different work, fix and revalidate the
+benchmark adapter before using the measurements. For an architecture absent
+from AISimulate, follow [How to add a new model](../add_a_new_model.md) as well.
+An already registered architecture needs no new class or parallelization mapping
+merely to add another supported measured configuration.
+
+## Workflow at a glance
+
+| Step | Action | Required result |
+| --- | --- | --- |
+| [1](#1-check-support-and-prepare-the-environment) | Check backend/model support and prepare the environment | Compatible engine, benchmark, and AISimulate builds; known adaptation gaps |
+| [2](#2-freeze-the-engine-configuration-and-measurement-plan) | Freeze configuration, timing semantics, and sampling coverage | Reproducible configuration and a plan covering the intended workloads |
+| [3](#3-smoke-test-and-collect) | Smoke test, adapt if needed, then collect | Validated prefill/decode measurements plus raw evidence and provenance |
+| [4](#4-validate-and-install-the-fpm-profile) | Validate the data contract and install the pair | A schema-v6 Parquet/metadata pair in a local systems root |
+| [5](#5-construct-and-check-the-performance-model) | Construct the canonical model and check queries | Matching identity, ready estimator, and verified measured-point lookups |
+| [6](#6-connect-the-model-to-replay) | Supply the same profile plus serving configuration | A reproducible prediction configuration and successful Replay smoke |
+| [7](#7-validate-coverage-and-accuracy) | Check coverage and compare held-out measurements | Errors and limitations reported separately from calibration checks |
+
+With a validated profile from someone else, review steps 1–2 and start execution
+at step 4. New GPU collection follows all seven steps. A failure in runtime or
+simulator support is an adaptation task; additional sampling alone will not
+resolve it.
+
+<a id="1-check-the-aisimulate-commands"></a>
+
+## 1. Check support and prepare the environment
 
 Use Python 3.11–3.13 and an AISimulate build containing
 [PR #284](https://github.com/ai-dynamo/aisimulate/pull/284). A package version
@@ -92,7 +151,8 @@ aisimulate predict --help
 ```
 
 Use the same activated Bash or Zsh session for the remaining commands.
-For existing data, continue with the quickstart below or step 5.
+For existing data, review its recorded identity and conditions in step 2, then
+continue at step 4. For new measurements, continue through steps 2 and 3.
 
 For **new GPU collection**, additionally check:
 
@@ -102,19 +162,248 @@ python -m collector.fpm_forward --help
 ```
 
 The collection host needs model configuration metadata and `kubectl` access.
-The MiniMax example needs four H200 GPUs on one node and an existing namespace,
-checkpoint PVC/path, collection image, and matching Generator target release.
+The target runtime needs the model weights, allocated GPUs, and matching engine
+and benchmark code. The Kubernetes Collector additionally needs an existing
+namespace, checkpoint PVC/path, collection image, and Generator target release.
 Record the image digest, model revision, GPU type, and resolved configuration.
-Before launching, read [recovery and cleanup](#8-recovery-and-cleanup).
+Before launching, read [recovery and cleanup](#recovery-and-cleanup).
 
-## Use an existing profile: Kimi K3 TP8+DCP8
+## 2. Freeze the engine configuration and measurement plan
 
-This CPU-only quickstart downloads the published
+Define the target deployment before measuring it. Keep a record of:
+
+- **Identity:** model/config/checkpoint revision, GPU and interconnect topology,
+  engine version and image/source revision, TP/PP/attention-DP/MoE TP/EP, and DCP
+  when used. Record actual GPU count separately from logical parallel dimensions.
+- **Execution policy:** weight and KV precision, attention/MoE backend settings,
+  CUDA Graph capture policy, speculation, model context limit, token budget,
+  maximum active requests, and prefix-cache policy.
+- **Measurement contract:** which engine work is timed, units, rank aggregation,
+  warmup and repeat policy, and the source/initialization of every cache or
+  recurrent state consumed by a measurement.
+- **Coverage:** prefill request/new-token/prefix coordinates and decode
+  batch/context coordinates needed by the intended Replay workload.
+
+The balanced profile uses iteration totals: prefill coordinates are
+`(batch_size, total_prefill_tokens, total_kv_read_tokens)`; decode coordinates
+are `(batch_size, total_kv_read_tokens)`. A rectangular min/max range does not
+prove that all interior queries can be interpolated. Include graph boundaries
+and the intended batch/context range in the plan.
+
+For an existing profile, compare these requirements with its manifest and
+resolved engine configuration. Keep unknown fields explicit rather than
+inventing values or changing the recorded identity to obtain a match.
+
+**Example — Kimi:** TP8+DCP8 uses eight GPUs, `max_num_seqs=32`, and a custom
+vLLM build. Its data covers that measured engine configuration. It neither
+provides a TP8-only profile nor qualifies PP>1 or arbitrary mixed/ragged shapes.
+**Example — MiniMax:** [B1–B2](#b1-prepare-the-campaign-step-2) show configuration
+and plan generation for a new four-H200 campaign.
+
+**Result:** a frozen plan/configuration with known state-seeding and coverage
+assumptions. Use a separate data identity or campaign when changing those conditions.
+
+## 3. Smoke test and collect
+
+First execute a small prefill and decode measurement for each intended
+configuration. Check that the engine initializes, the requested work is actually
+scheduled, timings are finite and use the intended boundary, and all required
+ranks participate. Inspect whether attention KV and any recurrent state are
+warmed, synthesized, or skipped. A successful launch or prefill alone does not
+qualify decode.
+
+If the architecture needs benchmark changes, implement them and repeat the
+smoke before running the sweep. In particular, a token-based attention capacity
+limit may not account for per-request linear/recurrent cache state. State
+initialization can change performance; document and validate synthetic-state
+measurements instead of treating them as equivalent to real request history.
+
+After smoke passes, run the full planned surface. Save raw FPMs, actual scheduled
+shapes, effective engine configuration, versions/hashes, repeat counts, and
+failure/skip reasons. Keep incomplete or alternate-state results distinguishable
+from the primary profile. Validate that the intended phases and cells were
+published; exit code 0 by itself is not evidence that old cells were replaced.
+
+The [MiniMax collection example](#b3-run-smoke-then-formal-collection-step-3)
+shows the Collector commands and publication checks. Use
+[recovery and cleanup](#recovery-and-cleanup) for retries and owned resources.
+
+**Result:** measurements and provenance that satisfy the frozen plan, with
+missing or unsupported regions reported explicitly.
+
+<a id="5-inspect-the-published-pair"></a>
+
+## 4. Validate and install the FPM profile
+
+The runtime consumes a pair of files, not raw self-benchmark JSON:
+
+```text
+<systems-root>/
+  <system>.yaml
+  query_versions.yaml
+  attention_lane_defaults.yaml
+  data/<system>/<backend>/<version>/
+    fpm_forward_perf.parquet
+    fpm_forward_perf.metadata.json
+```
+
+Use the [whole-forward publication contract](../../collector/README.md#whole-forward-fpm-campaign)
+to produce schema `aic_fpm_forward_perf`, version 6. Collector performs this
+conversion for its campaigns. Importing raw output from another benchmark path
+requires an explicit conversion preserving the recorded workload and identity.
+The `systems_paths` configuration points to `<systems-root>`, not its `data/`
+subdirectory. Whole-forward profiles use the layout above; operation tables may
+have an additional family directory.
+
+Check the file hash, schema, row count, phase coverage, identity fields, units,
+and measurement policy. A recorded DCP value must be positive and divide TP;
+missing DCP and explicit DCP1 remain different identities. For per-row repeated
+measurements, the sidecar policy and each row's policy/repeat count must agree.
+Keep the producer's aggregated latency; importing the pair does not train or
+recompute it.
+
+Keep the hardware/query-policy files and source manifest with the pair. Preserve
+both files together when copying or renaming them to the canonical filenames.
+A dataset may contain comparator profiles or nonuniform workloads: choose the
+appropriate primary profile instead of merging every artifact into one table.
+
+[Example A1](#a1-import-the-measured-pair-step-4) downloads our published DCP8
+profile at a pinned HF revision and checks its hashes. [Example B4](#b4-inspect-the-published-pair-step-4)
+checks a newly collected pair. Publishing a pair does not automatically bundle
+it into an AISimulate release: use an external systems root or submit it through
+the repository's data-publication process.
+
+**Result:** a validated local profile and its provenance. No separate registry
+service or regression-training command is needed for measured FPM interpolation.
+
+<a id="6-load-the-new-data-and-query-one-forward-pass"></a>
+
+## 5. Construct and check the performance model
+
+Use `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
+Supply the exact model, system, backend/version, worker role, topology, precision,
+and backend identity of the profile, together with its `systems_paths` root.
+Use `estimation_mode="fpm_interpolation"` and `fallback_policy="deny"` to
+select measured FPM data explicitly. The general defaults are `auto` + `deny`;
+auto tries op-level, FPM interpolation, then regression at construction.
+
+Check `diagnostics()` for readiness, the selected estimator, resolved identity,
+and systems root. Query a known measured prefill point and a known measured
+decode point with `estimate_forward_pass_time_ms`. FPM inputs describe scheduled
+iteration totals; they are not request TTFT/ITL. With correction disabled, verify
+that measured-point queries reproduce their stored latency before testing
+interpolation. Save the resolved provenance with your results.
+
+For profiles that require them:
+
+- `dcp` records decode context parallelism within the TP group; it does not
+  multiply physical GPU count. Current DCP timing uses measured vLLM FPM;
+  SOL-dependent transfer paths are unsupported.
+- `estimator_config.fpm_interpolation.text_only` permits language timing for
+  a multimodal architecture while retaining encoder weights. It supplies no
+  vision execution timing.
+- `unrecorded_quant_modes` can select null FMHA/communication identity fields.
+  It is an exact null match, not a wildcard; leave the corresponding explicit
+  quantization overrides unset.
+
+A missing cell or unsupported query is a coverage/support error. Do not change
+its topology, precision, or version labels to make it load. The selected model
+does not switch estimators on a query miss, and untrained regression cannot run
+offline prediction.
+
+[Example A2](#a2-query-the-canonical-model-step-5) checks both phases of the
+collected Kimi profile. [Example B5](#b5-query-the-canonical-model-step-5) shows
+the same API for MiniMax. See the [Core API](../../../../docs/core-api.md#choosing-a-forward-pass-api)
+for the complete contract.
+
+**Result:** a ready estimator with the intended data identity and checked queries.
+
+<a id="7-run-ais-predict-using-the-same-external-data"></a>
+
+## 6. Connect the model to Replay
+
+Configure `aisimulate predict` with the same data root, estimator selection,
+identity, and engine build assumptions. Then supply the serving behavior that
+an FPM table does not define: worker layout, scheduler token/request limits,
+context limit, block geometry and capacity, prefix-cache policy, traffic, and
+any transfer/offload settings.
+
+Relevant YAML fields include:
+
+| Purpose | Configuration |
+| --- | --- |
+| Local profile and selection | `engine.systems_paths`, `engine.estimation_mode`, `engine.fallback_policy` |
+| Estimator-specific controls | `engine.estimator_config`, or per-role `timing.estimator_config` |
+| Recorded DCP | `engine.workers.<role>.parallelism.decode_context` |
+| Precision and attention implementation | Per-role `timing.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` |
+| Scheduling and KV state | Per-role `scheduler` and `kv_cache` |
+
+Start with a small in-domain workload and inspect completed requests, generated
+tokens, estimator provenance, and GPU counts. Expand it only after validating
+query coverage. New FPM measurements do not remove unsupported scheduler or
+memory behavior. DCP currently requires explicit fixed KV capacity and explicit
+bytes per token if using offload/P-D transfer. The generic cache does not model
+KDA checkpoint/eviction behavior or native hybrid prefill chunk alignment.
+
+Prediction accepts the timing identity overrides above for regular language
+workers with default timing. Recommendation currently rejects those overrides,
+and DCP is not a recommendation search dimension. [Example A3](#a3-run-and-check-replay-steps-67)
+and [Example B6](#b6-run-replay-step-6) provide complete prediction inputs.
+
+**Result:** a reproducible Replay configuration and a successful smoke run;
+accuracy and unsupported regions are checked in step 7.
+
+<a id="9-validate-accuracy-separately"></a>
+
+## 7. Validate coverage and accuracy
+
+First verify exact measured-point queries, then test the interpolation and
+Replay shapes required by your workload. Report unsupported queries as coverage
+gaps. Successfully loading a table and replaying its calibration points does not
+establish prediction accuracy; use independent measurements under matched conditions.
+
+1. Freeze a validation workload with held-out shapes or traces. Record model and
+   runtime versions, GPU/system, parallelism, quantization, CUDA Graph policy,
+   context/KV limits, prefix policy, input/output lengths, and arrival or
+   concurrency settings. Preserve the raw measurements.
+2. For forward-level validation, compare predicted and measured latency for the
+   same iteration coordinates, phase, rank aggregation, and timing boundary.
+   Report prefill and decode separately. A collected-point lookup is a data-path
+   check, not an independent accuracy test.
+3. For request-level validation, compare AIS predictions against a real serving
+   benchmark with the same traffic. Define TTFT, ITL/TPOT, throughput units, and
+   aggregation identically. Include ragged batches, mixed/chunked execution,
+   and higher concurrency when they are part of the intended deployment.
+4. Report query coverage and failed/out-of-domain cases alongside errors. For
+   positive measured latencies `m_i` and predictions `p_i`, per-point absolute
+   percentage error is `100 * abs(p_i - m_i) / m_i`; MAPE averages those errors.
+   WAPE is `100 * sum(abs(p_i - m_i)) / sum(m_i)` and weights larger latencies
+   more heavily. Select acceptance thresholds before inspecting the results.
+
+**Result:** a reproducible comparison with explicit conditions, coverage,
+errors, and pass/fail criteria. FPM forward error alone does not establish
+TTFT/TPOT or throughput accuracy. The
+[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) reports existing
+accuracy results; it is not a substitute for validating a new cell. See the
+[snapshot and regeneration details](../../../../pages/e2e-accuracy/README.md) for how that evidence
+is produced.
+
+Retain known limitations with the profile so subsequent users can decide
+whether it fits their workload.
+
+<a id="use-an-existing-profile-kimi-k3-tp8dcp8"></a>
+
+## Example A: onboard the collected Kimi K3 TP8+DCP8 profile
+
+This worked example illustrates steps 4–7 using a profile already collected
+through Dynamo self-benchmarking. Complete step 1 first and review the retained
+collection configuration as described in step 2. It runs on CPU and downloads
+the published
 [Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/6fad3f9a0df5a24603108dcea0d201259254b904/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
 checks one measured point from each phase, and completes a small Replay run.
 It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 
-### Download and install the measured pair
+### A1. Import the measured pair (step 4)
 
 Choose a new output directory. The public download uses Python's standard
 library; no Hugging Face login or additional download package is required.
@@ -187,7 +476,7 @@ export AIC_ALLOW_UNLISTED_VERSIONS=1
 This permits version selection; model/topology/precision matching stays strict.
 For another profile whose backend version is already queryable, omit the override.
 
-### Query prefill and decode through the canonical API
+### A2. Query the canonical model (step 5)
 
 Run this in the same session. The script compares its predictions with the
 stored measurements and records the model's resolved configuration.
@@ -248,7 +537,7 @@ only null FMHA/communication identities in this dataset. Leave the corresponding
 top-level quant fields unset. Missing DCP, DCP1, and DCP8 are distinct identities;
 an explicit DCP8 request never substitutes another configuration.
 
-### Run a small Kimi Replay
+### A3. Run and check Replay (steps 6–7)
 
 Create the complete prediction YAML. The unquoted heredoc below expands
 `FPM_RUN` to the absolute systems path; YAML itself does not expand shell variables.
@@ -312,7 +601,7 @@ engine block size of 64 is not this logical block size. The recorded engine's
 `max_num_seqs` is 32. Keep these values tied to this profile, not to Kimi models
 in general.
 
-This quickstart checks timing consumption. DCP Replay requires explicit capacity;
+This example checks timing consumption. DCP Replay requires explicit capacity;
 if enabling host offload or P/D transfer, also provide explicit bytes per token.
 The generic Replay cache does not model KDA checkpoint/eviction behavior or
 native hybrid prefill chunk alignment. Prefix caching is disabled here to keep
@@ -325,15 +614,25 @@ Only measured points and supported interpolation are available for DCP;
 SOL-dependent transfer paths fail explicitly. Arbitrary cached-prefix/chunk
 shapes may be unsupported even inside the axis minima/maxima. Expand traffic
 only after checking query coverage and perform an
-[independent accuracy check](#9-validate-accuracy-separately) before using the
+[independent accuracy check](#7-validate-coverage-and-accuracy) before using the
 results for deployment decisions.
 
-The existing-data quickstart is complete. Continue below only to collect a new
-MiniMax profile; use a separate campaign directory.
+These checks verify that the profile loads and the example workload runs. Use
+step 7 to validate broader workloads. Example B shows a new collection campaign;
+use a separate directory if running both examples.
 
-## 2. Choose the example's output paths
+## Example B: collect a MiniMax-M2.7 TP4 profile
 
-This guide uses an external directory to keep the example's results separate
+This example illustrates steps 2–6 with a new vLLM collection on four H200 GPUs.
+Complete step 1 first. It assumes a working GPU collection environment; replace
+the namespace, checkpoint, image, and release placeholders with its values.
+This example does not collect DCP. Use step 7 for accuracy validation afterward.
+
+<a id="2-choose-the-examples-output-paths"></a>
+
+### B1. Prepare the campaign (step 2)
+
+This example uses an external directory to keep its results separate
 from bundled databases and previous campaigns. The directory name and layout
 are choices for this walkthrough, not mandatory FPM setup steps. The later
 commands use these paths consistently; replace the absolute path below with a
@@ -378,7 +677,9 @@ particular, do not copy `Workers.agg.extra_cli_args` or `ServiceConfig` from a
 standalone Generator example into this file. The accepted fields are defined in
 [the collector input resolver](../../collector/fpm_forward/entry.py).
 
-## 3. Freeze and inspect the plan
+<a id="3-freeze-and-inspect-the-plan"></a>
+
+### B2. Freeze and inspect the plan (step 2)
 
 Use the Generator target release from the existing collection configuration
 and define the campaign arguments once:
@@ -435,7 +736,7 @@ The sampling settings have distinct meanings:
 The complete option list is available from `python3 -m collector.fpm_forward
 --help` and [its argument definitions](../../collector/fpm_forward/config.py).
 
-### Include multiple GPU counts and parallel configurations
+#### Include multiple GPU counts and parallel configurations
 
 Both GPU counts and parallel presets accept multiple values. To expand this
 MiniMax campaign, replace these three entries in `fpm_args` before generating
@@ -470,12 +771,14 @@ Selecting multiple counts/presets does not launch all configurations
 simultaneously.
 
 Regenerate and inspect `plan.json` after changing these options. If the original
-campaign has already run, first prepare a fresh campaign directory as in step 2
-and redefine `fpm_args` with the new paths. The later TP4 SDK/predict examples
+campaign has already run, first prepare a fresh campaign directory as in B1
+and redefine `fpm_args` with the new paths. The B5–B6 TP4 SDK/predict examples
 still select only their matching cell from the larger database; they do not
 automatically compare all collected configurations.
 
-## 4. Run smoke, then formal collection
+<a id="4-run-smoke-then-formal-collection"></a>
+
+### B3. Run smoke, then formal collection (step 3)
 
 First read the number of cells from the inspected plan and execute the minimal
 profile for every cell. This works for both the two-cell TP4 example and an
@@ -562,7 +865,7 @@ provenance, logs, checkpoints, and the published pair. Inspect
 [collector contract](../../collector/README.md#whole-forward-fpm-campaign) for
 accepted regimes and publication behavior.
 
-## 5. Inspect the published pair
+### B4. Inspect the published pair (step 4)
 
 The version directory is the actual Pod's `importlib.metadata.version("vllm")`,
 also recorded in the published rows/metadata. It is not the AIS version or the
@@ -625,7 +928,7 @@ Keep these paths distinct:
 Whole-forward FPM has no extra model-family directory between the system and
 backend. Always transfer the metadata sidecar together with the Parquet file.
 
-## 6. Load the new data and query one forward pass
+### B5. Query the canonical model (step 5)
 
 This query explicitly selects the external root. The example asks for a
 four-request prefill with 1,024 new tokens per request and no cached prefix;
@@ -686,7 +989,7 @@ bypass a mismatch. External trees without `query_versions.yaml` use a different
 policy that disables the version-slot gate; omitting the file is not needed for
 this workflow.
 
-## 7. Run AIS predict using the same external data
+### B6. Run Replay (step 6)
 
 Save this as `$FPM_RUN/predict.yaml`. Replace the backend version with the
 collected version and `systems_paths` with the absolute `$FPM_RUN/systems`
@@ -756,25 +1059,12 @@ missing cell fails rather than silently switching to `op_level`. With default
 capacity estimation, FPM also caps KV capacity at the collected decode-KV
 ceiling. Inspect that cap when explaining concurrency and throughput.
 
-New configurations use `estimation_mode` and `fallback_policy`. Without
-explicit selection, the defaults are `auto` + `deny`: construction tries
-op-level, measured FPM interpolation, then regression. For a measured-profile
-workflow, explicitly select `fpm_interpolation` + `deny` as above. An untrained
-regression cannot run offline prediction, and a selected estimator never switches
-models on a query miss.
+<a id="8-recovery-and-cleanup"></a>
 
-For nondefault precision, put `gemm_quant_mode`, `moe_quant_mode`,
-`fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, and
-`attention_backend` under `engine.workers.<role>.timing`, using the exact
-recorded identity. These overrides require default timing and regular language
-workers. Recommendation rejects them until its feasibility preflight supports
-the same identity. See the [Core API](../../../../docs/core-api.md) for estimator
-controls and the [DCP quickstart](#use-an-existing-profile-kimi-k3-tp8dcp8) for
-a complete configuration with text-only and unrecorded-precision settings.
+## Recovery and cleanup
 
-## 8. Recovery and cleanup
-
-Use the same frozen arguments and roots to resume:
+For a Collector campaign such as Example B, use the same frozen `fpm_args`
+and output roots to resume:
 
 ```bash
 python3 -m collector.fpm_forward "${fpm_args[@]}" --resume
@@ -812,37 +1102,6 @@ owned resources before ending the campaign.
 Do not delete unrelated workloads or the namespace. Default `/results` storage
 is Pod-local `emptyDir`, so deleting Pods before salvaging results loses those
 files.
-
-## 9. Validate accuracy separately
-
-Passing the preceding stages establishes that the collection and prediction
-path works. Accuracy requires independent measurements under matched conditions.
-
-1. Freeze a validation workload with held-out shapes or traces. Record model and
-   runtime versions, GPU/system, parallelism, quantization, CUDA Graph policy,
-   context/KV limits, prefix policy, input/output lengths, and arrival or
-   concurrency settings. Preserve the raw measurements.
-2. For forward-level validation, compare predicted and measured latency for the
-   same iteration coordinates, phase, rank aggregation, and timing boundary.
-   Report prefill and decode separately. A collected-point lookup is a data-path
-   check, not an independent accuracy test.
-3. For request-level validation, compare AIS predictions against a real serving
-   benchmark with the same traffic. Define TTFT, ITL/TPOT, throughput units, and
-   aggregation identically. Include ragged batches, mixed/chunked execution,
-   and higher concurrency when they are part of the intended deployment.
-4. Report query coverage and failed/out-of-domain cases alongside errors. For
-   positive measured latencies `m_i` and predictions `p_i`, per-point absolute
-   percentage error is `100 * abs(p_i - m_i) / m_i`; MAPE averages those errors.
-   WAPE is `100 * sum(abs(p_i - m_i)) / sum(m_i)` and weights larger latencies
-   more heavily. Select acceptance thresholds before inspecting the results.
-
-**Expected:** a reproducible comparison with explicit conditions, coverage,
-errors, and pass/fail criteria. FPM forward error alone does not establish
-TTFT/TPOT or throughput accuracy. The
-[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) reports existing
-accuracy results; it is not a substitute for validating a new cell. See the
-[snapshot and regeneration details](../../../../pages/e2e-accuracy/README.md) for how that evidence
-is produced.
 
 ## FPM data and prediction troubleshooting
 

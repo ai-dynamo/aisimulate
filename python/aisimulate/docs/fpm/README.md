@@ -5,12 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [end-to-end FPM workflow](end-to-end-workflow.md) to import
-published self-benchmark data or collect new whole-forward measurements, load
-the performance-data pair through the canonical SDK, and run an AISimulate
-prediction. The [Kimi K3 TP8+DCP8 quickstart](end-to-end-workflow.md#use-an-existing-profile-kimi-k3-tp8dcp8)
-uses existing data and runs entirely on CPU. The guide also includes collection
-prerequisites, expected artifacts, acceptance checks, and recovery steps.
+Start with the [self-benchmark and FPM onboarding guide](end-to-end-workflow.md).
+Its seven steps cover support checks, measurement planning, collection, profile
+validation, canonical model construction, Replay integration, and accuracy
+validation. It explains which engine-iteration differences self-collection can
+capture and which behaviors, including PP, need separate simulator support.
+
+Self-benchmark collection currently supports vLLM configurations that pass
+model/runtime validation; new architectures can require benchmark adaptation.
+SGLang and TensorRT-LLM support is coming soon. The guide includes the collected
+[Kimi K3 TP8+DCP8 profile](end-to-end-workflow.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
+and a new MiniMax collection campaign as worked examples of the general procedure.
 
 There are two distinct workflows:
 
