@@ -2723,13 +2723,13 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 
 
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
-@pytest.mark.parametrize("base_version", ["0.12.0", "0.11.0"])
+@pytest.mark.parametrize("base_version", ["0.13.0", "0.12.0"])
 def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            (REPOSITORY_ROOT / name).read_text().replace('version = "0.12.0"', f'version = "{base_version}"')
+            (REPOSITORY_ROOT / name).read_text().replace('version = "0.13.0"', f'version = "{base_version}"')
         )
     for args in (
         ["init", "-q"],
