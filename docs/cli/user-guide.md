@@ -2011,7 +2011,7 @@ shows them explicitly.
 | Exit Code | Meaning |
 |---:|---|
 | `0` | Successful prediction or recommendation. |
-| `1` | Execution failure or a completed recommendation with no feasible or resource-limited candidate. |
+| `1` | Execution failure, or a completed recommendation that selects no configuration and has zero resource-limited candidates. |
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
 | `3` | Resource refusal, including a partial recommendation containing resource-limited candidates. |
 | `124` | Supervisor initialization or shutdown timeout. |
@@ -2047,7 +2047,7 @@ Unsupported stack, backend, or policy combinations are reported as errors.
 | Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install `aisimulate ai-dynamo` in that environment and use `--stack dynamo`. |
 | `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
 | `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
-| No feasible candidate, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
+| No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
 | Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](../local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../../python/aisimulate/docs/fpm/README.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |

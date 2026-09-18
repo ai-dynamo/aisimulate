@@ -137,7 +137,7 @@ jq '{counts, views, rejected: [.candidates[] | select(.status != "feasible") | {
 ```
 
 Check the [exit code](user-guide.md#errors-and-exit-codes) as well as the file:
-a completed recommendation with no feasible or resource-limited candidate writes its ledger and
+a completed recommendation that selects no configuration and has zero resource-limited candidates writes its ledger and
 exits `1`. Resource-limited candidates produce exit `3`, even when completed recommendations
 remain available. A supervisor interruption can leave only checkpoint evidence; inspect the
 [resource diagnostics](../local-resources.md) before treating the search as complete.

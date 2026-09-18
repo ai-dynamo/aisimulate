@@ -12,6 +12,11 @@ headroom, and limits parallel simulations to fit the estimated resource budget.
 You can omit the entire `execution.resources` section. Set explicit limits only
 when you want to override the automatic budget.
 
+Normal package installation includes the required `psutil` and `ijson`
+dependencies. Downstream images that install an AISimulate wheel with
+`--no-deps` must explicitly install both dependencies before adopting a release
+containing these controls.
+
 These controls describe the machine running AISimulate. Simulated GPU counts,
 KV-cache memory fractions, traffic concurrency, and request counts retain their
 original meaning.

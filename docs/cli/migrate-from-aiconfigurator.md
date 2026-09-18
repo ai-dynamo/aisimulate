@@ -173,7 +173,7 @@ aisimulate predict \
 ```
 
 Check `budget-selected/prediction.json` for latency and throughput under the saved workload.
-If the completed search has no feasible or resource-limited candidate, it writes
+If the completed search selects no configuration and has zero resource-limited candidates, it writes
 `recommendation.json`, exits with status 1, and produces no selected YAML. Resource-limited
 candidates instead produce exit 3, including when fitting candidates and selected YAML remain
 available. Inspect the ledger and [resource diagnostics](../local-resources.md) before predicting
