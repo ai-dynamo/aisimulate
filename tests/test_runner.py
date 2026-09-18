@@ -1467,7 +1467,10 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, la
     assert args == original
 
 
-def test_direct_replay_resolves_aliases_in_the_role_systems_root(monkeypatch, tmp_path):
+@pytest.mark.parametrize("root_location", ["role", "timing"])
+def test_direct_replay_resolves_aliases_in_the_effective_systems_root(
+    monkeypatch, tmp_path, root_location
+):
     from pathlib import Path
 
     import yaml
@@ -1496,9 +1499,24 @@ def test_direct_replay_resolves_aliases_in_the_role_systems_root(monkeypatch, tm
         "aic_model_path": "Qwen/Qwen3-32B-FP8",
         "aic_system": "h200_sxm",
         "aic_tp_size": 2,
-        "systems_path": str(tmp_path),
         "block_size": 64,
     }
+    if root_location == "role":
+        args["systems_path"] = str(tmp_path)
+    else:
+        args["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": {
+                "model": "Qwen/Qwen3-32B-FP8",
+                "system": "h200_sxm",
+                "backend": "vllm",
+                "tp": 2,
+                "attention_dp": 1,
+                "systems_paths": [str(tmp_path)],
+                "systems_path": "default",
+            },
+        }
     deployment = BackendDeploymentSpec(
         deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
     )

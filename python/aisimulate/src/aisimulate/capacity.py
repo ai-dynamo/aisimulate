@@ -53,10 +53,14 @@ def materialize_aic_num_gpu_blocks(
 
     lowered = dict(raw)
     timing = lowered.get("timing_model")
+    timing_system_roots = None
     if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
         authored = timing.get("config")
         if not isinstance(authored, dict):
             raise ValueError("external AIC timing config must be a mapping")
+        timing_system_roots = authored.get("systems_paths")
+        if not timing_system_roots and authored.get("systems_path") is not None:
+            timing_system_roots = [authored["systems_path"]]
         if "estimation_mode" in authored or "estimator_config" in authored:
             from aisimulate_core.sdk import RustForwardPassPerfModel
 
@@ -158,6 +162,16 @@ def materialize_aic_num_gpu_blocks(
     if not model:
         raise ValueError("AIC KV cache capacity estimation requires aic_model_path in engine args")
 
+    capacity_systems_path = lowered.get("systems_path")
+    if timing_system_roots:
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        resolved_roots = resolve_systems_paths(timing_system_roots)
+        if resolved_roots:
+            # Native timing gives systems_paths precedence over systems_path;
+            # capacity preflight must query that same first effective root.
+            capacity_systems_path = resolved_roots[0]
+
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
         system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
@@ -189,7 +203,7 @@ def materialize_aic_num_gpu_blocks(
         fmha_dtype=lowered.get("aic_fmha_dtype"),
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
-        systems_path=lowered.get("systems_path"),
+        systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )

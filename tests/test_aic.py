@@ -123,6 +123,11 @@ def test_explicit_capacity_is_preserved_without_estimation(monkeypatch) -> None:
         "aic_backend": "vllm",
         "aic_model_path": "test-model",
         "num_gpu_blocks": 17,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {"systems_paths": ["/path/that/does/not/exist"]},
+        },
     }
     assert aic.materialize_aic_num_gpu_blocks(raw) == raw
 
