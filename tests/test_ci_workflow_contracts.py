@@ -680,6 +680,14 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_core_public_api.py" not in application_commands
     assert "test_core_public_api.py" not in compatibility_commands
 
+    contract_steps = [
+        step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
+    ]
+    assert len(contract_steps) == 1
+    contract_command = contract_steps[0]["run"]
+    assert "--ignore=tests/fpm_accuracy" in contract_command
+    assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
+
     recommendation_path = "tests/e2e/cli/test_cli_recommend.py"
     recommendation_steps = [
         step for step in jobs["application-tests"]["steps"] if recommendation_path in step.get("run", "")
