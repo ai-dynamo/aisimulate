@@ -60,9 +60,12 @@ aisimulate predict --stack engine \
 
 The [example YAML](../../../examples/cli/dynamo-deployment-recommend.yaml)
 fixes concurrency and compares two TP shapes under a two-GPU limit. Inspect
-`recommendation.json` for failures and selected candidate IDs. If there is no
-feasible result, `recommend` exits `1` and produces no numbered YAML. Stop and
-investigate that ledger before proceeding. Use a fresh output directory for
+`recommendation.json` for failures and selected candidate IDs. If no configuration
+is selected and there are zero resource-limited candidates, `recommend` exits `1`
+and produces no numbered YAML. Any resource-limited candidate makes the exit
+status `3`, including when the result is empty or some selected YAML files remain
+available. Inspect the ledger and [resource diagnostics](../../../docs/local-resources.md)
+before proceeding. Use a fresh output directory for
 another study, or apply the CLI's explicit `--overwrite` policy.
 
 ## 3. Render the selected candidate
