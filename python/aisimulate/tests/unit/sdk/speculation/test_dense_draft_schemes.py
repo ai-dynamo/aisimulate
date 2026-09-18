@@ -26,12 +26,12 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk import common, models
-from aiconfigurator_core.sdk import config as sdk_config
-from aiconfigurator_core.sdk.speculation import SpeculationConfig
-from aiconfigurator_core.sdk.speculation.dflash import DFlashScheme
-from aiconfigurator_core.sdk.speculation.dspark import DSparkScheme
-from aiconfigurator_core.sdk.speculation.eagle import EagleScheme
+from aisimulate_core.sdk import common, models
+from aisimulate_core.sdk import config as sdk_config
+from aisimulate_core.sdk.speculation import SpeculationConfig
+from aisimulate_core.sdk.speculation.dflash import DFlashScheme
+from aisimulate_core.sdk.speculation.dspark import DSparkScheme
+from aisimulate_core.sdk.speculation.eagle import EagleScheme
 
 pytestmark = pytest.mark.unit
 
@@ -266,7 +266,7 @@ class TestNgram:
         assert scheme.draft_kv_bytes_per_sequence(model, 10_000) == 0.0
 
     def test_requires_explicit_k(self):
-        from aiconfigurator_core.sdk.speculation.ngram import NgramScheme
+        from aisimulate_core.sdk.speculation.ngram import NgramScheme
 
         with pytest.raises(ValueError, match="num_speculative_tokens"):
             NgramScheme.from_configs(None, SpeculationConfig(kind="ngram", params={}))
@@ -389,7 +389,7 @@ class TestNgramTriggerRate:
         assert scheme.expected_progress(1.15) == pytest.approx(2.15)
 
     def test_trigger_rate_bounds(self):
-        from aiconfigurator_core.sdk.speculation.ngram import NgramScheme
+        from aisimulate_core.sdk.speculation.ngram import NgramScheme
 
         with pytest.raises(ValueError, match="trigger_rate"):
             NgramScheme(num_speculative_tokens=8, trigger_rate=0.0)

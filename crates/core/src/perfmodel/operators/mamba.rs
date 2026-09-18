@@ -547,7 +547,7 @@ mod tests {
     fn gdn_flashinfer_lane_sol_matches_python_bs128_census_anchor() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let db = PerfDatabase::load(&systems_root, "gb300", "sglang", "0.5.14")
             .expect("gb300/sglang/0.5.14 must load");
         assert_eq!(db.system_spec.gpu.sm_version, Some(103));
@@ -577,7 +577,7 @@ mod tests {
     fn gdn_context_and_fla_sol_state_bytes_follow_resolved_dtype() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let db = PerfDatabase::load(&systems_root, "gb300", "sglang", "0.5.14")
             .expect("gb300/sglang/0.5.14 must load");
         let op = |kernel_source: &str, phase: &str, dtype: &str| GdnOp {

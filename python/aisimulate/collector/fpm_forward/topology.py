@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.utils import enumerate_parallel_config
+from aisimulate.sdk import common
+from aisimulate.sdk.utils import enumerate_parallel_config
 
 from .config import FPMCollectionOptions
 from .types import ParallelTopology

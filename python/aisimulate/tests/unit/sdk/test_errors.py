@@ -17,7 +17,7 @@ two contracts verified here:
 
 import pytest
 
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk.errors import (
     EmpiricalNotImplementedError,
     InsufficientMemoryError,
     KVCacheCapacityError,
@@ -28,7 +28,7 @@ from aiconfigurator.sdk.errors import (
     is_expected_no_result_cause,
     is_gpu_retriable,
 )
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
+from aisimulate.sdk.perf_database import PerfDataNotAvailableError
 
 pytestmark = pytest.mark.unit
 

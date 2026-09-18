@@ -23,7 +23,7 @@ class TestUpdateSupportMatrix:
         # view that resolves keys on first read) rather than a plain
         # dict. Both shapes support the same per-key access pattern the
         # rest of this test exercises.
-        from aiconfigurator.sdk.perf_database import _LazySupportMatrix
+        from aisimulate.sdk.perf_database import _LazySupportMatrix
 
         assert hasattr(comprehensive_perf_db, "supported_quant_mode")
         assert isinstance(comprehensive_perf_db.supported_quant_mode, dict | _LazySupportMatrix)

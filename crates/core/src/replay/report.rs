@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod bounded;
+
 use ddsketchy::DDSketch;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -28,6 +30,13 @@ pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
+    /// Versioned forecast contract, present only for a lookahead eviction policy.
+    pub kv_eviction_assumption: Option<&'static str>,
+    /// Prefill tokens in completed, committed forward passes, including
+    /// recomputation. This is measured from native pass metrics, not inferred
+    /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
+    pub committed_prefill_tokens: u64,
     pub g3_offload: Option<crate::engine::G3Stats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
@@ -398,6 +407,11 @@ impl Serialize for ReplayReport {
             power.validate().map_err(serde::ser::Error::custom)?;
         }
         let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
+        if let Some(assumption) = self.kv_eviction_assumption {
+            map.serialize_entry("kv_eviction_assumption", assumption)?;
+        }
+        map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
         if let Some(g3) = &self.g3_offload {
             map.serialize_entry("g3_offload", g3)?;
         }
@@ -950,7 +964,12 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
+    committed_prefill_tokens: u64,
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    batch_reporting: bool,
+    bounded_summary: Option<bounded::BoundedSummary>,
+    completed_to_retire: Vec<Uuid>,
+    prepared_report: Option<ReplayReport>,
     /// Absolute simulated timestamp at which this reporting epoch began.
     /// Collection uses the runtime clock; aggregate rates use elapsed epoch
     /// time. Warmed reports rebase measured request and play outcome timestamps
@@ -1076,6 +1095,82 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    /// Batch runs may retire terminal state after runtime completion callbacks.
+    /// Steppable SDK runtimes retain their existing request-query semantics.
+    pub(crate) fn begin_batch_reporting(&mut self) {
+        self.batch_reporting = true;
+        if !self.capture_per_request && !self.defer_token_timeline_finalization {
+            self.bounded_summary = Some(bounded::BoundedSummary::default());
+        }
+    }
+
+    /// Retain primer/warmup admissions until the barrier copies them into the
+    /// preparation ledger. The next reporting epoch resumes bounded storage.
+    pub(crate) fn begin_batch_preparation_reporting(&mut self) {
+        self.batch_reporting = true;
+    }
+
+    pub(crate) fn is_batch_reporting(&self) -> bool {
+        self.batch_reporting
+    }
+
+    fn retire_completed(&mut self) -> anyhow::Result<()> {
+        if let Some(summary) = &mut self.bounded_summary {
+            for uuid in self.completed_to_retire.drain(..) {
+                if let Some(stats) = self.requests.remove(&uuid) {
+                    summary.add(&stats, self.sla)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_on_arrival(
+        &mut self,
+        uuid: Uuid,
+        at_ms: f64,
+        input: usize,
+        output: usize,
+    ) -> anyhow::Result<()> {
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
+        self.on_arrival(uuid, at_ms, input, output);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_batch_report(&mut self) -> anyhow::Result<()> {
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
+        let Some(mut summary) = self.bounded_summary.take() else {
+            return Ok(());
+        };
+        for (_, mut stats) in self.requests.drain() {
+            stats.finalize_token_timeline(
+                stats.terminal_status == Some(ReplayTerminalStatus::Completed)
+                    && stats.first_admit_ms.is_some(),
+                &mut self.itl_distribution,
+                &mut self.output_token_throughput_per_user,
+            );
+            summary.add(&stats, self.sla).map_err(|error| {
+                crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+            })?;
+        }
+        let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
+        self.prepared_report = Some(summary.finish(base).map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?);
+        Ok(())
+    }
+
+    /// Call once per native pass completion, independently of sampled FPM
+    /// telemetry. Repeated admissions and preemption make reuse-derived work
+    /// estimates incorrect; only the committed pass describes executed work.
+    pub(crate) fn on_completed_prefill_work(&mut self, tokens: u64) {
+        self.committed_prefill_tokens += tokens;
+    }
+
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
     }
@@ -1536,6 +1631,8 @@ impl TraceCollector {
             itl_distribution,
             output_token_throughput_per_user,
             defer_token_timeline_finalization,
+            bounded_summary,
+            completed_to_retire,
             ..
         } = self;
         if let Some(stats) = requests.get_mut(&uuid)
@@ -1543,6 +1640,9 @@ impl TraceCollector {
         {
             stats.terminal_time_ms = Some(terminal_time_ms);
             stats.terminal_status = Some(status);
+            if bounded_summary.is_some() {
+                completed_to_retire.push(uuid);
+            }
             if !*defer_token_timeline_finalization {
                 stats.finalize_token_timeline(
                     status == ReplayTerminalStatus::Completed && stats.first_admit_ms.is_some(),
@@ -1597,7 +1697,7 @@ impl TraceCollector {
     /// includes idle time in this epoch and starts the next one.
     pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
         debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
-        let next = Self {
+        let mut next = Self {
             report_start_ms: report_end_ms,
             defer_token_timeline_finalization: self.defer_token_timeline_finalization,
             capture_per_request: self.capture_per_request,
@@ -1607,6 +1707,9 @@ impl TraceCollector {
             decode_gpus_per_worker: self.decode_gpus_per_worker,
             ..Default::default()
         };
+        if self.batch_reporting {
+            next.begin_batch_reporting();
+        }
         std::mem::replace(self, next).finish_at(Some(report_end_ms))
     }
 
@@ -1615,6 +1718,9 @@ impl TraceCollector {
     }
 
     fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
+        if let Some(report) = self.prepared_report.take() {
+            return report;
+        }
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1787,6 +1893,9 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
+            kv_eviction_assumption: None,
+            committed_prefill_tokens: self.committed_prefill_tokens,
             g3_offload: self
                 .g3_offload
                 .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
@@ -2286,6 +2395,129 @@ mod tests {
             p99_ms: sorted[percentile_rank(sorted.len(), 99.0)],
             std_ms: std_dev(values),
         }
+    }
+
+    #[test]
+    fn batch_preparation_retains_admissions_then_profile_retires_requests() {
+        let mut collector = TraceCollector::default();
+        collector.begin_batch_preparation_reporting();
+        let primer = Uuid::from_u128(1);
+        collector.try_on_arrival(primer, 0.0, 64, 1).unwrap();
+        collector.on_admit(primer, 1.0, 0);
+        collector.on_token(primer, 2.0);
+        collector.on_terminal(primer, 2.0, ReplayTerminalStatus::Completed);
+        collector
+            .try_on_arrival(Uuid::from_u128(2), 3.0, 64, 1)
+            .unwrap();
+        assert_eq!(collector.request_admission(primer), Some((1.0, 0)));
+        collector.take_report(100.0);
+        assert!(collector.is_batch_reporting());
+        assert!(collector.bounded_summary.is_some());
+
+        let profile = Uuid::from_u128(3);
+        collector.try_on_arrival(profile, 100.0, 128, 1).unwrap();
+        collector.on_admit(profile, 101.0, 64);
+        collector.on_token(profile, 102.0);
+        collector.on_terminal(profile, 102.0, ReplayTerminalStatus::Completed);
+        collector
+            .try_on_arrival(Uuid::from_u128(4), 103.0, 128, 1)
+            .unwrap();
+        assert!(!collector.contains_request(primer));
+        assert!(!collector.contains_request(profile));
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 2);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.duration_ms, 2.0);
+        assert_eq!(report.throughput.request_throughput_rps, 500.0);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.5);
+    }
+
+    #[test]
+    fn batch_summary_retires_completed_records_and_preserves_report() {
+        let mut baseline = TraceCollector::default();
+        let mut bounded = TraceCollector::default();
+        bounded.begin_batch_reporting();
+        for index in 1..=20_000 {
+            for collector in [&mut baseline, &mut bounded] {
+                let uuid = Uuid::from_u128(index);
+                collector.try_on_arrival(uuid, index as f64, 16, 3).unwrap();
+                collector.on_admit(uuid, index as f64 + 1.0, 0);
+                for offset in [10.0, 20.0, 30.0] {
+                    collector.on_token(uuid, index as f64 + offset);
+                }
+                collector.on_terminal(uuid, index as f64 + 30.0, ReplayTerminalStatus::Completed);
+            }
+            assert!(bounded.requests.len() <= 1);
+        }
+        bounded.prepare_batch_report().unwrap();
+        assert!(bounded.requests.is_empty());
+        assert_eq!(
+            serde_json::to_value(baseline.finish()).unwrap(),
+            serde_json::to_value(bounded.finish()).unwrap()
+        );
+    }
+
+    #[test]
+    fn detailed_batch_reporting_preserves_records_past_the_previous_cap() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        collector.begin_batch_reporting();
+        let request_count = 100_001;
+        // Reverse arrival insertion also checks that the existing output
+        // ordering is preserved, rather than switching to completion order.
+        for index in (0..request_count).rev() {
+            let uuid = Uuid::from_u128(index as u128);
+            collector.try_on_arrival(uuid, index as f64, 1, 1).unwrap();
+            collector.on_admit(uuid, index as f64, 0);
+            collector.on_token(uuid, index as f64 + 1.0);
+            collector.on_terminal(uuid, index as f64 + 1.0, ReplayTerminalStatus::Completed);
+        }
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, request_count);
+        assert_eq!(report.request_counts.completed_requests, request_count);
+        assert_eq!(report.request_counts.total_output_tokens, request_count);
+        assert_eq!(report.per_request.len(), request_count);
+        for (index, record) in report.per_request.iter().enumerate() {
+            assert_eq!(record.uuid, Uuid::from_u128(index as u128).to_string());
+            assert_eq!(record.arrival_time_ms, index as f64);
+            assert_eq!(record.output_length, 1);
+            assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+        }
+    }
+
+    #[rstest::rstest]
+    fn completed_record_retirement_preserves_live_requests_and_step_queries(
+        #[values(false, true)] batch_reporting: bool,
+    ) {
+        let mut collector = TraceCollector::default();
+        if batch_reporting {
+            collector.begin_batch_reporting();
+        }
+        let [completed, active, next] = [1, 2, 3].map(Uuid::from_u128);
+        for uuid in [completed, active] {
+            collector.try_on_arrival(uuid, 0.0, 1, 1).unwrap();
+            collector.on_admit(uuid, 1.0, 0);
+        }
+        collector.on_token(completed, 2.0);
+        collector.on_terminal(completed, 2.0, ReplayTerminalStatus::Completed);
+        // Completion callbacks can still read this request's finished stats.
+        assert_eq!(collector.actual_output_length(completed), Some(1));
+        collector.try_on_arrival(next, 3.0, 1, 1).unwrap();
+        assert_eq!(collector.contains_request(completed), !batch_reporting);
+        assert!(collector.contains_request(active));
+        assert!(collector.contains_request(next));
+        collector.on_admit(next, 3.0, 0);
+        for uuid in [active, next] {
+            collector.on_token(uuid, 4.0);
+            collector.on_terminal(uuid, 4.0, ReplayTerminalStatus::Completed);
+        }
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 3);
+        assert_eq!(report.request_counts.completed_requests, 3);
+        assert_eq!(report.request_counts.total_output_tokens, 3);
     }
 
     #[test]

@@ -92,7 +92,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     # separate source directory, while CI's preceding core-wheel step already
     # places it in the current purelib directory.
     dependency_paths = [Path(sysconfig.get_path("purelib")).resolve()]
-    core_spec = importlib.util.find_spec("aiconfigurator_core")
+    core_spec = importlib.util.find_spec("aisimulate_core")
     assert core_spec is not None and core_spec.submodule_search_locations
     core_root = Path(next(iter(core_spec.submodule_search_locations))).resolve().parent
     if core_root not in dependency_paths:
@@ -117,9 +117,19 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         cwd=unrelated_repository,
         env=env,
     )
+    installed_version = _run(
+        [
+            str(installed_python),
+            "-c",
+            "import importlib.metadata; print(importlib.metadata.version('aisimulate'))",
+        ],
+        cwd=unrelated_repository,
+        env=env,
+    ).stdout.strip()
 
     expected_version = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]["version"]
-    assert f"Verified installed AISimulate {expected_version} FPM workflow" in completed.stdout
-    assert f"installed:aisimulate=={expected_version}:record-sha256:" in completed.stdout
+    assert installed_version == expected_version
+    assert f"Verified installed AISimulate {installed_version} FPM workflow" in completed.stdout
+    assert f"installed:aisimulate=={installed_version}:record-sha256:" in completed.stdout
     assert unrelated_head not in completed.stdout
     assert str(unrelated_repository) not in completed.stdout

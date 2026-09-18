@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
+from aisimulate.generator.api import generate_backend_artifacts
 
 pytestmark = pytest.mark.unit
 
@@ -99,7 +99,7 @@ class _FakeTask:
     ],
 )
 def test_bridge_prescribes_msa_only_for_m3_on_the_sm100_family(backend, model, system, expected):
-    from aiconfigurator.generator.module_bridge import _msa_sparse_implementation
+    from aisimulate.generator.module_bridge import _msa_sparse_implementation
 
     assert _msa_sparse_implementation(_FakeTask(backend, model, system)) == expected
 
@@ -109,7 +109,7 @@ def test_naive_generator_carries_the_msa_prescription():
     MiniMax-M3/SM100-family prescription as the optimized path — otherwise a
     naive deployment runs the TRT-LLM default the perf rows do not represent
     (review 4972622548 item 1)."""
-    from aiconfigurator.generator.naive import build_naive_generator_params
+    from aisimulate.generator.naive import build_naive_generator_params
 
     params = build_naive_generator_params(
         model_name="MiniMaxAI/MiniMax-M3",

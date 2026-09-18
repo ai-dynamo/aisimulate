@@ -25,6 +25,7 @@ class _RecommendationResult:
         }
         self._selected_ids = list(self._candidates)
         self._failed = failed
+        self.counts = SimpleNamespace(resource_limited=0)
 
     @property
     def selected_candidate_ids(self):
@@ -420,6 +421,17 @@ def test_predict_online_rejects_runner_without_online_capability(tmp_path, monke
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_dry_run_is_rejected_before_execution(command, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: pytest.fail("removed option must stop before replay"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, "--config", "unused.yaml", "--dry-run"])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --dry-run" in capsys.readouterr().err
+
+
 def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     def unavailable(_stack):
         raise cli.StackResolutionError("stack unavailable")
@@ -436,6 +448,9 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
 @pytest.mark.filterwarnings("error")
 def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.recommend import _run_recommendation
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -654,7 +669,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert generated["placement"] == {"policy": "first"}
     assert generated["evaluation"]["sla"] == {sla_field: bound}
     result = json.loads((recommendation_output / "recommendation.json").read_text())
-    assert result["schema_version"] == "1.0"
+    assert result["schema_version"] == "1.1"
     assert result["counts"]["feasible"] == 1
     assert result["views"]["top_n"] == ["candidate-000001"]
     assert result["candidates"][0]["prediction_config"] == generated
@@ -825,7 +840,8 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_summary["power_coverage"] is None
 
 
-def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("resource_limited", [0, 1])
+def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys, resource_limited) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -900,26 +916,25 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    partial = _RecommendationResult(candidates)
+    partial.counts.resource_limited = resource_limited
     monkeypatch.setattr(
         "aisimulate.recommend.run_recommendation",
-        lambda *args, **kwargs: _RecommendationResult(candidates),
+        lambda *args, **kwargs: partial,
     )
 
     output = tmp_path / "out"
-    assert (
-        cli.main(
-            [
-                "recommend",
-                "--config",
-                str(config_path),
-                "--output-dir",
-                str(output),
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
+    assert cli.main(
+        [
+            "recommend",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    ) == (3 if resource_limited else 0)
 
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 1
@@ -962,7 +977,10 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert not (recommendations / "0001.yaml").exists()
 
 
-def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("resource_limited", [0, 1])
+def test_recommendation_writes_an_empty_result_before_returning_failure(
+    tmp_path, monkeypatch, capsys, resource_limited
+) -> None:
     import aisimulate.recommend as recommendation_module
 
     monkeypatch.setattr(
@@ -971,11 +989,14 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         staticmethod(lambda raw: object()),
     )
     monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
+    result = _RecommendationResult([], failed=1)
+    result.counts.resource_limited = resource_limited
     monkeypatch.setattr(
         recommendation_module,
         "run_recommendation",
-        lambda *args, **kwargs: _RecommendationResult([], failed=1),
+        lambda *args, **kwargs: result,
     )
+    monkeypatch.setattr(cli, "_resource_plan", lambda *args: {"status": "admitted"})
     output = tmp_path / "empty-result"
 
     status = cli._recommend(
@@ -989,7 +1010,7 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         object(),
     )
 
-    assert status == 1
+    assert status == (3 if resource_limited else 1)
     assert json.loads((output / "recommendation.json").read_text())["counts"] == {
         "failed": 1,
         "feasible": 0,
@@ -1359,6 +1380,10 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
         def capabilities(self):
             return EngineReplayRunnerFactory().capabilities()
 
+    trace_path = tmp_path / "play.json"
+    trace_path.write_text(
+        json.dumps({"id": "play", "block_size": 64, "requests": [{"t": 0, "type": "s", "in": 64, "out": 1}]})
+    )
     config_path = tmp_path / "snapshot.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -1370,7 +1395,7 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
                     "workers": {"aggregated": {}},
                 },
                 "traffic": {
-                    "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace_path)]},
                     "load": {"type": "trace_timestamps", "agentic_lanes": 2},
                 },
             }

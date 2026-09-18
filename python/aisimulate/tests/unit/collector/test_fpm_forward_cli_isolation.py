@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.config import add_fpm_generator_arguments, reject_fpm_arguments_without_fpm
 from collector.fpm_forward.entry import _load_generator_overrides, resolve_inputs, run_resolved
 

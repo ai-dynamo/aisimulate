@@ -7,7 +7,7 @@
 
 import pytest
 
-from aiconfigurator.cli.api import cli_recommend
+from aisimulate.legacy_cli.api import cli_recommend
 
 pytestmark = [pytest.mark.e2e, pytest.mark.build]
 

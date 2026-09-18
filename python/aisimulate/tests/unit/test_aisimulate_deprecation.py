@@ -7,9 +7,9 @@ import warnings
 
 import pytest
 
-from aiconfigurator import deprecation
-from aiconfigurator import main as root_main
-from aiconfigurator.sdk import sweep
+from aisimulate.legacy_cli import deprecation
+from aisimulate.legacy_cli import entrypoint as root_main
+from aisimulate.sdk import sweep
 
 pytestmark = pytest.mark.unit
 
@@ -52,8 +52,10 @@ def test_each_legacy_cli_mode_warns_without_renaming_the_command(monkeypatch, mo
     assert f"`aiconfigurator cli {mode}`" in str(warning.message)
     assert f"`aiconfigurator cli {mode} ...`" in str(warning.message)
     assert "`aisimulate cli" not in str(warning.message)
-    assert "AIConfigurator 0.13.0" in str(warning.message)
-    assert "deprecated AIConfigurator distribution" in str(warning.message)
+    assert "AISimulate 0.13.0" in str(warning.message)
+    assert "removal is targeted for AISimulate 0.14.0" in str(warning.message)
+    assert "deprecated compatibility command" in str(warning.message)
+    assert "aisimulate==0.12.0" not in str(warning.message)
     assert "preserves the established command name" in str(warning.message)
     assert warning.filename == __file__
 
@@ -91,5 +93,6 @@ def test_each_legacy_sweeper_entry_point_warns_once_at_caller(entry_point) -> No
     assert warning.category is DeprecationWarning
     assert entry_point.__name__ in str(warning.message)
     assert "aisimulate.sweeper.Sweeper" in str(warning.message)
-    assert "AIConfigurator 0.13.0" in str(warning.message)
+    assert "in the same package" in str(warning.message)
+    assert "aiconfigurator` import namespace" not in str(warning.message)
     assert warning.filename == __file__

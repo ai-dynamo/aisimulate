@@ -2,7 +2,7 @@
 description: >
   Generator testing strategy: unit, golden snapshots, validator.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Generator Testing Reference

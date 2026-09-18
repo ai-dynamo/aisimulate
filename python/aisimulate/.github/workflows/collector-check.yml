@@ -17,7 +17,7 @@ name: Collector Data Check
 on:
   pull_request:
     paths:
-      - "aic-core/src/aiconfigurator_core/systems/data/**"
+      - "src/aisimulate_core/systems/data/**"
       - "collector/**"
       - "tools/perf_database/**"
   workflow_dispatch:

@@ -77,14 +77,13 @@ except ImportError:
     from vllm.model_executor.layers.fla.ops import (
         fused_recurrent_gated_delta_rule_packed_decode,
     )
+from collector.case_generator import get_common_gdn_test_cases
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import ChunkGatedDeltaRule
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
 from vllm.version import __version__ as vllm_version
-
-from collector.case_generator import get_common_gdn_test_cases
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 

@@ -254,21 +254,13 @@ mod vllm {
     #[test]
     fn rejects_prompt_at_max_model_len() {
         let sequence = native_sequence(Uuid::from_u128(740), 0..8, 1, false);
-        assert!(should_reject_for_model_len(
-            SchedulingPolicy::Vllm,
-            &sequence,
-            Some(8)
-        ));
+        assert!(should_reject_for_model_len(&sequence, Some(8)));
     }
 
     #[test]
     fn rejects_prompt_above_max_model_len() {
         let sequence = native_sequence(Uuid::from_u128(741), 0..9, 1, false);
-        assert!(should_reject_for_model_len(
-            SchedulingPolicy::Vllm,
-            &sequence,
-            Some(8)
-        ));
+        assert!(should_reject_for_model_len(&sequence, Some(8)));
     }
 
     #[test]
@@ -790,10 +782,13 @@ mod vllm {
         );
     }
 
-    #[test]
-    fn core_rejects_prompt_above_max_model_len() {
+    #[rstest::rstest]
+    fn core_rejects_prompt_at_or_above_max_model_len(
+        #[values(EngineType::Vllm, EngineType::Trtllm)] backend: EngineType,
+        #[values(8, 9)] prompt_len: u32,
+    ) {
         let args = MockEngineArgs::builder()
-            .engine_type(EngineType::Vllm)
+            .engine_type(backend)
             .block_size(4)
             .num_gpu_blocks(4)
             .max_model_len(Some(8))
@@ -807,7 +802,7 @@ mod vllm {
         let mut core = VllmCore::new(args);
         let uuid = Uuid::from_u128(1);
         core.receive(DirectRequest {
-            tokens: (0..9).collect(),
+            tokens: (0..prompt_len).collect(),
             max_output_tokens: 1,
             uuid: Some(uuid),
             ..Default::default()
@@ -905,7 +900,7 @@ mod trtllm {
     use super::*;
 
     #[test]
-    fn trtllm_does_not_apply_vllm_max_model_len() {
+    fn trtllm_rejects_prompt_above_max_model_len() {
         let sequence = RequestKvState::native(
             Uuid::from_u128(780),
             (0..9).collect(),
@@ -917,11 +912,7 @@ mod trtllm {
             false,
             None,
         );
-        assert!(!should_reject_for_model_len(
-            SchedulingPolicy::TrtllmGuaranteedNoEvict,
-            &sequence,
-            Some(8)
-        ));
+        assert!(should_reject_for_model_len(&sequence, Some(8)));
     }
 
     /// block_size 4, 6 GPU blocks (24 tokens). Each request below reserves

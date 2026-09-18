@@ -38,9 +38,9 @@ from typing import ClassVar
 
 import pytest
 
-import aiconfigurator_core.sdk.operations as ops
-from aiconfigurator_core.sdk import common, config
-from aiconfigurator_core.sdk.models import attention_op_keys, get_model
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.models import attention_op_keys, get_model
 
 pytestmark = pytest.mark.unit
 

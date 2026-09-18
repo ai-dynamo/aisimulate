@@ -160,9 +160,7 @@ def wheel_identity(wheel: Path) -> dict:
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
         for member in archive.namelist():
-            if member.endswith("/") or not member.startswith(
-                ("aisimulate/", "aiconfigurator/", "aiconfigurator_core/")
-            ):
+            if member.endswith("/") or not member.startswith(("aisimulate/", "aiconfigurator/", "aisimulate_core/")):
                 continue
             installed = Path(dist.locate_file(member))
             if not installed.is_file() or archive.read(member) != installed.read_bytes():
@@ -170,7 +168,7 @@ def wheel_identity(wheel: Path) -> dict:
             checked += 1
     if checked < 3:
         raise ValueError("wheel does not contain the unified package")
-    for name in ("aisimulate._runtime", "aisimulate.runner", "aiconfigurator.cli.api"):
+    for name in ("aisimulate._runtime", "aisimulate.runner", "aisimulate.legacy_cli.api"):
         module = importlib.import_module(name)
         if not Path(module.__file__).resolve().is_relative_to(Path(dist.locate_file("")).resolve()):
             raise ValueError("import resolved outside installed wheel")
@@ -242,13 +240,13 @@ def replay_spec(request, backend_version: str):
 
 
 def predict_point(point: dict) -> dict:
-    from aiconfigurator.cli.api import cli_estimate
-    from aiconfigurator.sdk.config_adapter import (
+    from aisimulate.legacy_cli.api import cli_estimate
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sdk.config_adapter import (
         InferenceXSource,
         adapt_config,
         to_cli_estimate_kwargs,
     )
-    from aisimulate.runner import EngineReplayRunnerFactory
 
     config, bench = point["config"], point["benchmark"]
     # A fingerprint alone cannot reconstruct non-normalized recipe knobs.
@@ -406,7 +404,7 @@ def campaign(args) -> None:
         "runtime": {
             **identity,
             "source_checkout": {**source, "repository": REPOSITORY},
-            "cli_entry_point": "aiconfigurator.main:main",
+            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
         },
     }
     common = {

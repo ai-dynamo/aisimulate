@@ -22,6 +22,59 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class ForwardPassEstimatorSpec:
+    """Resolved output of Core's canonical forward-pass constructor.
+
+    The config is the sole estimator identity carried by Sweeper and Replay.
+    Convenience properties below are projections, never independently authored
+    values. Diagnostics preserve Core's selection result for artifacts.
+    """
+
+    config: dict[str, JSONValue]
+    options: dict[str, JSONValue] | None = None
+    diagnostics: dict[str, JSONValue] = field(default_factory=dict)
+
+    @property
+    def model_path(self) -> str:
+        return str(self.config["model"])
+
+    @property
+    def system(self) -> str:
+        return str(self.config["system"])
+
+    @property
+    def backend(self) -> str:
+        return str(self.config["backend"])
+
+    @property
+    def backend_version(self) -> str:
+        return str(self.config["backend_version"])
+
+    @property
+    def database_mode(self) -> str:
+        return str(self.config["database_mode"])
+
+    @property
+    def transfer_policy(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("transfer_policy") or ())
+
+    @property
+    def forward_model(self) -> str:
+        return str(self.config["estimation_mode"])
+
+    @property
+    def systems_paths(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("systems_paths") or ())
+
+    @property
+    def performance_data_root(self) -> str:
+        provenance = self.diagnostics.get("provenance")
+        if isinstance(provenance, dict):
+            return str(provenance.get("selected_systems_root") or "")
+        return ""
+
+
+@dataclass(frozen=True)
 class EncoderPoolSpec:
     """Resolved analytical EPD pool. Missing power is unavailable, never zero watts."""
 
@@ -95,6 +148,7 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
+    forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
 
 
@@ -323,7 +377,7 @@ class RunnerCapabilities:
                 if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
                     raise ValueError("agentic replay requires HBM-only KV cache; host offload is unsupported")
                 if not self.supports_agentic_speculative_decoding and any(
-                    rank.get(key) is not None for key in ("aic_nextn", "nextn")
+                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
                 ):
                     raise ValueError("agentic replay requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]

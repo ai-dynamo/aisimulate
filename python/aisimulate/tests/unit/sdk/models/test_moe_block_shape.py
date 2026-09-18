@@ -4,7 +4,7 @@
 """Unit tests for MoEBlockShape and the derived MoE fields in ``_get_model_info``.
 
 The expectations are pinned against the shipped HF ``config.json`` fixtures in
-``aiconfigurator_core/model_configs`` (loaded by model path, same as the other
+``aisimulate_core/model_configs`` (loaded by model path, same as the other
 model-config tests). DeepSeek-R1 is the parity oracle: 61 hidden layers with
 ``first_k_dense_replace=3`` and ``n_shared_experts=1`` must derive to 58 MoE
 layers and 1 shared expert.
@@ -14,9 +14,11 @@ import dataclasses
 
 import pytest
 
-from aiconfigurator.sdk.models.blocks import MoEBlockShape
-from aiconfigurator.sdk.models.helpers import _derive_num_moe_layers, _get_model_info
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
+from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.blocks import MoEBlockShape
+from aisimulate.sdk.models.helpers import _derive_num_moe_layers, _get_model_info
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -132,3 +134,35 @@ class TestMoEBlockShape:
         shape = MoEBlockShape.from_model_info(_get_model_info("deepseek-ai/DeepSeek-R1"))
         with pytest.raises(dataclasses.FrozenInstanceError):
             shape.topk = 4
+
+
+@pytest.mark.parametrize("tp,ep", [(1, 1), (4, 4), (8, 1), (8, 8)])
+def test_sglang_r1_resident_weights_follow_checkpoint_layers_and_shards(tp, ep):
+    model = get_model(
+        "deepseek-ai/DeepSeek-R1",
+        build_model_config(tp_size=tp, pp_size=1, attention_dp_size=1, moe_tp_size=tp // ep, moe_ep_size=ep),
+        "sglang",
+    )
+    # Independent tensor-shape ledger for the shipped FP8 R1 checkpoint:
+    # 61 attention layers, 58 routed/shared blocks, 3 dense gated MLPs.
+    hidden = 7168
+    attention = 61 * (2112 * hidden + 1536 * 128 * 192 / tp + 512 * 128 * 256 / tp + hidden * 128 * 128 / tp)
+    embeddings_and_head = 2 * 129280 * hidden * 2 / tp
+    routed = 58 * 256 * 3 * hidden * 2048 / tp
+    shared = 58 * 3 * hidden * 2048 / tp
+    routers = 58 * 256 * hidden * 2
+    dense = 3 * 3 * hidden * 18432 / tp
+    before = [(op._name, op.get_weights()) for op in model.context_ops]
+    assert model.get_weight_memory_bytes() == attention + embeddings_and_head + routed + shared + routers + dense
+    assert [(op._name, op.get_weights()) for op in model.context_ops] == before
+    # Memory accounting must not rescale the approximate latency graph.
+    routed_op = next(op for op in model.context_ops if op._name == "context_moe")
+    assert routed_op._scale_factor == 61
+
+
+@pytest.mark.parametrize("backend,nextn", [("vllm", 0), ("trtllm", 0), ("sglang", 2)])
+def test_r1_resident_weight_override_preserves_other_execution_layouts(backend, nextn):
+    cfg = build_model_config(tp_size=8, pp_size=1, attention_dp_size=1, moe_tp_size=8, moe_ep_size=1)
+    cfg.nextn = nextn
+    model = get_model("deepseek-ai/DeepSeek-R1", cfg, backend)
+    assert model.get_weight_memory_bytes() is None

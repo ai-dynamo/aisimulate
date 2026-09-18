@@ -171,6 +171,11 @@ where
         })
     }
 
+    pub(crate) fn with_sla_thresholds(mut self, sla: crate::replay::SlaThresholds) -> Self {
+        self.collector.set_sla_thresholds(sla);
+        self
+    }
+
     /// Toggle per-request record capture on the underlying collector. When
     /// `true`, the final `ReplayReport` returned from `run()` will
     /// have `per_request` populated. Default `false` (cheap).
@@ -343,7 +348,7 @@ where
             );
         }
         self.collector
-            .on_arrival(uuid, arrival_time_ms, input_length, output_length);
+            .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
@@ -611,6 +616,10 @@ where
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> anyhow::Result<()> {
         debug_assert_eq!(payload.stage, SimulationWorkerStage::Aggregated);
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         if let Some(sink) = &self.artifact_sink {
             sink.record_pass_completion_kv_events(
                 payload.pass_started_at_ms,
@@ -1468,6 +1477,11 @@ where
     /// timestamp would exceed that cap; in-flight requests at that point are
     /// reported as incomplete.
     pub(crate) fn run(mut self) -> anyhow::Result<(TraceCollector, AggRuntimeStats)> {
+        if self.admission.is_agentic_preparing() {
+            self.collector.begin_batch_preparation_reporting();
+        } else {
+            self.collector.begin_batch_reporting();
+        }
         self.run_to_completion()?;
 
         self.progress.finish();
@@ -1491,6 +1505,7 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }
 }
@@ -1824,6 +1839,37 @@ mod agentic_warmup_tests {
         ) -> anyhow::Result<ReplayScalingDecision> {
             self.0.lock().unwrap().push(snapshot);
             Ok(ReplayScalingDecision::default())
+        }
+    }
+
+    #[test]
+    fn batch_warmup_summary_preserves_preparation_admissions_and_profile_epoch() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let run = |capture| {
+                runtime(backend, 64, 10.0)
+                    .with_per_request_records(capture)
+                    .run()
+                    .unwrap()
+                    .0
+                    .finish()
+            };
+            let detailed = run(true);
+            let summary = run(false);
+            assert!(summary.per_request.is_empty());
+            assert!(
+                summary
+                    .agentic_phases
+                    .as_ref()
+                    .unwrap()
+                    .requests
+                    .iter()
+                    .all(|request| request.first_admit_ms.is_some())
+            );
+            assert_eq!(
+                serde_json::to_value(summary).unwrap(),
+                serde_json::to_value(detailed).unwrap(),
+                "{backend:?} batch summary must retain the same preparation evidence and profile metrics"
+            );
         }
     }
 

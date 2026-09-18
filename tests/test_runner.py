@@ -10,7 +10,7 @@ import pickle
 import pytest
 
 import aisimulate
-from aisimulate import aic
+from aisimulate import capacity as aic
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
@@ -265,6 +265,51 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert "trace_block_size" not in traffic
 
 
+@pytest.mark.parametrize("model_key", ["model", "model_path"])
+def test_agentic_runner_reads_canonical_model_identity(model_key):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+        performance_model_metadata={"aggregated": {"provider": "aic", "config": {model_key: "test-model"}}},
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=deployment,
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "agentic.jsonl",
+                "trace_format": "agentic_mooncake",
+            },
+        )
+    )
+    assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("payload", [{}, {"config": None}, {"config": []}, {"config": "invalid"}])
+def test_runner_rejects_nonmapping_aic_timing_before_materialization(nested_rank, payload, monkeypatch):
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("invalid timing reached capacity"))
+    runtime = RecordingRuntime()
+    args = _engine_args(timing={"type": "external", "provider": "aic", **payload})
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
 def test_runner_rejects_agentic_execution_without_a_target_model():
     engine_args = _engine_args()
     engine_args.pop("aic_model_path")
@@ -390,7 +435,8 @@ def test_disaggregated_agentic_requires_same_target_model(trace_format, model_so
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo", "standard_dynamo"])
 @pytest.mark.parametrize("role", ["prefill", "decode"])
 @pytest.mark.parametrize("timing_model", ["test-model", "other-model"])
-def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role, timing_model):
+@pytest.mark.parametrize("declared_target", [False, True])
+def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role, timing_model, declared_target):
     runtime = RecordingRuntime()
     roles = {name: _engine_args(role=name) for name in ("prefill", "decode")}
     roles[role]["timing_model"] = {"type": "external", "provider": "aic", "config": {"model": timing_model}}
@@ -404,6 +450,11 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
             backend_version="test",
             prefill_engine_args=roles["prefill"],
             decode_engine_args=roles["decode"],
+            performance_model_metadata=(
+                {name: {"provider": "aic", "config": {"model": "test-model"}} for name in roles}
+                if declared_target
+                else {}
+            ),
             num_prefill_workers=1,
             num_decode_workers=1,
         ),
@@ -411,12 +462,20 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
     )
     runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
     if timing_model != "test-model" and trace_format != "standard_dynamo":
-        with pytest.raises(ValueError, match=f"agentic {role} AIC timing model must match"):
+        message = (
+            f"agentic {role} AIC timing model must match"
+            if declared_target
+            else "agentic prefill and decode must use the same configured target model"
+        )
+        with pytest.raises(ValueError, match=message):
             runner.run(spec)
         assert runtime.execution_spec is None
     else:
         runner.run(spec)
-        assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+        if declared_target or timing_model == "test-model":
+            assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+        else:
+            assert "execution_model" not in runtime.execution_spec["traffic"]
         assert runtime.execution_spec["spec"]["engine"][role]["rank"]["timing_model"]["config"]["model"] == timing_model
 
 
@@ -612,7 +671,8 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
-def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rank_only_controls", [False, True])
+def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch, rank_only_controls):
     reserved_bytes = 14_559_947_612
     path = tmp_path / "prediction.yaml"
     path.write_text(
@@ -641,8 +701,27 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    import aisimulate_core
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    class Estimator:
+        def __init__(self, config):
+            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
     public = CorePredictionConfig.from_yaml(path)
     spec = prediction_to_replay_spec(public)
+    if rank_only_controls:
+        timing = spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        timing.pop("cuda_graph_reserved_bytes")
+        timing.pop("gpu_memory_utilization")
     runtime = RecordingRuntime()
 
     assert public.engine.workers.aggregated is not None
@@ -1084,6 +1163,32 @@ def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
     assert timing_config["backend_version"] == "0.11.1"
 
 
+def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
+    runtime = RecordingRuntime()
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "tp": 2,
+            "attention_dp": 1,
+        },
+    }
+    args = {"tensor_parallel_size": 2, "rank": {"block_size": 4, "num_gpu_blocks": 128, "timing_model": timing}}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
+    from aisimulate_core.sdk.perf_database import resolve_query_version
+
+    assert actual == resolve_query_version("h200_sxm", "vllm", "current")
+    assert timing["config"]["backend_version"] == "current"
+
+
 def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
     timing = {
         "type": "external",
@@ -1275,7 +1380,7 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory
 
     calls = []
     estimate = {
@@ -1333,6 +1438,25 @@ def test_memory_detail_with_explicit_blocks_does_not_guess_components():
     data = report.metadata["native_report"]["memory_diagnostics"]["aggregated"]
     assert data["status"] == "unavailable"
     assert "memory_breakdown" not in data
+
+
+def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    class HostResourceError(RuntimeError):
+        pass
+
+    resources = ModuleType("aisimulate.resources")
+    resources.ResourceLimitError = HostResourceError
+    monkeypatch.setitem(sys.modules, "aisimulate.resources", resources)
+
+    class LimitedRuntime:
+        def run_replay_json(self, payload):
+            raise MemoryError("report storage: No space left on device")
+
+    with pytest.raises(HostResourceError, match="report storage: No space left on device"):
+        EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())
 
 
 @pytest.mark.parametrize(
