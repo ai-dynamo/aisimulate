@@ -576,6 +576,9 @@ class Task:
     # closed; None/default uses the mapped framework default or safe default fallback. SGLang WideEP
     # maps None/default to flashinfer and also supports fa3.
     attention_backend: common.AttentionBackend | None = None
+    # Exact collected MoE compute kernel-source lane; unlike moe_backend this
+    # does not select topology or a runtime implementation family.
+    moe_kernel_source: str | None = field(default=None, kw_only=True)
     wideep_num_slots: int | None = None  # EPLB slot count; defaults to num_experts when None
     gemm_quant_mode: common.GEMMQuantMode | None = None
     moe_quant_mode: common.MoEQuantMode | None = None
@@ -860,6 +863,7 @@ class Task:
             common.AttentionBackend,
             "attention_backend",
         )
+        self.moe_kernel_source = config.normalize_kernel_source(self.moe_kernel_source, "moe_kernel_source")
         # Canonicalize at construction so downstream config and routing see
         # exactly one spelling for the only supported engine-step backend.
         self.engine_step_backend = validate_engine_step_backend(self.engine_step_backend)
@@ -2125,6 +2129,7 @@ class Task:
             # this field as the kernel-LANE override — materializing a lane name here
             # would silently pin every model to the flashinfer lane.
             attention_backend=self.attention_backend,
+            moe_kernel_source=self.moe_kernel_source,
             wideep_num_slots=self.wideep_num_slots,
             forward_model=self.forward_model or "op_level",
             moe_comm_backend=None,

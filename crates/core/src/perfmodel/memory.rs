@@ -508,6 +508,7 @@ mod tests {
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
                 decoder_replay: false,
+                moe_kernel_source: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
                     tp_size: 1,

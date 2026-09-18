@@ -39,6 +39,7 @@ def build_model_config(
     forward_model: str | None = None,
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     speculation=None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
@@ -63,6 +64,7 @@ def build_model_config(
         moe_backend=None if moe_backend == "default" else moe_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
+        moe_kernel_source=moe_kernel_source,
         speculation=speculation,
     )
 

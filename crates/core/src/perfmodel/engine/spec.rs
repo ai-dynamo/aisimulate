@@ -319,6 +319,7 @@ mod tests {
             workload_distribution: "power_law_1.2".into(),
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: Some("sglang_flashinfer_trtllm_moe".into()),
             enable_eplb: false,
             is_context: false,
         }
@@ -825,6 +826,7 @@ mod tests {
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
             decoder_replay: false,
+            moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -1107,11 +1109,11 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 kind: "EngineSpec",
                 got: 18,
-                expected: 19
+                expected: ENGINE_SPEC_SCHEMA_VERSION
             })
         ));
-        // A false schema19 stamp cannot silently use the JSON-only default.
-        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        // A false current-schema stamp cannot silently use the JSON-only default.
+        bytes[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::EngineSpec(_))

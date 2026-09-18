@@ -92,6 +92,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
     "moe_backend": ("aic_moe_backend",),
+    "moe_kernel_source": ("moe_kernel_source", "aic_moe_kernel_source"),
     "attention_backend": ("aic_attention_backend",),
     "enable_eplb": ("aic_enable_eplb",),
     "wideep_num_slots": ("aic_wideep_num_slots",),

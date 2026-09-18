@@ -44,7 +44,7 @@ use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::util_empirical::{self, UtilGrid};
 use crate::perf_database::PerfDatabase;
 use crate::perf_database::gemm::quant_tc_flops;
-use crate::perf_database::moe::{MoeKernel, MoeSiblingSlice};
+use crate::perf_database::moe::MoeSiblingSlice;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -144,27 +144,21 @@ pub(crate) fn policy_fingerprint(policy: TransferPolicy) -> String {
 /// to the wideep context/generation MoE tables retired with AIC-1601 — see
 /// the typed error raised at each selector point.)
 #[derive(Clone, Copy, PartialEq)]
-enum MoeTableSel {
+enum MoeTableSel<'a> {
     Standard,
     LowLatency,
+    ExactKernelSource(&'a str),
 }
 
-impl MoeTableSel {
-    /// Grid cache-key tag. Python folds `kernel_tag` ("std" / "ll") plus
-    /// `id(node)` into the key.
-    fn tag(self) -> &'static str {
+impl MoeTableSel<'_> {
+    /// Grid cache-key tag. Exact source selection must be included so a grid
+    /// built from one kernel lane can never answer for another.
+    fn tag(self) -> String {
         match self {
-            Self::Standard => "std",
-            Self::LowLatency => "ll",
+            Self::Standard => "std".to_owned(),
+            Self::LowLatency => "ll".to_owned(),
+            Self::ExactKernelSource(source) => format!("kernel_source={source}"),
         }
-    }
-}
-
-/// The perf-DB kernel grid behind a selector.
-fn moe_kernel(table: MoeTableSel) -> MoeKernel {
-    match table {
-        MoeTableSel::Standard => MoeKernel::Standard,
-        MoeTableSel::LowLatency => MoeKernel::LowLatency,
     }
 }
 
@@ -214,6 +208,11 @@ pub struct MoeOp {
     /// pre-existing specs -> None -> the regular table.
     #[serde(default)]
     pub moe_backend: Option<String>,
+    /// Exact collected MoE kernel-source lane. `None` preserves the
+    /// framework/default lookup; `Some` selects only rows carrying this exact
+    /// `kernel_source` value and fails on a missing lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
     /// EPLB enabled (Python `MoE._enable_eplb`). On the sglang branch the
     /// PREFILL token count is corrected to `int(num_tokens * 0.8)`
     /// (operations/moe.py: expert-parallel load balancing evens the
@@ -266,6 +265,7 @@ impl MoeOp {
             workload_distribution: workload_distribution.into(),
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: false,
         }
@@ -361,6 +361,29 @@ impl MoeOp {
             )));
         }
 
+        if let Some(kernel_source) = self.moe_kernel_source.as_deref() {
+            let value = db.moe.query_kernel_source(
+                kernel_source,
+                num_tokens,
+                self.hidden_size,
+                self.inter_size,
+                self.topk,
+                self.num_experts,
+                self.moe_tp_size,
+                self.moe_ep_size,
+                self.quant_mode,
+                &self.workload_distribution,
+                &sol,
+            )?;
+            return Ok(PerformanceResult::with_energy(
+                value.latency,
+                value.energy,
+                Source::Silicon,
+            )
+            .clamp_non_negative()
+            .scaled(self.scale_factor));
+        }
+
         // Mirrors Python's MoE._query_moe_table TRT-LLM gate: for nvfp4
         // gated MoE at num_tokens <= 128, probe the
         // `moe_torch_flow_min_latency` grid first and fall back to the
@@ -449,18 +472,20 @@ impl MoeOp {
                 self.name
             )));
         }
-        let table = if num_tokens <= 128
-            && quant == MoeQuantMode::Nvfp4
-            && self.is_gated
-            && db.moe.low_latency_available()?
-        {
-            match self.slice_points(db, MoeTableSel::LowLatency) {
-                Ok(_) => MoeTableSel::LowLatency,
-                Err(err) if err.is_missing_perf_data() => MoeTableSel::Standard,
-                Err(err) => return Err(err),
+        let table = match self.moe_kernel_source.as_deref() {
+            Some(kernel_source) => MoeTableSel::ExactKernelSource(kernel_source),
+            None if num_tokens <= 128
+                && quant == MoeQuantMode::Nvfp4
+                && self.is_gated
+                && db.moe.low_latency_available()? =>
+            {
+                match self.slice_points(db, MoeTableSel::LowLatency) {
+                    Ok(_) => MoeTableSel::LowLatency,
+                    Err(err) if err.is_missing_perf_data() => MoeTableSel::Standard,
+                    Err(err) => return Err(err),
+                }
             }
-        } else {
-            MoeTableSel::Standard
+            None => MoeTableSel::Standard,
         };
         let kernel_tag = table.tag();
 
@@ -535,7 +560,7 @@ impl MoeOp {
                 }
             }
             if let Some(reference) =
-                self.reference_grid(db, kernel_tag, num_gemms, policy, &candidates)?
+                self.reference_grid(db, &kernel_tag, num_gemms, policy, &candidates)?
             {
                 grid = Some(reference);
             }
@@ -563,7 +588,7 @@ impl MoeOp {
                         &mut candidates,
                     )?;
                     if let Some(reference) =
-                        self.reference_grid(db, kernel_tag, num_gemms, policy, &candidates)?
+                        self.reference_grid(db, &kernel_tag, num_gemms, policy, &candidates)?
                     {
                         if !reference.is_empty() {
                             grid = Some(reference);
@@ -594,19 +619,43 @@ impl MoeOp {
     fn slice_points(
         &self,
         db: &PerfDatabase,
-        table: MoeTableSel,
+        table: MoeTableSel<'_>,
     ) -> Result<Vec<(u32, f64)>, AicError> {
-        db.moe.slice_points(
-            moe_kernel(table),
-            self.quant_mode.name(),
-            &self.workload_distribution,
-            self.topk,
-            self.num_experts,
-            self.hidden_size,
-            self.inter_size,
-            self.moe_tp_size,
-            self.moe_ep_size,
-        )
+        match table {
+            MoeTableSel::Standard => db.moe.slice_points(
+                crate::perf_database::moe::MoeKernel::Standard,
+                self.quant_mode.name(),
+                &self.workload_distribution,
+                self.topk,
+                self.num_experts,
+                self.hidden_size,
+                self.inter_size,
+                self.moe_tp_size,
+                self.moe_ep_size,
+            ),
+            MoeTableSel::LowLatency => db.moe.slice_points(
+                crate::perf_database::moe::MoeKernel::LowLatency,
+                self.quant_mode.name(),
+                &self.workload_distribution,
+                self.topk,
+                self.num_experts,
+                self.hidden_size,
+                self.inter_size,
+                self.moe_tp_size,
+                self.moe_ep_size,
+            ),
+            MoeTableSel::ExactKernelSource(kernel_source) => db.moe.slice_points_for_kernel_source(
+                kernel_source,
+                self.quant_mode.name(),
+                &self.workload_distribution,
+                self.topk,
+                self.num_experts,
+                self.hidden_size,
+                self.inter_size,
+                self.moe_tp_size,
+                self.moe_ep_size,
+            ),
+        }
     }
 
     /// Distinct quant names of the selected table, in first-seen (file row)
@@ -614,9 +663,19 @@ impl MoeOp {
     fn table_available_quants(
         &self,
         db: &PerfDatabase,
-        table: MoeTableSel,
+        table: MoeTableSel<'_>,
     ) -> Result<Vec<String>, AicError> {
-        db.moe.available_quants(moe_kernel(table))
+        match table {
+            MoeTableSel::Standard => db
+                .moe
+                .available_quants(crate::perf_database::moe::MoeKernel::Standard),
+            MoeTableSel::LowLatency => db
+                .moe
+                .available_quants(crate::perf_database::moe::MoeKernel::LowLatency),
+            MoeTableSel::ExactKernelSource(kernel_source) => {
+                db.moe.available_quants_for_kernel_source(kernel_source)
+            }
+        }
     }
 
     /// Enumerate `source_quant`'s collected sibling slices (same table,
@@ -627,19 +686,37 @@ impl MoeOp {
     fn collect_candidates(
         &self,
         db: &PerfDatabase,
-        table: MoeTableSel,
+        table: MoeTableSel<'_>,
         source_quant: MoeQuantMode,
         sol_quant: MoeQuantMode,
         provenance: &'static str,
         out: &mut Vec<MoeReferenceCandidate>,
     ) -> Result<(), AicError> {
-        let slices = db.moe.sibling_slices(
-            moe_kernel(table),
-            source_quant.name(),
-            &self.workload_distribution,
-            self.moe_tp_size,
-            self.moe_ep_size,
-        );
+        let slices = match table {
+            MoeTableSel::Standard => db.moe.sibling_slices(
+                crate::perf_database::moe::MoeKernel::Standard,
+                source_quant.name(),
+                &self.workload_distribution,
+                self.moe_tp_size,
+                self.moe_ep_size,
+            ),
+            MoeTableSel::LowLatency => db.moe.sibling_slices(
+                crate::perf_database::moe::MoeKernel::LowLatency,
+                source_quant.name(),
+                &self.workload_distribution,
+                self.moe_tp_size,
+                self.moe_ep_size,
+            ),
+            MoeTableSel::ExactKernelSource(kernel_source) => {
+                db.moe.sibling_slices_for_kernel_source(
+                    kernel_source,
+                    source_quant.name(),
+                    &self.workload_distribution,
+                    self.moe_tp_size,
+                    self.moe_ep_size,
+                )
+            }
+        };
         let slices = match slices {
             Ok(slices) => slices,
             Err(err) if err.is_missing_perf_data() => return Ok(()),
@@ -874,6 +951,7 @@ mod tests {
             attention_dp_size,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: false,
         }
@@ -911,6 +989,7 @@ mod tests {
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: false,
         }
@@ -1127,6 +1206,7 @@ mod tests {
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: false,
         };
@@ -1156,6 +1236,7 @@ mod tests {
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: false,
         };
