@@ -1087,6 +1087,8 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
     random_seed = _random_seed(workload.get("random_seed", 0))
     sampler = workload.get("length_sampler", "python_random")
     if sampler == "numpy_random_state":
+        if random_seed > 0xFFFF_FFFF:
+            raise ValueError("numpy_random_state random_seed must be an unsigned 32-bit integer")
         length_rng = np.random.RandomState(random_seed)
     elif sampler == "python_random":
         length_rng = random.Random(random_seed)

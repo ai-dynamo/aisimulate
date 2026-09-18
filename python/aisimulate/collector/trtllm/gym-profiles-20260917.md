@@ -93,16 +93,18 @@ The measured runtime sources match TensorRT-LLM commit
   recycling after finishing. The smoke CSVs retain all three expected token
   counts. No failed measurement is treated as a successful production case.
 
-Artifacts are retained under `results/trt-62-20260917` on:
+Artifact location aliases below are resolved through the campaign owner's
+access-controlled retention manifest. Measurement hashes and artifact filenames
+are unchanged. Artifacts are retained under `results/trt-62-20260917` on:
 
-- B200: `nsc-svg-slurm-1-login-02.nvidia.com`, storage root
-  `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec`.
-- H200: `computelab-sc-01`, storage root `/home/scratch.simonec_gpu`.
-- Initial H200 preparation and failed launch: `neb-cdg-slurm-1-login-02.nvidia.com`,
-  storage root `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec`.
+- B200: `${B200_CLUSTER}`, storage root
+  `${B200_ARTIFACT_ROOT}`.
+- H200: `${H200_CLUSTER}`, storage root `${H200_ARTIFACT_ROOT}`.
+- Initial H200 preparation and failed launch: `${H200_PREPARATION_CLUSTER}`,
+  storage root `${H200_PREPARATION_ARTIFACT_ROOT}`.
 
 Local evidence, runners, source archives, native replay reports, and package
-hashes are under `/Users/simonec/.cache/aisim-e2e-gym/trt-62-20260917/`.
+hashes are under `${CAMPAIGN_ARTIFACT_ROOT}/`.
 
 ## Infrastructure retries
 

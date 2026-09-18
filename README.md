@@ -404,7 +404,8 @@ before sending a change.
 Engine replay synthetic workloads accept `length_sampler: numpy_random_state`
 for InferenceX-compatible seeded token lengths. The default `python_random`
 preserves existing workloads. Both sample the full input vector before output
-lengths; unknown sampler names are rejected.
+lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
+32-bit integer; the Python sampler retains unsigned 64-bit seed support.
 
 ### FPM accuracy overview
 

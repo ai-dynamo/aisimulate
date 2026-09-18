@@ -10,9 +10,16 @@ runtime:
 # model-filtered internal collection CI run, 8x B200, zero failures).
 # 2026-08-09: appended 5508 nvidia/MiniMax-M3-NVFP4 nvfp4 rows (model-filtered
 # internal CI run, zero failures).
-# 2026-09-17: appended 81 GPT-OSS-120B MXFP4 rows (TP=2/4/8, EP=1,
-# power_law_1.2) from Slurm job 1993260. All 218295 prior rows are unchanged.
-# Source, hashes, row counts, and replay: collector/trtllm/gym-profiles-20260917.md.
+# Historical stage, job 1993260: appended 81 W4A16 MXFP4 rows (TP=2/4/8,
+# EP=1, power_law_1.2), producing 218376 rows from 218295 prior rows.
+# Historical refresh, job 1994597: replaced 162 W4A16 MXFP4 rows;
+# 218214 rows retained exact values, with 218376 total rows.
+# Final refresh, job 1995371: measured 162 W4A8 MXFP4/MXFP8 rows,
+# replaced 81 existing rows and added 81 TP=2/4/8, EP=1 rows.
+# 218295 prior rows retain exact values; final total: 218457 rows.
+# Final moe_perf.parquet SHA256:
+# db1930fde20b419284bf1f038fadd4b398d29701b12867fd4ac9da878808e781
+# Source, graph validation and replay: collector/trtllm/gym-w4a8-20260918.md.
 tables:
   moe_perf:
     status: complete

@@ -1346,3 +1346,41 @@ def test_runner_rejects_unknown_length_sampler():
                 }
             )
         )
+
+
+@pytest.mark.parametrize(
+    "sampler,seed",
+    [("numpy_random_state", 0xFFFF_FFFF), ("python_random", 0x1_0000_0000), ("python_random", 0xFFFF_FFFF_FFFF_FFFF)],
+)
+def test_runner_sampler_seed_upper_bounds(sampler, seed):
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            workload={
+                "isl": 10,
+                "osl": 5,
+                "request_count": 2,
+                "arrival_interval_ms": 0.0,
+                "random_range_ratio": 0.8,
+                "random_seed": seed,
+                "length_sampler": sampler,
+            }
+        )
+    )
+    assert len(runtime.execution_spec["requests"]) == 2
+
+
+def test_runner_rejects_numpy_seed_above_uint32():
+    with pytest.raises(ValueError, match="numpy_random_state random_seed.*32-bit"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "random_seed": 0x1_0000_0000,
+                    "length_sampler": "numpy_random_state",
+                }
+            )
+        )

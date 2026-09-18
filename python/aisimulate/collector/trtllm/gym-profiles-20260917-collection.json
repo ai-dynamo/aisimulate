@@ -24,16 +24,16 @@
   },
   "runs": {
     "b200": {
-      "host": "nsc-svg-slurm-1-login-02.nvidia.com",
+      "host": "${B200_CLUSTER}",
       "job_id": 1993260,
       "node": "nsc-svg-slurm-1-gpu-145",
       "gpus": 4,
       "state": "COMPLETED",
       "exit_code": "0:0",
       "elapsed": "00:04:57",
-      "results": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/trt-62-20260917/production-b200",
-      "stdout": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/logs/trt62-production-b200-1993260.out",
-      "stderr": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/logs/trt62-production-b200-1993260.err",
+      "results": "${B200_ARTIFACT_ROOT}/results/trt-62-20260917/production-b200",
+      "stdout": "${B200_ARTIFACT_ROOT}/logs/trt62-production-b200-1993260.out",
+      "stderr": "${B200_ARTIFACT_ROOT}/logs/trt62-production-b200-1993260.err",
       "publication": {
         "summary": {
           "planned": 3083,
@@ -242,7 +242,7 @@
       }
     },
     "h200": {
-      "host": "computelab-sc-01",
+      "host": "${H200_CLUSTER}",
       "job_id": 4375636,
       "node": "viking-prod-214",
       "gpus": 2,
@@ -252,9 +252,9 @@
       "smoke_elapsed": "00:01:46",
       "production_elapsed": "00:08:52",
       "mpi": "pmix",
-      "results": "/home/scratch.simonec_gpu/results/trt-62-20260917/production-h200",
-      "stdout": "/home/scratch.simonec_gpu/logs/trt62-h200-pmix-4375636.out",
-      "stderr": "/home/scratch.simonec_gpu/logs/trt62-h200-pmix-4375636.err",
+      "results": "${H200_ARTIFACT_ROOT}/results/trt-62-20260917/production-h200",
+      "stdout": "${H200_ARTIFACT_ROOT}/logs/trt62-h200-pmix-4375636.out",
+      "stderr": "${H200_ARTIFACT_ROOT}/logs/trt62-h200-pmix-4375636.err",
       "publication": {
         "summary": {
           "planned": 3080,
@@ -477,9 +477,9 @@
       ],
       "runtime": "1.3.0rc20"
     },
-    "results": "/home/scratch.simonec_gpu/results/trt-62-20260917/recheck-h200-outliers",
-    "stdout": "/home/scratch.simonec_gpu/logs/trt62-h200-recheck-4375895.out",
-    "stderr": "/home/scratch.simonec_gpu/logs/trt62-h200-recheck-4375895.err",
+    "results": "${H200_ARTIFACT_ROOT}/results/trt-62-20260917/recheck-h200-outliers",
+    "stdout": "${H200_ARTIFACT_ROOT}/logs/trt62-h200-recheck-4375895.out",
+    "stderr": "${H200_ARTIFACT_ROOT}/logs/trt62-h200-recheck-4375895.err",
     "points": [
       {
         "key": {

@@ -104,9 +104,9 @@ Hopper defaults and non-TRT backends must remain independently resolved.
 - Source rule: https://github.com/NVIDIA/TensorRT-LLM/blob/93cb6518b6d6dbd6095748189e626db731f44545/tensorrt_llm/_torch/model_config.py#L342-L353
 - Original recipe: https://github.com/SemiAnalysisAI/InferenceX/blob/2baba8e27be8529b4453afc953f9859ec092c73d/benchmarks/single_node/gptoss_fp4_b200_trt.sh
 - Raw client/server results, telemetry, profile, replay reports and runners:
-  `~/.cache/aisim-e2e-gym/trt-62-20260917/serving-repro/`.
-- Remote: `nsc-svg-slurm-1-login-02.nvidia.com`,
-  `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/trt-62-20260917/serving-repro/`.
+  `${CAMPAIGN_ARTIFACT_ROOT}/serving-repro/`.
+- Remote: `${B200_CLUSTER}`,
+  `${B200_ARTIFACT_ROOT}/results/trt-62-20260917/serving-repro/`.
 - `comparison.json`, `trace-summary.json`, `manifest.json`, `model-manifest.json`
   and `client-lengths-replay.json` retain the numeric results and provenance.
 
