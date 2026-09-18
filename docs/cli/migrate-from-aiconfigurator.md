@@ -173,8 +173,11 @@ aisimulate predict \
 ```
 
 Check `budget-selected/prediction.json` for latency and throughput under the saved workload.
-If the search finds no feasible candidate, it writes `recommendation.json`, exits with status 1,
-and produces no selected YAML; inspect that report before running the prediction command.
+If the completed search selects no configuration and has zero resource-limited candidates, it writes
+`recommendation.json`, exits with status 1, and produces no selected YAML. Resource-limited
+candidates instead produce exit 3, including when fitting candidates and selected YAML remain
+available. Inspect the ledger and [resource diagnostics](../local-resources.md) before predicting
+a selected configuration or treating the search as complete.
 
 **What changed:** eight GPUs is a ceiling, so the winner may use fewer. This example evaluates
 eight random trials to keep the walkthrough bounded; increase the trial budget for your search.

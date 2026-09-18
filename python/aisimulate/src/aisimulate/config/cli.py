@@ -13,6 +13,7 @@ from pydantic import Field, model_validator
 
 from .common import (
     EvaluationConfig,
+    ExecutionConfig,
     OptimizationConfig,
     OptimizerConfig,
     StrictModel,
@@ -31,6 +32,7 @@ class CorePredictionConfig(StrictModel):
     traffic: TrafficPredictionConfig = Field(default_factory=TrafficPredictionConfig.default)
     engine: EnginePredictionConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CorePredictionConfig:
@@ -55,6 +57,7 @@ class CoreRecommendationConfig(StrictModel):
     traffic: TrafficRecommendationConfig | None = None
     engine: EngineRecommendationConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     optimization: OptimizationConfig
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
 

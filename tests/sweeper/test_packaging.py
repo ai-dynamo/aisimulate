@@ -78,7 +78,7 @@ def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
     scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
         "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
+        "aisimulate": "aisimulate.supervision:main",
     }
 
 
