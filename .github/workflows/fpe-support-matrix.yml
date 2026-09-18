@@ -8,6 +8,10 @@ on:
       expected_sha:
         required: true
         type: string
+      source_branch:
+        description: Source branch whose inventory is being qualified
+        type: string
+        default: main
       provenance_artifact:
         description: Nightly artifact containing checksums and provenance, but no wheel
         required: false
@@ -28,6 +32,11 @@ on:
 permissions:
   contents: read
 
+env:
+  FPE_BRANCH: ${{ inputs.source_branch || 'main' }}
+  FPE_SOURCE_SHA: ${{ inputs.expected_sha }}
+  FPE_TOOLING_SHA: ${{ github.sha }}
+
 jobs:
   prepare-wheel:
     name: Prepare exact FPE wheel
@@ -46,12 +55,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - name: Verify exact target
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-        run: test -n "${EXPECTED_SHA}" && test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: test -n "${EXPECTED_SHA}" && test "$(git -C release-source rev-parse HEAD)" = "${EXPECTED_SHA}"
       - id: location
         name: Resolve the Artifactory wheel handoff
         shell: bash
@@ -67,23 +81,14 @@ jobs:
           fi
           subpath="${INPUT_WHEEL_SUBPATH:-fpe/${EXPECTED_SHA}/${GITHUB_RUN_ID}/amd64}"
           echo "subpath=${subpath}" >> "${GITHUB_OUTPUT}"
-      - name: Checkout the current Artifactory transfer helper
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: .workflow-tools
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/setup-manylinux-python-rust
-            python/aisimulate/tools/artifactory_wheel_handoff.sh
-          sparse-checkout-cone-mode: false
-      - uses: ./.workflow-tools/.github/actions/setup-manylinux-python-rust
+      - uses: ./.github/actions/setup-manylinux-python-rust
         if: inputs.wheel_subpath == ''
       - name: Build one wheel for standalone qualification
+        working-directory: release-source
         if: inputs.wheel_subpath == ''
         run: |
           python -m pip install 'maturin>=1.12,<2'
-          python scripts/build_manylinux_wheel.py --output-dir fpe-wheel
+          python scripts/build_manylinux_wheel.py --output-dir ../fpe-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.provenance_artifact != ''
         with:
@@ -97,7 +102,7 @@ jobs:
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.expected_sha }}
-        run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
       - name: Verify nightly artifact checksums and source
         if: inputs.provenance_artifact != ''
         env:
@@ -111,6 +116,8 @@ jobs:
           if provenance["commit"] != os.environ["EXPECTED_SHA"]:
               raise SystemExit("nightly artifact belongs to a different source commit")
           PY
+      - name: Record source and current qualification tooling
+        run: /opt/python/cp312-cp312/bin/python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - id: digest
         name: Record the single wheel identity
         run: |
@@ -132,7 +139,7 @@ jobs:
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
           WHEEL_SOURCE_SHA: ${{ inputs.expected_sha }}
-        run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh upload fpe-wheel
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload fpe-wheel
 
   discover-shards:
     name: Discover matrix shards
@@ -140,23 +147,20 @@ jobs:
     runs-on: ubuntu-latest
     environment: pr-wheel-staging
     outputs:
-      shards: ${{ steps.shards.outputs.value }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Checkout the current Artifactory transfer helper
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: .workflow-tools
-          persist-credentials: false
-          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
-          sparse-checkout-cone-mode: false
       - name: Fetch the qualified wheel from Artifactory
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
@@ -164,7 +168,9 @@ jobs:
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           ARTIFACTORY_SUBPATH: ${{ needs.prepare-wheel.outputs.wheel-subpath }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.expected_sha }}
-        run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+      - name: Bind the fetched wheel to the selected source and current tooling
+        run: python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - name: Install the exact wheel for live inventory discovery
         env:
           FPE_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
@@ -172,19 +178,8 @@ jobs:
           echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install --force-reinstall fpe-wheel/*.whl
       - id: shards
-        name: Read live system/backend identities from the qualified SDK
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-          sys.path.insert(0, "python/aisimulate")
-          from tools.support_matrix.support_matrix import SupportMatrix
-          shards = {(system, backend) for _, system, backend, _ in SupportMatrix().generate_combinations()}
-          if not shards:
-              raise SystemExit("no FPE shards discovered")
-          value = json.dumps([{"system": s, "backend": b} for s, b in sorted(shards)])
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"value={value}\n")
-          PY
+        name: Read selected-source inventory with current qualification tooling
+        run: python scripts/run_release_fpe.py discover --wheel-dir fpe-wheel
 
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
@@ -208,19 +203,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Checkout the current Artifactory transfer helper
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: .workflow-tools
-          persist-credentials: false
-          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
-          sparse-checkout-cone-mode: false
       - name: Fetch the qualified wheel from Artifactory
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
@@ -228,7 +220,9 @@ jobs:
           ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           ARTIFACTORY_SUBPATH: ${{ needs.prepare-wheel.outputs.wheel-subpath }}
           EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.expected_sha }}
-        run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+      - name: Bind the fetched wheel to the selected source and current tooling
+        run: python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - name: Verify and install the qualified wheel
         run: |
           echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
@@ -251,7 +245,7 @@ jobs:
           FPE_SYSTEM: ${{ matrix.shard.system }}
           FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
-          python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+          python scripts/run_release_fpe.py probe --wheel-dir fpe-wheel \
             --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
             --output-dir "fpe-support-matrix/${FPE_SYSTEM}/${FPE_BACKEND}" \
             --forward-model op_level --sdk-log-level ERROR --max-workers 8
@@ -267,36 +261,42 @@ jobs:
     name: Qualify and build FPE support matrix
     needs: [generate, discover-shards, prepare-wheel]
     runs-on: ubuntu-latest
+    environment: pr-wheel-staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-support-matrix-*
           path: fpe-support-matrix
+      - name: Fetch the qualified wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ needs.prepare-wheel.outputs.wheel-subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.expected_sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-wheel
+      - name: Bind the fetched wheel to the selected source and current tooling
+        run: python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - name: Require complete same-wheel reports and native sentinels
         env:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          EXPECTED_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
         run: |
-          python3 python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py fpe-support-matrix \
-            --expected-shards "${EXPECTED_SHARDS}" --expected-sha "${EXPECTED_SHA}" \
-            --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
-            --required-probes .github/fpe-required-probes.json --output fpe-qualification.json
-      - name: Build the deterministic split web matrix
-        run: |
-          python3 python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py fpe-support-matrix \
-            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+          printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
+          python3 scripts/run_release_fpe.py package --wheel-dir fpe-wheel \
+            --reports fpe-support-matrix --destination fpe-nightly-web
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-support-matrix-web
-          path: |
-            fpe-qualification.json
-            python/aisimulate/docs/fpe-support-matrix/index.html
-            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+          path: fpe-nightly-web
           if-no-files-found: error
           # Pages reuses the latest qualified snapshot on documentation pushes.
           retention-days: 90

@@ -118,9 +118,9 @@ Manual dispatches and site-change triggers are listed below.
 
 | Workflow | When it runs | Role |
 | --- | --- | --- |
-| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
+| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen and ready-for-review; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Scheduled runs build, qualify, and stage nightly artifacts, skipping unchanged `main`; manual runs build and stage an approved source SHA |
+| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Builds, stages, qualifies, and hands off artifacts for publication; skips unchanged scheduled `main` and requires approval for manual sources |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
@@ -128,9 +128,26 @@ Manual dispatches and site-change triggers are listed below.
 | [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Schedules FPE support-matrix refreshes for discovered `release/*` branches |
 | [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
-| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
+| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Every trusted `pull-request/*` push; selects relevant PR files before benchmarking; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
 | [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one explicit SHA | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
 | [GitHub Pages](../.github/workflows/pages.yml) | FPE Support Matrix, Main branch nightly CI, Release branch nightly CI, or E2E Accuracy Matrix completion; relevant site changes on PRs/`main`; daily at 09:17 UTC; manual dispatch | Validates qualified FPE and accuracy snapshots, tests FPE branch selection in Chromium, and builds public pages; deployment is restricted to trusted `main` |
+
+Forward performance uses the same selection pattern as Full CI: a small
+GitHub-hosted job checks the complete PR file list before allocating the benchmark
+runner. This includes the first copied-branch push, whose event can contain no
+commits. The selector checks current and previous filenames, validates the PR
+head and base, and reports an explicit skip for unrelated changes. API failures
+or changed revisions fail selection; empty, incomplete, or oversized file lists
+run the benchmark conservatively. Manual dispatch forces a comparison after the
+same revision checks: the trusted copy must match the current PR head.
+
+If the PR changes the performance gate's Python files or the shared prediction
+grid, the benchmark job also runs the PR's controller against the same base and
+head installations. This validates new matrix cases before merge and reports
+them separately, alongside the normal comparison made with the base controller. It reuses the built
+packages and requires no additional runner or manual dispatch.
+Gate documentation-only changes do not select a benchmark or an additional
+controller run.
 
 Ownership checks, prediction performance, E2E accuracy, and Pages run independently
 of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.
@@ -144,8 +161,9 @@ The [review contract](../REVIEW.md#risk-tiered-review-and-ci) defines review
 depth and merge policy. The root [CodeRabbit configuration](../.coderabbit.yaml)
 configures automated review separately from GitHub Actions.
 
-1. Mark the PR non-draft and apply `review-ready`. Fast CI and CodeRabbit run
-   in parallel. The label admits work for review; it is not an approval.
+1. Open or update the PR to run Fast CI automatically, including while it is a
+   draft. Mark the PR non-draft for automatic CodeRabbit review, subject to its
+   configured title and label exclusions. No `review-ready` label is needed.
 2. Complete the reviews required for the risk level on the current commit:
    CodeRabbit for all tiers, plus Codex for medium/high risk.
 3. A maintainer admits Full CI after the required initial reviews complete with
@@ -172,12 +190,12 @@ Fast CI has three substantive jobs, followed by an aggregate result:
 | Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
 | Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
 | Rust Format | `cargo fmt --all -- --check` |
-| Fast CI Success | Requires the three jobs to succeed for an admitted PR, branch push, or manual run |
+| Fast CI Success | Requires the three jobs to succeed for every PR, branch push, or manual run |
 
-Draft PRs skip substantive work and report Fast CI as not applicable. A
-non-draft PR missing `review-ready` fails the aggregate. The exact Ruff paths
-are listed in [the workflow](../.github/workflows/fast-ci.yml); this is not a
-claim that every migrated source file is linted.
+Draft and non-draft PRs run the same Fast CI checks without a label requirement.
+The aggregate fails if any required job fails, is canceled, or is skipped.
+The exact Ruff paths are listed in [the workflow](../.github/workflows/fast-ci.yml);
+this is not a claim that every migrated source file is linted.
 
 Every standalone run publishes `Fast CI Success`. Full CI contains only a
 lightweight **Require Fast CI** job, which reads the standalone run and verifies
@@ -247,6 +265,16 @@ records a full baseline commit that must resolve in the checkout. Tolerances
 are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+The FP8-block data correction in PR #244 changes only the MiniMax cases to
+enable declared reuse: their vLLM 0.24.0 primary data no longer contains
+invalid eager FP8-block measurements, so corrected GEMMs come from 0.25.0.
+With the original data, enabling reuse reproduces all four old baselines
+exactly. With corrected data, the prefill baselines change from
+42.676331 / 116.409355 ms to 21.898890 / 98.968257 ms, and decode from
+39.364559 / 7396.437641 ms to 6.956580 / 2192.966039 ms (short/long cases).
+The four Qwen baselines and all tolerances remain unchanged. These are
+prediction-stability values, not measured whole-model accuracy.
 
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
@@ -319,8 +347,11 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
-`main` with the last successful scheduled nightly. The build stamps a date-based dev
-version, uses pinned build tooling, and records checksums and provenance.
+`main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
+by its zero-padded ten-digit workflow run number, for example
+`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+retries retain the same version, and later dates sort after earlier dates. Builds
+use pinned tooling and record checksums and provenance.
 
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
@@ -341,7 +372,7 @@ Two kinds of validation then run:
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
   and console commands are checked using the downloaded wheel.
-- **FPE Support Matrix (scheduled runs):** the amd64 nightly wheel is reused and checked against
+- **FPE Support Matrix (scheduled and approved manual runs):** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
@@ -362,7 +393,7 @@ as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
 
 The GitLab request contract was checked against release-automation revision
-`1aaaeae1f4a29345085b68bb460d09ee47cc4bb0`, specifically the root
+`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
 `.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
 The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
 request selects `ref=main` and forwards these fields:
@@ -371,9 +402,10 @@ request selects `ref=main` and forwards these fields:
 | --- | --- |
 | `PROJECT` | `aisimulate` |
 | `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
-| `NIGHTLY_TAG` | `nightly-YYYYMMDD-<first-seven-commit-characters>` |
+| `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
 | `WHEEL_VERSION` | Exact stamped wheel version |
 | `GITHUB_RUN_ID` / `COMMIT_SHA` | Producing GitHub run and full source commit |
+| `AISIMULATE_TOOLING_SHA` | Trusted workflow commit providing the version stamper |
 | `SLACK_THREAD_TS` / `SLACK_CHANNEL_ID` | Notification thread and channel, optionally empty |
 | `DRY_RUN` | `false` |
 
@@ -402,7 +434,7 @@ trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
 
-To build and stage a specific commit, dispatch from `main` and supply a full
+To build, stage, qualify, and publish a specific commit, dispatch from `main` and supply a full
 40-character SHA reachable from `main` or a `release/*` branch:
 
 ```bash
@@ -417,11 +449,18 @@ checksums, source provenance, and license evidence. Staging paths include the
 unique run ID, and manual runs neither block the scheduled concurrency group nor
 count toward its unchanged-source guard.
 
-Manual dispatches do not run FPE qualification or trigger the GitLab public
-publisher. Their date-based package versions can match another build, so use
-the exact run's `nightly-dist-<arch>` artifacts and checksums; these builds are
-staging evidence, not a public or FPE-qualified nightly. Scheduled runs retain
-the full FPE and public-publication gates above.
+Approved manual dispatches run FPE qualification and may trigger the GitLab
+public publisher under the same successful-build, license, and FPE gates as the
+cron. The selected source supplies the package and model inventory; trusted
+workflow tooling supplies version stamping, the artifact contract, and FPE
+probes, including for older release sources. Qualification records source and
+tooling commits separately and uses the exact staged wheel. The GitLab crate
+publisher uses that same pinned version stamper and unique numeric suffix.
+
+The GitLab consumer must support `AISIMULATE_TOOLING_SHA` and the 18-digit
+nightly suffix before this producer is enabled. Successful GitHub staging or
+handoff alone does not establish that the asynchronous GitLab public publication
+completed; inspect its wheel and crate publish jobs.
 
 ### E2E accuracy campaigns
 
@@ -442,7 +481,7 @@ their publication. Retried jobs preserve successful branches' original run-attem
 provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
 incomplete campaigns cannot publish. A release selector may still show a historical
 snapshot until that release has a qualified campaign. See the
-[accuracy campaign contract](../python/aisimulate/docs/e2e-accuracy/README.md)
+[accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
 ## Reading results and troubleshooting
@@ -450,7 +489,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 | What you see | Meaning and next check |
 | --- | --- |
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
-| `Fast CI Success` failed with no substantive jobs | Check that the PR is non-draft and has `review-ready` |
+| `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
@@ -610,3 +649,13 @@ an executed shard or an explicit exception; verify actual collection.
 - [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
   Model Data Quality Gate. Existing collector and prediction jobs alone do not
   establish that combined gate.
+
+## FPM accuracy
+
+`FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
+an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
+on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
+and publishes successful branch results independently; failed refreshes retain
+the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
+and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).

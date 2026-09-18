@@ -13,6 +13,8 @@ use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, SglangArgs,
 };
@@ -71,6 +73,68 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
         arrival_timestamp_ms: None,
         ..Default::default()
     }
+}
+
+#[test]
+fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(1);
+    let next = Uuid::from_u128(2);
+    let oracle = BeladyOracle::new(vec![(first, hashes.clone()), (next, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(32, 4, 4));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens.clone(), 0);
+    request.uuid = Some(first);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass1 = core.execute_pass(&mut collector, 0.0);
+    assert_eq!(pass1.fpm.as_ref().unwrap().sum_prefill_tokens, 4);
+    assert_eq!(
+        oracle.next_use(hashes[1]),
+        1,
+        "even the uncomputed chunk is retired"
+    );
+    let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+    assert_eq!(
+        oracle.next_use(hashes[0]),
+        1,
+        "continuation does not retire another request"
+    );
+    assert!(core.is_empty());
+
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(next);
+    core.receive(request);
+    let pass3 = core.execute_pass(&mut collector, pass2.end_ms);
+    assert_eq!(pass3.admissions[0].reused_input_tokens, 8);
+    assert_eq!(pass3.fpm.as_ref().unwrap().sum_prefill_tokens, 0);
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
+}
+
+#[test]
+fn belady_keeps_failed_admission_outstanding_until_terminal_cancellation() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let uuid = Uuid::from_u128(1);
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(1, 4, 8));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(uuid);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(pass.admissions.is_empty());
+    assert_eq!(oracle.next_use(hashes[0]), 0);
+    assert_eq!(core.waiting.len(), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
+        .unwrap();
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
 }
 
 #[test]

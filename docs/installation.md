@@ -115,9 +115,10 @@ alone does not establish that validation completed. The nightly path is
 
 Obtain the wheel for your platform from Artifactory using your organization's
 authenticated artifact access. Obtain `provenance.json` and `SHA256SUMS.txt`
-from the same run's `nightly-dist-amd64` or `nightly-dist-arm64` GitHub artifact.
-Verify the recorded source revision and wheel SHA-256, then install that exact
-downloaded file:
+from the same run's `nightly-build-metadata-amd64` or
+`nightly-build-metadata-arm64` GitHub artifact; those metadata artifacts do not
+contain wheels. Verify the recorded source revision and wheel SHA-256, then
+install that exact downloaded file:
 
 ```bash
 python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl

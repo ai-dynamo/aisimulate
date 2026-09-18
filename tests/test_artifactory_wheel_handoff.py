@@ -108,9 +108,7 @@ def _environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, remote
 
 
-def _run(
-    mode: str, directory: Path, env: dict[str, str]
-) -> subprocess.CompletedProcess[str]:
+def _run(mode: str, directory: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(HANDOFF), mode, str(directory)],
         env=env,
@@ -166,6 +164,22 @@ def test_artifactory_handoff_records_explicit_source_sha(tmp_path: Path) -> None
     manifest = json.loads((remote_dir / "_WHEEL.json").read_text())
     assert manifest["source_sha"] == env["WHEEL_SOURCE_SHA"]
     assert _run("download", tmp_path / "destination", env).returncode == 0
+
+
+def test_artifactory_handoff_accepts_an_explicit_producer_run(tmp_path: Path) -> None:
+    env, _ = _environment(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "aisimulate-0.12.0-cp311-abi3-manylinux_2_28_x86_64.whl").write_bytes(b"nightly wheel")
+    assert _run("upload", source, env).returncode == 0
+
+    consumer_env = {
+        **env,
+        "GITHUB_RUN_ID": "99",
+        "EXPECTED_WHEEL_RUN_ID": env["GITHUB_RUN_ID"],
+    }
+    downloaded = _run("download", tmp_path / "destination", consumer_env)
+    assert downloaded.returncode == 0, downloaded.stdout + downloaded.stderr
 
 
 def test_artifactory_handoff_rejects_overwrite_and_wrong_source(tmp_path: Path) -> None:

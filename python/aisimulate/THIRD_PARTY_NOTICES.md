@@ -27,7 +27,7 @@ Pinned upstream collection and preserved-file SHA-256:
 `5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
 
 AISimulate-modified root overlay SHA-256:
-`70960b92994caaad52f806bd5c618353670c9e754a4d61525962f561360d9d48`
+`a70a21425533b419feaafcec67b176b3048a0893c4833bb802f46dc6e9a8f57e`
 
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -866,3 +866,18 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## AISim FPM Gym
+
+- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
+- Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
+  `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
+- Derived files: `scripts/fpm_accuracy/`, `pages/fpm-accuracy/`, and
+  `tests/fpm_accuracy/test_hf_dataset.py`.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
+  publish this code under Apache-2.0.
+- Modified: development-only two-predictor evaluation, public overview export,
+  GitHub Pages presentation, local import paths, and canonical estimator API
+  adaptation with older-wheel compatibility. No Plotly assets included.

@@ -179,7 +179,7 @@ if not isinstance(size, int) or size <= 0:
 expected_sha = os.environ.get("EXPECTED_WHEEL_SOURCE_SHA", "")
 if expected_sha and source_sha != expected_sha:
     raise SystemExit(f"wheel source mismatch: expected {expected_sha}, got {source_sha}")
-expected_run_id = os.environ.get("GITHUB_RUN_ID", "")
+expected_run_id = os.environ.get("EXPECTED_WHEEL_RUN_ID") or os.environ.get("GITHUB_RUN_ID", "")
 if expected_run_id and run_id != expected_run_id:
     raise SystemExit(f"wheel run mismatch: expected {expected_run_id}, got {run_id}")
 print(f"{filename}\t{sha256}\t{size}")

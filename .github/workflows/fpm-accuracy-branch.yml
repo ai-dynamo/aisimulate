@@ -1,0 +1,210 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: FPM Accuracy Branch
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+      artifact_key:
+        required: true
+        type: string
+      hf_revision:
+        required: true
+        type: string
+      nightly_run:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  # Read non-wheel provenance from a prior nightly run when one is reused.
+  actions: read
+
+jobs:
+  wheel:
+    name: Prepare exact accuracy wheel
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 120
+    environment: pr-wheel-staging
+    permissions:
+      contents: read
+      # Download non-wheel provenance from the selected nightly run.
+      actions: read
+    container:
+      # Same manylinux builder as the FPE matrix.
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+    outputs:
+      sha256: ${{ steps.verify.outputs.sha256 }}
+      subpath: ${{ steps.location.outputs.subpath }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to the evaluated branch
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+          EVALUATED_BRANCH: ${{ inputs.branch }}
+        run: |
+          test "$(git -C source rev-parse HEAD)" = "${EXPECTED_SHA}"
+          git -C source merge-base --is-ancestor "${EXPECTED_SHA}" "refs/remotes/origin/${EVALUATED_BRANCH}"
+          test -z "$(git -C source status --porcelain)"
+      - uses: ./.github/actions/setup-manylinux-python-rust
+        if: inputs.nightly_run == ''
+      - name: Build the exact revision when no reusable wheel exists
+        if: inputs.nightly_run == ''
+        run: |
+          python -m pip install 'maturin>=1.12,<2'
+          python source/scripts/build_manylinux_wheel.py --output-dir "${RUNNER_TEMP}/accuracy-wheel"
+          test -z "$(git -C source status --porcelain)"
+      - id: location
+        name: Resolve the Artifactory wheel location
+        env:
+          ARTIFACT_KEY: ${{ inputs.artifact_key }}
+          NIGHTLY_RUN: ${{ inputs.nightly_run }}
+        run: |
+          if [ -n "${NIGHTLY_RUN}" ]; then
+            echo "subpath=nightly/${NIGHTLY_RUN}/handoff/amd64" >> "${GITHUB_OUTPUT}"
+          else
+            echo "subpath=fpm-accuracy/${GITHUB_RUN_ID}/${ARTIFACT_KEY}/amd64" >> "${GITHUB_OUTPUT}"
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: inputs.nightly_run != ''
+        with:
+          name: nightly-build-metadata-amd64
+          path: ${{ runner.temp }}/accuracy-wheel
+          run-id: ${{ inputs.nightly_run }}
+          github-token: ${{ github.token }}
+      - name: Fetch the reusable nightly wheel from Artifactory
+        if: inputs.nightly_run != ''
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ inputs.nightly_run }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${RUNNER_TEMP}/accuracy-wheel"
+      - name: Stage the exact branch wheel in Artifactory
+        if: inputs.nightly_run == ''
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
+          WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload "${RUNNER_TEMP}/accuracy-wheel"
+      - name: Verify wheel checksum and nightly producer revision
+        id: verify
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+          NIGHTLY_RUN: ${{ inputs.nightly_run }}
+        run: |
+          /opt/python/cp312-cp312/bin/python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel'
+          wheels = list(directory.glob('aisimulate-*.whl'))
+          if len(wheels) != 1:
+              raise SystemExit('expected one unified wheel')
+          wheel = wheels[0]
+          digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          if os.environ['NIGHTLY_RUN']:
+              provenance = json.loads((directory / 'provenance.json').read_text())
+              if (provenance['commit'] != os.environ['EXPECTED_SHA'] or
+                  provenance['repository'] != 'ai-dynamo/aisimulate' or
+                  provenance['event'] != 'schedule' or provenance['ref'] != 'refs/heads/main' or
+                  provenance['arch'] != 'amd64' or provenance['artifacts'][wheel.name] != digest):
+                  raise SystemExit('nightly wheel provenance mismatch')
+              checksums = dict(line.split(maxsplit=1)[::-1] for line in (directory / 'SHA256SUMS.txt').read_text().splitlines())
+              for name in (wheel.name, 'provenance.json'):
+                  if hashlib.sha256((directory / name).read_bytes()).hexdigest() != checksums[name]:
+                      raise SystemExit('nightly artifact checksum mismatch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write(f'sha256={digest}\n')
+          PY
+  campaign:
+    name: Qualify FPM accuracy (${{ inputs.artifact_key }})
+    needs: wheel
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 360
+    environment: pr-wheel-staging
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      RAYON_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install the CPU campaign environment
+        run: |
+          /opt/python/cp312-cp312/bin/python -m venv "${RUNNER_TEMP}/accuracy-venv"
+          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
+      - name: Fetch the exact wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ needs.wheel.outputs.subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ inputs.nightly_run }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${RUNNER_TEMP}/accuracy-wheel"
+      - name: Install the exact wheel shared by both predictors
+        env:
+          WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
+        run: |
+          echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
+          python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
+          python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
+          python -m pip check
+      - name: Evaluate the pinned HF dataset and qualify the complete campaign
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+          EVALUATED_BRANCH: ${{ inputs.branch }}
+          HF_REVISION: ${{ inputs.hf_revision }}
+        run: |
+          python scripts/run_fpm_accuracy.py \
+            --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
+            --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
+            --evaluator-sha "${GITHUB_SHA}" --hf-revision "${HF_REVISION}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/accuracy-public"
+      - name: Report advisory accuracy and coverage
+        run: |
+          python - <<'PYCODE' >> "${GITHUB_STEP_SUMMARY}"
+          import json, os
+          from pathlib import Path
+          summary = json.loads((Path(os.environ['RUNNER_TEMP']) / 'accuracy-public/summary.json').read_text())
+          print('## FPM accuracy (advisory)\n')
+          print('Evaluated revision:', summary['snapshot']['commit_sha'])
+          print('HF revision:', summary['snapshot']['hf_revision'])
+          print('Configurations:', len(summary['rows']))
+          print('\nOnly FPM warmup, FPM no warmup, and Regression are evaluated.')
+          print('Accuracy values do not gate release staging. Incomplete campaigns cannot publish.')
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fpm-accuracy-web-${{ inputs.artifact_key }}
+          overwrite: true
+          # A single directory lets the container hook remap the entire path.
+          # Multiline absolute paths remap only the first entry on this runner.
+          path: ${{ runner.temp }}/accuracy-public/
+          if-no-files-found: error
+          retention-days: 90
