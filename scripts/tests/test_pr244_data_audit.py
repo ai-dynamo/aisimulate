@@ -4,6 +4,8 @@
 """Reject corrupt coverage evidence and expose bad timing rows."""
 
 import copy
+import gzip
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +77,41 @@ class CollectionEvidenceTest(unittest.TestCase):
             )
             self.assertEqual(result["latency_unit"], "ms")
             self.assertEqual(result["columns"]["m"]["max"], 3)
+
+    def test_write_rejects_anomalies_even_when_report_matches(self):
+        cases = {
+            "duplicate_physical_keys": {"m": [1, 1]},
+            "null_cells": {"m": [1, None]},
+            "negative_latency": {"latency": [1.0, -1.0]},
+            "zero_latency": {"latency": [1.0, 0.0]},
+            "infinite_latency": {"latency": [1.0, float("inf")]},
+            "nan_latency": {"latency": [1.0, float("nan")]},
+        }
+        for label, invalid_columns in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                data = root / "data"
+                path = data / "b300_sxm/gemm/vllm/0.25.0/gemm_perf.parquet"
+                path.parent.mkdir(parents=True)
+                columns = {"m": [1, 2], "gemm_dtype": ["fp8", "fp8"], "latency": [1.0, 2.0]}
+                pq.write_table(pa.table(columns | invalid_columns), path)
+                path.with_name("collection_meta.yaml").write_text("schema_version: 2\n")
+                ledger = copy.deepcopy(self.ledger)
+                ledger["source_revision"] = audit.SOURCE
+                ledger["systems"]["b300_sxm"]["reported_tables"] = {
+                    path.name: {"rows": 2, "sha256": audit.sha256(path.read_bytes())}
+                }
+                (root / "case-outcomes.json.gz").write_bytes(gzip.compress(json.dumps(ledger).encode()))
+                manifest = root / "manifest.json"
+                original = '{"previous": "valid manifest"}\n'
+                manifest.write_text(original)
+                with (
+                    patch.multiple(audit, ROOT=root, DATA=data, EVIDENCE=root, SYSTEMS=("b300_sxm",)),
+                    patch("sys.argv", ["audit_pr244_data.py", "--write"]),
+                    self.assertRaisesRegex(ValueError, "Published table contains anomalies: b300_sxm/gemm_perf"),
+                ):
+                    audit.main()
+                self.assertEqual(manifest.read_text(), original)
 
 
 if __name__ == "__main__":

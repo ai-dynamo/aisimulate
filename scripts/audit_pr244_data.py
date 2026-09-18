@@ -169,6 +169,10 @@ def build_manifest():
         require(set(tables) == set(reported), f"Table inventory drift: {system}")
         for name, table in tables.items():
             require(
+                all(count == 0 for count in table["anomalies"].values()),
+                f"Published table contains anomalies: {system}/{name}: {table['anomalies']}",
+            )
+            require(
                 all(table[key] == reported[name][key] for key in ("rows", "sha256")),
                 f"Published table differs from collection report: {system}/{name}",
             )

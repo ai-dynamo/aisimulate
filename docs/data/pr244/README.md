@@ -17,6 +17,9 @@ files. It checks each file's hash and row count against the original collection
 report, then compares the result with `manifest.json`. No network or historical
 Git objects are needed for this check. Use `--write` only when intentionally
 regenerating the manifest after reviewing a change.
+Both check and write modes reject tables with null cells, duplicate physical
+keys, or nonfinite/nonpositive latency, even when the original report's hash
+and row count match. Rejection leaves the existing manifest unchanged.
 
 | System | Tables | Rows | Retained cases | Done | Failed | Unattempted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
