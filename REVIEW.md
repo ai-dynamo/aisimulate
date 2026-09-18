@@ -33,6 +33,13 @@ also require a Codex review of the same commit. The risk level changes review
 depth, not merge authority: every tier still requires the applicable CODEOWNER
 approval.
 
+A draft or a PR excluded by the configured title/label filters is not eligible
+for maintainer Full CI admission on the strength of a skipped CodeRabbit check.
+When the work is ready, remove those exclusions, mark it non-draft, and obtain
+substantive CodeRabbit review of the current head. There is no replacement-review
+waiver in this policy. An automatic copy-branch coverage run does not satisfy
+this review requirement or grant merge permission.
+
 | Risk | Review before Full CI | Human merge gate |
 | --- | --- | --- |
 | Low | Fast CI and CodeRabbit | Applicable CODEOWNER |

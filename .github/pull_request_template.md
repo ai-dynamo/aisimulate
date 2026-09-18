@@ -14,7 +14,8 @@ State the problem, the behavior change, and the intended consumer.
 <!--
 Point reviewers to the riskiest files, decisions, and cross-layer contracts.
 Use REVIEW.md for tier definitions and handoff expectations. Drafts run Fast CI;
-mark ready for automatic CodeRabbit review. No review-ready label is needed.
+mark ready and remove title/label exclusions for automatic CodeRabbit review.
+No review-ready label is needed; a skipped review is not admission evidence.
 -->
 
 - Risk level and rationale: <!-- low / medium / high; highest applicable tier -->

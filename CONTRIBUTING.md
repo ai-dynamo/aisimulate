@@ -29,7 +29,9 @@ using the [review contract](REVIEW.md#risk-tiered-review-and-ci), name the
 responsible CODEOWNER team/reviewer, and identify the expert decision for
 high-risk work. Keep unfinished work as a draft: Fast CI still runs, and marking
 the PR ready starts eligible automatic CodeRabbit review without a
-`review-ready` label. Medium/high risk also requires same-commit Codex review.
+`review-ready` label. Remove title/label exclusions when requesting review;
+a skipped CodeRabbit check does not qualify the PR for maintainer Full CI
+admission. Medium/high risk also requires same-commit Codex review.
 
 Follow the [handoff and finding policy](REVIEW.md#review-handoff-and-finding-disposition)
 when requesting review or responding to findings. Keep blocking conversations

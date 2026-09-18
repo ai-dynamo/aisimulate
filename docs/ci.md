@@ -164,6 +164,10 @@ configures automated review separately from GitHub Actions.
 1. Open or update the PR to run Fast CI automatically, including while it is a
    draft. Mark the PR non-draft for automatic CodeRabbit review, subject to its
    configured title and label exclusions. No `review-ready` label is needed.
+   If review is skipped because the PR is a draft or excluded, clear those
+   conditions and obtain current-head CodeRabbit review before maintainer Full
+   CI admission. The automatic copy-branch coverage backstop does not waive
+   this requirement; no replacement-review exception is defined.
 2. Record the risk tier and rationale, responsible CODEOWNER team/reviewer, and
    expert escalation in the PR's review map, following the
    [handoff policy](../REVIEW.md#review-handoff-and-finding-disposition).
