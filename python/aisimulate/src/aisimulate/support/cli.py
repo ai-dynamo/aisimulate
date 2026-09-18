@@ -399,6 +399,7 @@ def _review_config_profile(
     while True:
         identity, workload = request.identity, request.workload
         print("Review FPM profile before saving:")
+        print(f"  Modeling scope: {config.notes['modeling_scope']}")
         print(
             f"  Deployment: {identity.model} ({identity.model_kind}) @ {identity.model_revision}; "
             f"{identity.framework} {identity.framework_version}; "

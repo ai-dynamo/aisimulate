@@ -84,6 +84,180 @@ def test_config_hash_and_identity_are_content_facts_not_checkpoint_revision(tmp_
     assert "auto_map" in config.notes
 
 
+@pytest.mark.parametrize("kind", ["dense", "moe"])
+@pytest.mark.parametrize("declared_architecture", [False, True])
+def test_nested_text_geometry_and_architecture_are_independent_of_wrapper_and_encoders(
+    tmp_path, kind, declared_architecture
+):
+    text = _config(tmp_path).raw
+    if kind == "moe":
+        text.update(architectures=["MixtralForCausalLM"], model_type="mixtral", num_local_experts=4)
+    architecture = text["architectures"][0]
+    baseline = derive_profile(_config(tmp_path, **text), _request(kind), _runtime())
+    if not declared_architecture:
+        del text["architectures"]
+    config = _config(
+        tmp_path,
+        architectures=["ExampleMultimodalForConditionalGeneration"],
+        model_type="example_multimodal",
+        _name_or_path="example/original-checkpoint",
+        hidden_size=1024,
+        n_layer=99,
+        max_position_embeddings=8192,
+        num_experts=64,
+        text_config={**text, "_name_or_path": "example/decoder-base"},
+        vision_config={"hidden_size": 512, "num_hidden_layers": 20, "num_experts": 8},
+        audio_config={"hidden_size": 256, "num_hidden_layers": 10},
+    )
+
+    draft = derive_profile(config, _request(kind), _runtime())
+
+    published_architecture = architecture if declared_architecture else "ExampleMultimodalForConditionalGeneration"
+    assert draft.resolved == {**baseline.resolved, "architecture": published_architecture}
+    assert draft.profile.architecture == published_architecture
+    assert config.decoder_architecture == architecture
+    assert config.suggestions["model"] == "example/original-checkpoint"
+    assert config.sha256 == hashlib.sha256((tmp_path / "config.json").read_bytes()).hexdigest()
+    notes = json.loads(draft.profile.provenance)["config_notes"]
+    assert "text_config" in notes["decoder_config"]
+    assert f"decoder architecture={architecture}" in notes["decoder_architecture"]
+    assert "Text decoder only" in notes["modeling_scope"]
+    assert "Full multimodal deployment memory and latency are not modeled" in notes["modeling_scope"]
+    assert json.loads(draft.profile.deployments[0].resources.provenance)["config_notes"] == notes
+
+
+def test_nested_config_inherits_only_shared_precision_metadata_and_original_identity(tmp_path):
+    text = _config(tmp_path).raw
+    del text["torch_dtype"]
+    config = _config(
+        tmp_path,
+        _name_or_path="example/quantized-checkpoint",
+        auto_map={"AutoConfig": "do_not_execute.Config"},
+        text_config={**text, "_name_or_path": "example/decoder-base"},
+        quantization_config={"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_scheme": "FP8"},
+    )
+    draft = derive_profile(config, _request(), _runtime(weights_bytes=1024))
+    assert draft.profile is not None
+    assert draft.resolved["gemm_quant_mode"] == draft.resolved["moe_quant_mode"] == "nvfp4"
+    assert config.raw["torch_dtype"] == "bfloat16"
+    assert config.raw["quantization_config"]["quant_algo"] == "NVFP4"
+    assert config.suggestions["model"] == "example/quantized-checkpoint"
+    assert "torch_dtype, quantization_config inherited" in config.notes["shared_metadata"]
+    assert "auto_map" in config.notes
+    assert config.sha256 in draft.profile.provenance
+
+
+def test_nested_precision_metadata_takes_precedence_as_a_group(tmp_path):
+    text = _config(tmp_path).raw
+    del text["torch_dtype"]
+    config = _config(
+        tmp_path,
+        text_config={**text, "dtype": "float16", "quantization_config": {"quant_method": "fp8"}},
+        quantization_config={"quant_method": "modelopt", "quant_algo": "NVFP4"},
+    )
+    draft = derive_profile(config, _request())
+    assert draft.resolved["gemm_quant_mode"] == "fp8_static"
+    assert draft.resolved["moe_quant_mode"] == "fp8"
+    assert "torch_dtype" not in config.raw
+    assert "config tensor dtype=float16" in config.notes["dtype"]
+    assert "shared_metadata" not in config.notes
+
+
+@pytest.mark.parametrize("metadata", [{"hf_quant_config": {"format": "custom"}}, {"quant_algo": "CUSTOM"}])
+def test_shared_unrecognized_quantization_prevents_bfloat16_storage_assumptions(tmp_path, metadata):
+    config = _config(tmp_path, text_config=_config(tmp_path).raw, **metadata)
+    draft = derive_profile(config, _request())
+    assert {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"} <= draft.missing.keys()
+    for key, value in metadata.items():
+        assert config.raw[key] == value
+        assert key in config.notes["shared_metadata"]
+
+
+@pytest.mark.parametrize("metadata", [{"hf_quant_config": {"format": "custom"}}, {"quant_algo": "CUSTOM"}])
+def test_nested_unrecognized_quantization_is_not_replaced_by_shared_metadata(tmp_path, metadata):
+    config = _config(
+        tmp_path,
+        text_config={**_config(tmp_path).raw, **metadata},
+        quantization_config={"quant_method": "fp8"},
+    )
+    draft = derive_profile(config, _request())
+    assert {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"} <= draft.missing.keys()
+    assert "quantization_config" not in config.raw
+
+
+@pytest.mark.parametrize("model_type", [None, "example_custom_text"])
+def test_unknown_nested_decoder_retains_wrapper_identity_and_requires_resource_bounds(tmp_path, model_type):
+    text = _config(tmp_path).raw
+    for key in ("architectures", "model_type", "max_position_embeddings"):
+        del text[key]
+    text.update(model_max_length=4096, n_routed_experts=4, local_layer_ids=[0], sliding_window_size=128)
+    if model_type:
+        text["model_type"] = model_type
+    config = _config(
+        tmp_path,
+        architectures=["ExampleMultimodalForConditionalGeneration"],
+        model_type="example_multimodal",
+        text_config=text,
+    )
+    draft = derive_profile(config, _request("moe"), _runtime())
+    assert draft.resolved["architecture"] == "ExampleMultimodalForConditionalGeneration"
+    assert draft.resolved["context_length"] == 4096
+    assert draft.resolved["num_experts"] == 4
+    assert {"weights_bytes", "activations_bytes", "cache_layout", "kv_bytes_per_token"} <= draft.missing.keys()
+    assert "wrapper architecture" in draft.sources["architecture"]
+    assert "assumption" in draft.sources["gemm_quant_mode"]
+    complete = derive_profile(
+        config,
+        _request("moe"),
+        _runtime(weights_bytes=1024, activations_bytes=2048, kv_bytes_per_token=64, cache_layout="linear"),
+    )
+    assert complete.profile is not None
+    assert "user override" in complete.sources["kv_bytes_per_token"]
+
+
+def test_missing_text_geometry_does_not_fall_back_to_wrapper_dimensions(tmp_path):
+    config = _config(tmp_path, text_config={"model_type": "llama", "model_max_length": 2048})
+    draft = derive_profile(config, _request(), _runtime())
+    assert {"weights_bytes", "activations_bytes", "kv_bytes_per_token"} <= draft.missing.keys()
+    assert "hidden_size" not in config.raw
+    assert "hidden_size" in draft.missing["weights_bytes"]
+
+
+def test_known_wrapper_does_not_establish_unknown_nested_decoder_resource_layout(tmp_path):
+    text = {key: value for key, value in _config(tmp_path).raw.items() if key not in ("architectures", "model_type")}
+    config = _config(tmp_path, text_config=text)
+    draft = derive_profile(config, _request(), _runtime())
+    assert draft.resolved["architecture"] == "LlamaForCausalLM"
+    assert config.decoder_architecture is None
+    assert {"num_experts", "weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"} <= (
+        draft.missing.keys()
+    )
+
+
+@pytest.mark.parametrize("text", [None, {}, [], "decoder", [{"hidden_size": 16}], {"text_config": {"hidden_size": 16}}])
+def test_malformed_or_ambiguous_text_sections_have_actionable_diagnostics(tmp_path, text):
+    with pytest.raises(ValueError, match="text_config.*decoder.*--fpm-profile"):
+        _config(tmp_path, text_config=text)
+
+
+def test_nested_architecture_ambiguity_is_not_hidden_by_wrapper_fallback(tmp_path):
+    text = {**_config(tmp_path).raw, "architectures": ["LlamaForCausalLM", "MixtralForCausalLM"]}
+    with pytest.raises(ValueError, match="exactly one decoder architecture"):
+        _config(tmp_path, text_config=text)
+
+
+def test_flat_multimodal_metadata_does_not_change_decoder_estimates(tmp_path):
+    baseline = derive_profile(_config(tmp_path), _request(), _runtime())
+    config = _config(
+        tmp_path,
+        vision_config={"hidden_size": 512, "num_hidden_layers": 20},
+        audio_config={"hidden_size": 256, "num_hidden_layers": 10},
+    )
+    draft = derive_profile(config, _request(), _runtime())
+    assert draft.resolved == baseline.resolved
+    assert "Text decoder only" in json.loads(draft.profile.provenance)["config_notes"]["modeling_scope"]
+
+
 @pytest.mark.parametrize("tp,weights,kv", [(1, 13472, 64), (2, 6816, 32), (4, 3744, 32)])
 def test_dense_tensor_counts_include_replicated_norms_and_kv_heads(tmp_path, tp, weights, kv):
     # TP1: 2 embedding/head matrices * 64*16 + 2 layers *
@@ -313,6 +487,7 @@ def test_missing_fields_are_complete_and_unknown_layout_can_use_explicit_resourc
         ({"num_attention_heads": 0}, "num_attention_heads"),
         ({"architectures": ["LlamaForCausalLM", "OtherForCausalLM"]}, "architectures"),
         ({"n_layer": 4}, "conflicting"),
+        ({"model_max_length": 4096}, "conflicting context_length"),
         ({"dtype": "float32"}, "conflicting"),
         ({"num_key_value_heads": 3}, "num_key_value_heads"),
         ({"attention_bias": "false"}, "attention_bias"),
@@ -362,23 +537,26 @@ def test_overrides_are_strict_even_before_identity_is_complete(tmp_path, overrid
         derive_profile(_config(tmp_path), None, overrides)
 
 
+@pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize(
     "updates",
     [
         {"sliding_window": 128},
         {"layer_types": ["full_attention", "linear_attention"]},
         {"is_encoder_decoder": True},
-        {"vision_config": {"hidden_size": 16}},
         {"ssm_cfg": {"d_state": 16}},
         {"kv_lora_rank": 8},
     ],
 )
-def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path, updates):
+def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path, updates, nested):
+    if nested:
+        updates = {"text_config": {**_config(tmp_path).raw, **updates}}
     with pytest.raises(ValueError, match="unsupported"):
         config = _config(tmp_path, **updates)
         derive_profile(config, _request(), _runtime(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear"))
 
 
+@pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("preview", [False, True])
 @pytest.mark.parametrize("explicit_resources", [False, True])
 @pytest.mark.parametrize(
@@ -392,9 +570,11 @@ def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path
     ],
 )
 def test_late_architecture_and_expert_inputs_cannot_bypass_structural_guards(
-    tmp_path, preview, explicit_resources, facts, architecture, experts, match
+    tmp_path, preview, explicit_resources, facts, architecture, experts, match, nested
 ):
     config = _config(tmp_path, architectures=None, model_type="unknown", **facts)
+    if nested:
+        config = _config(tmp_path, architectures=None, model_type="unknown_wrapper", text_config=config.raw)
     overrides = _runtime(architecture=architecture, num_experts=experts)
     if explicit_resources:
         overrides.update(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear")
@@ -519,7 +699,8 @@ def test_real_minimax_and_glm_extract_independent_facts_without_naive_storage_ru
         assert finished_kv.resolved["kv_bytes_per_token"] == 62 * 2 * 2 * 128 * 2
 
 
-def test_config_route_does_not_import_model_construction_or_remote_code(tmp_path, monkeypatch):
+@pytest.mark.parametrize("nested", [False, True])
+def test_config_route_does_not_import_model_construction_or_remote_code(tmp_path, monkeypatch, nested):
     original = builtins.__import__
 
     def checked(name, *args, **kwargs):
@@ -528,5 +709,8 @@ def test_config_route_does_not_import_model_construction_or_remote_code(tmp_path
         return original(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", checked)
-    draft = derive_profile(_config(tmp_path), _request(), _runtime())
+    config = _config(tmp_path)
+    if nested:
+        config = _config(tmp_path, text_config=config.raw, vision_config={"hidden_size": 512})
+    draft = derive_profile(config, _request(), _runtime())
     assert draft.profile is not None

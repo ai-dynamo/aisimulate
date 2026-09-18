@@ -78,6 +78,19 @@ def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
     return source, resource
 
 
+def _multimodal_config(text=None):
+    return {
+        "_name_or_path": "example/multimodal-checkpoint",
+        "architectures": ["ExampleMultimodalForConditionalGeneration"],
+        "model_type": "example_multimodal",
+        "hidden_size": 4096,
+        "num_hidden_layers": 32,
+        "text_config": dict(_CONFIG if text is None else text),
+        "vision_config": {"hidden_size": 512, "num_hidden_layers": 8},
+        "audio_config": {"hidden_size": 256, "num_hidden_layers": 4},
+    }
+
+
 def _args(output: Path, source: Path, resource: Path | None = None, **changes) -> list[str]:
     options = {**_IDENTITY, **_PILOT, **changes}
     command = ["onboard", "init", "--model-config", str(source), "--output", str(output)]
@@ -161,8 +174,9 @@ def test_explicit_identity_and_pilot_context_override_config_hints(tmp_path, mon
     assert request.fpm_profile.context_length == 32768
 
 
-def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path, monkeypatch, capsys):
-    source, resources = _files(tmp_path)
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path, monkeypatch, capsys, multimodal):
+    source, resources = _files(tmp_path, config=_multimodal_config() if multimodal else None)
     output = tmp_path / "new" / "request.yaml"
     prompts = []
     answers = iter(["", "save", "accept"])
@@ -180,6 +194,10 @@ def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path,
     assert prompts == ["Review action (accept/edit/cancel): "] * 3
     transcript = capsys.readouterr().out
     assert "Review FPM profile before saving:" in transcript
+    review = transcript.split("Review FPM profile before saving:", 1)[1]
+    assert "Text decoder only" in review
+    assert "encoders, projectors, preprocessing" in review
+    assert "Full multimodal deployment memory and latency are not modeled" in review
     assert "weights_bytes: 2147483648" in transcript
     assert "source: user override" in transcript
     assert "per rank" in transcript
@@ -565,6 +583,53 @@ def test_real_cli_accepts_optional_null_moe_metadata_with_late_expert_count(tmp_
     assert request.profile_deployment().resources.weights_bytes == _OVERRIDES["weights_bytes"]
 
 
+def test_real_cli_multimodal_intake_preserves_text_scope_and_original_source(tmp_path):
+    source, resources = _files(tmp_path, config=_multimodal_config())
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    output = tmp_path / "request.yaml"
+    result = subprocess.run(
+        [sys.executable, "-m", "aisimulate", *_args(output, source, resources)],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Text decoder only" in result.stdout
+    assert "encoders, projectors, preprocessing" in result.stdout
+    assert "Full multimodal deployment memory and latency are not modeled" in result.stdout
+    assert "Review action" not in result.stdout
+    request = SupportRequest.from_yaml(output)
+    assert request.identity.model == "example/multimodal-checkpoint"
+    assert request.fpm_profile.architecture == "LlamaForCausalLM"
+    provenance = json.loads(request.fpm_profile.provenance)
+    assert provenance["config_sha256"] == source_hash
+    assert "Text decoder only" in provenance["config_notes"]["modeling_scope"]
+    assert "text_config" in provenance["config_notes"]["decoder_config"]
+    assert provenance["config_notes"]["hidden_size"] == "config hidden_size=128"
+
+
+def test_real_cli_unknown_multimodal_decoder_lists_missing_resource_bounds_without_writing(tmp_path):
+    text = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    text["num_experts"] = 0
+    source, _ = _files(tmp_path, config=_multimodal_config(text))
+    output = tmp_path / "new" / "request.yaml"
+    result = subprocess.run(
+        [sys.executable, "-m", "aisimulate", *_args(output, source)],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "Text decoder only" in result.stdout
+    for field in ("weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"):
+        assert field in result.stderr
+    assert "--resource-overrides" in result.stderr
+    assert "unsupported encoder, multimodal" not in result.stderr
+    assert not output.parent.exists()
+
+
 def test_bundled_modelopt_string_cache_config_creates_complete_request(tmp_path, monkeypatch):
     _terminal(monkeypatch)
     config_path = (
@@ -824,12 +889,13 @@ def test_config_route_option_relationships_are_rejected_before_reading_files(
     assert not output.parent.exists()
 
 
+@pytest.mark.parametrize("multimodal", [False, True])
 @pytest.mark.parametrize(
     "tp,dp,moe_tp,moe_ep,preset",
     [(4, 1, 4, 1, "pure_tp"), (1, 8, 1, 8, "dep"), (8, 1, 1, 8, "tep")],
 )
 def test_config_init_to_plan_replay_preserves_full_topology_without_source_files(
-    tmp_path, monkeypatch, tp, dp, moe_tp, moe_ep, preset
+    tmp_path, monkeypatch, tp, dp, moe_tp, moe_ep, preset, multimodal
 ):
     config = {
         **_CONFIG,
@@ -837,6 +903,8 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
         "model_type": "example_moe",
         "num_local_experts": 8,
     }
+    if multimodal:
+        config = _multimodal_config(config)
     source, resources = _files(tmp_path, config=config)
     output = tmp_path / "request.yaml"
     real_import = builtins.__import__
@@ -864,6 +932,7 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     source.unlink()
     resources.unlink()
     request = SupportRequest.from_yaml(output)
+    assert "Text decoder only" in json.loads(request.fpm_profile.provenance)["config_notes"]["modeling_scope"]
     assert request.parallel_preset == preset
     assert request.profile_deployment().parallel_tuple == (tp, 1, dp, moe_tp, moe_ep, 1)
     plan = tmp_path / "plan"

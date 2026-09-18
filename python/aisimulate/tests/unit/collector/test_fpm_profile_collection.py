@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.metadata
 import json
 import sys
@@ -160,6 +161,244 @@ def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_mo
     assert "--model private-org/new-model" in script
     assert "--max-num-batched-tokens 8192" in script
     assert "--max-num-seqs 1024" in script
+
+
+def _multimodal_config():
+    # Independently authored geometry; the wrapper is the checkpoint identity,
+    # while the nested model type establishes the supported decoder layout.
+    return {
+        "architectures": ["ExampleMultimodalForConditionalGeneration"],
+        "model_type": "example_multimodal",
+        "text_config": {
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+            "hidden_size": 128,
+            "intermediate_size": 256,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "vocab_size": 1024,
+            "max_position_embeddings": 4096,
+            "torch_dtype": "bfloat16",
+        },
+        "vision_config": {"hidden_size": 512, "num_hidden_layers": 8},
+    }
+
+
+def _onboard_collection_plan(tmp_path, document, overrides=None):
+    from aisimulate.support.config_profile import derive_profile
+    from aisimulate.support.config_profile import load_model_config as load_onboarding_config
+    from aisimulate.support.fpm import fpm_cli_args
+    from aisimulate.support.schema import SupportRequest
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(document))
+    request = SupportRequest.model_validate(
+        {
+            "identity": {
+                "model": "example/multimodal-checkpoint",
+                "model_revision": "collector-test-snapshot",
+                "model_kind": "dense",
+                "framework_version": "0.25.1",
+                "gpu": "h200_sxm",
+                "gpu_count": 1,
+                "gpus_per_node": 1,
+                "interconnect": "NVLink",
+            },
+            "search": {"context_length": 4096},
+            "workload": {"input_tokens": 128, "concurrency": 8, "request_count": 8},
+        }
+    )
+    draft = derive_profile(
+        load_onboarding_config(path),
+        request,
+        {
+            "fmha_quant_mode": "bfloat16",
+            "comm_quant_mode": "half",
+            "kv_cache_dtype": "bfloat16",
+            **(overrides or {}),
+        },
+    )
+    assert draft.profile is not None, draft.missing
+    assert hashlib.sha256(path.read_bytes()).hexdigest() in draft.profile.provenance
+    request = SupportRequest.model_validate({**request.model_dump(), "fpm_profile": draft.profile})
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    args = cli._parser().parse_args(command[3:])
+    return planner.build_collection_plan(
+        backend="vllm",
+        model_path=request.identity.model,
+        model_architecture=args.model_architecture,
+        model_config_path=str(path),
+        system="h200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(args),
+        fpm_profile=draft.profile,
+    )
+
+
+@pytest.mark.parametrize("declare_text_architecture", [False, True])
+@pytest.mark.parametrize(
+    "wrapper_fields",
+    [
+        {},
+        {"n_routed_experts": 32},
+        {"kv_lora_rank": 64},
+        {"q_lora_rank": 32, "num_experts": 16, "sliding_window": 64, "multi_query": True, "hidden_size": 1024},
+    ],
+)
+def test_config_onboarding_architecture_matches_multimodal_collection(
+    tmp_path, no_models_or_timing_data, declare_text_architecture, wrapper_fields
+):
+    document = {**_multimodal_config(), **wrapper_fields}
+    if not declare_text_architecture:
+        del document["text_config"]["architectures"]
+    plan = _onboard_collection_plan(tmp_path, document)
+    expected = "LlamaForCausalLM" if declare_text_architecture else "ExampleMultimodalForConditionalGeneration"
+    assert plan.capability.architecture == plan.fpm_profile.architecture == expected
+    assert plan.capability.is_moe is False
+    assert plan.capability.attention_kind == "dense_gqa"
+    assert len(plan.cells) == 2
+    assert "Text decoder only" in plan.fpm_profile.provenance
+    assert {decision["source"] for decision in plan.to_dict()["topology_memory_admission"]} == {"fpm_profile_declared"}
+    parsed = plan.capability.model_config.parsed_payload()
+    assert parsed["hidden_size"] == 128
+    assert parsed["num_experts"] == 0
+    assert all(key not in parsed["raw_config"] for key in wrapper_fields if key != "hidden_size")
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize("outer_alias", ["quant_algo", "hf_quant_config"])
+@pytest.mark.parametrize(
+    "algorithm,expected_gemm,expected_moe", [("fp8", "fp8_static", "fp8"), ("nvfp4", "nvfp4", "nvfp4")]
+)
+@pytest.mark.parametrize("shared_precision", [False, True])
+@pytest.mark.parametrize("dtype_key", ["dtype", "torch_dtype"])
+def test_config_onboarding_precision_matches_multimodal_collection(
+    tmp_path, no_models_or_timing_data, outer_alias, algorithm, expected_gemm, expected_moe, shared_precision, dtype_key
+):
+    document = _multimodal_config()
+    text = document["text_config"]
+    del text["torch_dtype"]
+    selected = document if shared_precision else text
+    selected[dtype_key] = "bfloat16"
+    selected["quantization_config"] = {"quant_method": algorithm, "kv_cache_scheme": {"type": "float", "num_bits": 8}}
+    other_dtype_key = "torch_dtype" if dtype_key == "dtype" else "dtype"
+    outer_algorithm = algorithm if shared_precision else ("nvfp4" if algorithm == "fp8" else "fp8")
+    document[outer_alias] = (
+        outer_algorithm if outer_alias == "quant_algo" else {"quantization": {"quant_algo": outer_algorithm.upper()}}
+    )
+    if shared_precision:
+        # Null aliases, like missing aliases, do not declare decoder precision.
+        text[dtype_key] = None
+        text["quantization_config"] = None
+    else:
+        document[other_dtype_key] = "float32"
+        document.update(quant_dynamic=True, kv_cache_quant_algo="int8")
+    plan = _onboard_collection_plan(
+        tmp_path,
+        document,
+        {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8", "weights_bytes": 1024, "activations_bytes": 1024},
+    )
+    assert len(plan.cells) == 2
+    assert plan.dtype_profile.gemm_quant_mode == expected_gemm
+    assert plan.dtype_profile.moe_quant_mode == expected_moe
+    assert plan.dtype_profile.native_kv_cache_dtype == "fp8"
+    evidence = plan.capability.model_config
+    frozen = evidence.to_dict()
+    assert frozen["payload"] == document
+    assert (
+        frozen["sha256"]
+        == hashlib.sha256(
+            json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+    )
+    raw = evidence.parsed_payload()["raw_config"]
+    assert raw["quant_algo"] == algorithm
+    assert raw["kv_cache_quant_algo"] == "fp8"
+    assert "quant_dynamic" not in raw
+    assert raw[dtype_key] == "bfloat16"
+    assert other_dtype_key not in raw
+    if not shared_precision:
+        assert "hf_quant_config" not in raw
+    raw["quantization_config"]["quant_method"] = "mutated"
+    detached = evidence.effective_payload
+    detached["quantization_config"]["quant_method"] = "mutated"
+    (tmp_path / "config.json").unlink()
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+    assert evidence.parsed_payload()["raw_config"]["quant_algo"] == algorithm
+    assert evidence.to_dict() == frozen
+
+
+def test_registered_multimodal_parser_keeps_context_out_of_decoder_metadata(tmp_path, no_models_or_timing_data):
+    document = _multimodal_config()
+    document.update(
+        architectures=["Llama4ForConditionalGeneration"],
+        n_routed_experts=32,
+        kv_lora_rank=64,
+        hf_quant_config={"quantization": {"quant_algo": "NVFP4"}},
+        quant_dynamic=True,
+        vision_config={
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_channels": 3,
+            "intermediate_size": 64,
+            "image_size": 16,
+            "patch_size": 4,
+            "pixel_shuffle_ratio": 0.5,
+            "projector_input_dim": 32,
+            "projector_output_dim": 16,
+            "vision_output_dim": 16,
+        },
+        image_processor_config={"max_patches": 1, "resize_to_max_canvas": False, "add_global_tile": False},
+    )
+    del document["text_config"]["architectures"]
+    document["text_config"]["quantization_config"] = {"quant_method": "fp8", "kv_cache_scheme": "FP8"}
+    plan = _onboard_collection_plan(
+        tmp_path,
+        document,
+        {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8", "weights_bytes": 1024, "activations_bytes": 1024},
+    )
+    assert plan.capability.architecture == "Llama4ForConditionalGeneration"
+    assert plan.capability.is_moe is False
+    assert plan.capability.attention_kind == "dense_gqa"
+    assert plan.dtype_profile.gemm_quant_mode == "fp8_static"
+    evidence = plan.capability.model_config
+    frozen = evidence.to_dict()
+    parsed = evidence.parsed_payload()
+    assert parsed["hidden_size"] == 128
+    assert parsed["num_experts"] == 0
+    assert parsed["extra_params"].vision_config.hidden_size == 16
+    assert parsed["extra_params"].vision_config.max_num_tiles == 1
+    assert parsed["raw_config"]["quant_algo"] == "fp8"
+    assert all(
+        key not in parsed["raw_config"]
+        for key in ("n_routed_experts", "kv_lora_rank", "vision_config", "image_processor_config", "hf_quant_config")
+    )
+    (tmp_path / "config.json").unlink()
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+    assert evidence.to_dict() == frozen
+
+
+def test_unknown_decoder_quantization_is_not_replaced_by_wrapper_precision(tmp_path, no_models_or_timing_data):
+    document = _multimodal_config()
+    document["quantization_config"] = {"quant_method": "fp8"}
+    document["text_config"]["quant_algo"] = "unknown_decoder_quantization"
+    with pytest.raises(ValueError, match="Unsupported quant algorithm: unknown_decoder_quantization"):
+        _onboard_collection_plan(
+            tmp_path,
+            document,
+            {"gemm_quant_mode": "fp8_static", "moe_quant_mode": "fp8", "weights_bytes": 1024},
+        )
 
 
 def test_frozen_profile_content_invalidates_resume_without_changing_cell_ids(tmp_path, no_models_or_timing_data):

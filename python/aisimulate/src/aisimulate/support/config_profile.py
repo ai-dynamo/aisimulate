@@ -82,7 +82,7 @@ _INT_ALIASES = {
     "num_key_value_heads": ("num_key_value_heads", "num_kv_heads"),
     "head_dim": ("head_dim",),
     "vocab_size": ("vocab_size",),
-    "context_length": ("max_position_embeddings", "n_positions", "max_seq_len", "seq_length"),
+    "context_length": ("max_position_embeddings", "n_positions", "max_seq_len", "seq_length", "model_max_length"),
     "num_experts": _EXPERT_ALIASES,
 }
 _OPTIONAL_DIMENSIONS = frozenset(("num_key_value_heads", "head_dim", "intermediate_size"))
@@ -111,6 +111,8 @@ _AUXILIARY_DIMENSIONS = (
 @dataclass(frozen=True)
 class ModelConfig:
     raw: dict[str, Any]
+    # Checkpoint/collector identity in suggestions may name a multimodal wrapper.
+    decoder_architecture: str | None
     sha256: str
     suggestions: dict[str, Any]
     notes: dict[str, str]
@@ -259,10 +261,8 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None) -> None:
     for key in ("attention_bias", "mlp_bias", "tie_word_embeddings", "is_encoder_decoder", "use_sliding_window"):
         if key in raw and type(raw[key]) is not bool:
             raise ValueError(f"{key} must be a boolean")
-    if raw.get("is_encoder_decoder") or any(
-        raw.get(key) is not None for key in ("vision_config", "audio_config", "text_config")
-    ):
-        raise ValueError("unsupported encoder, multimodal or nested text layout; supply a decoder-only config")
+    if raw.get("is_encoder_decoder"):
+        raise ValueError("unsupported encoder-decoder text layout; supply a decoder-only config or FPM profile")
     if any(raw.get(key) is not None for key in ("ssm_cfg", "mamba_d_state", "linear_conv_kernel_dim")) or any(
         name in (architecture or "").lower() for name in ("mamba", "jamba", "rwkv")
     ):
@@ -308,6 +308,36 @@ def load_model_config(path: str | Path) -> ModelConfig:
     raw = json.loads(payload, object_pairs_hook=_unique_object, parse_float=_finite_float, parse_constant=_finite_float)
     if not isinstance(raw, dict):
         raise ValueError("model config JSON must be an object")
+    document = raw
+    notes = {
+        "modeling_scope": (
+            "Text decoder only. FPM excludes multimodal encoders, projectors, preprocessing and other non-text "
+            "components and their resource costs. Full multimodal deployment memory and latency are not modeled."
+        )
+    }
+    if "text_config" in document:
+        text_config = document["text_config"]
+        if not isinstance(text_config, dict) or not text_config:
+            raise ValueError(
+                "text_config must be a nonempty object describing one text decoder; "
+                "supply its decoder config or a complete --fpm-profile"
+            )
+        if "text_config" in text_config:
+            raise ValueError("ambiguous nested text_config; supply one text decoder config or a complete --fpm-profile")
+        raw = dict(text_config)
+        notes["decoder_config"] = "config text_config; outer model and encoder geometry are excluded"
+        inherited = []
+        for keys in (("dtype", "torch_dtype"), ("quantization_config", "hf_quant_config", "quant_algo")):
+            if any(raw.get(key) is not None for key in keys):
+                continue
+            for key in keys:
+                if document.get(key) is not None:
+                    raw[key] = document[key]
+                    inherited.append(key)
+        if inherited:
+            notes["shared_metadata"] = (
+                f"config-level {', '.join(inherited)} inherited because text_config does not declare that metadata"
+            )
     geometry = {key: _aliased_int(raw, key) for key in _INT_ALIASES}
     for key in _EXTRA_DIMENSIONS:
         if raw.get(key) is not None:
@@ -315,9 +345,21 @@ def load_model_config(path: str | Path) -> ModelConfig:
     for key in _AUXILIARY_DIMENSIONS:
         if raw.get(key) is not None:
             _integer(raw[key], key, minimum=0)
-    architecture = _architecture(raw)
+    decoder_architecture = _architecture(raw)
+    architecture = decoder_architecture
+    if raw is not document:
+        if raw.get("architectures") is None and (wrapper_architecture := _architecture(document)):
+            architecture = wrapper_architecture
+            notes["architecture"] = (
+                f"config wrapper architecture={architecture} retained for checkpoint/collector identity"
+            )
+        notes["decoder_architecture"] = (
+            f"text_config decoder architecture={decoder_architecture}; used for decoder validation/resource estimates"
+            if decoder_architecture
+            else "text_config does not identify a decoder architecture; decoder resource bounds require explicit input"
+        )
     experts = geometry["num_experts"]
-    _validate_architecture(raw, architecture, experts)
+    _validate_architecture(raw, decoder_architecture, experts)
     _validate_quantization(raw)
     dtype = _dtype(raw)
     heads, kv_heads = geometry["num_attention_heads"], geometry["num_key_value_heads"]
@@ -326,14 +368,14 @@ def load_model_config(path: str | Path) -> ModelConfig:
     dense_layers = raw.get("first_k_dense_replace")
     if geometry["num_hidden_layers"] and dense_layers is not None and dense_layers > geometry["num_hidden_layers"]:
         raise ValueError("first_k_dense_replace cannot exceed num_hidden_layers")
-    if architecture in _DENSE:
+    if decoder_architecture in _DENSE:
         experts = 0
     suggestions: dict[str, Any] = {}
-    notes = {key: f"config {key}={value}" for key, value in geometry.items() if value is not None}
+    notes.update({key: f"config {key}={value}" for key, value in geometry.items() if value is not None})
     for key in (*_EXTRA_DIMENSIONS, *_AUXILIARY_DIMENSIONS):
         if raw.get(key) is not None:
             notes[key] = f"config {key}={raw[key]}"
-    names = {_text(raw[key], key) for key in ("_name_or_path", "name_or_path") if raw.get(key)}
+    names = {_text(document[key], key) for key in ("_name_or_path", "name_or_path") if document.get(key)}
     if len(names) > 1:
         raise ValueError("conflicting _name_or_path and name_or_path identity hints")
     if names:
@@ -352,8 +394,11 @@ def load_model_config(path: str | Path) -> ModelConfig:
     if experts is not None:
         suggestions["model_kind"] = "moe" if experts else "dense"
     if dtype:
-        notes["dtype"] = f"config tensor dtype={dtype}; does not declare runtime attention or KV-cache precision"
-    if raw.get("auto_map"):
+        notes["dtype"] = (
+            f"config tensor dtype={dtype}; checkpoint storage still needs verification; "
+            "does not declare runtime attention or KV-cache precision"
+        )
+    if raw.get("auto_map") or document.get("auto_map"):
         notes["auto_map"] = "remote-code references present; read as metadata only and never executed"
     if raw.get("quantization_config") is not None:
         quant = raw["quantization_config"]
@@ -369,7 +414,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
     for key in ("num_nextn_predict_layers", "num_mtp_modules", "mtp_transformer_layers", "use_mtp"):
         if key in raw:
             notes[key] = f"config {key}={raw[key]}; checkpoint capability does not enable runtime speculative decoding"
-    return ModelConfig(raw, hashlib.sha256(payload).hexdigest(), suggestions, notes)
+    return ModelConfig(raw, decoder_architecture, hashlib.sha256(payload).hexdigest(), suggestions, notes)
 
 
 def validate_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -408,7 +453,12 @@ def _precision_facts(config: ModelConfig) -> dict[str, tuple[str, str]]:
     if quant is None:
         if _dtype(raw) == "bfloat16":
             return dict.fromkeys(
-                ("gemm_quant_mode", "moe_quant_mode"), ("bfloat16", "config unquantized bfloat16 tensor dtype")
+                ("gemm_quant_mode", "moe_quant_mode"),
+                (
+                    "bfloat16",
+                    "assumption: bfloat16 tensor dtype with no inline quantization metadata; "
+                    "verify deployed weight precision (sidecars and checkpoint tensors are not inspected)",
+                ),
             )
         return {}
     result = {}
@@ -479,10 +529,13 @@ def _geometry(config: ModelConfig, architecture: str | None, request: SupportReq
 
 
 def _weight_estimate(
-    config: ModelConfig, request: SupportRequest | None, values: dict[str, Any], geometry: dict[str, int]
+    config: ModelConfig,
+    request: SupportRequest | None,
+    values: dict[str, Any],
+    geometry: dict[str, int],
+    architecture: str | None,
 ) -> tuple[int | None, str]:
     raw = config.raw
-    architecture = values.get("architecture")
     if any(raw.get(key) is not None for key in ("quantization_config", "hf_quant_config", "quant_algo")):
         return None, "quantized/mixed tensor storage, packing and scales require explicit rank-local weights_bytes"
     if architecture not in _WEIGHT_LAYOUTS:
@@ -556,9 +609,8 @@ def _weight_estimate(
 
 
 def _activation_estimate(
-    values: dict[str, Any], geometry: dict[str, int], request: SupportRequest | None
+    values: dict[str, Any], geometry: dict[str, int], request: SupportRequest | None, architecture: str | None
 ) -> tuple[int | None, str]:
-    architecture = values.get("architecture")
     if architecture not in _FULL_ATTENTION or request is None:
         return None, "activation/workspace estimate unavailable for this layout or topology; provide activations_bytes"
     if values.get("fmha_quant_mode") not in {"bfloat16", "float16"}:
@@ -644,7 +696,9 @@ def derive_profile(
         if key == "context_length" and key in values and value > values[key]:
             raise ValueError("context_length override exceeds the source config context limit")
         values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
-    architecture = values.get("architecture")
+    architecture = config.decoder_architecture
+    if "architecture" not in config.suggestions:
+        architecture = values.get("architecture")
     _validate_architecture(config.raw, architecture, values.get("num_experts"))
     geometry = _geometry(config, architecture, request)
     if request:
@@ -721,9 +775,9 @@ def derive_profile(
         if key in values:
             continue
         value, source = (
-            estimate(config, request, values, geometry)
+            estimate(config, request, values, geometry, architecture)
             if key == "weights_bytes"
-            else estimate(values, geometry, request)
+            else estimate(values, geometry, request, architecture)
         )
         if value is None:
             missing[key] = source

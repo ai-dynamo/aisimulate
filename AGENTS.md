@@ -17,6 +17,14 @@ the config using available Hub access as described in stage 1. Reuse supplied
 facts and inspect the config/profile before asking for derivable metadata; defer
 other questions to their stage and help the user choose deployment settings.
 
+Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
+`text_config`, or its flat text-decoder fields, and explain that FPM models only
+the text decoder. Multimodal encoders, projectors, preprocessing and other
+non-text components and their resource costs are excluded; full multimodal
+deployment memory and latency are not modeled. Preserve this scope in the
+reviewed profile's provenance and require explicit bounds for unknown decoder
+resources. Keep validation of incompatible decoder/cache semantics intact.
+
 Report the current stage, its result or blocker, and the next action. Resume from
 validated artifacts and accepted decisions instead of repeating the intake.
 Stage transitions are not additional approval gates. Preserve explicit review
