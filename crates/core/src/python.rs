@@ -2134,6 +2134,33 @@ mod tests {
     }
 
     #[test]
+    fn dcp_capacity_requires_explicit_blocks() {
+        let mut config = aic_config();
+        config.tp = 4;
+        config.dcp = Some(4);
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.tensor_parallel_size = 4;
+        role.rank.num_gpu_blocks = 17;
+
+        let error = materialize_aic_capacity(&config, &mut role, false, |_, _| {
+            panic!("DCP must be rejected before estimating capacity")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit KV block capacity"));
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        materialize_aic_capacity(&config, &mut role, true, |_, _| {
+            panic!("explicit DCP capacity must not invoke the estimator")
+        })
+        .unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        config.dcp = Some(1);
+        materialize_aic_capacity(&config, &mut role, false, |_, _| Ok(321)).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 321);
+    }
+
+    #[test]
     fn cuda_graph_reservation_reaches_capacity_rematerialization() {
         let mut config = aic_config();
         config.cuda_graph_reserved_bytes = 14_559_939_133;

@@ -774,6 +774,28 @@ def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
         ):
             with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
                 prefill(different)
+        with pytest.raises(NotImplementedError, match="encoder/multimodal"):
+            prefill(replace(config, fpm_text_only=False))
         assert prefill(config) == pytest.approx(7.0)
+    finally:
+        _engine_handle_cache_clear()
+
+
+def test_session_cache_separates_text_only_mode(fpm_session):
+    from dataclasses import replace
+
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+
+    plain, database, _, isl, _ = fpm_session
+    text_only = models.get_model(plain.model_path, replace(plain.config, fpm_text_only=True), BACKEND)
+    _engine_handle_cache_clear()
+    try:
+        plain_handle = _cached_engine_handle(plain, database)
+        text_handle = _cached_engine_handle(text_only, database)
+        assert text_handle is not plain_handle
+        # Both valid modes query the fixture's measured 40 ms prefill row.
+        for handle in (plain_handle, text_handle):
+            assert handle.predict_prefill_latency(bs=2, isl=isl, prefix=0) == pytest.approx(40.0)
+        assert _cached_engine_handle(plain, database) is plain_handle
     finally:
         _engine_handle_cache_clear()

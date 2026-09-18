@@ -319,6 +319,9 @@ memory behavior. DCP currently requires explicit fixed KV capacity and explicit
 bytes per token if using offload/P-D transfer. The generic cache does not model
 KDA checkpoint/eviction behavior or native hybrid prefill chunk alignment.
 
+For `decode_context`, use **`--stack engine`**. Dynamo Replay and Planner do not
+yet support this field; their DCP integration requires a separate downstream update.
+
 Prediction accepts the timing identity overrides above for regular language
 workers with default timing. Recommendation currently rejects those overrides,
 and DCP is not a recommendation search dimension. [Example A3](#a3-run-and-check-replay-steps-67)
