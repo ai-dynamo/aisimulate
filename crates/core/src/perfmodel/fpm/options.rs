@@ -26,18 +26,19 @@ pub(crate) const DEFAULT_REGRESSION_FFN_TOKEN_WEIGHT: f64 = 1.0;
 /// The defaults retain a bounded sliding sample set, wait for enough
 /// observations before predicting from learned data, and bound native
 /// correction factors to `[0.5, 2.0]`. Native correction retains observations
-/// per inferred workload kind; regression retains one set for its fixed worker
-/// type.
+/// per inferred workload kind; regression retains one set per logical store
+/// (one for dedicated roles, four for Aggregated).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ForwardPassPerfOptions {
-    /// Maximum retained observations across all buckets. The cap applies per
-    /// inferred workload kind for Native and once per role-bound Regression
-    /// model.
+    /// Maximum retained observations across the feature-space buckets in each
+    /// logical store. The cap applies per inferred workload kind for Native
+    /// and per workload store for Regression. At the default of 64, Aggregated
+    /// regression can retain up to 256 observations across its four stores.
     #[serde(default = "default_max_observations")]
     pub max_observations: usize,
     /// Minimum retained observations required before a regression fit or
     /// native correction is used. Native applies it per inferred workload
-    /// kind; Regression applies it to its single store.
+    /// kind; Regression applies it independently to each logical store.
     #[serde(default = "default_min_observations")]
     pub min_observations: usize,
     /// Optional absolute lower bound on native correction factors for

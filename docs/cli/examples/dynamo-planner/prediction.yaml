@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Run from this directory; timings and model metadata are synthetic.
+traffic:
+  source: {type: synthetic, input_tokens: 32, output_tokens: 4}
+  load: {type: constant_rate, requests_per_second: 1.0}
+  stop: {requests: 12}
+
+engine:
+  mode: aggregated
+  model: ./model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 2048
+  workers:
+    aggregated:
+      parallelism:
+        replicas: 2
+        tensor: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler: {max_batched_tokens: 2048, max_sequences: 32}
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        capacity: {type: fixed, blocks: 256}
+      timing: {type: fixed, prefill_ms: 1, decode_ms: 1}
+
+evaluation:
+  sla: {ttft_ms: 8000.0, itl_ms: 200.0}
+
+planner:
+  policy: enabled
+  target: load
+  enable_throughput_scaling: false
+  enable_load_scaling: true
+  throughput_adjustment_interval_seconds: 180
+  load_adjustment_interval_seconds: 5
+  load_scaling_down_sensitivity: 80
+  load_min_observations: 5
+  max_num_gpus: 2
+  min_workers: 1

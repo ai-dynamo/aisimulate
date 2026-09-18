@@ -44,6 +44,13 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: crate::engine::belady::BeladyOracle) {
+        match &mut self.core {
+            EngineCore::Vllm(core) => core.set_belady_oracle(oracle),
+            EngineCore::Sglang(core) => core.set_belady_oracle(oracle),
+        }
+    }
+
     pub(crate) fn set_g3_offload(
         &mut self,
         registry: crate::engine::g3_offload::SharedG3Tier,

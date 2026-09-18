@@ -1,12 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
+# Copyright contributors to the vLLM project. Modified for collector execution.
 
 # MiniMax-M3 support landed in vLLM 0.24.0 (vllm/models/minimax_m3/ +
 # MinimaxM3QKVParallelLinearWithIndexer + fused_minimax_m3_qknorm_rope_kv_insert);
 # this collector follows the 0.24.0 APIs and is pinned to the manifest
 # default runtime (vllm collectors pin exactly; see
 # test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version).
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 validation: job 1968755 passed 8 context and 6 generation
+# cases after matching serving inference mode, positions, and THK top-k layout.
+__compat__ = "vllm>=0.24.0,<=0.25.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
@@ -413,11 +417,11 @@ def _create_msa_attention_module(
     # shape [num_index_heads, tokens padded to a multiple of 4 for
     # build_k2q_csr's int4 loads, sparse_topk_blocks], int32.
     max_num_batched_tokens = vllm_config.scheduler_config.max_num_batched_tokens
-    padded_num_tokens = (max_num_batched_tokens + 3) // 4 * 4
+    # vLLM dd10e03f9 changes HTK -> THK (nvidia/model.py:796-803).
+    # Its indexer writes buf[:num_tokens] (nvidia/indexer_msa.py:340-347),
+    # so retaining 0.24's head-first allocation gives the wrong output shape.
     topk_indices_buffer = torch.empty(
-        num_kv_heads,
-        padded_num_tokens,
-        sparse_cfg["sparse_topk_blocks"],
+        *_msa_topk_buffer_shape(num_kv_heads, max_num_batched_tokens, sparse_cfg["sparse_topk_blocks"], vllm_version),
         dtype=torch.int32,
         device=device,
     )
@@ -508,6 +512,23 @@ def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
     return int(block_table.max().item()) + 1  # blocks needed incl. null block
 
 
+def _msa_topk_buffer_shape(num_heads: int, max_tokens: int, topk: int, version: str) -> tuple[int, int, int]:
+    """Match the serving allocation's versioned index-head/token axis order."""
+    from packaging.version import Version
+
+    padded_tokens = (max_tokens + 3) // 4 * 4
+    if Version(version) >= Version("0.25.0"):
+        return padded_tokens, num_heads, topk
+    return num_heads, padded_tokens, topk
+
+
+def _msa_query_positions(batch_size: int, seq_len: int, is_context: bool, prefix_len: int = 0) -> list[int]:
+    """Absolute positions of only the current query tokens, not cached tokens."""
+    start = prefix_len if is_context else seq_len
+    width = seq_len if is_context else 1
+    return [position for _ in range(batch_size) for position in range(start, start + width)]
+
+
 def _create_kv_caches_and_metadata(
     vllm_config,
     attn_module,
@@ -555,6 +576,16 @@ def _create_kv_caches_and_metadata(
         )
 
     common_attn_metadata = create_common_attn_metadata(batch_spec, block_size, torch_device, arange_block_indices=True)
+    # vLLM dd10e03f9 supplies CommonAttentionMetadata.positions in
+    # gpu_model_runner.py:2393; its values are cached-token count plus the
+    # query-local offset (:1946-1949). MSA's new indexer consumes this field
+    # at models/minimax_m3/nvidia/indexer_msa.py:169-172. The field already
+    # exists in 0.24.0; leaving it None fails the 0.25.0 MSA builder.
+    common_attn_metadata.positions = torch.tensor(
+        _msa_query_positions(batch_size, seq_len, is_context, prefix_len),
+        dtype=torch.long,
+        device=torch_device,
+    )
     num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
 
     # Main paged K/V cache: shape from the layer's own backend
@@ -849,18 +880,23 @@ def run_msa_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    return run_msa_module(
-        seq_len=seq_len,
-        batch_size=batch_size,
-        num_heads=num_heads,
-        kv_cache_dtype=kv_cache_dtype,
-        compute_dtype=compute_dtype,
-        gemm_type=gemm_type,
-        prefix_len=prefix_len,
-        perf_filename=perf_filename,
-        model_path=model_path,
-        device=device,
-    )
+    # Serving executes model forward under inference mode (vLLM dd10e03f9,
+    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
+    # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
+    # mutates a cached workspace that may have been created by the dry run.
+    with torch.inference_mode():
+        return run_msa_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            prefix_len=prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            device=device,
+        )
 
 
 def _cleanup():

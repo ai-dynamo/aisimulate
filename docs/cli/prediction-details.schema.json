@@ -193,6 +193,253 @@
             "serving_metrics"
           ],
           "additionalProperties": false
+        },
+        "energy": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "available",
+                "withheld",
+                "unsupported",
+                "not_observed",
+                "missing"
+              ]
+            },
+            "scope": {
+              "const": "active_forward_pass_per_gpu"
+            },
+            "diagnostics": {
+              "type": "object",
+              "properties": {
+                "power_w": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "exclusiveMinimum": 0
+                },
+                "power_coverage": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "publication_status": {
+                  "enum": [
+                    "available",
+                    "withheld",
+                    "unsupported",
+                    "not_observed",
+                    "missing"
+                  ]
+                },
+                "phases": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/energyPhase"
+                  }
+                }
+              },
+              "required": [
+                "power_w",
+                "power_coverage",
+                "phases",
+                "publication_status"
+              ],
+              "if": {
+                "properties": {
+                  "publication_status": {
+                    "const": "available"
+                  }
+                },
+                "required": [
+                  "publication_status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "power_w": {
+                    "type": "number"
+                  },
+                  "power_coverage": {
+                    "type": "number",
+                    "minimum": 0.9
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "power_w": {
+                    "type": "null"
+                  }
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "withheld"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "number",
+                        "exclusiveMaximum": 0.9
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "missing"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "number",
+                        "minimum": 0.9
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "unsupported"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "publication_status": {
+                        "const": "not_observed"
+                      }
+                    },
+                    "required": [
+                      "publication_status"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "power_coverage": {
+                        "enum": [
+                          0,
+                          null
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "diagnostics"
+          ],
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "available"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "withheld"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "withheld"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "unsupported"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "unsupported"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "not_observed"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "not_observed"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "missing"
+                },
+                "diagnostics": {
+                  "properties": {
+                    "publication_status": {
+                      "const": "missing"
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       "required": [],
@@ -210,6 +457,10 @@
           "minLength": 1
         },
         "time": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy": {
           "type": "string",
           "minLength": 1
         }
@@ -379,6 +630,234 @@
         "unavailable_reason"
       ],
       "additionalProperties": false
+    },
+    "energyOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy_wms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covered_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "power_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "measured",
+            "transferred",
+            "modeled",
+            "mixed",
+            "other",
+            "missing"
+          ]
+        },
+        "energy_contribution": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "enum": [
+            "available",
+            "partial",
+            "missing"
+          ]
+        },
+        "uncovered_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "covered_latency_ms",
+        "power_coverage",
+        "source",
+        "source_kind",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "energyPhase": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "energy_wms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covered_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "power_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "measured",
+            "transferred",
+            "modeled",
+            "mixed",
+            "other",
+            "missing"
+          ]
+        },
+        "publication_status": {
+          "enum": [
+            "available",
+            "withheld",
+            "not_observed",
+            "missing"
+          ]
+        },
+        "power_w": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/energyOperation"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "covered_latency_ms",
+        "power_coverage",
+        "publication_status",
+        "power_w",
+        "source",
+        "source_kind",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "publication_status": {
+            "const": "available"
+          }
+        },
+        "required": [
+          "publication_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "power_w": {
+            "type": "number"
+          },
+          "power_coverage": {
+            "type": "number",
+            "minimum": 0.9
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "power_w": {
+            "type": "null"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "withheld"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "type": "number",
+                "exclusiveMaximum": 0.9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "missing"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "type": "number",
+                "minimum": 0.9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "publication_status": {
+                "const": "not_observed"
+              }
+            },
+            "required": [
+              "publication_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "power_coverage": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",
@@ -426,6 +905,22 @@
           "skipped": {
             "required": [
               "time"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "energy"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "energy"
             ]
           }
         }

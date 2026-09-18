@@ -605,6 +605,10 @@ where
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> anyhow::Result<()> {
         debug_assert_eq!(payload.stage, SimulationWorkerStage::Aggregated);
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         if let Some(sink) = &self.artifact_sink {
             sink.record_pass_completion_kv_events(
                 payload.pass_started_at_ms,

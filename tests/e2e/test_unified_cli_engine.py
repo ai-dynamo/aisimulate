@@ -199,7 +199,9 @@ def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path:
         "json",
     )
     cli_report = json.loads(result.stdout)
-    assert cli_report == json.loads((output / "prediction.json").read_text())
+    saved = json.loads((output / "prediction.json").read_text())
+    assert cli_report == {key: value for key, value in saved.items() if key != "power_diagnostics"}
+    assert saved["power_diagnostics"]["publication_status"] == "unsupported"
     assert cli_report["agentic_qualification"] == "functional_only"
     assert cli_report["agentic_lanes"] == 1
     assert cli_report["completed_requests"] == cli_report["agentic_graph"]["node_count"]

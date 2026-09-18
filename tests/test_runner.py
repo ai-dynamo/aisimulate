@@ -4,6 +4,7 @@
 """Engine-only implementation of the canonical Sweeper Runner contract."""
 
 import json
+import math
 import pickle
 
 import pytest
@@ -56,6 +57,20 @@ class RecordingRuntime:
                 "completed_requests": 1,
             }
         )
+
+
+class PowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload.update({"power_w": 487.5, "power_coverage": 0.95})
+        return json.dumps(payload)
+
+
+class WithheldPowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload["power_coverage"] = 0.42
+        return json.dumps(payload)
 
 
 def _engine_args(*, role="aggregated", backend="vllm", timing=None):
@@ -216,7 +231,8 @@ def test_agentic_qualification_survives_default_python_report():
 
     report = EngineReplayRunnerFactory(runtime=QualifiedRuntime()).create(0).run(_spec())
 
-    assert report.metadata == qualification
+    assert {key: report.metadata[key] for key in qualification} == qualification
+    assert report.metadata["power"]["publication_status"] == "unavailable"
     assert report.metrics["completed_requests"] == 1
     assert "native_report" not in report.metadata
 
@@ -387,7 +403,9 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["requests"][0]["input_tokens"] == 8
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
-    assert report.metadata == {}
+    assert report.metadata["power"]["publication_status"] == "unavailable"
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
@@ -711,6 +729,30 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
     assert runtime.execution_spec["record_per_request"] is True
     assert report.metadata["native_report"]["completed_requests"] == 1
+
+
+def test_runner_preserves_native_power_provenance_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=PowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_w"] == 487.5
+    assert report.metrics["power_coverage"] == 0.95
+    assert report.metadata["power"] == {
+        "source": "modeled",
+        "scope": "active_forward_pass_per_gpu",
+        "power_w_unit": "W",
+        "coverage_gate": 0.9,
+        "publication_status": "available",
+    }
+
+
+def test_runner_preserves_withheld_power_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_coverage"] == 0.42
+    assert report.metrics["power_w"] is None
+    assert report.metadata["power"]["publication_status"] == "withheld"
 
 
 def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
@@ -1229,3 +1271,38 @@ def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
 
     with pytest.raises(HostResourceError, match="report storage: No space left on device"):
         EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())
+
+
+@pytest.mark.parametrize(
+    "watts,coverage",
+    [
+        (500.0, 0.89),
+        (500.0, None),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (None, 1.1),
+        (None, -0.1),
+        (True, 1.0),
+        (None, True),
+        (math.nan, 1.0),
+        (math.inf, 1.0),
+        (-math.inf, 1.0),
+        (None, math.nan),
+        (None, math.inf),
+        (None, -math.inf),
+        (10**400, 1.0),
+        (None, 10**400),
+    ],
+)
+def test_runner_rejects_invalid_power_publication(watts, coverage):
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError):
+        _normalize_engine_replay_report({"power_w": watts, "power_coverage": coverage}, include_native_report=False)
+
+
+def test_runner_rejects_overflowing_ordinary_metric():
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
+        _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)

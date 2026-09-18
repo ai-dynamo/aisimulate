@@ -382,7 +382,7 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
-    needs: [fast-ci, select-full-ci, application-test-wheel]
+    needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
     if: >-
       ${{
         always() &&
@@ -662,6 +662,7 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
+          python -m pip install pip-licenses==5.5.5
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
@@ -727,6 +728,40 @@ jobs:
           -n auto
           --timeout=600
         working-directory: python/aisimulate
+
+  python-compliance:
+    name: Python Dependency Licenses
+    # SPDX headers are covered by the spdx-headers checks in fast-ci; this
+    # job is only the dependency-license gate, which is architecture-
+    # independent. Gated on the application-wheel scope (and listed in that
+    # job's needs) so a disallowed license blocks wheel builds and staging.
+    needs: [fast-ci, select-full-ci]
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Check Python dependency licenses
+        run: python scripts/check_python_licenses.py
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
@@ -864,6 +899,7 @@ jobs:
       - application-wheel
       - application-test-wheel
       - application-tests
+      - python-compliance
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
@@ -890,6 +926,7 @@ jobs:
               "rust-feature-modes": "rust_feature_modes",
               "public-api-rust": "public_api_rust",
               "application-wheel": "application_wheel",
+              "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
               "python-compatibility": "python_compatibility",
