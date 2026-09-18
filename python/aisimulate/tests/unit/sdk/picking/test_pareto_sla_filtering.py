@@ -14,13 +14,13 @@ Covers:
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk.pareto_analysis import (
+from aisimulate.sdk.pareto_analysis import (
     get_best_configs_under_request_latency_constraint,
     get_best_configs_under_tpot_constraint,
     get_pareto_front,
 )
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.picking import pick_default
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.picking import pick_default
 
 pytestmark = pytest.mark.unit
 

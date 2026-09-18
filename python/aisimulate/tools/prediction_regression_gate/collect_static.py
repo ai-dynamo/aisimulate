@@ -85,13 +85,13 @@ def _row_key(row: dict) -> tuple:
 
 def collect_combo(combo: grid.Combo) -> tuple[grid.Combo, list[dict], float]:
     """Run the full grid for one combo. Runs inside a worker process."""
-    from aiconfigurator.cli.api import _build_model_config
-    from aiconfigurator.sdk import config as sdk_config
-    from aiconfigurator.sdk.backends.factory import get_backend
-    from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-    from aiconfigurator.sdk.inference_session import InferenceSession
-    from aiconfigurator.sdk.models import _get_model_info, get_model
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.legacy_cli.api import _build_model_config
+    from aisimulate.sdk import config as sdk_config
+    from aisimulate.sdk.backends.factory import get_backend
+    from aisimulate.sdk.errors import PerfDataNotAvailableError
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate.sdk.models import _get_model_info, get_model
+    from aisimulate.sdk.perf_database import get_database_view
 
     t0 = time.perf_counter()
     database = get_database_view(

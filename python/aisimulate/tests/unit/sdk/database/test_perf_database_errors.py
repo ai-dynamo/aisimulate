@@ -3,7 +3,7 @@
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk.perf_database import (
     PerfDataNotAvailableError,
     has_perf_data_not_available_cause,
 )

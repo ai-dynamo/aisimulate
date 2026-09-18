@@ -136,9 +136,13 @@ def _is_prediction_path(path: str) -> bool:
             "crates/core/src/engine/",
             "crates/core/src/perfmodel/",
             "crates/core/tests/perfmodel/",
-            "python/aisimulate/src/aiconfigurator/",
-            "python/aisimulate/src/aiconfigurator_core/",
-            "python/aisimulate/src/aisimulate/aic.py",
+            "python/aisimulate/src/aisimulate/sdk/",
+            "python/aisimulate/src/aisimulate/generator/",
+            "python/aisimulate/src/aisimulate/legacy_cli/",
+            "python/aisimulate/src/aisimulate/fpm_contract.py",
+            "python/aisimulate/src/aisimulate/logging_utils.py",
+            "python/aisimulate/src/aisimulate_core/",
+            "python/aisimulate/src/aisimulate/capacity.py",
             "python/aisimulate/tools/accuracy_regression_testing/",
             "python/aisimulate/tools/accuracy_tracking/",
             "python/aisimulate/tools/prediction_regression_gate/",
@@ -155,7 +159,7 @@ def _is_collector_path(path: str) -> bool:
             "python/aisimulate/tests/unit/collector/",
             "python/aisimulate/docs/perf_database/",
         )
-    ) or path.startswith("python/aisimulate/src/aiconfigurator_core/systems/data/")
+    ) or path.startswith("python/aisimulate/src/aisimulate_core/systems/data/")
 
 
 def _all(reason: str, paths: list[str]) -> dict[str, object]:

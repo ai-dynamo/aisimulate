@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    logging.getLogger("aiconfigurator_core").setLevel(args.sdk_log_level)
+    logging.getLogger("aisimulate_core").setLevel(args.sdk_log_level)
     workload = ProbeWorkload(
         isl=args.isl,
         osl=args.osl,

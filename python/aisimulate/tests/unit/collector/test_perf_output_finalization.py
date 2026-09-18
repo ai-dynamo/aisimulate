@@ -8,12 +8,11 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
+import collector.helper as helper_mod
 import pyarrow as pa
 import pyarrow.csv as pc_csv
 import pyarrow.parquet as pq
 import pytest
-
-import collector.helper as helper_mod
 from collector.helper import (
     PerfFinalizationInfo,
     convert_perf_csv_to_parquet,
@@ -87,7 +86,7 @@ def _directory_regular_state(directory: Path) -> dict[str, tuple[bytes, int, int
 
 def test_find_perf_csv_outputs_is_non_recursive_by_default(tmp_path):
     top_level = tmp_path / "gemm_perf.txt"
-    nested = tmp_path / "src" / "aiconfigurator" / "systems" / "data" / "gemm_perf.txt"
+    nested = tmp_path / "src" / "aisimulate_core" / "systems" / "data" / "gemm_perf.txt"
     incomplete = tmp_path / "INCOMPLETE.txt"
 
     _write_perf_csv(top_level)
@@ -114,7 +113,7 @@ def test_find_perf_csv_outputs_ignores_structured_provenance_markers(tmp_path):
 
 def test_finalize_perf_outputs_does_not_recurse_into_checked_in_assets(tmp_path):
     top_level = tmp_path / "gemm_perf.txt"
-    nested = tmp_path / "src" / "aiconfigurator" / "systems" / "data" / "gemm_perf.txt"
+    nested = tmp_path / "src" / "aisimulate_core" / "systems" / "data" / "gemm_perf.txt"
 
     _write_perf_csv(top_level)
     nested.parent.mkdir(parents=True)

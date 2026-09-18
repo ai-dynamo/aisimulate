@@ -16,7 +16,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from tools.prediction_regression_gate import grid
 
 pytestmark = pytest.mark.unit

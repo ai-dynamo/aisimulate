@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_RESOLVED_CONFIG_GLOB,
     FPM_RESOLVED_CONFIG_TEMPLATE,
     fpm_benchmark_result_name,
@@ -89,7 +89,7 @@ def test_every_gate_accepted_path_is_discoverable_by_every_glob_consumer():
     import fnmatch
     from pathlib import PurePosixPath
 
-    from aiconfigurator.fpm_contract import FPM_BENCHMARK_RESULT_GLOB, FPM_RESULTS_DIR
+    from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB, FPM_RESULTS_DIR
 
     accepted = [
         "/results/benchmark.json",

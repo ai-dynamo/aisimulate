@@ -22,8 +22,8 @@ that shift must be a conscious act.
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator_core.sdk.operations.mamba import GDNKernel
+from aisimulate.sdk.perf_database import get_database
+from aisimulate_core.sdk.operations.mamba import GDNKernel
 
 pytestmark = pytest.mark.unit
 

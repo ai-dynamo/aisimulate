@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import (
     SHARED_LAYER_REUSE_MARKER,
     PerfDatabase,
     databases_cache,
@@ -158,7 +158,7 @@ def _build_db(systems_root: Path, *, database_mode: str | None = "HYBRID") -> Pe
 
 def _gemm_lookup(db: PerfDatabase, m: int, n: int, k: int) -> float | None:
     """Read latency for a single (m, n, k) triple from the loaded gemm dict."""
-    from aiconfigurator.sdk.operations.gemm import GEMM
+    from aisimulate.sdk.operations.gemm import GEMM
 
     # Under lazy per-op data ownership ``PerfDatabase()`` no longer
     # opens any CSV, so we explicitly trigger ``GEMM.load_data``
@@ -398,7 +398,7 @@ def test_fallback_emits_warning(env: Path, caplog: pytest.LogCaptureFixture) -> 
     _write_gemm_csv(_backend_csv(env, backend="vllm", version="0.5"), [("vllm", "default", 1024, 4096, 4096, 0.7)])
     _make_manifest(env, [("gemm_perf.parquet", "default", "shared_fallback", ["trtllm", "vllm"])])
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.sdk.perf_database"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.sdk.perf_database"):
         db = _build_db(env)  # HYBRID mode
         # The lazy GEMM.load_data (triggered by _gemm_lookup) emits the
         # warning, so it must run while capture is active.
@@ -526,7 +526,7 @@ def test_get_database_shared_layer_override_cached_separately(env: Path) -> None
 
 def test_get_database_view_shared_layer_override(env: Path) -> None:
     """get_database_view(shared_layer=False) yields a SILICON view without the shared layer."""
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     active_csv = _backend_csv(env)
     _write_gemm_csv(active_csv, [])

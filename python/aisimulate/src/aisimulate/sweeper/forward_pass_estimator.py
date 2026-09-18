@@ -9,7 +9,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from aiconfigurator_core.sdk import (
+from aisimulate_core.sdk import (
     ForwardPassPerfModelConfig,
     RustForwardPassPerfModel,
 )
@@ -26,7 +26,7 @@ class ForwardPassEstimatorResolutionError(ValueError):
 def resolve_systems_paths(configured: list[str] | None) -> tuple[str, ...]:
     """Expand and validate request-scoped system roots without setting globals."""
 
-    from aiconfigurator_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
+    from aisimulate_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
 
     return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ())))
 
