@@ -58,7 +58,11 @@ def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
 
 
 def test_nightly_can_publish_the_wheel_needed_by_pending_downstream_migrations():
-    jobs = _workflow("nightly-ci.yml")["jobs"]
+    workflow = _workflow("nightly-ci.yml")
+    serialized_workflow = json.dumps(workflow)
+    assert "check_release_migrations.py" not in serialized_workflow
+    assert "release-gates.json" not in serialized_workflow
+    jobs = workflow["jobs"]
     guard = jobs["changes-guard"]
     commands = "\n".join(_run_commands(job) for job in jobs.values() if "steps" in job)
     assert "check_release_migrations.py" not in commands
