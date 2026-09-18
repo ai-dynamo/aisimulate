@@ -236,7 +236,7 @@ required result, keep the AIC command above.
 - [4.3 Traces and multi-turn sessions](#43-replay-traces-and-multi-turn-sessions)
 - [4.4 Cache capacity and host offload](#44-model-cache-capacity-and-host-offload)
 - [4.5 Dynamo routing and planning](#45-include-dynamo-routing-and-planning)
-- [4.6 Op-level and FPM timing](#46-select-op-level-or-whole-forward-fpm-timing)
+- [4.6 Select and configure performance estimators](#46-select-and-configure-performance-estimators)
 - [4.7 Analytical EPD](#47-predict-and-search-analytical-epd)
 - [4.8 Heterogeneous P/D hardware](#48-migrate-heterogeneous-pd-hardware)
 - [4.9 AFD](#49-afd-translation)
@@ -435,7 +435,11 @@ scaling limits and the search's candidate GPU budget are separate controls.
 
 <a id="select-op-level-or-whole-forward-fpm-timing"></a>
 
-### 4.6 Select op-level or whole-forward FPM timing
+<a id="46-select-op-level-or-whole-forward-fpm-timing"></a>
+
+### 4.6 Select and configure performance estimators
+
+#### 4.6.1 Select an estimator
 
 **Before — AIC estimates a batch using collected whole-forward profiles:**
 
@@ -453,20 +457,79 @@ AIC_ALLOW_UNLISTED_VERSIONS=1 aiconfigurator cli estimate \
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 aisimulate predict \
   --config tests/e2e/configs/unified_cli/predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml \
-  --set engine.workers.aggregated.timing.forward_model=fpm \
+  --set engine.workers.aggregated.timing.estimation_mode=fpm_interpolation \
+  --set engine.workers.aggregated.timing.fallback_policy=deny \
   --output-dir ./minimax-fpm
 ```
 
 **Result to inspect:** `minimax-fpm/prediction.json` contains the serving prediction using
 whole-forward profiles.
 
-**What changed:** AIC's `--forward-model` becomes a per-role
-`engine.workers.<role>.timing.forward_model` setting. `op_level` remains the default. The AISimulate
-fixture uses four in-flight requests rather than fixing every scheduler batch to four. The AIC
-command pins FMHA precision to match the collected profile. Both commands pin vLLM 0.25.1, which
-requires the shown unlisted-version override. FPM requires
-`timing.type: default` and matching profile coverage; a missing profile fails explicitly. See the
-[FPM guide](../../python/aisimulate/docs/fpm/README.md).
+**What changed:** AIC's `--forward-model fpm` maps to the per-role
+`engine.workers.<role>.timing.estimation_mode: fpm_interpolation` setting. The defaults are
+`estimation_mode: auto` and `fallback_policy: deny`. Auto searches
+`op_level -> fpm_interpolation -> fpm_regression` during construction, including with deny.
+For an explicit mode, deny prevents switching estimators; allow tries that mode first, then the
+remaining estimators in the same global priority order. Invalid configuration does not trigger
+fallback. An untrained regression is not ready for offline simulation, and queries do not
+silently switch estimators after construction. Saved `timing.forward_model` inputs are migrated
+with their explicit mode and strict selection preserved; use `estimation_mode` in new configs.
+
+The AISimulate fixture uses four in-flight requests rather than fixing every scheduler batch to
+four. The AIC command pins FMHA precision to match the collected profile. Both commands pin
+vLLM 0.25.1, which requires the shown unlisted-version override. FPM requires
+`timing.type: default` and matching profile coverage; the explicit FPM/deny example fails when
+that profile is missing. See the [FPM guide](../../python/aisimulate/docs/fpm/README.md).
+
+#### 4.6.2 Configure data policies and estimator tuning
+
+**Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
+the bundled system definitions:
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode agg --batch-size 64 --tp-size 2 \
+  --isl 1024 --osl 128 \
+  --database-mode HYBRID --transfer-policy conservative --systems-paths default \
+  --detail source
+```
+
+**Result to inspect:** the estimate and per-operation source breakdown show which data supplied
+the prediction. A policy choice does not guarantee coverage. `SOL` selects theoretical estimates;
+custom system directories can be added to `--systems-paths`. See
+[database modes](legacy-aic-user-guide.md#database-mode) and
+[system paths](legacy-aic-user-guide.md#systems-paths).
+
+**After — carry the policy into serving prediction and recommendation:**
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --set engine.estimation_mode=auto --set engine.fallback_policy=deny \
+  --output-dir ./policy-prediction
+
+aisimulate recommend --config budget-search.yaml \
+  --set engine.database_mode=HYBRID \
+  --set engine.transfer_policy=conservative \
+  --set 'engine.systems_paths=[default]' \
+  --output-dir ./policy-search
+```
+
+Use an ordered list of existing directories plus `default` to search custom data before the
+bundled root. These controls require regular aggregated/disaggregated language workers with
+default timing in every role. AFD, analytical encoder pools, and fixed/polynomial providers keep
+their existing paths. Recommendation YAML pins each selected role's effective data root, version,
+policy, estimator mode, and full estimator configuration for a subsequent prediction.
+
+`engine.estimator_config` carries supported regression/correction controls; see the
+[canonical API](../core-api.md#estimator-controls). Shared role-based correction is deferred:
+current native correction stores and the latest role-bound regression routing remain unchanged.
+The unified CLI does not expose AIC's per-operation source breakdown shown above; keep the
+compatibility CLI or SDK for that diagnostic.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -1236,27 +1299,11 @@ alone does not establish support for an entire CLI workflow.
 
 ### 5.6 Estimator controls and speculative decoding
 
-Backend version and op-level/FPM selection have unified mappings. The following controls still
-require AIC or the estimator SDK.
-
-**Choose performance-data and transfer policies.** This uses `HYBRID`, conservative transfer, and
-the bundled system definitions:
-
-```bash
-aiconfigurator cli estimate \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode agg --batch-size 64 --tp-size 2 \
-  --isl 1024 --osl 128 \
-  --database-mode HYBRID --transfer-policy conservative --systems-paths default \
-  --detail source
-```
-
-**Result to inspect:** the estimate and per-operation source breakdown show which data supplied
-the prediction. A policy choice does not guarantee coverage. `SOL` selects theoretical estimates;
-custom system directories can be added to `--systems-paths`. See
-[database modes](legacy-aic-user-guide.md#database-mode) and
-[system paths](legacy-aic-user-guide.md#systems-paths).
+For supported estimator selection, fallback, database/transfer policies, system roots, and
+regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
+The controls below continue to use AIC or the estimator SDK: explicit quantization/kernel
+selectors, exact cached-prefix assumptions, and non-ngram speculative decoding. Per-operation source
+diagnostics also remain on the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:

@@ -32,7 +32,106 @@ def materialize_aic_num_gpu_blocks(
 ) -> dict[str, Any]:
     """Return engine arguments with rank-local AIC KV capacity materialized."""
 
+    canonical_result = None
+
+    def finish_lowering(value):
+        if canonical_result is None:
+            return value
+        result = dict(canonical_result)
+        for name in ("timing_model", "num_gpu_blocks", "tensor_parallel_size", "dp_size"):
+            if name in value:
+                result[name] = value[name]
+        for name in (
+            "gpu_memory_utilization",
+            "mem_fraction_static",
+            "free_gpu_memory_fraction",
+            "cuda_graph_reserved_bytes",
+            "systems_path",
+        ):
+            result.pop(name, None)
+        return result
+
     lowered = dict(raw)
+    timing = lowered.get("timing_model")
+    if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+        authored = timing.get("config")
+        if not isinstance(authored, dict):
+            raise ValueError("external AIC timing config must be a mapping")
+        if "estimation_mode" in authored or "estimator_config" in authored:
+            from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+            memory_fields = {
+                key: value
+                for key, value in authored.items()
+                if key
+                in {
+                    "gpu_memory_utilization",
+                    "mem_fraction_static",
+                    "free_gpu_memory_fraction",
+                    "cuda_graph_reserved_bytes",
+                }
+            }
+            for name in (
+                "gpu_memory_utilization",
+                "mem_fraction_static",
+                "free_gpu_memory_fraction",
+                "cuda_graph_reserved_bytes",
+            ):
+                if name in lowered:
+                    if name in memory_fields and memory_fields[name] != lowered[name]:
+                        raise ValueError(f"{name} conflicts with canonical timing configuration")
+                    memory_fields[name] = lowered[name]
+            request = {key: value for key, value in authored.items() if key not in memory_fields}
+            model = RustForwardPassPerfModel.best_available(request)
+            try:
+                diagnostics = model.diagnostics()
+            finally:
+                model.close()
+            if diagnostics.get("readiness") != "ready":
+                raise ValueError("regression estimator is not ready; replay requires training observations")
+            canonical_result = dict(raw)
+            resolved = diagnostics["provenance"]["config"]
+            lowered["timing_model"] = {**timing, "config": {**resolved, **memory_fields}}
+            for names, expected in (
+                (("tensor_parallel_size", "aic_tp_size"), resolved["tp"]),
+                (("dp_size", "aic_attention_dp_size"), resolved["attention_dp"]),
+            ):
+                for name in names:
+                    if name in lowered and lowered[name] != expected:
+                        raise ValueError(f"{name} conflicts with canonical timing topology")
+                lowered[names[0]] = expected
+                lowered[names[1]] = expected
+            lowered.update(
+                {
+                    key: value
+                    for key, value in {
+                        "aic_model_path": resolved["model"],
+                        "aic_system": resolved["system"],
+                        "aic_backend": resolved["backend"],
+                        "aic_backend_version": resolved["backend_version"],
+                        "aic_pp_size": resolved["pp"],
+                        "aic_moe_tp_size": resolved["moe_tp_size"],
+                        "aic_moe_ep_size": resolved["moe_ep_size"],
+                    }.items()
+                    if value is not None
+                }
+            )
+            for target, source in (
+                ("aic_gemm_dtype", "gemm_quant_mode"),
+                ("aic_moe_dtype", "moe_quant_mode"),
+                ("aic_fmha_dtype", "fmha_quant_mode"),
+                ("aic_kv_cache_dtype", "kvcache_quant_mode"),
+                ("aic_comm_dtype", "comm_quant_mode"),
+            ):
+                if resolved[source] is not None:
+                    lowered[target] = resolved[source]
+            if resolved["systems_paths"]:
+                lowered["systems_path"] = resolved["systems_paths"][0]
+            for name, value in memory_fields.items():
+                if name in lowered and lowered[name] != value:
+                    raise ValueError(f"{name} conflicts with canonical timing configuration")
+                lowered.setdefault(name, value)
+
     attention_dp = lowered.get("aic_attention_dp_size")
     dp = attention_dp or 1
     configured_dp = lowered.get("dp_size") or 1
@@ -46,10 +145,10 @@ def materialize_aic_num_gpu_blocks(
         lowered["dp_size"] = dp
 
     if lowered.get("num_gpu_blocks") is not None:
-        return lowered
+        return finish_lowering(lowered)
     backend = lowered.get("aic_backend")
     if backend is None:
-        return lowered
+        return finish_lowering(lowered)
     if not isinstance(backend, str) or backend not in DEFAULT_BACKEND_VERSIONS:
         supported = ", ".join(sorted(DEFAULT_BACKEND_VERSIONS))
         raise ValueError(
@@ -90,7 +189,7 @@ def materialize_aic_num_gpu_blocks(
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
-    return lowered
+    return finish_lowering(lowered)
 
 
 def estimate_num_gpu_blocks(
