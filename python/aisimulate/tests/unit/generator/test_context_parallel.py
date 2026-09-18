@@ -23,7 +23,6 @@ from aiconfigurator.fpm_contract import FPM_RUN_SCRIPT_FILENAME
 from aiconfigurator.generator.api import generate_backend_artifacts, generate_from_request
 from aiconfigurator.generator.context_parallel import (
     ContextParallelUnsupportedError,
-    context_parallel_gpu_multiplier,
     context_parallel_params,
     cp_strategy_for,
 )
@@ -59,11 +58,9 @@ def _render_template(backend: str, name: str, **context) -> str:
 def test_both_knobs_at_one_render_nothing():
     assert context_parallel_params(backend="vllm", backend_version="0.20.1") == {}
     assert context_parallel_params(backend="trtllm", backend_version="1.3.0rc14") == {}
-    assert context_parallel_gpu_multiplier(1) == 1
 
 
-def test_prefill_cp_grows_the_worker_and_decode_cp_does_not():
-    assert context_parallel_gpu_multiplier(4) == 4
+def test_decode_cp_alone_renders_only_its_own_knob():
     params = context_parallel_params(backend="vllm", backend_version="0.20.1", decode_context_parallel_size=8)
     assert params == {"decode_context_parallel_size": 8}
 

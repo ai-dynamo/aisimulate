@@ -42,6 +42,7 @@ from typing import Any
 from aiconfigurator_core.sdk import perf_database
 from aiconfigurator_core.sdk.backends.factory import get_backend
 from aiconfigurator_core.sdk.common import DefaultHFModels
+from aiconfigurator_core.sdk.config import validate_parallel_size
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config, validate_nextn
 from aiconfigurator_core.sdk.models import get_model
 from aiconfigurator_core.sdk.utils import (
@@ -126,18 +127,6 @@ def _validate_tolerance(tolerance_fraction: float | None) -> None:
     t = float(tolerance_fraction)
     if not (math.isfinite(t) and 0.0 <= t < 1.0):
         raise ValueError(f"tolerance_fraction must be finite and in [0, 1), got {tolerance_fraction}")
-
-
-def _validate_context_parallel_sizes(cp_size: Any, dcp_size: Any) -> None:
-    """Reject non-positive, fractional and boolean CP / DCP sizes.
-
-    Runs FIRST in :func:`estimate_kv_cache`, before the ``int(...)`` coercion
-    and before any model build or fallback, so ``1.9``, ``True`` or ``0`` fail
-    loudly instead of sizing a different (cp=dcp=1) topology.
-    """
-    for name, value in (("cp_size", cp_size), ("dcp_size", dcp_size)):
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"{name} must be a positive integer, got {value!r}")
 
 
 def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
@@ -1095,7 +1084,10 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
-    _validate_context_parallel_sizes(cp_size, dcp_size)
+    # Before the int(...) coercion, the model build and the naive fallback:
+    # 1.9 / True / 0 must fail here, not size a cp=dcp=1 topology.
+    validate_parallel_size("cp_size", cp_size)
+    validate_parallel_size("dcp_size", dcp_size)
     fraction = float(memory_fraction_value)
     is_of_free = memory_fraction_kind == "of_free"
 

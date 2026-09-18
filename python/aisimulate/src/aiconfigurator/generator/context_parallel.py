@@ -31,6 +31,8 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
+from aiconfigurator_core.sdk.config import validate_parallel_size
+
 # DeepSeek Sparse Attention architectures: SGLang's prefill CP requires the
 # ``interleave`` layout for them (zigzag is rejected at startup); dense and
 # plain-MLA models use ``zigzag``.
@@ -80,18 +82,13 @@ def _parse_version(backend_version: str | None) -> Version | None:
 
 
 def _positive(value: Any, name: str) -> int:
+    """Unset (``None``) means 1; anything else must be a positive integer."""
     if value is None:
         return 1
-    if isinstance(value, bool):
-        # bool is an int subclass (True == 1); a flag is never a parallel size.
-        raise ContextParallelUnsupportedError(f"{name} must be a positive integer, got {value!r}")
     try:
-        number = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ContextParallelUnsupportedError(f"{name} must be a positive integer, got {value!r}") from exc
-    if number != value or number < 1:
-        raise ContextParallelUnsupportedError(f"{name} must be a positive integer, got {value!r}")
-    return number
+        return validate_parallel_size(name, value)
+    except ValueError as exc:
+        raise ContextParallelUnsupportedError(str(exc)) from exc
 
 
 def cp_strategy_for(architecture: str | None, model_family: str | None = None) -> str:
@@ -166,10 +163,3 @@ def context_parallel_params(
         _require_version(backend, "dcp_comm_backend", backend_version, dcp_comm_backend)
         params["dcp_comm_backend"] = dcp_comm_backend
     return params
-
-
-def context_parallel_gpu_multiplier(context_parallel_size: Any) -> int:
-    """How prefill CP grows the worker: ``cp`` extra attention ranks on every
-    backend (SGLang folds them into ``--tp``, vLLM's PCP expands the world size).
-    Decode CP never changes the GPU count."""
-    return _positive(context_parallel_size, "context_parallel_size")

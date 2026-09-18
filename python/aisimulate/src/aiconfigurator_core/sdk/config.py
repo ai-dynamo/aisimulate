@@ -28,6 +28,19 @@ def normalize_kernel_backend(
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
+def validate_parallel_size(name: str, value: object) -> int:
+    """Return ``value`` when it is a positive integer parallel size; raise otherwise.
+
+    The one rule every CP / DCP entry point shares (ModelConfig, KV-capacity
+    estimation, Task roles, the deployment generator): booleans, fractions,
+    ``None`` and non-positive values fail loudly instead of collapsing to a
+    different (cp = dcp = 1) topology.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
 def has_video_input(
     *,
     num_videos: int = 0,
@@ -144,9 +157,8 @@ class ModelConfig:
     system: str | None = None
 
     def __post_init__(self) -> None:
-        for name, value in (("cp_size", self.cp_size), ("dcp_size", self.dcp_size)):
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+        validate_parallel_size("cp_size", self.cp_size)
+        validate_parallel_size("dcp_size", self.dcp_size)
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,

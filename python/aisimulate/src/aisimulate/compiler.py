@@ -385,14 +385,23 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
     }
-    # Context-parallel knobs are spelled out only when set: cp=dcp=1 deployments
-    # stay byte-identical to pre-CP outputs and comparable with the sweeper's
-    # parallel_config, which never carries them.
-    if parallel.prefill_context != 1:
-        mapping[f"{prefix}cp"] = parallel.prefill_context
-    if parallel.decode_context != 1:
-        mapping[f"{prefix}dcp"] = parallel.decode_context
+    mapping.update(_context_parallel_knobs(parallel, f"{prefix}cp", f"{prefix}dcp"))
     return mapping
+
+
+def _context_parallel_knobs(parallel: Any, cp_key: str, dcp_key: str) -> dict[str, int]:
+    """The two context-parallel knobs, spelled out only when set.
+
+    cp=dcp=1 deployments, engine args, perf-model metadata and estimator
+    identities stay byte-identical to pre-CP outputs (and comparable with the
+    sweeper's parallel_config, which never carries the knobs).
+    """
+    knobs: dict[str, int] = {}
+    if parallel.prefill_context != 1:
+        knobs[cp_key] = parallel.prefill_context
+    if parallel.decode_context != 1:
+        knobs[dcp_key] = parallel.decode_context
+    return knobs
 
 
 def _worker_performance_model_metadata(
@@ -416,12 +425,7 @@ def _worker_performance_model_metadata(
             "forward_model": worker.timing.forward_model,
         },
     }
-    # Context-parallel knobs join the perf identity only when set, so cp=dcp=1
-    # metadata stays byte-identical to pre-CP outputs.
-    if parallel.prefill_context != 1:
-        metadata["config"]["cp_size"] = parallel.prefill_context
-    if parallel.decode_context != 1:
-        metadata["config"]["dcp_size"] = parallel.decode_context
+    metadata["config"].update(_context_parallel_knobs(parallel, "cp_size", "dcp_size"))
     return metadata
 
 
@@ -464,12 +468,7 @@ def _worker_engine_args(
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
-    # Context-parallel knobs are spelled out only when set, so cp=dcp=1 specs stay
-    # byte-identical to pre-CP outputs.
-    if parallel.prefill_context != 1:
-        payload["aic_cp_size"] = parallel.prefill_context
-    if parallel.decode_context != 1:
-        payload["aic_dcp_size"] = parallel.decode_context
+    payload.update(_context_parallel_knobs(parallel, "aic_cp_size", "aic_dcp_size"))
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
@@ -534,10 +533,7 @@ def _worker_engine_args(
             attention_dp=parallel.attention_data,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
-            # Context-parallel knobs enter the estimator identity only when set,
-            # so cp=dcp=1 configs stay byte-identical to pre-CP outputs.
-            cp_size=parallel.prefill_context if parallel.prefill_context != 1 else None,
-            dcp_size=parallel.decode_context if parallel.decode_context != 1 else None,
+            **_context_parallel_knobs(parallel, "cp_size", "dcp_size"),
             kv_block_size=block_size,
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,

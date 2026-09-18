@@ -286,31 +286,41 @@ class BaseModel:
             return int(op._num_heads), q_dim, v_dim
         return None
 
-    def _rewrite_op_for_dcp(self, op, dcp: int):
-        """Return ``(op with dcp applied, (dims, scale) | None)``.
+    @staticmethod
+    def _through_fallback(op, leaf):
+        """Apply ``leaf(op) -> (op, hit)`` to an op or to every interior of a ``FallbackOp``.
 
-        ``FallbackOp`` exposes clones of its inner ops, so a rewritten
-        fallback is rebuilt around the rewritten primary/fallback list; the
-        collectives are then priced once for the whole block.
+        ``FallbackOp`` exposes clones of its inner ops, so a block whose interior
+        was touched is rebuilt around the new primary/fallback list. Returns the
+        (possibly rebuilt) op and the first truthy ``hit``.
         """
         import aiconfigurator_core._aiconfigurator_core as _core
         import aiconfigurator_core.sdk.operations as ops
 
-        if isinstance(op, _core.FallbackOp):
-            primary, found = self._rewrite_op_for_dcp(op._primary, dcp)
-            fallback = []
-            for inner in op._fallback:
-                inner, inner_found = self._rewrite_op_for_dcp(inner, dcp)
-                fallback.append(inner)
-                found = found or inner_found
-            if found is None:
-                return op, None
-            return ops.FallbackOp(op._name, primary=primary, fallback=fallback), found
-        dims = self._decode_attention_dcp_dims(op)
-        if dims is None:
-            return op, None
-        op._dcp_size = dcp
-        return op, (dims, float(op._scale_factor))
+        if not isinstance(op, _core.FallbackOp):
+            return leaf(op)
+        primary, hit = BaseModel._through_fallback(op._primary, leaf)
+        fallback = []
+        for inner in op._fallback:
+            inner, inner_hit = BaseModel._through_fallback(inner, leaf)
+            fallback.append(inner)
+            hit = hit or inner_hit
+        if not hit:
+            return op, hit
+        return ops.FallbackOp(op._name, primary=primary, fallback=fallback), hit
+
+    def _rewrite_op_for_dcp(self, op, dcp: int):
+        """Return ``(op with dcp applied, (dims, scale) | None)``; the collectives
+        are then priced once for the whole (possibly rebuilt) block."""
+
+        def leaf(inner):
+            dims = self._decode_attention_dcp_dims(inner)
+            if dims is None:
+                return inner, None
+            inner._dcp_size = dcp
+            return inner, (dims, float(inner._scale_factor))
+
+        return self._through_fallback(op, leaf)
 
     def _dcp_attn_comm_ops(self, name: str, scale: float, *, n_local: int, q_dim: int, v_dim: int) -> list:
         """The per-layer DCP collectives that accompany one decode attention op."""
@@ -331,29 +341,23 @@ class BaseModel:
                 comm_quant_mode=comm_quant_mode,
             )
         ]
-        style = self._dcp_comm_style()
-        if style == "ag_rs":
-            collectives.append(
-                ops.NCCL(
-                    f"{name}_dcp_out_reduce_scatter",
-                    scale,
-                    "reduce_scatter",
-                    num_elements_per_token=gathered_heads * v_dim,
-                    num_gpus=dcp,
-                    comm_quant_mode=comm_quant_mode,
-                )
+        # Partial-output merge: ag_rs reduce-scatters the fp32 outputs (vLLM
+        # default), a2a moves them with one packed all-to-all (SGLang default).
+        kind, suffix = (
+            ("reduce_scatter", "out_reduce_scatter")
+            if self._dcp_comm_style() == "ag_rs"
+            else ("alltoall", "out_all_to_all")
+        )
+        collectives.append(
+            ops.NCCL(
+                f"{name}_dcp_{suffix}",
+                scale,
+                kind,
+                num_elements_per_token=gathered_heads * v_dim,
+                num_gpus=dcp,
+                comm_quant_mode=comm_quant_mode,
             )
-        else:
-            collectives.append(
-                ops.NCCL(
-                    f"{name}_dcp_out_all_to_all",
-                    scale,
-                    "alltoall",
-                    num_elements_per_token=gathered_heads * v_dim,
-                    num_gpus=dcp,
-                    comm_quant_mode=comm_quant_mode,
-                )
-            )
+        )
         return collectives
 
     def _dcp_kv_head_replication(self) -> int | None:
@@ -387,24 +391,16 @@ class BaseModel:
         unchanged. FallbackOp interiors are clones, so the block is rebuilt.
         """
         import aiconfigurator_core._aiconfigurator_core as _core
-        import aiconfigurator_core.sdk.operations as ops
 
-        if isinstance(op, _core.FallbackOp):
-            primary, hit = self._stripe_context_for_dcp(op._primary, dcp)
-            fallback = []
-            for inner in op._fallback:
-                inner, inner_hit = self._stripe_context_for_dcp(inner, dcp)
-                fallback.append(inner)
-                hit = hit or inner_hit
-            if not hit:
-                return op, False
-            return ops.FallbackOp(op._name, primary=primary, fallback=fallback), True
-        striped = isinstance(op, (_core.ContextAttention, _core.ContextMLA, _core.ContextDSAModule)) or (
-            isinstance(op, _core.MLAModule) and op._is_context
-        )
-        if striped:
-            op._dcp_size = dcp
-        return op, striped
+        def leaf(inner):
+            striped = isinstance(inner, (_core.ContextAttention, _core.ContextMLA, _core.ContextDSAModule)) or (
+                isinstance(inner, _core.MLAModule) and inner._is_context
+            )
+            if striped:
+                inner._dcp_size = dcp
+            return inner, striped
+
+        return self._through_fallback(op, leaf)
 
     def _apply_decode_context_parallel(self) -> None:
         """Rewrite ``generation_ops`` for ``config.dcp_size > 1``.

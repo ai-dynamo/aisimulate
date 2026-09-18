@@ -2054,11 +2054,9 @@ class Task:
         ``False`` or ``None``; those must fail loudly instead of silently
         modeling the worker with DCP disabled.
         """
-        value = self._role_attr(role, "dcp_size")
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            field = "dcp_size" if role == "agg" else f"{role}_dcp_size"
-            raise ValueError(f"{field} must be a positive integer, got {value!r}")
-        return value
+        return config.validate_parallel_size(
+            "dcp_size" if role == "agg" else f"{role}_dcp_size", self._role_attr(role, "dcp_size")
+        )
 
     # =====================================================================
     # Builders consumed by sweep.py
