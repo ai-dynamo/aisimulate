@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 ARTIFACT_NAME = "fpe-support-matrix-web"
 DATA_PREFIX = "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/"
+LEGACY_DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
 RELEASE_WORKFLOW = ".github/workflows/release-nightly-ci.yml"
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"
@@ -101,7 +102,11 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             raise ValueError("FPE qualification status counts must be nonnegative integers")
         if not statuses.get("PASS", 0) or statuses.get("BUILD_FAILED", 0) or statuses.get("QUERY_FAILED", 0):
             raise ValueError("FPE qualification has no passes or unexpected native failures")
-        index = _strict_json(bundle.read(DATA_PREFIX + "index.json"))
+        prefixes = [prefix for prefix in (DATA_PREFIX, LEGACY_DATA_PREFIX) if prefix + "index.json" in names]
+        if len(prefixes) != 1:
+            raise ValueError("missing or ambiguous FPE dataset layout")
+        data_prefix = prefixes[0]
+        index = _strict_json(bundle.read(data_prefix + "index.json"))
         files = index.get("files") if isinstance(index, dict) else None
         if not isinstance(files, list) or not files or len(set(files)) != len(files):
             raise ValueError("empty or duplicate FPE dataset index")
@@ -111,7 +116,7 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
         for filename in files:
             if not isinstance(filename, str) or not re.fullmatch(r"[a-z0-9_]+\.csv", filename):
                 raise ValueError("unsafe FPE dataset filename")
-            data = bundle.read(DATA_PREFIX + filename)
+            data = bundle.read(data_prefix + filename)
             reader = csv.DictReader(io.StringIO(data.decode("utf-8")), strict=True)
             headers = reader.fieldnames or []
             if not headers or len(headers) != len(set(headers)) or any(not field.strip() for field in headers):
