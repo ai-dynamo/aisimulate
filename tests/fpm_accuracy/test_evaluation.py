@@ -126,6 +126,30 @@ def test_predictor_failures_remain_in_denominator(case):
     assert "unsupported model" not in json.dumps(result)
 
 
+def test_dcp_keeps_regression_and_reports_native_fpm_as_unsupported(tmp_path):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-measurement-v1",
+        files=[("truth", "traffic.jsonl", json.dumps(_fpm_payload()).encode())],
+        tp=8,
+        dcp=8,
+    )
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+
+    def factory(method, context):
+        if method == "aic-fpm":
+            map_worker_config_to_aic(context.worker)
+            pytest.fail("native FPM must not silently map DCP to ordinary CP")
+        return Predictor(method, context, [])
+
+    result = evaluate_case(case, factory=factory)
+    warmup = result["results"]["warmup"]
+    assert warmup["status"] == "unsupported_predictor"
+    assert warmup["metrics"]["all"]["measured_count"] == warmup["metrics"]["all"]["unavailable_count"] == 1
+    assert warmup["metrics"]["all"]["error_count"] == 0
+    assert result["results"]["regression"]["status"] == "evaluated"
+
+
 def test_missing_worker_stores_are_logged_before_scoring(case, capsys):
     instances = []
 

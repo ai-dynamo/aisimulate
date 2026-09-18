@@ -31,6 +31,12 @@ configuration and measurement manifests, and FPM sidecars share the strict
 public-contract JSON parser: duplicate keys (including nested keys) and
 non-finite constants fail even when the pinned bytes match their hashes.
 
+Decode context parallelism (`dcp`) is a separate identity dimension from `cp`.
+Legacy manifests, sidecars, and parquet files without `dcp` mean `dcp=1`;
+non-default values must agree across all three. Native FPM currently has no
+DCP input, so `dcp>1` is reported as unsupported with measurements retained in
+coverage. Worker-isolated regression continues to score the same observations.
+
 Listener window and single-rank chronology keys use milliseconds so mixed
 streams preserve predict → score → tune ordering. Missing MoE parallelism
 defaults to one; malformed values and unknown recorded precisions fail closed.

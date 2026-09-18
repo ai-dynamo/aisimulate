@@ -50,6 +50,8 @@ def _build_dataset(
     evidence_format_id: str | None = None,
     include_fpm: bool = True,
     dp: int = 1,
+    tp: int = 1,
+    dcp: int | None = None,
 ) -> HfDataset:
     measurement_entries = []
     for index, (role, suffix, content) in enumerate(files):
@@ -99,13 +101,15 @@ def _build_dataset(
             "weight_quantization": "bfloat16",
             "kv_cache_dtype": "bfloat16",
             "parallel_strategy": "single",
-            "tp": 1,
+            "tp": tp,
             "pp": 1,
             "dp": dp,
             "moe_tp": 1,
             "moe_ep": 1,
             "cp": 1,
         }
+        if dcp is not None:
+            configuration_selector["dcp"] = dcp
         fpm_relative = f"{CONFIGURATION_PATH}/fpm/fpm.parquet"
         fpm_path = root / fpm_relative
         fpm_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +156,7 @@ def _build_dataset(
         "framework_version": "1.0",
         "parallelism": "single",
         "parallel_strategy": "single",
-        "tp": 1,
+        "tp": tp,
         "pp": 1,
         "dp": dp,
         "moe_tp": 1,
@@ -170,6 +174,8 @@ def _build_dataset(
             "file_count": len(measurement_entries),
         },
     }
+    if dcp is not None:
+        configuration_manifest["dcp"] = dcp
     if evidence_format_id is not None:
         configuration_manifest["measurements"]["evidence_format_id"] = evidence_format_id
     _write_json(root / config_manifest_path, configuration_manifest)
@@ -209,6 +215,51 @@ def test_duplicate_hf_json_keys_fail_even_with_matching_hashes(tmp_path, relativ
     with pytest.raises(DataError, match="duplicate JSON key"):
         dataset = HfDataset.from_local(tmp_path, revision=REVISION)
         dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("dcp", [None, 1, 8])
+def test_dcp_identity_preserves_legacy_and_explicit_values(tmp_path, dcp):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp)
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert case.configuration.worker_config_record.config.parallelism.decode_context_parallel_size == (dcp or 1)
+
+
+@pytest.mark.parametrize("source", ["selector", "parquet"])
+@pytest.mark.parametrize("value", [None, 1, True])
+def test_dcp_identity_must_match_all_pinned_evidence(tmp_path, source, value):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=8)
+    leaf = tmp_path / CONFIGURATION_PATH
+    metadata = json.loads((leaf / "fpm/fpm.metadata.json").read_text())
+    manifest = json.loads((leaf / "manifest.json").read_text())
+    if source == "selector":
+        if value is None:
+            metadata["configuration_selector"].pop("dcp")
+        else:
+            metadata["configuration_selector"]["dcp"] = value
+    else:
+        parquet_path = leaf / "fpm/fpm.parquet"
+        table = pq.read_table(parquet_path).to_pydict()
+        if value is None:
+            table.pop("dcp")
+        else:
+            table["dcp"] = [value]
+        pq.write_table(pa.table(table), parquet_path)
+        metadata["parquet_sha256"] = manifest["fpm"][0]["sha256"] = _sha256(parquet_path)
+    _write_json(leaf / "fpm/fpm.metadata.json", metadata)
+    _write_json(leaf / "manifest.json", manifest)
+    with pytest.raises(DataError, match="different configuration|missing configuration identity"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "8", None])
+def test_invalid_manifest_dcp_fails_closed(tmp_path, value):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[])
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["dcp"] = value
+    _write_json(path, manifest)
+    with pytest.raises(DataError, match="dcp"):
+        dataset.configurations()
 
 
 def _fpm_payload(*, rank: int = 0, counter: int = 1, wall_time: float = 0.01) -> dict[str, object]:
