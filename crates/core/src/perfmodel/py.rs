@@ -148,6 +148,23 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
     }
 }
 
+/// Discover the ordered roots using the same SDK/environment policy as the Python facade.
+pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
+    Python::with_gil(|py| {
+        py.import("aiconfigurator_core.sdk.rust_engine_step")?
+            .getattr("_resolve_forward_pass_systems_paths")?
+            .call1((Vec::<String>::new(),))?
+            .extract::<Vec<PathBuf>>()
+    })
+    .map_err(|error: PyErr| {
+        if Python::with_gil(|py| error.is_instance_of::<PyValueError>(py)) {
+            AicError::InvalidEngineConfig(format!("resolve systems paths: {error}"))
+        } else {
+            AicError::DataRoot(format!("resolve systems paths: {error}"))
+        }
+    })
+}
+
 /// Resolve the bundled `systems/` directory for [`AicEngine::from_spec`].
 ///
 /// Mirrors the systems-root half of `DataRoots::discover` but does NOT require
@@ -156,7 +173,7 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
 /// `python/aisimulate/src/aiconfigurator_core/systems`.
-fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
+pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
     }
@@ -195,6 +212,10 @@ pub struct AicEngine {
 }
 
 impl AicEngine {
+    pub(crate) fn from_shared_engine(inner: Arc<Engine>) -> Self {
+        Self { inner }
+    }
+
     /// Internal constructor shared by [`AicEngine::from_spec`] and
     /// [`AicEngineBuilder::build`].
     fn new(engine: Engine) -> Self {
@@ -1020,6 +1041,8 @@ struct EngineBuildRequest {
     attention_dp_size: u32,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
+    cp_size: Option<u32>,
+    dcp_size: Option<u32>,
     gemm_quant_mode: Option<String>,
     moe_quant_mode: Option<String>,
     kvcache_quant_mode: Option<String>,
@@ -1027,6 +1050,7 @@ struct EngineBuildRequest {
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
     nextn: u32,
+    speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
@@ -1064,6 +1088,8 @@ impl AicEngineBuilder {
                 attention_dp_size: 1,
                 moe_tp_size: None,
                 moe_ep_size: None,
+                cp_size: None,
+                dcp_size: None,
                 gemm_quant_mode: None,
                 moe_quant_mode: None,
                 kvcache_quant_mode: None,
@@ -1071,6 +1097,7 @@ impl AicEngineBuilder {
                 comm_quant_mode: None,
                 attention_backend: None,
                 nextn: 0,
+                speculation: None,
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
@@ -1141,6 +1168,15 @@ impl AicEngineBuilder {
     pub fn moe_parallelism(mut self, tp_size: Option<u32>, ep_size: Option<u32>) -> Self {
         self.request.moe_tp_size = tp_size;
         self.request.moe_ep_size = ep_size;
+        self
+    }
+
+    /// Set optional prefill context parallelism (`cp_size`, widens the attention
+    /// side) and decode context parallelism (`dcp_size`, stripes the decode KV
+    /// across the existing TP ranks). Unset keeps both at one.
+    pub fn context_parallelism(mut self, cp_size: Option<u32>, dcp_size: Option<u32>) -> Self {
+        self.request.cp_size = cp_size;
+        self.request.dcp_size = dcp_size;
         self
     }
 
@@ -1351,6 +1387,8 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
         kwargs.set_item("moe_tp_size", request.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", request.moe_ep_size)?;
+        kwargs.set_item("cp_size", request.cp_size.unwrap_or(1))?;
+        kwargs.set_item("dcp_size", request.dcp_size.unwrap_or(1))?;
         kwargs.set_item("gemm_quant_mode", request.gemm_quant_mode.as_deref())?;
         kwargs.set_item("moe_quant_mode", request.moe_quant_mode.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
@@ -1363,6 +1401,12 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
+        if let Some(speculation) = &request.speculation {
+            let json = serde_json::to_string(speculation)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
+            kwargs.set_item("speculation", value)?;
+        }
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
         engine_mod
@@ -1382,9 +1426,73 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // `UnsupportedModel` — the variant `best_available` treats as
     // fallback-safe. Hard caller/config errors use `InvalidEngineConfig` (which
     // is NOT fallback-safe) so they surface instead of silently degrading.
-    .map_err(|e| AicError::UnsupportedModel(format!("compile_engine: {e}")))?;
+    .map_err(|error| {
+        let invalid = Python::with_gil(|py| {
+            py.import("aiconfigurator_core.sdk.engine")
+                .and_then(|module| module.getattr("InvalidEngineConfigurationError"))
+                .is_ok_and(|kind| error.is_instance(py, &kind))
+        });
+        if invalid {
+            AicError::InvalidEngineConfig(format!("compile_engine: {error}"))
+        } else {
+            AicError::UnsupportedModel(format!("compile_engine: {error}"))
+        }
+    })?;
 
+    if request.backend_version.is_none()
+        && crate::perfmodel::engine::spec::EngineSpec::from_bincode(&spec_bytes)?
+            .engine
+            .backend_version
+            .is_none()
+    {
+        return Err(AicError::DataRoot(format!(
+            "no backend version is available for {}/{}/{}",
+            systems_root.display(),
+            request.system,
+            request.backend,
+        )));
+    }
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
+}
+
+/// Compile the selected canonical native estimator through the shared builder.
+pub(crate) fn compile_forward_pass_model_to_engine(
+    config: &crate::ForwardPassPerfModelConfig,
+    systems_path: &str,
+) -> Result<Engine, AicError> {
+    let forward_model = config.estimation_mode.native_name().ok_or_else(|| {
+        AicError::InvalidEngineConfig(
+            "a native estimator mode must be selected before compilation".into(),
+        )
+    })?;
+    compile_engine_from_request(EngineBuildRequest {
+        model_path: config.model.clone(),
+        system: config.system.clone(),
+        backend: config.backend.as_str().to_owned(),
+        backend_version: config.backend_version.clone(),
+        tp_size: config.tp,
+        pp_size: config.pp,
+        attention_dp_size: config.attention_dp,
+        moe_tp_size: config.moe_tp_size,
+        moe_ep_size: config.moe_ep_size,
+        cp_size: config.cp_size,
+        dcp_size: config.dcp_size,
+        gemm_quant_mode: config.gemm_quant_mode.clone(),
+        moe_quant_mode: config.moe_quant_mode.clone(),
+        kvcache_quant_mode: config.kvcache_quant_mode.clone(),
+        fmha_quant_mode: config.fmha_quant_mode.clone(),
+        comm_quant_mode: config.comm_quant_mode.clone(),
+        attention_backend: config.attention_backend.clone(),
+        nextn: config.nextn,
+        speculation: config.speculation.clone(),
+        kv_block_size: config.kv_block_size,
+        systems_path: Some(systems_path.to_owned()),
+        forward_model: Some(forward_model.to_owned()),
+        database_mode: Some(config.database_mode.as_str().to_owned()),
+        shared_layer: config.enable_shared_layer,
+        transfer_policy: config.transfer_policy.clone(),
+        strict_provenance: Some(config.strict_provenance),
+    })
 }
 
 /// Build a compiled [`Engine`] from a modular [`EngineConfig`] (the
@@ -1421,6 +1529,8 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
+        cp_size: config.parallel.cp_size,
+        dcp_size: config.parallel.dcp_size,
         gemm_quant_mode: gemm_quant_name(config.quantization.weight_dtype.as_ref())
             .map(str::to_owned),
         moe_quant_mode: moe_quant_name(config.quantization.moe_dtype.as_ref()).map(str::to_owned),
@@ -1433,6 +1543,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         // Attention backend is not carried on EngineConfig; let Python resolve it.
         attention_backend: None,
         nextn,
+        speculation: None,
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
@@ -1516,31 +1627,13 @@ pub struct PyForwardPassPerfModel {
     inner: crate::ForwardPassPerfModel,
 }
 
-/// Parse the optional options JSON into [`ForwardPassPerfOptions`], defaulting
-/// when `None`/empty. Serde fills missing fields from the per-field defaults.
-/// Raw JSON callers represent nonfinite regression weights with the exact
-/// quoted sentinels `"NaN"`, `"Infinity"`, and `"-Infinity"`.
-fn parse_fpm_options(options_json: Option<&str>) -> PyResult<crate::ForwardPassPerfOptions> {
-    match options_json {
-        None => Ok(crate::ForwardPassPerfOptions::default()),
-        Some(s) if s.trim().is_empty() => Ok(crate::ForwardPassPerfOptions::default()),
-        Some(s) => serde_json::from_str(s)
-            .map_err(|e| PyValueError::new_err(format!("invalid options JSON: {e}"))),
-    }
-}
-
-/// Parse the exact worker-type spellings shared with the Dynamo planner.
-/// Aliases are intentionally rejected so model identity cannot depend on which
-/// API surface constructed it.
-fn parse_fpm_worker_type(worker_type: &str) -> PyResult<crate::ForwardPassWorkerType> {
-    match worker_type {
-        "prefill" => Ok(crate::ForwardPassWorkerType::Prefill),
-        "decode" => Ok(crate::ForwardPassWorkerType::Decode),
-        "aggregated" => Ok(crate::ForwardPassWorkerType::Aggregated),
-        _ => Err(PyValueError::new_err(format!(
-            "invalid worker_type {worker_type:?}: expected 'prefill', 'decode', or 'aggregated'"
-        ))),
-    }
+fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPerfModelConfig> {
+    let mut de = serde_json::Deserializer::from_str(config_json);
+    let config = serde_path_to_error::deserialize(&mut de)
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config at {e}")))?;
+    de.end()
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config: {e}")))?;
+    Ok(config)
 }
 
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either
@@ -1560,50 +1653,99 @@ fn parse_fpm_iteration(fpm_json: &str) -> PyResult<Vec<crate::ForwardPassMetrics
 
 #[pymethods]
 impl PyForwardPassPerfModel {
-    /// `RustForwardPassPerfModel.from_native(config_json, options_json=None)`:
-    /// strict native AIC model. Compiles the engine via Python `compile_engine`;
-    /// raises if the config cannot be compiled.
+    /// Create a model from the complete canonical request.
     #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn from_native(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_native(config, options).map_err(aic_to_py)?;
+    fn best_available(config_json: &str) -> PyResult<Self> {
+        let config = parse_forward_pass_config(config_json)?;
+        let inner = crate::ForwardPassPerfModel::best_available(config).map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 
-    /// `RustForwardPassPerfModel.best_available(config_json, worker_type,
-    /// options_json=None)`:
-    /// native when possible, else regression fallback (reason in
-    /// `diagnostics()["last_warning"]`).
+    /// Expand and validate the canonical schema without constructing an engine.
     #[staticmethod]
-    #[pyo3(signature = (config_json, worker_type, options_json=None))]
-    fn best_available(
+    fn normalize_config(config_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?;
+        config.validate().map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Migration adapter for previously saved flat tuning options.
+    #[staticmethod]
+    fn legacy_estimator_config(options_json: &str) -> PyResult<String> {
+        let options: crate::ForwardPassPerfOptions = serde_json::from_str(options_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid legacy options: {e}")))?;
+        let config = crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?;
+        config.validate().map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Translate a saved EngineConfig and flat options into the canonical schema.
+    #[staticmethod]
+    #[pyo3(signature = (config_json, worker_type, options_json=None, allow_regression=false))]
+    fn migrate_legacy_config(
         config_json: &str,
         worker_type: &str,
         options_json: Option<&str>,
-    ) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let worker_type = parse_fpm_worker_type(worker_type)?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::best_available(config, worker_type, options)
-            .map_err(aic_to_py)?;
-        Ok(Self { inner })
-    }
-
-    /// `RustForwardPassPerfModel.from_regression(worker_type,
-    /// options_json=None)`:
-    /// regression-only model (no native engine, no Python compile).
-    #[staticmethod]
-    #[pyo3(signature = (worker_type, options_json=None))]
-    fn from_regression(worker_type: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let worker_type = parse_fpm_worker_type(worker_type)?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_regression(worker_type, options)
-            .map_err(aic_to_py)?;
-        Ok(Self { inner })
+        allow_regression: bool,
+    ) -> PyResult<String> {
+        let legacy: EngineConfig =
+            serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let options = options_json
+            .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
+        let request = engine_build_request(
+            &legacy,
+            legacy.systems_path.as_ref().and_then(|path| path.to_str()),
+        );
+        let worker_type = serde_json::from_value(serde_json::Value::String(worker_type.to_owned()))
+            .map_err(|e| PyValueError::new_err(format!("invalid worker_type: {e}")))?;
+        let estimation_mode = match request.forward_model.as_deref().unwrap_or("op_level") {
+            "op_level" => crate::EstimationMode::OpLevel,
+            "fpm" => crate::EstimationMode::FpmInterpolation,
+            value => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown legacy forward_model {value:?}"
+                )));
+            }
+        };
+        let config = crate::ForwardPassPerfModelConfig {
+            model: request.model_path,
+            system: request.system,
+            backend: legacy.backend,
+            worker_type,
+            backend_version: request.backend_version,
+            tp: request.tp_size,
+            pp: request.pp_size,
+            attention_dp: request.attention_dp_size,
+            moe_tp_size: request.moe_tp_size,
+            moe_ep_size: request.moe_ep_size,
+            cp_size: request.cp_size,
+            dcp_size: request.dcp_size,
+            gemm_quant_mode: request.gemm_quant_mode,
+            moe_quant_mode: request.moe_quant_mode,
+            fmha_quant_mode: request.fmha_quant_mode,
+            kvcache_quant_mode: request.kvcache_quant_mode,
+            comm_quant_mode: request.comm_quant_mode,
+            nextn: request.nextn,
+            speculation: request.speculation,
+            kv_block_size: request.kv_block_size,
+            estimation_mode,
+            database_mode: legacy.database_mode,
+            transfer_policy: request.transfer_policy,
+            systems_paths: legacy.systems_path.into_iter().collect(),
+            fallback_policy: if allow_regression {
+                crate::ForwardPassFallbackPolicy::LegacyRegression
+            } else {
+                crate::ForwardPassFallbackPolicy::Deny
+            },
+            estimator_config: crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?,
+            attention_backend: request.attention_backend,
+            enable_shared_layer: request.shared_layer,
+            strict_provenance: legacy.strict_provenance,
+        };
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as

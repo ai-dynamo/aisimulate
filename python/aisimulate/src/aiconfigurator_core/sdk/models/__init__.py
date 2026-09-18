@@ -31,6 +31,7 @@ import importlib
 import pkgutil
 
 from aiconfigurator_core.sdk import config
+from aiconfigurator_core.sdk.errors import InvalidEngineConfigurationError
 from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY, BaseModel
 from aiconfigurator_core.sdk.models.helpers import (
     _apply_model_quant_defaults,
@@ -143,7 +144,9 @@ def get_model(
     """
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
     if forward_model not in _FORWARD_MODELS:
-        raise ValueError(f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}")
+        raise InvalidEngineConfigurationError(
+            f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}"
+        )
 
     # Shallow-copy so mutations below don't poison the @cache'd original.
     model_info = dict(_get_model_info(model_path))
@@ -160,7 +163,10 @@ def get_model(
     )
     _apply_model_quant_defaults(model_config, raw_config, architecture, backend_name)
     if check_is_moe(model_path, model_info=model_info):
-        model_config.resolve_moe_parallelism()
+        try:
+            model_config.resolve_moe_parallelism()
+        except (ValueError, TypeError, KeyError) as exc:
+            raise InvalidEngineConfigurationError(str(exc)) from exc
 
     if model_config.overwrite_num_layers > 0:
         model_info["layers"] = model_config.overwrite_num_layers
@@ -188,7 +194,7 @@ def get_model(
             )
         # sglang CP requires the attention side to be pure CP (no concurrent attn TP/DP).
         if backend_name == "sglang" and (model_config.tp_size != 1 or model_config.attention_dp_size != 1):
-            raise ValueError(
+            raise InvalidEngineConfigurationError(
                 f"sglang CP requires tp_size=1 and attention_dp_size=1 when cp_size>1 "
                 f"(CP and attention TP/DP are mutually exclusive on sglang). Got "
                 f"tp_size={model_config.tp_size}, attention_dp_size={model_config.attention_dp_size}, "

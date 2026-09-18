@@ -25,6 +25,7 @@ pub(crate) struct BucketedRegression {
     samples: BucketedSamples<RegressionObservation>,
     min_observations: usize,
     fit: Option<LinearFit>,
+    ridge_scale: f64,
 }
 
 impl StoreStats for BucketedRegression {
@@ -43,6 +44,7 @@ impl BucketedRegression {
             samples: BucketedSamples::new_dynamic(options, FEATURE_DIMENSION),
             min_observations: options.min_observations,
             fit: None,
+            ridge_scale: options.regression_ridge_scale,
         }
     }
 
@@ -71,7 +73,7 @@ impl BucketedRegression {
             .into_iter()
             .map(|(_, observation)| observation)
             .collect::<Vec<_>>();
-        self.fit = fit_regression(&retained, self.min_observations);
+        self.fit = fit_regression_with_ridge(&retained, self.min_observations, self.ridge_scale);
         true
     }
 
@@ -186,9 +188,18 @@ struct StandardizedObservation {
     observed_ms: f64,
 }
 
+#[cfg(test)]
 fn fit_regression(
     observations: &[RegressionObservation],
     min_observations: usize,
+) -> Option<LinearFit> {
+    fit_regression_with_ridge(observations, min_observations, 1e-9)
+}
+
+fn fit_regression_with_ridge(
+    observations: &[RegressionObservation],
+    min_observations: usize,
+    ridge_scale: f64,
 ) -> Option<LinearFit> {
     if observations.len() < min_observations {
         return None;
@@ -224,7 +235,9 @@ fn fit_regression(
                 (active_mask & (1usize << mask_axis) != 0).then_some(*feature_axis)
             })
             .collect::<Vec<_>>();
-        let Some(fit) = fit_linear_active_set(&standardized, standardization, &fitted_axes) else {
+        let Some(fit) =
+            fit_linear_active_set(&standardized, standardization, &fitted_axes, ridge_scale)
+        else {
             continue;
         };
         let squared_error = standardized
@@ -263,6 +276,7 @@ fn fit_linear_active_set(
     observations: &[StandardizedObservation],
     standardization: Standardization,
     fitted_axes: &[usize],
+    ridge_scale: f64,
 ) -> Option<LinearFit> {
     let size = fitted_axes.len() + 1;
     let mut lhs = vec![vec![0.0_f64; size]; size];
@@ -283,7 +297,7 @@ fn fit_linear_active_set(
     }
 
     let solution = solve_linear_system(lhs.clone(), rhs.clone())
-        .or_else(|| solve_regularized_linear_system(lhs, rhs))?;
+        .or_else(|| solve_regularized_linear_system(lhs, rhs, ridge_scale))?;
     if !solution.iter().all(|value| value.is_finite())
         || solution[1..].iter().any(|coefficient| *coefficient < 0.0)
     {
@@ -302,14 +316,18 @@ fn fit_linear_active_set(
 }
 
 /// Retry a singular normal equation with ridge regularization on slopes only.
-fn solve_regularized_linear_system(mut lhs: Vec<Vec<f64>>, rhs: Vec<f64>) -> Option<Vec<f64>> {
+fn solve_regularized_linear_system(
+    mut lhs: Vec<Vec<f64>>,
+    rhs: Vec<f64>,
+    ridge_scale: f64,
+) -> Option<Vec<f64>> {
     let scale = lhs
         .iter()
         .enumerate()
         .map(|(axis, row)| row[axis].abs())
         .sum::<f64>()
         .max(1.0);
-    let ridge = scale * 1e-9;
+    let ridge = scale * ridge_scale;
     for (axis, row) in lhs.iter_mut().enumerate().skip(1) {
         row[axis] += ridge;
     }
@@ -574,6 +592,9 @@ mod tests {
 
     #[test]
     fn collinear_active_axes_use_slope_regularization_with_free_intercept() {
+        let mut config = crate::EstimatorConfig::default();
+        config.fpm_regression.fit.singular_ridge_scale = 0.25;
+        let options = config.regression_options();
         let observations = (1..=6)
             .map(|attention| RegressionObservation {
                 raw_x: [attention as f64, 2.0 * attention as f64],
@@ -593,8 +614,15 @@ mod tests {
         // The two standardized columns are identical, so the unregularized
         // normal equation is singular. The fallback regularizes only the two
         // slopes, leaving the free intercept at the population target mean.
-        let regularized_fit =
-            fit_linear_active_set(&standardized, standardization, &[0, 1]).unwrap();
+        // trace(X'X)=18, lambda=18/4=4.5, so the combined slope is
+        // shrunk by 12/(12+4.5)=8/11. At x=7: 17.5 + 10.5*8/11 = 553/22.
+        let regularized_fit = fit_linear_active_set(
+            &standardized,
+            standardization,
+            &[0, 1],
+            options.regression_ridge_scale,
+        )
+        .unwrap();
         assert!(
             regularized_fit
                 .coefficients
@@ -602,13 +630,20 @@ mod tests {
                 .all(|slope| *slope > 0.0)
         );
         assert_close(regularized_fit.intercept, 17.5, 1e-12);
-        assert_close(regularized_fit.predict(&[7.0, 14.0]).unwrap(), 28.0, 1e-7);
+        assert_close(
+            regularized_fit.predict(&[7.0, 14.0]).unwrap(),
+            553.0 / 22.0,
+            1e-12,
+        );
 
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(&options);
+        assert_eq!(regression.ridge_scale, 0.25);
         for observation in observations {
             assert!(regression.add_observation(observation.raw_x, observation.observed_ms));
         }
         assert!(regression.is_ready());
+        // The full NNLS search can select a nonsingular single-axis face,
+        // which fits these exactly collinear observations without shrinkage.
         assert_close(regression.predict(&[7.0, 14.0]).unwrap(), 28.0, 1e-7);
     }
 

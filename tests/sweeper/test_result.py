@@ -756,6 +756,13 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     assert result.selected_candidates == []
 
 
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_result_orchestration(monkeypatch):
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
 def test_resource_limited_records_roundtrip_without_claiming_evaluation():
     payload = _complete_result().model_dump(mode="json")
     payload["candidates"].append(
