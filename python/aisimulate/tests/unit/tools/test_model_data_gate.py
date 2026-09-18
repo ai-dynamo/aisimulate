@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -338,3 +339,29 @@ def test_extra_columns_do_not_hide_duplicate_native_gemm_coordinates(repo, tmp_p
     write_table(source, records)
     _, report = run(source, base, tmp_path)
     assert any(item["rule"] == "duplicate_physical_key" for item in report["stages"]["Artifact integrity"]["findings"])
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_cli_rejects_untracked_or_modified_executing_harness(repo, tmp_path, tracked):
+    source, base = repo
+    harness = source / gate.APP / "tools/model_data_gate"
+    harness.mkdir(parents=True)
+    for name in ("run.py", "stages.py"):
+        (harness / name).write_bytes((TOOL / name).read_bytes())
+    if tracked:
+        base = commit(source)
+        with (harness / "stages.py").open("a") as stream:
+            stream.write("\n# a local modification must not be attributed to HEAD\n")
+    out = tmp_path / "cli-report"
+    completed = subprocess.run(
+        [sys.executable, str(harness / "run.py"), "--base", base, "--head", base, "--out", str(out)],
+        cwd=source,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1, completed.stderr
+    report = json.loads((out / "report.json").read_text())
+    assert report["conclusion"] == "Failed"
+    error = report["stages"]["Artifact integrity"]["error"]
+    assert ("tracked checkout differs" if tracked else "absent from the declared head") in error

@@ -228,6 +228,14 @@ def main() -> int:
             raise ValueError("checkout HEAD must equal --head; do not execute another revision's gate")
         if git(repo, "status", "--porcelain", "--untracked-files=no"):
             raise ValueError("tracked checkout differs from the exact head; use a clean worktree")
+        for module in (Path(__file__), Path(__file__).with_name("stages.py")):
+            relative = module.relative_to(repo).as_posix()
+            try:
+                committed = git(repo, "show", f"{args.head}:{relative}")
+            except subprocess.CalledProcessError as error:
+                raise ValueError(f"executing gate module is absent from the declared head: {relative}") from error
+            if module.read_bytes() != committed:
+                raise ValueError(f"executing gate module differs from the declared head: {relative}")
     except Exception as error:
         report = {
             "schema_version": 1,
