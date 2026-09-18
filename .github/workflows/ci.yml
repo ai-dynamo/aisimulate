@@ -667,6 +667,8 @@ jobs:
         if: matrix.shard.suite == 'contracts'
         run: |
           python -m pip install pip-licenses==5.5.5
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m pip check
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
