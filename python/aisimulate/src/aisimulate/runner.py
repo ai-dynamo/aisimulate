@@ -929,6 +929,8 @@ def _materialize_engine_execution_spec(
 
     use_workload_driver = spec.workload.get("source_type") is not None
     if use_workload_driver:
+        if "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         requests: list[dict[str, JSONValue]] = []
         max_in_flight = _configured_in_flight_cap(spec)
     else:

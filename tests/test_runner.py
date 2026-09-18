@@ -1501,3 +1501,16 @@ def test_length_sampler_is_not_exposed_by_public_cli(capsys):
         build_parser().parse_args(["predict", "-c", "unused.yaml", "--length-sampler", "numpy_random_state"])
     assert error.value.code == 2
     assert "unrecognized arguments: --length-sampler numpy_random_state" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("source_type", ["synthetic", "trace"])
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random", "typo"])
+def test_workload_driver_rejects_length_sampler_before_native_execution(source_type, sampler):
+    runtime = RecordingRuntime()
+    with pytest.raises(
+        ValueError, match="length_sampler requires materialized direct synthetic replay without source_type"
+    ):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(workload={"source_type": source_type, "length_sampler": sampler})
+        )
+    assert runtime.execution_spec is None

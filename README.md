@@ -405,7 +405,9 @@ Direct Python `ReplaySpec.workload` synthetic workloads accept
 `length_sampler: numpy_random_state` for InferenceX-compatible seeded token
 lengths in Gym replay. The public prediction/recommendation YAML and CLI, and
 the Sweeper `Workload` schema, do not expose this option and reject it.
-Trace replay rejects non-default samplers. The default `python_random`
+The supported direct path must omit `source_type`; all workload-driver inputs
+with `source_type` reject `length_sampler`. Materialized trace replay rejects
+non-default samplers. The default `python_random`
 preserves existing workloads. Both sample the full input vector before output
 lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
 32-bit integer; the Python sampler retains unsigned 64-bit seed support.
