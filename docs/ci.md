@@ -269,6 +269,16 @@ are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
 
+Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
+fixture after removal of its invalid FP8-block rows. Installed-wheel checks
+resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports and verify their object identity. The AFD qualification golden retains
+all numerical values; its replay hash includes the empty
+`forward_pass_estimators` field added by the unified estimator schema.
+The heterogeneous prefill/decode CLI round trip verifies each role's system
+inside `timing_model.config`, along with the external AIC provider, and retains
+the recommendation-versus-replay metric checks.
+
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains
 invalid eager FP8-block measurements, so corrected GEMMs come from 0.25.0.
