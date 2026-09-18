@@ -442,7 +442,7 @@ def compile_engine(
 
     fpm_options = fpm_options or {}
     recorded_attention_backend = attention_backend
-    if forward_model == "fpm" and backend == "vllm" and attention_backend == "FLASHINFER_MLA":
+    if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
         attention_backend = "flashinfer"
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1

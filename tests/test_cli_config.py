@@ -307,6 +307,7 @@ def test_custom_parallel_preset_lowers_as_flat_atomic_choices() -> None:
         }
     )
 
+    config = CoreRecommendationConfig.model_validate(config.model_dump(mode="json"))
     lowered = recommendation_to_sweeper(config)
 
     assert lowered.search_space.flat_parallel_modes == ["agg"]
@@ -1338,6 +1339,13 @@ def test_prediction_dcp_identity_roundtrip_and_explicit_capacity():
     raw["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {"type": "default"}
     with pytest.raises(ValueError, match="explicit KV block capacity"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    cache = raw["engine"]["workers"]["aggregated"]["kv_cache"]
+    cache.update(capacity={"type": "fixed", "blocks": 2175}, host_offload={"num_host_blocks": 32})
+    with pytest.raises(ValueError, match="explicit bytes_per_token"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    cache["bytes_per_token"] = 1728
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    assert deployment.agg_engine_args["kv_cache_bytes_per_token"] == 1728
 
 
 @pytest.mark.parametrize(
@@ -1352,3 +1360,56 @@ def test_prediction_rejects_identity_that_custom_timing_would_ignore(timing):
     raw["workers"]["aggregated"] = {"timing": timing}
     with pytest.raises(ValidationError, match="identity require default timing"):
         CorePredictionConfig.model_validate({"engine": raw})
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_recommendation_rejects_unsupported_timing_identity(role):
+    from aisimulate.config.engine import WorkersRecommendationConfig
+
+    with pytest.raises(ValidationError, match="identity is prediction-only"):
+        WorkersRecommendationConfig.model_validate(
+            {
+                role: {
+                    "timing": {
+                        "gemm_quant_mode": "fp8",
+                        "kvcache_quant_mode": "fp8",
+                        "attention_backend": "flashinfer",
+                    }
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_prediction_fp8_kv_transfer_uses_cache_precision(mode):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine = {
+        "mode": mode,
+        "model": "Qwen/Qwen3-32B",
+        "hardware": "h200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.24.0",
+        "context_length": 4096,
+        "workers": {
+            role: {
+                "parallelism": {"tensor": 2},
+                "timing": {"kvcache_quant_mode": "fp8"},
+                "kv_cache": {
+                    "capacity": {"type": "fixed", "blocks": 256},
+                    **({"host_offload": {"num_host_blocks": 256}} if mode == "aggregated" else {}),
+                },
+            }
+            for role in roles
+        },
+    }
+    if mode == "disaggregated":
+        engine["kv_transfer"] = {"bytes_per_token": "auto", "bandwidth_gb_per_second": 50}
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    for role in roles:
+        args = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        assert args["timing_model"]["config"]["kvcache_quant_mode"] == "fp8"
+        key = "kv_cache_bytes_per_token" if mode == "aggregated" else "kv_transfer_bytes_per_token"
+        # Qwen3-32B: 64 layers, K+V, 4 KV heads/rank at TP2, 128 dimensions, 1 byte FP8.
+        assert args[key] == 65536

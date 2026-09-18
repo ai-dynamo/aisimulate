@@ -283,10 +283,14 @@ Replay YAML passes recorded DCP through
 `engine.workers.<role>.parallelism.decode_context`. Per-worker `timing` accepts
 the canonical quant-mode fields and `attention_backend`, alongside estimator
 selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
-automatic DCP/hybrid capacity sizing is not implemented. Supplying a fixed pool
-does not add KDA checkpoint, eviction, or chunk-alignment fidelity to the generic
-Replay cache/scheduler. This API change enables timing consumption, not full
-hybrid-cache simulation or multimodal prediction from text-only measurements.
+automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
+transfer also requires explicit KV bytes per token with DCP.
+These timing precision/backend overrides are prediction-only; recommendation
+rejects them until its feasibility preflight supports the same identity.
+Supplying a fixed pool does not add KDA checkpoint, eviction, or chunk-alignment
+fidelity to the generic Replay cache/scheduler. This API change enables timing
+consumption, not full hybrid-cache simulation or multimodal prediction from
+text-only measurements.
 
 The positional engine-spec wire version remains unchanged: the engine identity
 is JSON-encoded and the FPM match identity is already variable-length. Legacy

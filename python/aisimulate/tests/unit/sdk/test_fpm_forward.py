@@ -632,8 +632,11 @@ def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
     assert resident == prefill.get_weights() + sum(op.get_weights() for op in model.encoder_ops)
 
 
-def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
-    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+@pytest.fixture
+def kimi_fpm_profile(tmp_path, request):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    recorded_dcp = getattr(request, "param", 8)
 
     systems = tmp_path / "systems"
     systems.mkdir()
@@ -654,7 +657,9 @@ def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
         _row("decode", 1, 0, 128, 3.0, model_path="moonshotai/Kimi-K3", identity=identity),
     ]
     for row in rows:
-        row.update(dcp=8, measurement_policy="kvwarm_median_of_3", measurement_repeats=3)
+        row.update(measurement_policy="kvwarm_median_of_3", measurement_repeats=3)
+        if recorded_dcp is not None:
+            row["dcp"] = recorded_dcp
     # Independent oracle: the synthetic measured records above define 7 ms
     # prefill and 3 ms decode, irrespective of the model's operator estimates.
     _write_pair(
@@ -662,10 +667,10 @@ def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
         rows,
         sidecar_overrides={
             "measurement_policy": "per_row_single_sample_or_median_of_3",
-            "configuration_selector": {"dcp": 8},
+            "configuration_selector": {"dcp": recorded_dcp} if recorded_dcp is not None else {},
         },
     )
-    config = ForwardPassPerfModelConfig(
+    return ForwardPassPerfModelConfig(
         model="moonshotai/Kimi-K3",
         system=SYSTEM,
         backend=BACKEND,
@@ -674,7 +679,7 @@ def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
         tp=8,
         moe_tp_size=8,
         moe_ep_size=1,
-        dcp=8,
+        dcp=recorded_dcp,
         kvcache_quant_mode="fp8",
         attention_backend="FLASHINFER_MLA",
         estimation_mode="fpm_interpolation",
@@ -684,6 +689,13 @@ def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
             "correction": {"enabled": False},
         },
     )
+
+
+@pytest.mark.parametrize("kimi_fpm_profile", [None, 1, 8], indirect=True)
+def test_canonical_kimi_dcp_profile_queries_measured_points(kimi_fpm_profile):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
     model = RustForwardPassPerfModel.best_available(config)
     try:
         assert model.estimate_forward_pass_time_ms(
@@ -704,20 +716,64 @@ def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
                 },
             }
         ) == pytest.approx(3.0)
-        assert model.diagnostics()["provenance"]["config"]["dcp"] == 8
+        assert model.diagnostics()["provenance"]["config"]["dcp"] == config.dcp
     finally:
         model.close()
     from dataclasses import replace
 
     from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
 
-    for dcp in (None, 1):
+    for dcp in (None, 1, 8):
+        if dcp == config.dcp:
+            continue
         with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
             RustForwardPassPerfModel.best_available(replace(config, dcp=dcp))
     automatic = RustForwardPassPerfModel.best_available(replace(config, estimation_mode="auto"))
     try:
         provenance = automatic.diagnostics()["provenance"]
         assert provenance["selected_estimation_mode"] == "fpm_interpolation"
-        assert provenance["config"]["dcp"] == 8
+        assert provenance["config"]["dcp"] == config.dcp
     finally:
         automatic.close()
+
+
+def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
+    from dataclasses import replace
+
+    from aiconfigurator.sdk.config import RuntimeConfig
+    from aiconfigurator.sdk.inference_session import InferenceSession
+    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aiconfigurator_core.sdk.rust_engine_step import _engine_handle_cache_clear
+
+    config = _model_config(
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        forward_model="fpm",
+        fpm_text_only=True,
+        fpm_unrecorded_quant_modes=("fmha", "comm"),
+        fpm_attention_backend="FLASHINFER_MLA",
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4,
+    )
+    database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=kimi_fpm_profile.systems_paths[0])
+    runtime = RuntimeConfig(batch_size=1, isl=128, osl=2)
+
+    def prefill(model_config):
+        model = models.get_model(kimi_fpm_profile.model, model_config, BACKEND)
+        return InferenceSession(model, database, get_backend(BACKEND)).run_static_latency_only(runtime, "static_ctx")
+
+    _engine_handle_cache_clear()
+    try:
+        assert prefill(config) == pytest.approx(7.0)  # synthetic measured prefill row
+        for different in (
+            replace(config, dcp_size=1),
+            replace(config, fpm_unrecorded_quant_modes=()),
+            replace(config, fpm_attention_backend="auto"),
+        ):
+            with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+                prefill(different)
+        assert prefill(config) == pytest.approx(7.0)
+    finally:
+        _engine_handle_cache_clear()

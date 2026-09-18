@@ -572,12 +572,15 @@ def _resolve_kv_bytes_per_token(
     if configured != "auto":
         return configured
     parallel = worker.parallelism
+    if (parallel.decode_context or 1) > 1:
+        raise ValueError("DCP KV transfer sizing requires explicit bytes_per_token")
     return estimate_kv_bytes_per_token(
         engine.model,
         tp_size=parallel.tensor,
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        kvcache_quant_mode=worker.timing.kvcache_quant_mode,
     )
 
 

@@ -1157,6 +1157,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "attention_dp_size": _optional_int(getattr(model_config, "attention_dp_size", None)),
         # Part of the engine identity so cp variants get distinct cached handles.
         "cp_size": _optional_int(getattr(model_config, "cp_size", None)),
+        "dcp_size": _optional_int(getattr(model_config, "dcp_size", None)),
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
@@ -1203,6 +1204,9 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "fpm_text_only": getattr(model_config, "fpm_text_only", False),
+                        "fpm_unrecorded_quant_modes": getattr(model_config, "fpm_unrecorded_quant_modes", ()),
+                        "fpm_attention_backend": getattr(model_config, "fpm_attention_backend", None),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
