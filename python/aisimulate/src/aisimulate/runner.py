@@ -17,6 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .capacity import materialize_aic_num_gpu_blocks
+from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -270,6 +271,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_state_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -1150,16 +1152,20 @@ def _materialize_engine_role(
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
-        num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
-        role_config = materialize_aic_num_gpu_blocks(
-            role_config,
-            **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
-        )
-        if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
-            role_memory["status"] = "available"
-            role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
-            role_memory.pop("unavailable_reason", None)
-        capacity_materialized = role_config.get("num_gpu_blocks") is not None
+        state_cache = _manual_state_cache(role_config, deployment_backend, role)
+        num_gpu_blocks_is_explicit = state_cache is not None or role_config.get("num_gpu_blocks") is not None
+        if state_cache is not None:
+            role_config["state_cache"] = state_cache.model_dump(mode="json")
+        else:
+            role_config = materialize_aic_num_gpu_blocks(
+                role_config,
+                **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
+            )
+            if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
+                role_memory["status"] = "available"
+                role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+                role_memory.pop("unavailable_reason", None)
+            capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -1230,6 +1236,11 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
+    state_cache = _manual_state_cache(rank, deployment_backend, role)
+    if state_cache is not None:
+        num_gpu_blocks_is_explicit = True
+        rank["state_cache"] = state_cache.model_dump(mode="json")
+
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
     if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
         raise ValueError(f"engine provider {role} config duplicates cuda_graph_reserved_bytes")
@@ -1255,7 +1266,7 @@ def _materialize_engine_role(
             "engine provider rank backend conflicts with deployment backend: "
             f"{configured_backend!r} != {deployment_backend!r}"
         )
-    if "block_size" not in rank:
+    if "block_size" not in rank and state_cache is None:
         # Keep scheduler capacity, AIC compilation, and synthetic-prefix
         # materialization on one explicit backend-native block size.
         rank["block_size"] = {
@@ -1508,6 +1519,46 @@ def _materialize_engine_role(
         "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }
+
+
+def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) -> StateCacheConfig | None:
+    """Validate manual geometry before any automatic capacity materialization."""
+
+    raw = rank.get("state_cache")
+    if raw is None:
+        return None
+    state_cache = StateCacheConfig.model_validate(raw)
+    if backend != "vllm" or role != "aggregated":
+        raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
+    if rank.get("native_host_offload") is not None:
+        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+    if rank.get("g3_offload") is not None:
+        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    conflicts = [
+        name
+        for name in (
+            "gpu_memory_utilization",
+            "mem_fraction_static",
+            "free_gpu_memory_fraction",
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_bandwidth",
+        )
+        if rank.get(name) is not None
+    ]
+    if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
+        conflicts.append("cuda_graph_reserved_bytes")
+    # Rust serializes this default explicitly; it does not enable PD transfer.
+    if rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+        conflicts.append("kv_transfer_timing_mode")
+    if conflicts:
+        raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")
+    for name in ("num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"):
+        value = rank.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"state_cache requires explicit positive {name} within u64")
+    if rank["num_gpu_blocks"] < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"]) + 1:
+        raise ValueError("state_cache capacity must fit one token block and one request state")
+    return state_cache
 
 
 def _positive_int(value: JSONValue, name: str) -> int:
