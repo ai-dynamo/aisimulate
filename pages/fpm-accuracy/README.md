@@ -29,6 +29,9 @@ comparison policy; it is not an independent held-out ranking of input libraries.
 Regression predicts and scores each observation before tuning on its target;
 state is isolated by worker. Worker roles are inferred from scheduled workload
 across the case, never latency. This is an offline role-inference policy.
+Configurations with decode context parallelism (`dcp>1`) retain their measured
+coverage and worker regression results, but show native FPM as unsupported.
+The evaluator validates DCP identity without treating it as ordinary CP.
 Revisions without the worker-scoped regression API (including `release/0.12.0`
 at `1f728534`) show Regression as unsupported. Their measurements remain in its
 coverage denominator; FPM evaluation continues. Legacy shared regression state
