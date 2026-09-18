@@ -659,3 +659,7 @@ on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).
+
+Fast CI explicitly fetches the immutable numerical sentinel baseline when it is
+absent from the checkout. A squash merge can leave that measured source commit
+outside main history; the baseline values and commit validation remain unchanged.
