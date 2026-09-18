@@ -63,12 +63,10 @@ def test_fpe_support_matrix_uses_packaged_pages_data():
 def test_package_readme_only_exposes_current_static_page_entrypoints():
     readme = PACKAGE_README.read_text()
 
-    assert "https://deepwiki.com/ai-dynamo/aisimulate" in readme
     assert "AIC Developer Universe" not in readme
     assert "ai-dynamo.github.io/aiconfigurator" not in readme
-    assert "[AISimulate website](https://ai-dynamo.org/aisimulate/)" in readme
-    assert "[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)" in readme
+    assert "[Website](https://ai-dynamo.org/aisimulate/)" in readme
     assert "[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)" in readme
     assert "[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)" in readme
     assert "release branches" not in readme
-    assert "[per-system CSV files](src/aiconfigurator_core/systems/support_matrix)" in readme
+    assert "[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/)" in readme
