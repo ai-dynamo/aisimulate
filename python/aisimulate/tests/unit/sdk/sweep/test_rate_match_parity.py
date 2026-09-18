@@ -14,8 +14,8 @@ one side.
 
 import pytest
 
-from aiconfigurator.sdk.picking import _build_disagg_summary_dict
-from aiconfigurator.sdk.sweep import _rate_match_dict
+from aisimulate.sdk.picking import _build_disagg_summary_dict
+from aisimulate.sdk.sweep import _rate_match_dict
 
 pytestmark = pytest.mark.unit
 
@@ -203,42 +203,42 @@ class TestWorkerGpus:
     """worker_gpus: num_total_gpus is authoritative, dims are the fallback."""
 
     def test_prefers_authoritative_num_total_gpus(self):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         # Dims say 1 GPU, but the backend stamped 8 (e.g. a dimension this
         # helper's fallback list does not know about yet) — trust the stamp.
         assert worker_gpus({"tp": 1, "pp": 1, "dp": 1, "num_total_gpus": 8}) == 8
 
     def test_falls_back_to_dims_product_including_cp(self):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         assert worker_gpus({"tp": 2, "pp": 2, "dp": 1, "cp": 4}) == 16
 
     def test_missing_dims_default_to_one(self):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         assert worker_gpus({"tp": 4}) == 4
 
     def test_nan_num_total_gpus_falls_back(self):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         assert worker_gpus({"tp": 2, "pp": 1, "dp": 1, "num_total_gpus": float("nan")}) == 2
 
     def test_nan_dim_in_fallback_counts_as_one(self):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         # Schema-materialized legacy rows NaN-fill dims they predate.
         assert worker_gpus({"tp": 2, "pp": 1, "dp": 1, "cp": float("nan")}) == 2
 
     @pytest.mark.parametrize("cp", [None, 0, -1])
     def test_invalid_dim_in_fallback_defaults_to_one(self, cp):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         assert worker_gpus({"tp": 2, "pp": 1, "dp": 1, "cp": cp}) == 2
 
     @pytest.mark.parametrize("n", [None, 0, -8])
     def test_invalid_num_total_gpus_falls_back(self, n):
-        from aiconfigurator.sdk.picking import worker_gpus
+        from aisimulate.sdk.picking import worker_gpus
 
         assert worker_gpus({"tp": 2, "pp": 1, "dp": 1, "num_total_gpus": n}) == 2
 
@@ -257,8 +257,8 @@ class TestSchemaMaterializedRows:
     def test_compose_and_render_schema_materialized_legacy_rows(self):
         import pandas as pd
 
-        from aiconfigurator.cli.report_and_save import _plot_worker_setup_table
-        from aiconfigurator.sdk import common
+        from aisimulate.legacy_cli.report_and_save import _plot_worker_setup_table
+        from aisimulate.sdk import common
 
         # Legacy per-worker rows: no cp key; num_total_gpus authoritative.
         p = self._materialize(_make_prefill_dict(tp=4, num_total_gpus=4), common.ColumnsStatic)

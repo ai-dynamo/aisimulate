@@ -10,16 +10,15 @@ from pathlib import Path
 from packaging.requirements import Requirement
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
-def test_new_and_compatibility_namespaces_export_the_same_native_types() -> None:
-    aisimulate_core = importlib.import_module("aisimulate_core")
-    aiconfigurator_core = importlib.import_module("aiconfigurator_core")
+def test_canonical_core_exports_the_unified_native_types() -> None:
+    core = importlib.import_module("aisimulate_core")
+    runtime = importlib.import_module("aisimulate._runtime")
 
-    assert aisimulate_core.AicEngine is aiconfigurator_core.AicEngine
-    assert aisimulate_core.RustForwardPassPerfModel is aiconfigurator_core.RustForwardPassPerfModel
     for name in (
+        "AicEngine",
+        "RustForwardPassPerfModel",
         "engine_spec_schema_version",
         "gemm_quant_util_levels",
         "moe_quant_util_levels",
@@ -29,23 +28,21 @@ def test_new_and_compatibility_namespaces_export_the_same_native_types() -> None
         "table_view_attributes",
         "weights_ops_json",
     ):
-        assert getattr(aisimulate_core, name) is getattr(aiconfigurator_core, name)
-    assert aisimulate_core.__version__ == importlib.metadata.version("aisimulate")
+        assert getattr(core, name) is getattr(runtime, name)
+    assert core.__version__ == importlib.metadata.version("aisimulate")
 
 
-def test_public_sdk_facade_and_explicit_modules_are_available() -> None:
+def test_public_sdk_facade_and_explicit_modules_share_identity() -> None:
     sdk = importlib.import_module("aisimulate_core.sdk")
+    engine = importlib.import_module("aisimulate_core.sdk.engine")
     errors = importlib.import_module("aisimulate_core.sdk.errors")
-    table_view = importlib.import_module("aisimulate_core.sdk.engine_table_view")
-    compatibility_errors = importlib.import_module("aiconfigurator_core.sdk.errors")
-    compatibility_table_view = importlib.import_module("aiconfigurator_core.sdk.engine_table_view")
+    application_errors = importlib.import_module("aisimulate.sdk.errors")
 
-    assert "compile_engine" in sdk.__all__
-    assert errors.PerfDataNotAvailableError is compatibility_errors.PerfDataNotAvailableError
-    assert table_view is compatibility_table_view
+    assert sdk.compile_engine is engine.compile_engine
+    assert errors.PerfDataNotAvailableError is application_errors.PerfDataNotAvailableError
 
 
-def test_aisimulate_owns_compatibility_namespaces_without_split_dependencies() -> None:
+def test_aisimulate_owns_core_without_split_dependencies() -> None:
     aisimulate_core = importlib.import_module("aisimulate_core")
     requirements = importlib.metadata.requires("aisimulate") or []
     dependency_names = {Requirement(requirement).name for requirement in requirements}
@@ -57,37 +54,43 @@ def test_aisimulate_owns_compatibility_namespaces_without_split_dependencies() -
     assert "ai-dynamo" not in dependency_names
 
 
-def test_native_compatibility_module_forwards_to_the_unified_runtime() -> None:
+def test_native_binding_module_forwards_to_the_unified_runtime() -> None:
     runtime = importlib.import_module("aisimulate._runtime")
-    compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
+    compatibility_runtime = importlib.import_module("aisimulate_core._native")
 
     assert compatibility_runtime.AicEngine is runtime.AicEngine
     assert compatibility_runtime.RustForwardPassPerfModel is runtime.RustForwardPassPerfModel
 
 
-def test_native_compatibility_wildcard_import_preserves_runtime_identity() -> None:
+def test_native_binding_wildcard_import_preserves_runtime_identity() -> None:
     runtime = importlib.import_module("aisimulate._runtime")
-    compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
+    compatibility_runtime = importlib.import_module("aisimulate_core._native")
     namespace: dict[str, object] = {}
 
-    exec("from aiconfigurator_core._aiconfigurator_core import *", {}, namespace)
+    exec("from aisimulate_core._native import *", {}, namespace)
 
     assert set(namespace) == set(compatibility_runtime.__all__)
     for name in compatibility_runtime.__all__:
         assert namespace[name] is getattr(runtime, name)
 
 
-def test_legacy_source_paths_are_non_recursive_views_of_canonical_sources() -> None:
-    compatibility_root = APPLICATION_ROOT / "aic-core"
+def test_only_canonical_source_packages_remain() -> None:
+    source = APPLICATION_ROOT / "src"
+    assert {path.name for path in source.iterdir() if path.is_dir()} == {"aisimulate", "aisimulate_core"}
+    assert not (APPLICATION_ROOT / "aic-core").exists()
 
-    assert not compatibility_root.is_symlink()
-    assert (compatibility_root / "src").resolve(strict=True) == (APPLICATION_ROOT / "src").resolve(strict=True)
-    assert (compatibility_root / "rust/aiconfigurator-core/src").resolve(strict=True) == (
-        REPOSITORY_ROOT / "crates/core/src/perfmodel"
-    ).resolve(strict=True)
-    assert (compatibility_root / "rust/aiconfigurator-core/tests").resolve(strict=True) == (
-        REPOSITORY_ROOT / "crates/core/tests/perfmodel"
-    ).resolve(strict=True)
-    assert (compatibility_root / "rust/aiconfigurator-core/parity_tests").resolve(strict=True) == (
-        REPOSITORY_ROOT / "crates/core/parity_tests/perfmodel"
-    ).resolve(strict=True)
+
+def test_legacy_import_namespaces_are_not_installed() -> None:
+    # Run this in the clean wheel environment too: source-only absence is insufficient.
+    assert importlib.util.find_spec("aiconfigurator") is None
+    assert importlib.util.find_spec("aiconfigurator_core") is None
+
+
+def test_resource_paths_belong_to_the_canonical_core() -> None:
+    from importlib.resources import files
+
+    core = files("aisimulate_core")
+    assert (core / "systems" / "h200_sxm.yaml").is_file()
+    assert (core / "model_configs").is_dir()
+    assert (files("aisimulate") / "legacy_cli" / "example.yaml").is_file()
+    assert (files("aisimulate") / "generator" / "config" / "deployment_config.yaml").is_file()

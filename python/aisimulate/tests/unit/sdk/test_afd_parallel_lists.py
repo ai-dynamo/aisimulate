@@ -5,7 +5,7 @@
 
 import pytest
 
-from aiconfigurator.sdk.task_v2 import build_afd_parallel_lists
+from aisimulate.sdk.task_v2 import build_afd_parallel_lists
 
 pytestmark = pytest.mark.unit
 

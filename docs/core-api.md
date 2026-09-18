@@ -3,16 +3,15 @@
 The core API is delivered through the repository's two release artifacts at
 the same version:
 
-- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
-  compatibility namespace `aiconfigurator_core`;
+- the `aisimulate` Python wheel, whose estimator API is `aisimulate_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
 The single wheel owns the application, estimator SDK, model and system data,
 and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
-Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available in AISimulate 0.13.0 for compatibility.
+Rust-to-Python construction path. Legacy Python import namespaces are removed
+in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
 
 ## Stable Python facade
 
@@ -75,8 +74,7 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. Both
-`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 

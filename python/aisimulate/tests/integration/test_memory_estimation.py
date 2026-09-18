@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration: ``aiconfigurator.sdk.memory`` capacity estimate over a REAL perf DB.
+"""Integration: ``aisimulate.sdk.memory`` capacity estimate over a REAL perf DB.
 
 Exercises the NATIVE path end-to-end (the full ``_get_memory_usage`` backend
 memory model + the OfFree/OfTotal budget math), which the unit tests in
@@ -20,7 +20,7 @@ Native cases (Qwen3-32B on h200_sxm, TRT-LLM OfFree and vLLM OfTotal), asserting
   scheduler_block_size)``, using the tolerance-adjusted token count when set.
 
 Requires the perf DB (LFS) for the SystemSpec capacity used by the native path,
-plus ``aiconfigurator_core`` importable (transitively, via ``sdk.memory``).
+plus ``aisimulate_core`` importable (transitively, via ``sdk.memory``).
 General native cases soft-skip when the import or native breakdown is unavailable.
 The required Eagle regression fails when its fixture cannot execute.
 """
@@ -33,9 +33,9 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-# `sdk.memory` (transitively) needs the compiled `aiconfigurator_core` extension,
+# `sdk.memory` (transitively) needs the compiled `aisimulate_core` extension,
 # so it must be importable; skip rather than error when it is not built.
-memory = pytest.importorskip("aiconfigurator.sdk.memory")
+memory = pytest.importorskip("aisimulate.sdk.memory")
 
 
 # (model, system, backend, backend_version, memory_fraction_kind) — the

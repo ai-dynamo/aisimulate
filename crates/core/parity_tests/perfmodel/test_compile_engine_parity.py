@@ -28,7 +28,7 @@ Three surfaces:
    source) from ``goldens/per_op.json`` — the Gate-3 precondition that per-op
    values cross the FFI with real op names.
 
-These tests require the maturin-built ``aiconfigurator_core`` extension.
+These tests require the maturin-built ``aisimulate_core`` extension.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ from test_engine_step_parity import (
     load_parity_golden,
 )
 
-from aiconfigurator.sdk import config, engine, perf_database
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.models import get_model
+from aisimulate.sdk import config, engine, perf_database
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.models import get_model
 
 pytestmark = pytest.mark.integration
 
@@ -591,7 +591,7 @@ def _build_wideep_sglang():
     ``wideep_sglang`` goldens exercise measured DeepEP expert compute alongside
     the new LL communication model.
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(
         perf_database.get_database,
@@ -642,7 +642,7 @@ def _build_wideep_sglang():
 
 def _build_gb200_wideep_sglang():
     """Runnable GB200 Stage-1 DeepEP config for parity and golden capture."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(
         perf_database.get_database,
@@ -695,9 +695,9 @@ def _build_gb200_wideep_sglang():
 
 
 def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
-    import aiconfigurator_core
+    import aisimulate_core
 
-    return engine.EngineHandle(bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)))
+    return engine.EngineHandle(bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json)))
 
 
 class TestWideEpDeepEpParity:
@@ -824,7 +824,7 @@ class TestGb200WideEpDeepEpParity:
 def _build_wideep_trtllm():
     """(model, backend, database, spec_json) for the TRT-LLM WideEP config;
     shared by the parity test (handle side) and the golden capture."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc20")
     if database is None:

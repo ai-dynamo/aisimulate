@@ -17,7 +17,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
-
 from collector.case_generator import get_common_mhc_test_cases
 from collector.helper import benchmark_with_power, log_perf
 from collector.registry_types import PerfFile
@@ -67,9 +66,8 @@ def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
 
 
 def _init_cuda(device: str) -> None:
-    from vllm.v1.worker.workspace import init_workspace_manager
-
     from collector.vllm.utils import setup_distributed
+    from vllm.v1.worker.workspace import init_workspace_manager
 
     setup_distributed(device)
     torch.cuda.set_device(device)
@@ -125,7 +123,7 @@ def _mhc_pre(residual, fn, base, scale):
     # (vllm/models/deepseek_v4/nvidia/model.py:854-890 @0.24.0). This
     # collector measures the norm_weight=None variant because the SDK's
     # DeepSeekV4 model composes mhc_pre + attn_norm (ElementWise) + mhc_post
-    # as separate per-layer ops (src/aiconfigurator/sdk/models/deepseek_v4.py)
+    # as separate per-layer ops (src/aisimulate/sdk/models/deepseek_v4.py)
     # — fusing the norm here would double-count it downstream.
     # Measured impact (H20, hc_mult=4, hidden=4096, T=1k/8k, 2026-07):
     # fused(post+pre+norm) matches pre(no-norm)+post within 1-2%, and the

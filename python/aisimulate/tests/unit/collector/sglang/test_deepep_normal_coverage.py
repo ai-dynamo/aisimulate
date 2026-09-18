@@ -6,7 +6,6 @@
 import csv
 
 import pytest
-
 from collector.wideep.sglang import collect_deepep_normal
 from collector.wideep.sglang.collect_deepep_normal import _validate_expert_partition, _verify_axis_coverage
 

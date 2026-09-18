@@ -152,7 +152,7 @@ class AICAFDPerformanceModel:
     def measure(self, request: AFDMeasurementRequest) -> tuple[AFDLayerTimes, ...]:
         estimator = self._estimator
         if estimator is None:
-            from aiconfigurator.cli.api import cli_estimate
+            from aisimulate.legacy_cli.api import cli_estimate
 
             estimator = cli_estimate
 
@@ -225,7 +225,7 @@ class AICAFDPerformanceModel:
                         num_layers=int(item["num_layers"]),
                         provenance={
                             "provider": "aic",
-                            "source": "aiconfigurator.cli.api.cli_estimate",
+                            "source": "aisimulate.legacy_cli.api.cli_estimate",
                             "api_version": AFD_MEASUREMENT_API_VERSION,
                             "units": "milliseconds_per_layer",
                             "communication_calibration": "unscaled",

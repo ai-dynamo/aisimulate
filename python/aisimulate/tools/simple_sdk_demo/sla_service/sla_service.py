@@ -12,15 +12,15 @@ import pandas as pd
 import uvicorn
 from fastapi import Body, FastAPI, Response
 
-from aiconfigurator.cli.api import cli_recommend
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.common import get_default_models
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.models import check_is_moe, get_model
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator.sdk.utils import enumerate_parallel_config
+from aisimulate.legacy_cli.api import cli_recommend
+from aisimulate.sdk import common
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.common import get_default_models
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.inference_session import InferenceSession
+from aisimulate.sdk.models import check_is_moe, get_model
+from aisimulate.sdk.perf_database import get_database
+from aisimulate.sdk.utils import enumerate_parallel_config
 
 logger = logging.getLogger(__name__)
 

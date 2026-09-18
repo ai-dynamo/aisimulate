@@ -4,7 +4,7 @@
 """Enumerate legal per-worker parallel shapes and the replica counts that fit a GPU budget.
 
 The per-worker shape enumeration mirrors
-``aiconfigurator.sdk.utils.enumerate_parallel_config`` + ``filter_real_silicon_configs``
+``aisimulate.sdk.utils.enumerate_parallel_config`` + ``filter_real_silicon_configs``
 (real-silicon profile): ``pp`` is pinned to 1; the MoE width constraint
 ``dp*tp == moe_tp*moe_ep`` holds; for MoE only the pure TEP / DEP / MoE-TP patterns are
 kept, plus their shared width-one identity shape (MoE-TP — moe_ep==1 under tensor- or

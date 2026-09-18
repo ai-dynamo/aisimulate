@@ -91,7 +91,7 @@ form the local-baseline bucket key.
 
 Usage:
     python3 tools/perf_database/check_cross_backend.py \\
-        --data-root aic-core/src/aiconfigurator_core/systems/data \\
+        --data-root src/aisimulate_core/systems/data \\
         --systems h200_sxm \\
         --out-md   $TMPDIR/cross-backend-check.md \\
         --out-json $TMPDIR/cross-backend-check.json
@@ -1631,7 +1631,7 @@ def main() -> None:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("aic-core/src/aiconfigurator_core/systems/data"),
+        default=Path("src/aisimulate_core/systems/data"),
         help="Root of the systems/data tree.",
     )
     parser.add_argument("--workers", type=int, default=1, help="Parallel system/op table workers (default: serial).")
@@ -1667,7 +1667,7 @@ def main() -> None:
     parser.add_argument(
         "--systems-spec-root",
         type=Path,
-        default=Path("aic-core/src/aiconfigurator_core/systems"),
+        default=Path("src/aisimulate_core/systems"),
         help="Directory of <system>.yaml gpu specs used for the gemm speed-of-light bound.",
     )
     parser.add_argument(

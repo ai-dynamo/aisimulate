@@ -28,7 +28,7 @@ use crate::{
 
 fn systems_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+        .join("../../python/aisimulate/src/aisimulate_core/systems")
 }
 
 const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";

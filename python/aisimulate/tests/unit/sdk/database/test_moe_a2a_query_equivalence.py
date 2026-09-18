@@ -30,16 +30,16 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk import engine
-from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.operations.moe_comm import MoEAllToAll
-from aiconfigurator_core.sdk.perf_database import get_database
+from aisimulate_core.sdk import engine
+from aisimulate_core.sdk.engine_table_view import fetch_table_view
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll
+from aisimulate_core.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 DEEPEP_NORMAL_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_deepep_normal_perf.parquet"
@@ -214,7 +214,7 @@ def test_l1_fp8_block_normalization_matches_legacy():
     probes STORED dtype keys, so this caller-visible alias needs its own
     shipped-data probe (raw fp8 rows as the expectation).
     """
-    from aiconfigurator_core.sdk import common
+    from aisimulate_core.sdk import common
 
     db = get_database("gb200", "trtllm", "1.3.0rc10", allow_unlisted_version=True)
     assert db is not None

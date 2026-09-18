@@ -292,7 +292,7 @@ mod tests {
     fn systems() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let spec = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("../../python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         std::fs::copy(spec, root.path().join("b200_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
         root

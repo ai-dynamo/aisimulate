@@ -38,16 +38,16 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.models import get_model, get_model_family
-from aiconfigurator.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
-from aiconfigurator.sdk.perf_database import databases_cache, get_database, set_systems_paths
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk import common
+from aisimulate.sdk.models import get_model, get_model_family
+from aisimulate.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
+from aisimulate.sdk.perf_database import databases_cache, get_database, set_systems_paths
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
 # A shape no shipped model has (hidden 5120 + 64 experts has no collision in
-# aic-core/src/aiconfigurator_core/model_configs): the contract must work for
+# src/aisimulate_core/model_configs): the contract must work for
 # a model the source tree has never seen, not just for re-collected DeepSeek.
 SYNTH_HIDDEN, SYNTH_INTER, SYNTH_TOPK, SYNTH_EXPERTS = 5120, 1536, 4, 64
 SYNTH_LAYERS = 48
@@ -438,7 +438,7 @@ def test_source_tree_is_untouched_fixtures_only(synth_systems, synth_model_path)
     resolved into the existing MOE family (no new family, no new model class),
     and the builder registry still holds exactly the two variants the package
     registers at import (no test-local ``register_moe_block``)."""
-    from aiconfigurator.sdk.models.blocks.moe import _MOE_BLOCK_REGISTRY, LARGE_EP_READY_FAMILIES
+    from aisimulate.sdk.models.blocks.moe import _MOE_BLOCK_REGISTRY, LARGE_EP_READY_FAMILIES
 
     assert get_model_family(synth_model_path) == "MOE"
     assert "MOE" in LARGE_EP_READY_FAMILIES

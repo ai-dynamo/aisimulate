@@ -15,10 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import aiconfigurator.sdk.models.helpers as helpers
-from aiconfigurator.sdk import common, config, inference_session, memory, models, pareto_analysis, sweep
-from aiconfigurator.sdk.models import resolve_context_fmha_by_data
-from aiconfigurator_core.sdk import models as canonical_models
+import aisimulate.sdk.models.helpers as helpers
+from aisimulate.sdk import common, config, inference_session, memory, models, pareto_analysis, sweep
+from aisimulate.sdk.models import resolve_context_fmha_by_data
+from aisimulate_core.sdk import models as canonical_models
 
 pytestmark = pytest.mark.unit
 
