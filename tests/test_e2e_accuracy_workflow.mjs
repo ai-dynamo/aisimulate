@@ -113,9 +113,15 @@ test("only successful scheduled nightlies can suppress another scheduled build",
 });
 
 const key = branch => createHash("sha256").update(branch).digest("hex").slice(0, 16);
-const entry = (branch, revision, nightly = "") => ({ branch, sha: revision, nightly_run: nightly, artifact_key: key(branch) });
+const entry = (branch, revision, nightly = "") => ({
+  branch,
+  sha: revision,
+  nightly_run: nightly,
+  nightly_attempt: nightly ? "2" : "",
+  artifact_key: key(branch),
+});
 const run = {
-  id: 123, head_sha: sha, head_branch: "main", event: "schedule",
+  id: 123, run_attempt: 2, head_sha: sha, head_branch: "main", event: "schedule",
   path: ".github/workflows/nightly-ci.yml", status: "waiting", conclusion: null,
   repository: { full_name: "ai-dynamo/aisimulate" },
   head_repository: { full_name: "ai-dynamo/aisimulate" },
