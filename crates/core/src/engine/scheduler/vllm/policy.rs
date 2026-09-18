@@ -103,13 +103,27 @@ pub(super) fn destination_capacity_error<S: PolicySequence>(
     exceeds.then_some(message)
 }
 
-pub(super) fn should_reject_for_model_len<S: PolicySequence>(
+/// TRT-LLM reserves through completion, so admission uses the realizable output
+/// budget. vLLM keeps its requested budget and enforces the limit during decode.
+pub(super) fn cap_output_for_model_len(
     policy: SchedulingPolicy,
+    prompt_len: usize,
+    max_output_tokens: usize,
+    max_model_len: Option<usize>,
+) -> usize {
+    match (policy, max_model_len) {
+        (SchedulingPolicy::TrtllmGuaranteedNoEvict, Some(limit)) => {
+            max_output_tokens.min(limit.saturating_sub(prompt_len))
+        }
+        _ => max_output_tokens,
+    }
+}
+
+pub(super) fn should_reject_for_model_len<S: PolicySequence>(
     sequence: &S,
     max_model_len: Option<usize>,
 ) -> bool {
-    policy == SchedulingPolicy::Vllm
-        && max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
+    max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
 }
 
 /// Number of additional tokens the request may generate before reaching

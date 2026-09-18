@@ -190,10 +190,17 @@ def _build_image(tmp_path, base):
 def test_manifest_retains_dense_moe_prefill_and_decode():
     manifest = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())
     cases = validate_cases(manifest)
-    assert len(cases) == 8
-    assert {(c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases} == {
-        (model, method, isl)
-        for model in ("Qwen/Qwen3-32B", "MiniMaxAI/MiniMax-M2.5")
+    assert len(cases) == 16
+    assert {
+        (c["compile"]["backend"], c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases
+    } == {
+        (backend, model, method, isl)
+        for backend, model in (
+            ("vllm", "Qwen/Qwen3-32B"),
+            ("vllm", "MiniMaxAI/MiniMax-M2.5"),
+            ("trtllm", "Qwen/Qwen3-32B"),
+            ("sglang", "Qwen/Qwen3-32B"),
+        )
         for method in ("predict_prefill_latency", "predict_decode_latency")
         for isl in (1024, 8192)
     }
