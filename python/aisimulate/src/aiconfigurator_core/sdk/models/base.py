@@ -262,17 +262,29 @@ class BaseModel:
         num_kv_heads_per_gpu = (self._num_kv_heads + self.config.tp_size - 1) // self.config.tp_size
         return num_kv_heads_per_gpu * self._head_size * self._num_layers * 2
 
+    def get_kvcache_static_bytes_per_sequence(self) -> float:
+        """Constant per-sequence state bytes on one GPU, charged inside the KV budget.
+
+        Zero for pure-attention models. Hybrid models whose recurrent layers keep a
+        fixed-size state per request (Mamba2 SSM + conv state) override this so
+        :meth:`get_kvcache_bytes_per_sequence` becomes ``static + seq_len * per_token``
+        and :meth:`get_kvcache_max_tokens` reserves the static term first.
+        """
+        return 0.0
+
     def get_kvcache_bytes_per_sequence(self, seq_len: int) -> float:
         """KV cache bytes for one sequence on one GPU."""
         seq_len = max(0, seq_len)
-        return seq_len * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        token_bytes = seq_len * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        return self.get_kvcache_static_bytes_per_sequence() + token_bytes
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         """Largest single-sequence length whose KV cache fits in ``kv_budget_bytes``.
 
         The capacity-sizing inverse of :meth:`get_kvcache_bytes_per_sequence`. The
-        base model's KV grows linearly -- a constant number of bytes per token --
-        so the inverse is exact floor-division by that per-token size.
+        base model's KV grows linearly -- a constant number of bytes per token on top
+        of :meth:`get_kvcache_static_bytes_per_sequence` -- so the inverse is exact
+        floor-division of the remaining budget by that per-token size.
 
         Models whose KV growth is non-linear -- hybrid sliding-window attention
         (SWA layers cap at the window while global layers keep growing) or
@@ -282,8 +294,9 @@ class BaseModel:
         :meth:`_binary_search_kvcache_max_tokens`) so capacity follows their true piecewise
         curve instead of extrapolating the ``seq_len=1`` slope.
         """
-        budget = float(kv_budget_bytes)
-        per_token = self.get_kvcache_bytes_per_sequence(1)
+        static = self.get_kvcache_static_bytes_per_sequence()
+        budget = float(kv_budget_bytes) - static
+        per_token = self.get_kvcache_bytes_per_sequence(1) - static
         if budget <= 0.0 or per_token <= 0.0:
             return 0
         return int(budget // per_token)

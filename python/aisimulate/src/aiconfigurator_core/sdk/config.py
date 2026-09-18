@@ -130,6 +130,10 @@ class ModelConfig:
     # Internal system identity used by phase/quantization-specific communication
     # dtype selection.  It travels with ModelConfig through sweep replacements.
     system: str | None = None
+    # Mamba2 SSM state dtype for hybrid models (mirrors vLLM --mamba-ssm-cache-dtype:
+    # "auto" | "float16" | "bfloat16" | "float32"). None defers to the checkpoint's
+    # `mamba_ssm_cache_dtype`; unset or "auto" means the model dtype (bf16).
+    mamba_ssm_cache_dtype: str | None = None
 
     def __post_init__(self) -> None:
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
