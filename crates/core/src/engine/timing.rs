@@ -240,6 +240,151 @@ impl ValidatedTimingPhase {
     }
 }
 
+/// Provider-owned state; all inputs pass through `ValidatedTimingPhase`.
+/// The public, checked accumulator remains the fallback for changing layouts.
+#[derive(Default)]
+pub(crate) struct TimingEvidenceAccumulator {
+    summary: TimingEvidenceSummary,
+    pending: Vec<OperationUpdate>,
+}
+
+struct OperationUpdate {
+    latency_ms: f64,
+    energy_wms: Option<f64>,
+    covered_latency_ms: f64,
+}
+
+impl TimingEvidenceAccumulator {
+    pub(crate) fn snapshot(&self) -> TimingEvidenceSummary {
+        self.summary.clone()
+    }
+
+    pub(crate) fn record(&mut self, incoming: &ValidatedTimingPhase, prefill: bool) -> Result<()> {
+        let phase = if prefill {
+            &mut self.summary.prefill
+        } else {
+            &mut self.summary.decode
+        };
+        let incoming = incoming.as_phase();
+        if phase.operations.is_empty()
+            || incoming.operations.is_empty()
+            || phase.operations.len() != incoming.operations.len()
+            || !phase
+                .operations
+                .iter()
+                .zip(&incoming.operations)
+                .all(|(left, right)| left.name == right.name)
+        {
+            return phase.try_accumulate(incoming.clone());
+        }
+
+        // Stage values before changing any public result. Match the checked
+        // accumulator's arithmetic and validation order, including its errors.
+        self.pending.clear();
+        for (left, right) in phase.operations.iter().zip(&incoming.operations) {
+            let latency_ms = left.latency_ms + right.latency_ms;
+            let covered_latency_ms = left.covered_latency_ms + right.covered_latency_ms;
+            let energy_wms = match (left.energy_wms, right.energy_wms) {
+                (Some(left), Some(right)) => Some(left + right),
+                (Some(energy), None) | (None, Some(energy)) => Some(energy),
+                (None, None) => None,
+            };
+            ensure!(
+                latency_ms.is_finite() && latency_ms >= 0.0,
+                "timing evidence operation {:?} returned invalid latency {}ms",
+                left.name,
+                latency_ms
+            );
+            ensure!(
+                energy_wms.is_none_or(|energy| energy.is_finite() && energy >= 0.0),
+                "timing evidence operation {:?} returned invalid energy {:?}W-ms",
+                left.name,
+                energy_wms
+            );
+            ensure!(
+                covered_latency_ms.is_finite()
+                    && covered_latency_ms >= 0.0
+                    && covered_latency_ms <= latency_ms,
+                "timing evidence operation {:?} returned invalid covered latency {}ms for {}ms total",
+                left.name,
+                covered_latency_ms,
+                latency_ms
+            );
+            let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
+            self.pending.push(OperationUpdate {
+                latency_ms,
+                energy_wms,
+                covered_latency_ms: if energy_wms.is_some() {
+                    covered_latency_ms
+                } else {
+                    0.0
+                },
+            });
+        }
+
+        // Keep the same three reductions as reconcile_operation_totals. In
+        // particular, energy uses reduce rather than a zero-seeded sum.
+        let latency_ms: f64 = self.pending.iter().map(|op| op.latency_ms).sum();
+        let energy_wms = self
+            .pending
+            .iter()
+            .filter_map(|op| op.energy_wms)
+            .reduce(|left, right| left + right);
+        let covered_latency_ms: f64 = self.pending.iter().map(|op| op.covered_latency_ms).sum();
+        ensure!(
+            latency_ms.is_finite() && latency_ms >= 0.0,
+            "timing phase evidence returned invalid latency {}ms",
+            latency_ms
+        );
+        ensure!(
+            energy_wms.is_none_or(|energy| energy.is_finite() && energy >= 0.0),
+            "timing phase evidence returned invalid energy {:?}W-ms",
+            energy_wms
+        );
+        ensure!(
+            covered_latency_ms.is_finite()
+                && covered_latency_ms >= 0.0
+                && covered_latency_ms <= latency_ms,
+            "timing phase evidence returned invalid covered latency {}ms for {}ms total",
+            covered_latency_ms,
+            latency_ms
+        );
+
+        // All fallible work is complete. Retain names and unchanged Other
+        // source strings instead of copying them on each prediction.
+        for ((left, right), update) in phase
+            .operations
+            .iter_mut()
+            .zip(&incoming.operations)
+            .zip(&self.pending)
+        {
+            left.latency_ms = update.latency_ms;
+            left.energy_wms = update.energy_wms;
+            left.covered_latency_ms = update.covered_latency_ms;
+            if left.source != right.source {
+                left.source = TimingEvidenceSource::Mixed;
+            }
+        }
+        if let Some(source) = &incoming.source {
+            match &phase.source {
+                Some(existing) if existing != source => {
+                    phase.source = Some(TimingEvidenceSource::Mixed);
+                }
+                None => phase.source = Some(source.clone()),
+                _ => {}
+            }
+        }
+        phase.latency_ms = latency_ms;
+        phase.energy_wms = energy_wms;
+        phase.covered_latency_ms = if energy_wms.is_some() {
+            covered_latency_ms
+        } else {
+            0.0
+        };
+        Ok(())
+    }
+}
+
 impl TimingPhaseEvidence {
     /// Build phase totals from operation evidence, rejecting invalid public
     /// field values and canonicalizing uncovered latency before aggregation.
@@ -1063,5 +1208,150 @@ mod tests {
         assert_eq!(polynomial.evidence_summary(), None);
         fixed.reset_evidence().unwrap();
         polynomial.reset_evidence().unwrap();
+    }
+
+    fn assert_phase_bits(actual: &TimingPhaseEvidence, expected: &TimingPhaseEvidence) {
+        assert_eq!(actual, expected);
+        let numbers = |phase: &TimingPhaseEvidence| {
+            let mut values = vec![
+                Some(phase.latency_ms.to_bits()),
+                phase.energy_wms.map(f64::to_bits),
+                Some(phase.covered_latency_ms.to_bits()),
+            ];
+            for op in &phase.operations {
+                values.extend([
+                    Some(op.latency_ms.to_bits()),
+                    op.energy_wms.map(f64::to_bits),
+                    Some(op.covered_latency_ms.to_bits()),
+                ]);
+            }
+            values
+        };
+        assert_eq!(numbers(actual), numbers(expected));
+    }
+
+    #[test]
+    fn provider_accumulator_matches_checked_updates_bit_for_bit() {
+        let mut fast = TimingEvidenceAccumulator::default();
+        let mut checked = TimingEvidenceSummary::default();
+        for step in 0..4096 {
+            let source = if step % 3 == 0 {
+                TimingEvidenceSource::Other("provider-specific".into())
+            } else {
+                TimingEvidenceSource::Silicon
+            };
+            let op = |name: &str, latency, energy| {
+                TimingOperationEvidence::new(name, latency, energy, source.clone()).unwrap()
+            };
+            let mut operations = vec![
+                op("large", 1e8, Some(1e9)),
+                op("small", 0.1, (step % 4 != 0).then_some(0.3)),
+                op("zero", -0.0, Some(-0.0)),
+            ];
+            match step % 29 {
+                0 => operations.clear(),
+                1 => operations.reverse(),
+                2 => {
+                    operations.remove(1);
+                }
+                3 => operations.push(op("small", 0.2, None)),
+                _ => {}
+            }
+            let incoming = ValidatedTimingPhase::from_operations(operations).unwrap();
+            let prefill = step % 7 == 0;
+            fast.record(&incoming, prefill).unwrap();
+            let phase = if prefill {
+                &mut checked.prefill
+            } else {
+                &mut checked.decode
+            };
+            phase.try_accumulate(incoming.as_phase().clone()).unwrap();
+            let snapshot = fast.snapshot();
+            assert_phase_bits(&snapshot.prefill, &checked.prefill);
+            assert_phase_bits(&snapshot.decode, &checked.decode);
+        }
+        assert!(
+            !fast.pending.is_empty(),
+            "the matching-layout path must run"
+        );
+    }
+
+    #[test]
+    fn provider_accumulator_preserves_checked_errors_and_atomicity() {
+        for (latency, energy, count) in [
+            (f64::MAX, None, 1),
+            (1.0, Some(f64::MAX), 1),
+            (f64::MAX * 0.3, None, 3),
+            (1.0, Some(f64::MAX * 0.3), 3),
+        ] {
+            let incoming = ValidatedTimingPhase::from_operations(
+                (0..count)
+                    .map(|i| {
+                        TimingOperationEvidence::new(
+                            i.to_string(),
+                            latency,
+                            energy,
+                            TimingEvidenceSource::Silicon,
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            let mut fast = TimingEvidenceAccumulator::default();
+            fast.record(&incoming, false).unwrap();
+            let before = fast.snapshot();
+            let mut checked = before.decode.clone();
+            let expected = checked
+                .try_accumulate(incoming.as_phase().clone())
+                .unwrap_err();
+            let actual = fast.record(&incoming, false).unwrap_err();
+            assert_eq!(actual.to_string(), expected.to_string());
+            assert_phase_bits(&fast.snapshot().decode, &before.decode);
+            // A valid update after failure must not observe partial scratch values.
+            fast.record(&ValidatedTimingPhase::default(), false)
+                .unwrap();
+            assert_phase_bits(&fast.snapshot().decode, &before.decode);
+        }
+        // Phase-only evidence always takes the public checked fallback. Such
+        // values cannot currently be constructed by the provider adapter.
+        let phase_only = ValidatedTimingPhase(TimingPhaseEvidence {
+            latency_ms: 2.0,
+            energy_wms: Some(800.0),
+            covered_latency_ms: 2.0,
+            source: Some(TimingEvidenceSource::Silicon),
+            operations: Vec::new(),
+        });
+        let mut fast = TimingEvidenceAccumulator::default();
+        let mut checked = TimingPhaseEvidence::default();
+        for _ in 0..2 {
+            fast.record(&phase_only, false).unwrap();
+            checked
+                .try_accumulate(phase_only.as_phase().clone())
+                .unwrap();
+            assert_phase_bits(&fast.snapshot().decode, &checked);
+        }
+        let incoming = ValidatedTimingPhase::from_operations(vec![
+            TimingOperationEvidence::new("gemm", 1.0, None, TimingEvidenceSource::Silicon).unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            fast.record(&incoming, false).unwrap_err().to_string(),
+            checked
+                .try_accumulate(incoming.as_phase().clone())
+                .unwrap_err()
+                .to_string()
+        );
+        assert_phase_bits(&fast.snapshot().decode, &checked);
+        for value in [f64::NAN, f64::INFINITY, -1.0] {
+            let invalid = TimingOperationEvidence {
+                name: "bad".into(),
+                latency_ms: value,
+                energy_wms: None,
+                covered_latency_ms: 0.0,
+                source: TimingEvidenceSource::Silicon,
+            };
+            assert!(ValidatedTimingPhase::from_operations(vec![invalid]).is_err());
+        }
     }
 }
