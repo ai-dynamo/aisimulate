@@ -100,16 +100,17 @@ pub(super) fn get_new_batch_prefill(
             break;
         }
 
-        let chunk_tokens = if extend_input <= config.chunked_prefill_size {
-            extend_input
-        } else {
-            let chunk = (rem_chunk_tokens as usize / config.block_size) * config.block_size;
-            if chunk == 0 {
-                rejected.push_back(req);
-                break;
-            }
-            chunk.min(extend_input)
-        };
+        let chunk_tokens =
+            if ceil_to_block(extend_input, config.block_size) as f64 <= rem_chunk_tokens {
+                extend_input
+            } else {
+                let chunk = (rem_chunk_tokens as usize / config.block_size) * config.block_size;
+                if chunk == 0 {
+                    rejected.push_back(req);
+                    break;
+                }
+                chunk.min(extend_input)
+            };
 
         // Budgets are charged for computed tokens only (`PrefillAdder._update_prefill_budget`),
         // not for the cached prefix.
