@@ -15,8 +15,10 @@ pytestmark = [
 ]
 
 
+@pytest.mark.parametrize("version_field", ["backend_version", "aic_backend_version"])
 def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     monkeypatch,
+    version_field,
 ) -> None:
     calls = []
 
@@ -29,6 +31,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
         {
             "engine_type": "vllm",
             "aic_backend": "vllm",
+            version_field: "test-version",
             "aic_system": "h200_sxm",
             "aic_model_path": "test-model",
             "aic_attention_dp_size": 2,
@@ -44,6 +47,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert lowered["num_gpu_blocks"] == 46000
     assert lowered["dp_size"] == 2
     assert calls[0]["attention_dp_size"] == 2
+    assert calls[0]["backend_version"] == "test-version"
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["max_num_sequences"] == 37

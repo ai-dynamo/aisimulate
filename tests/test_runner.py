@@ -1397,3 +1397,69 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("layout", ["flat", "canonical", "nested"])
+@pytest.mark.parametrize("version", ["", "next", "literal_next"])
+def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, layout, version):
+    from aisimulate import _runtime
+    from aisimulate_core.sdk import perf_database
+
+    slots = perf_database.get_version_slots("h200_sxm", "vllm")
+    expected = slots["next" if version == "literal_next" else version or "current"]
+    if version == "literal_next":
+        version = expected
+    assert slots["next"] != slots["current"]
+    phase = "python"
+    consumed_versions = {"python": [], "native": []}
+    get_database = perf_database.get_database
+
+    def recorded_database(*args, **kwargs):
+        database = get_database(*args, **kwargs)
+        consumed_versions[phase].append(database.version)
+        return database
+
+    monkeypatch.setattr(perf_database, "get_database", recorded_database)
+
+    class NativeRuntime:
+        def run_replay_json(self, raw):
+            nonlocal phase
+            phase = "native"
+            # Native replay builds timing first, copies its resolved provenance
+            # into AicTimingConfig, then passes that version to capacity.
+            return _runtime.run_replay_json(raw)
+
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "Qwen/Qwen3-32B-FP8",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "tp": 2,
+            "attention_dp": 1,
+        },
+    }
+    args = {
+        "aic_backend": "vllm",
+        "aic_model_path": "Qwen/Qwen3-32B-FP8",
+        "aic_system": "h200_sxm",
+        "aic_tp_size": 2,
+        "block_size": 64,
+    }
+    if layout == "canonical":
+        timing["config"]["estimation_mode"] = "op_level"
+        timing["config"]["worker_type"] = "aggregated"
+        args = {"tensor_parallel_size": 2, "block_size": 64, "timing_model": timing}
+    elif layout == "nested":
+        args = {"tensor_parallel_size": 2, "rank": {"block_size": 64, "timing_model": timing}}
+    original = json.loads(json.dumps(args))
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version=version, agg_engine_args=args, num_workers=1
+    )
+    report = EngineReplayRunnerFactory(runtime=NativeRuntime()).create(0).run(_spec(deployment=deployment))
+
+    assert report.metrics["completed_requests"] == 1
+    assert set(consumed_versions["native"]) == {expected}
+    assert set(consumed_versions["python"]) == (set() if layout == "nested" else {expected})
+    assert args == original

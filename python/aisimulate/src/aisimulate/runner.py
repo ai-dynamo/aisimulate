@@ -1151,6 +1151,39 @@ def _materialize_engine_role(
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
+        # Propagate authored versions before capacity preflight. Otherwise a
+        # deployment pin reaches timing only after capacity has used current.
+        timing = role_config.get("timing_model")
+        timing_config = None
+        if (
+            isinstance(timing, dict)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing.get("config"), dict)
+        ):
+            timing_config = timing["config"]
+        version = next(
+            (
+                value
+                for value in (
+                    role_config.get("aic_backend_version"),
+                    role_config.get("backend_version"),
+                    timing_config.get("backend_version") if timing_config is not None else None,
+                    deployment_backend_version or None,
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if version is not None:
+            if (
+                not num_gpu_blocks_is_explicit
+                and role_config.get("aic_backend") is not None
+                and not any(name in role_config for name in ("aic_backend_version", "backend_version"))
+            ):
+                role_config["aic_backend_version"] = version
+            if timing_config is not None and timing_config.get("backend_version") is None:
+                role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
         role_config = materialize_aic_num_gpu_blocks(
             role_config,
             **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
