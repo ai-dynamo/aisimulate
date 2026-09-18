@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [self-benchmark and FPM onboarding guide](end-to-end-workflow.md).
+Start with the [self-benchmark and FPM onboarding guide](self-benchmarking-and-onboarding.md).
 Its seven steps cover support checks, measurement planning, collection, profile
 validation, canonical model construction, Replay integration, and accuracy
 validation. It explains which engine-iteration differences self-collection can
@@ -14,7 +14,7 @@ capture and which behaviors, including PP, need separate simulator support.
 Self-benchmark collection currently supports vLLM configurations that pass
 model/runtime validation; new architectures can require benchmark adaptation.
 SGLang and TensorRT-LLM support is coming soon. The guide includes the collected
-[Kimi K3 TP8+DCP8 profile](end-to-end-workflow.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
+[Kimi K3 TP8+DCP8 profile](self-benchmarking-and-onboarding.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
 and a new MiniMax collection campaign as worked examples of the general procedure.
 
 There are two distinct workflows:
