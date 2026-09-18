@@ -100,6 +100,7 @@
 /tests/test_e2e_accuracy_overview.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_fpm_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_artifactory_wheel_handoff.py                 @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===

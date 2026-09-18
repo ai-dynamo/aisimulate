@@ -20,10 +20,13 @@ on:
       nightly_run:
         required: true
         type: string
+      nightly_attempt:
+        required: true
+        type: string
 
 permissions:
   contents: read
-  # Download the wheel artifact produced by the wheel job in this run.
+  # Read non-wheel provenance from a prior nightly run when one is reused.
   actions: read
 
 jobs:
@@ -31,15 +34,17 @@ jobs:
     name: Prepare exact accuracy wheel
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 120
+    environment: pr-wheel-staging
     permissions:
       contents: read
-      # Download the cross-run nightly-dist-amd64 artifact.
+      # Download non-wheel provenance from the selected nightly run.
       actions: read
     container:
       # Same manylinux builder as the FPE matrix.
       image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
     outputs:
       sha256: ${{ steps.verify.outputs.sha256 }}
+      subpath: ${{ steps.location.outputs.subpath }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,13 +72,45 @@ jobs:
           python -m pip install 'maturin>=1.12,<2'
           python source/scripts/build_manylinux_wheel.py --output-dir "${RUNNER_TEMP}/accuracy-wheel"
           test -z "$(git -C source status --porcelain)"
+      - id: location
+        name: Resolve the Artifactory wheel location
+        env:
+          ARTIFACT_KEY: ${{ inputs.artifact_key }}
+          NIGHTLY_RUN: ${{ inputs.nightly_run }}
+          NIGHTLY_ATTEMPT: ${{ inputs.nightly_attempt }}
+        run: |
+          if [ -n "${NIGHTLY_RUN}" ]; then
+            test -n "${NIGHTLY_ATTEMPT}"
+            echo "subpath=nightly/${NIGHTLY_RUN}/${NIGHTLY_ATTEMPT}/handoff/amd64" >> "${GITHUB_OUTPUT}"
+          else
+            echo "subpath=fpm-accuracy/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${ARTIFACT_KEY}/amd64" >> "${GITHUB_OUTPUT}"
+          fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.nightly_run != ''
         with:
-          name: nightly-dist-amd64
+          name: nightly-build-metadata-amd64
           path: ${{ runner.temp }}/accuracy-wheel
           run-id: ${{ inputs.nightly_run }}
           github-token: ${{ github.token }}
+      - name: Fetch the reusable nightly wheel from Artifactory
+        if: inputs.nightly_run != ''
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ inputs.nightly_run }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${RUNNER_TEMP}/accuracy-wheel"
+      - name: Stage the exact branch wheel in Artifactory
+        if: inputs.nightly_run == ''
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
+          WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload "${RUNNER_TEMP}/accuracy-wheel"
       - name: Verify wheel checksum and nightly producer revision
         id: verify
         env:
@@ -103,20 +140,12 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
               stream.write(f'sha256={digest}\n')
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-wheel/aisimulate-*.whl
-          overwrite: true
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
   campaign:
     name: Qualify FPM accuracy (${{ inputs.artifact_key }})
     needs: wheel
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 360
+    environment: pr-wheel-staging
     container:
       image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
     env:
@@ -133,10 +162,15 @@ jobs:
         run: |
           /opt/python/cp312-cp312/bin/python -m venv "${RUNNER_TEMP}/accuracy-venv"
           echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-wheel
+      - name: Fetch the exact wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ needs.wheel.outputs.subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ inputs.nightly_run }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${RUNNER_TEMP}/accuracy-wheel"
       - name: Install the exact wheel shared by both predictors
         env:
           WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}

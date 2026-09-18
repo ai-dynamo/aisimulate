@@ -593,9 +593,15 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     assert len(uploads) == 1 and "if" not in uploads[0]
     assert uploads[0]["with"]["overwrite"] == "true"
     assert uploads[0]["with"]["name"] == "e2e-accuracy-web-${{ inputs.artifact_key }}"
-    wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
-    assert wheel_upload["with"]["overwrite"] == "true"
-    assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
+    wheel_steps = workflow["jobs"]["wheel"]["steps"]
+    assert not [s for s in wheel_steps if "upload-artifact@" in s.get("uses", "")]
+    assert workflow["jobs"]["wheel"]["environment"] == "pr-wheel-staging"
+    assert workflow["jobs"]["campaign"]["environment"] == "pr-wheel-staging"
+    wheel_runs = "\n".join(s.get("run", "") for s in wheel_steps)
+    assert "artifactory_wheel_handoff.sh upload" in wheel_runs
+    assert "artifactory_wheel_handoff.sh download" in wheel_runs
+    campaign_runs = "\n".join(s.get("run", "") for s in workflow["jobs"]["campaign"]["steps"])
+    assert "artifactory_wheel_handoff.sh download" in campaign_runs
     assert set(uploads[0]["with"]["path"].splitlines()) == {
         "${{ runner.temp }}/accuracy-public/summary.json",
         "${{ runner.temp }}/accuracy-public/qualification.json",

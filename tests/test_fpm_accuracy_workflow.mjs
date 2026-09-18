@@ -13,9 +13,15 @@ const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
 const key = branch => createHash("sha256").update(branch).digest("hex").slice(0, 16);
-const entry = (branch, revision, nightly = "") => ({ branch, sha: revision, nightly_run: nightly, artifact_key: key(branch) });
+const entry = (branch, revision, nightly = "") => ({
+  branch,
+  sha: revision,
+  nightly_run: nightly,
+  nightly_attempt: nightly ? "2" : "",
+  artifact_key: key(branch),
+});
 const run = {
-  id: 123, head_sha: sha, head_branch: "main", event: "schedule",
+  id: 123, run_attempt: 2, head_sha: sha, head_branch: "main", event: "schedule",
   path: ".github/workflows/nightly-ci.yml", status: "waiting", conclusion: null,
   repository: { full_name: "ai-dynamo/aisimulate" },
   head_repository: { full_name: "ai-dynamo/aisimulate" },
@@ -50,7 +56,7 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
         { name: "Stage artifacts", conclusion: null, status: "waiting" },
       ];
       assert.equal(method, "artifacts");
-      return [{ name: "nightly-dist-amd64", expired }];
+      return [{ name: "nightly-build-metadata-amd64", expired }];
     } },
   });
   await vm.runInContext(`(async () => { ${source} })()`, context);

@@ -32,7 +32,13 @@ from scripts import check_python_licenses as python_licenses
 from scripts import select_forward_perf as forward_perf
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
-from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
+from scripts.require_fast_ci import (
+    REQUIRED_JOBS,
+    GateError,
+    latest_run,
+    require_fast_ci,
+    verify_jobs,
+)
 from scripts.select_full_ci import COMPONENTS, select_components
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -348,7 +354,12 @@ def _fast_run(**overrides):
 
 def _fast_jobs():
     return [
-        {"name": name, "head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+        {
+            "name": name,
+            "head_sha": "a" * 40,
+            "status": "completed",
+            "conclusion": "success",
+        }
         for name in sorted(REQUIRED_JOBS)
     ]
 
@@ -385,7 +396,9 @@ def test_fast_prerequisite_accepts_all_jobs_from_the_latest_attempt_across_pages
         {"event": "workflow_dispatch"},
     ],
 )
-def test_fast_prerequisite_rejects_wrong_commit_branch_origin_workflow_and_event(override):
+def test_fast_prerequisite_rejects_wrong_commit_branch_origin_workflow_and_event(
+    override,
+):
     with pytest.raises(GateError, match="No complete Fast CI evidence"):
         _require_fast(lambda _: [{"workflow_runs": [_fast_run(**override)]}], timeout=0)
 
@@ -394,7 +407,14 @@ def test_manual_full_ci_can_reuse_a_same_branch_push_or_manual_fast_run():
     for event in ("push", "workflow_dispatch"):
         run = _fast_run(event=event)
         assert (
-            latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisimulate") == run
+            latest_run(
+                [{"workflow_runs": [run]}],
+                "a" * 40,
+                "main",
+                "workflow_dispatch",
+                "ai-dynamo/aisimulate",
+            )
+            == run
         )
 
 
@@ -407,7 +427,12 @@ def test_fast_prerequisite_cannot_fall_back_to_an_older_success(conclusion):
 
 @pytest.mark.parametrize(
     "override",
-    [{"head_sha": "b" * 40}, {"status": "queued"}, {"conclusion": "skipped"}, {"conclusion": "failure"}],
+    [
+        {"head_sha": "b" * 40},
+        {"status": "queued"},
+        {"conclusion": "skipped"},
+        {"conclusion": "failure"},
+    ],
 )
 def test_fast_prerequisite_rejects_partial_or_wrong_commit_job_evidence(override):
     jobs = _fast_jobs()
@@ -497,7 +522,12 @@ def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
         "TEST_API_CALLS": str(tmp_path / "calls"),
         "TEST_API_FAILURE": str(failure == "api").lower(),
     }
-    args = [sys.executable, str(REPOSITORY_ROOT / "scripts/require_fast_ci.py"), "--timeout", "0"]
+    args = [
+        sys.executable,
+        str(REPOSITORY_ROOT / "scripts/require_fast_ci.py"),
+        "--timeout",
+        "0",
+    ]
     if overrides:
         for option, variable in (
             ("--repository", "GITHUB_REPOSITORY"),
@@ -516,7 +546,11 @@ def test_fast_prerequisite_cli_verifies_manual_run_and_appends_summary(tmp_path,
     result, summary = _run_fast_prerequisite_cli(tmp_path, overrides=overrides)
     assert result.returncode == 0, result.stdout + result.stderr
     assert summary.read_text().startswith("Existing evidence\n### Standalone Fast CI verified")
-    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisimulate/actions/runs/10", "attempt 1"):
+    for evidence in (
+        "a" * 40,
+        "https://github.com/ai-dynamo/aisimulate/actions/runs/10",
+        "attempt 1",
+    ):
         assert evidence in result.stdout
         assert evidence in summary.read_text()
     calls = (tmp_path / "calls").read_text().splitlines()
@@ -565,10 +599,18 @@ def test_collected_inventory_requires_explicit_manual_exceptions():
 
 def test_collected_inventory_reports_unexpected_skips_and_collection_failures():
     inventory = Inventory(
-        {"manual_suites": {}, "optional_collection_skips": {"tests/unit/test_tensor.py": "real torch"}}
+        {
+            "manual_suites": {},
+            "optional_collection_skips": {"tests/unit/test_tensor.py": "real torch"},
+        }
     )
     inventory.pytest_collectreport(
-        SimpleNamespace(failed=False, skipped=True, nodeid="tests/unit/test_tensor.py", longrepr="real torch required")
+        SimpleNamespace(
+            failed=False,
+            skipped=True,
+            nodeid="tests/unit/test_tensor.py",
+            longrepr="real torch required",
+        )
     )
     assert not inventory.errors
     inventory.pytest_collectreport(
@@ -580,7 +622,12 @@ def test_collected_inventory_reports_unexpected_skips_and_collection_failures():
         )
     )
     inventory.pytest_collectreport(
-        SimpleNamespace(failed=True, skipped=False, nodeid="tests/unit/test_bad.py", longrepr="import failed")
+        SimpleNamespace(
+            failed=True,
+            skipped=False,
+            nodeid="tests/unit/test_bad.py",
+            longrepr="import failed",
+        )
     )
     assert len(inventory.errors) == 2
     assert "unexpected collection skip" in inventory.errors[0]
@@ -594,6 +641,69 @@ def _workflow(name: str) -> dict:
 
 def _run_commands(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def test_actions_artifacts_never_contain_wheels() -> None:
+    forbidden_names = {
+        "aisimulate-wheel",
+        "aisimulate-wheel-amd64",
+        "aisimulate-wheel-arm64",
+        "application-test-wheel-${{ matrix.arch }}",
+        "application-wheel-${{ matrix.arch }}",
+        "fpe-qualified-wheel",
+        "nightly-dist-${{ matrix.arch }}",
+    }
+    upload_steps = []
+    for workflow_path in sorted(WORKFLOW_ROOT.glob("*.y*ml")):
+        workflow = yaml.load(workflow_path.read_text(), Loader=yaml.BaseLoader)
+        for job in workflow.get("jobs", {}).values():
+            upload_steps.extend(
+                (workflow_path, step)
+                for step in job.get("steps", [])
+                if step.get("uses", "").startswith("actions/upload-artifact@")
+            )
+    for action_path in sorted(ACTION_ROOT.glob("*/action.yml")):
+        action = yaml.load(action_path.read_text(), Loader=yaml.BaseLoader)
+        upload_steps.extend(
+            (action_path, step)
+            for step in action.get("runs", {}).get("steps", [])
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        )
+
+    for source, step in upload_steps:
+        inputs = step.get("with", {})
+        assert inputs.get("name") not in forbidden_names, source
+        paths = [line.strip() for line in inputs.get("path", "").splitlines() if line.strip()]
+        assert not [path for path in paths if ".whl" in path and not path.startswith("!")], source
+
+    nightly = next(
+        step
+        for source, step in upload_steps
+        if source.name == "nightly-ci.yml"
+        and step.get("with", {}).get("name") == "nightly-build-metadata-${{ matrix.arch }}"
+    )
+    nightly_paths = nightly["with"]["path"].splitlines()
+    assert "!${{ runner.temp }}/nightly-dist/*.whl" in nightly_paths
+
+
+def test_wheel_handoff_and_final_staging_use_separate_environments() -> None:
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in (
+        "application-test-wheel",
+        "application-tests",
+        "application-wheel",
+    ):
+        assert full_ci[job_name]["environment"] == "pr-wheel-staging"
+    assert full_ci["stage-application-wheel"]["environment"] == "automated-release"
+
+    nightly = _workflow("nightly-ci.yml")["jobs"]
+    for job_name in ("build-artifacts", "smoke-test"):
+        assert nightly[job_name]["environment"] == "pr-wheel-staging"
+    assert nightly["stage-artifactory"]["environment"] == "automated-release"
+
+    fpe = _workflow("fpe-support-matrix.yml")["jobs"]
+    for job_name in ("prepare-wheel", "discover-shards", "generate"):
+        assert fpe[job_name]["environment"] == "pr-wheel-staging"
 
 
 def _run_resolve_step(script: str, event_name: str, old_ref: str, tmp_path: Path) -> dict[str, str]:
@@ -737,15 +847,24 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     aggregate = jobs["readiness"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
 
-    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
+    assert set(jobs["stage-application-wheel"]["needs"]) == {
+        "readiness",
+        "application-wheel",
+    }
     application_wheel_commands = _run_commands(jobs["application-wheel"])
     assert "maturin build" not in application_wheel_commands
     assert any(
         step.get("uses", "").startswith("dtolnay/rust-toolchain@") for step in jobs["application-wheel"]["steps"]
     )
-    assert any(
-        step.get("with", {}).get("name") == "application-test-wheel-${{ matrix.arch }}"
+    assert "artifactory_wheel_handoff.sh download dist" in application_wheel_commands
+    fetch_step = next(
+        step
         for step in jobs["application-wheel"]["steps"]
+        if "artifactory_wheel_handoff.sh download" in step.get("run", "")
+    )
+    assert fetch_step["env"]["ARTIFACTORY_SUBPATH"].endswith("application-test/${{ matrix.arch }}")
+    assert not any(
+        step.get("uses", "").startswith("actions/download-artifact@") for step in jobs["application-wheel"]["steps"]
     )
 
 
@@ -756,8 +875,14 @@ def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
 
     assert "select-full-ci" in aggregate["needs"]
     assert "stage-application-wheel" not in aggregate["needs"]
-    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
-    assert set(aggregate["needs"]) == set(jobs) - {"readiness", "stage-application-wheel"}
+    assert set(jobs["stage-application-wheel"]["needs"]) == {
+        "readiness",
+        "application-wheel",
+    }
+    assert set(aggregate["needs"]) == set(jobs) - {
+        "readiness",
+        "stage-application-wheel",
+    }
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
     assert aggregate["steps"][0]["env"]["PLAN_JSON"] == ("${{ toJSON(needs.select-full-ci.outputs) }}")
     assert 'selected not in {"true", "false"}' in commands
@@ -950,7 +1075,14 @@ def test_manylinux_platform_rejects_unknown_architecture() -> None:
 
 
 def _manylinux_build_case(
-    tmp_path, monkeypatch, *, machine="x86_64", raw_count=1, repaired_count=1, repaired_tag=None, fail_repair=False
+    tmp_path,
+    monkeypatch,
+    *,
+    machine="x86_64",
+    raw_count=1,
+    repaired_count=1,
+    repaired_tag=None,
+    fail_repair=False,
 ):
     monkeypatch.setattr(manylinux_builder.sys, "platform", "linux")
     monkeypatch.setattr(manylinux_builder.platform, "machine", lambda: machine)
@@ -987,11 +1119,29 @@ def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, mo
     assert list(output.iterdir()) == [repaired]
     assert calls == [
         (
-            (sys.executable, "-m", "maturin", "build", "--release", "--auditwheel", "skip", "--out", raw_output),
+            (
+                sys.executable,
+                "-m",
+                "maturin",
+                "build",
+                "--release",
+                "--auditwheel",
+                "skip",
+                "--out",
+                raw_output,
+            ),
             manylinux_builder.PYTHON_PROJECT,
         ),
         (
-            ("auditwheel", "repair", "--plat", f"manylinux_2_28_{machine}", "--wheel-dir", str(output), raw_wheel),
+            (
+                "auditwheel",
+                "repair",
+                "--plat",
+                f"manylinux_2_28_{machine}",
+                "--wheel-dir",
+                str(output),
+                raw_wheel,
+            ),
             REPOSITORY_ROOT,
         ),
         (("auditwheel", "show", str(repaired)), REPOSITORY_ROOT),
@@ -1005,7 +1155,10 @@ def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, mo
         ({"raw_count": 2}, "exactly one unrepaired"),
         ({"repaired_count": 0}, "exactly one repaired"),
         ({"repaired_count": 2}, "exactly one repaired"),
-        ({"repaired_tag": "manylinux_2_17_x86_64"}, "required tag manylinux_2_28_x86_64"),
+        (
+            {"repaired_tag": "manylinux_2_17_x86_64"},
+            "required tag manylinux_2_28_x86_64",
+        ),
     ],
 )
 def test_manylinux_build_rejects_missing_duplicate_or_wrong_policy_wheels(tmp_path, monkeypatch, options, message):
@@ -1032,7 +1185,9 @@ def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> 
     assert "predates the prediction-regression harness" in collect_commands
 
 
-def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Path) -> None:
+def test_prediction_gate_resolves_base_for_push_and_manual_callers(
+    tmp_path: Path,
+) -> None:
     resolve_step = _workflow("prediction-regression-gate.yml")["jobs"]["refs"]["steps"][0]
     script = resolve_step["run"]
 
@@ -1061,7 +1216,10 @@ def test_full_ci_comparison_base_uses_previous_lifecycle_commit(
     assert (tmp_path / "gh-called").exists() is not uses_before
 
 
-@pytest.mark.parametrize(("before", "api_sha", "api_status"), [("bad", "c" * 40, 0), ("", "main", 0), ("", "", 1)])
+@pytest.mark.parametrize(
+    ("before", "api_sha", "api_status"),
+    [("bad", "c" * 40, 0), ("", "main", 0), ("", "", 1)],
+)
 def test_full_ci_comparison_base_fails_closed(tmp_path: Path, before: str, api_sha: str, api_status: int) -> None:
     result, output = _run_comparison_base(tmp_path, "push", "refs/heads/main", before, api_sha, api_status)
     assert result.returncode != 0
@@ -1069,11 +1227,19 @@ def test_full_ci_comparison_base_fails_closed(tmp_path: Path, before: str, api_s
 
 
 def _run_comparison_base(
-    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0
+    tmp_path: Path,
+    event: str,
+    ref: str,
+    before: str,
+    api_sha: str = "c" * 40,
+    api_status: int = 0,
 ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
     jobs = _workflow("ci.yml")["jobs"]
     assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
-    for name, argument in (("collector-data", "base_sha"), ("prediction-regression", "old-ref")):
+    for name, argument in (
+        ("collector-data", "base_sha"),
+        ("prediction-regression", "old-ref"),
+    ):
         assert "verify-target" in jobs[name]["needs"]
         assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
     step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
@@ -1108,7 +1274,11 @@ def _run_comparison_base(
 def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
     fast_ci = _workflow("fast-ci.yml")
     assert "workflow_call" not in fast_ci["on"]
-    assert set(fast_ci["on"]["push"]["branches"]) == {"main", "pull-request/*", "release/*"}
+    assert set(fast_ci["on"]["push"]["branches"]) == {
+        "main",
+        "pull-request/*",
+        "release/*",
+    }
     assert fast_ci["on"]["workflow_dispatch"]["inputs"]["expected_sha"]["required"] == "true"
     gate = _workflow("ci.yml")["jobs"]["fast-ci"]
     assert gate["name"] == "Require Fast CI"
@@ -1323,7 +1493,11 @@ def test_fast_ci_whitespace_checks_the_whole_pr_above_its_stacked_base(
     _git(tmp_path, "init", "--quiet")
     _commit_file(tmp_path, "root.txt", "root\n")
     base = _commit_file(tmp_path, "parent-pr.txt", "outside this PR \n")
-    _commit_file(tmp_path, "first-pr.txt", "first change \n" if earlier_whitespace else "first change\n")
+    _commit_file(
+        tmp_path,
+        "first-pr.txt",
+        "first change \n" if earlier_whitespace else "first change\n",
+    )
     target = _commit_file(tmp_path, "last-pr.txt", "last change\n")
     assert _git(tmp_path, "cat-file", "-e", f"{'f' * 40}^{{commit}}", check=False).returncode != 0
     assert _git(tmp_path, "diff", "--check", f"{target}^", target).returncode == 0
@@ -1375,7 +1549,17 @@ def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tm
         assert _git(checkout, "merge-base", base, target).stdout.strip() == common
         assert _git(checkout, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
         assert not _git(checkout, "tag", "--list").stdout.strip()
-        assert _git(checkout, "config", "--local", "--get-regexp", "extraheader", check=False).returncode == 1
+        assert (
+            _git(
+                checkout,
+                "config",
+                "--local",
+                "--get-regexp",
+                "extraheader",
+                check=False,
+            ).returncode
+            == 1
+        )
     else:
         assert result.returncode != 0
         assert "upload-pack: not our ref" in result.stderr
@@ -1425,11 +1609,22 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
 
 
 def test_manylinux_jobs_select_bundled_python_without_setup_python() -> None:
-    action_path = "./.github/actions/setup-manylinux-python-rust"
-    for workflow_name, job_name in (
-        ("ci.yml", "application-test-wheel"),
-        ("ci.yml", "release-artifact-contract"),
-        ("fpe-support-matrix.yml", "prepare-wheel"),
+    for workflow_name, job_name, action_path in (
+        (
+            "ci.yml",
+            "application-test-wheel",
+            "./.github/actions/setup-manylinux-python-rust",
+        ),
+        (
+            "ci.yml",
+            "release-artifact-contract",
+            "./.github/actions/setup-manylinux-python-rust",
+        ),
+        (
+            "fpe-support-matrix.yml",
+            "prepare-wheel",
+            "./.github/actions/setup-manylinux-python-rust",
+        ),
     ):
         steps = _workflow(workflow_name)["jobs"][job_name]["steps"]
         assert any(step.get("uses") == action_path for step in steps)
@@ -1445,7 +1640,18 @@ def test_manylinux_jobs_select_bundled_python_without_setup_python() -> None:
 
 
 @pytest.mark.parametrize(
-    "missing", [None, "python", "cc", "c++", "make", "auditwheel", "patchelf", "auditwheel-broken", "patchelf-broken"]
+    "missing",
+    [
+        None,
+        "python",
+        "cc",
+        "c++",
+        "make",
+        "auditwheel",
+        "patchelf",
+        "auditwheel-broken",
+        "patchelf-broken",
+    ],
 )
 def test_manylinux_bootstrap_exports_working_python_or_fails_before_build(tmp_path: Path, missing: str | None) -> None:
     action = yaml.safe_load((ACTION_ROOT / "setup-manylinux-python-rust" / "action.yml").read_text())
@@ -1494,7 +1700,10 @@ def test_manylinux_bootstrap_exports_working_python_or_fails_before_build(tmp_pa
         assert env_file.read_text() == path_file.read_text() == ""
         return
     assert result.returncode == 0, result.stdout + result.stderr
-    assert tool_log.read_text().splitlines() == ["auditwheel --version", "patchelf --version"]
+    assert tool_log.read_text().splitlines() == [
+        "auditwheel --version",
+        "patchelf --version",
+    ]
     exported = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
     assert exported == {
         "PYO3_PYTHON": str(binaries / "python"),
@@ -1932,7 +2141,10 @@ def test_parallel_test_matrix_has_no_missing_or_duplicate_partitions():
         "collector-data",
         "prediction-regression",
     }.issubset(jobs["readiness"]["needs"])
-    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
+    assert set(jobs["stage-application-wheel"]["needs"]) == {
+        "readiness",
+        "application-wheel",
+    }
     for suite in ("unit", "cli-build"):
         steps = [
             step for step in jobs["application-tests"]["steps"] if step.get("if") == f"matrix.shard.suite == '{suite}'"
@@ -1986,7 +2198,11 @@ def test_pages_release_completion_still_executes_main_checkout():
     assert checkout["with"]["fetch-depth"] == 0
     assert checkout["with"]["persist-credentials"] is False
     watched_workflows = trigger["workflow_run"]["workflows"]
-    for producer in ("fpe-support-matrix.yml", "nightly-ci.yml", "release-nightly-ci.yml"):
+    for producer in (
+        "fpe-support-matrix.yml",
+        "nightly-ci.yml",
+        "release-nightly-ci.yml",
+    ):
         assert _workflow(producer)["name"] in watched_workflows
     assert "Nightly CI" in watched_workflows  # Runs started before the main workflow rename.
 
@@ -1997,11 +2213,18 @@ def test_release_nightly_discovers_versions_and_bounds_total_concurrency():
     assert trigger["schedule"] == [{"cron": "23 9 * * *"}]
     assert "workflow_dispatch" in trigger
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["concurrency"] == {"group": "release-nightly-ci", "cancel-in-progress": "false"}
+    assert workflow["concurrency"] == {
+        "group": "release-nightly-ci",
+        "cancel-in-progress": "false",
+    }
     discover = workflow["jobs"]["discover"]
     assert discover["if"] == "github.ref == 'refs/heads/main'"
     checkout = discover["steps"][0]["with"]
-    assert checkout == {"ref": "${{ github.sha }}", "fetch-depth": "0", "persist-credentials": "false"}
+    assert checkout == {
+        "ref": "${{ github.sha }}",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
     assert "run_release_fpe.py list-releases" in _run_commands(discover)
     releases = workflow["jobs"]["releases"]
     assert releases["needs"] == "discover"
@@ -2032,6 +2255,7 @@ def test_release_qualification_pins_source_and_tooling_across_all_jobs():
     assert jobs["generate"]["needs"] == "prepare"
     assert set(jobs["qualify"]["needs"]) == {"prepare", "generate"}
     for job in jobs.values():
+        assert job["environment"] == "pr-wheel-staging"
         checkouts = [step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
         assert len(checkouts) == 2
         assert checkouts[0]["ref"] == "${{ github.sha }}"
@@ -2059,11 +2283,19 @@ def test_release_artifact_handoffs_cannot_mix_versions():
     import fnmatch
 
     jobs = _workflow("fpe-release-qualify.yml")["jobs"]
-    wheel = jobs["prepare"]["steps"][-1]["with"]["name"]
+    stage = next(s for s in jobs["prepare"]["steps"] if s.get("name") == "Stage the release FPE wheel in Artifactory")
+    assert stage["env"]["ARTIFACTORY_SUBPATH"] == "${{ steps.location.outputs.subpath }}"
+    assert stage["env"]["WHEEL_SOURCE_SHA"] == "${{ inputs.source_sha }}"
+    location = next(s for s in jobs["prepare"]["steps"] if s.get("id") == "location")
+    assert "fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/amd64" in location["run"]
     for name in ("generate", "qualify"):
-        download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
-        assert download["with"]["name"] == wheel
-    assert wheel == "fpe-release-wheel-${{ inputs.release }}"
+        download = next(
+            s for s in jobs[name]["steps"] if s.get("name") == "Fetch the release FPE wheel from Artifactory"
+        )
+        assert download["env"]["ARTIFACTORY_SUBPATH"] == "${{ needs.prepare.outputs.wheel-subpath }}"
+        assert download["env"]["EXPECTED_WHEEL_SOURCE_SHA"] == "${{ inputs.source_sha }}"
+        assert download["env"]["EXPECTED_WHEEL_RUN_ID"] == "${{ github.run_id }}"
+        assert "artifactory_wheel_handoff.sh download fpe-release-wheel" in download["run"]
     upload = jobs["generate"]["steps"][-1]["with"]["name"]
     pattern = next(s["with"]["pattern"] for s in jobs["qualify"]["steps"] if "pattern" in s.get("with", {}))
     versions = ["0.12.0", "0.13.0", "0.13.0-rc1", "0.13.0--preview"]
@@ -2090,18 +2322,31 @@ def _nightly_condition(job: str, *, cancelled: bool = False, **overrides) -> boo
         "vars.GITLAB_SECURITY_TRIGGER_ENABLED": "true",
         **{
             f"needs.{name}.result": "success"
-            for name in ("build-artifacts", "python-compliance", "fpe-support-matrix", "license-evidence")
+            for name in (
+                "build-artifacts",
+                "python-compliance",
+                "smoke-test",
+                "fpe-support-matrix",
+                "license-evidence",
+                "stage-artifactory",
+            )
         },
         **overrides,
     }
     expression = _workflow("nightly-ci.yml")["jobs"][job]["if"]
-    expression = re.sub(r"(?:github|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
+    expression = re.sub(
+        r"(?:github|needs|vars)\.[\w.-]+",
+        lambda match: repr(values[match[0]]),
+        expression,
+    )
     expression = expression.replace("!cancelled()", repr(not cancelled)).replace("&&", " and ").replace("||", " or ")
     return eval(expression, {"__builtins__": {}})
 
 
 @pytest.mark.parametrize("job", ["license-evidence", "fpe-support-matrix"])
-def test_nightly_validation_survives_skipped_approval_but_requires_successful_inputs(job):
+def test_nightly_validation_survives_skipped_approval_but_requires_successful_inputs(
+    job,
+):
     configuration = _workflow("nightly-ci.yml")["jobs"][job]
     # A status function overrides Actions' implicit success(), which would
     # otherwise reject the skipped approval ancestor of a scheduled first run.
@@ -2116,7 +2361,9 @@ def test_nightly_validation_survives_skipped_approval_but_requires_successful_in
             assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
 
 
-@pytest.mark.parametrize("job", ["python-compliance", "build-artifacts", "trigger-gitlab-security"])
+@pytest.mark.parametrize(
+    "job", ["python-compliance", "build-artifacts", "stage-artifactory", "trigger-gitlab-security"]
+)
 def test_nightly_retries_require_approval_from_the_current_attempt(job):
     assert _nightly_condition(job)
     for attempt in ("2", "3"):
@@ -2149,7 +2396,10 @@ def test_nightly_retries_require_approval_from_the_current_attempt(job):
     ) == (job in {"python-compliance", "build-artifacts"})
 
 
-@pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
+@pytest.mark.parametrize(
+    "gate",
+    ["build-artifacts", "fpe-support-matrix", "license-evidence", "stage-artifactory"],
+)
 @pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
 def test_nightly_failed_validation_cannot_publish(gate, result):
     assert not _nightly_condition("trigger-gitlab-security", **{f"needs.{gate}.result": result})
@@ -2177,10 +2427,12 @@ def test_manual_nightly_requires_current_approval_to_publish(attempt):
     assert _nightly_condition("python-compliance", **context)
     assert _nightly_condition("license-evidence", **context)
     assert _nightly_condition("fpe-support-matrix", **context)
+    assert _nightly_condition("stage-artifactory", **context)
     assert _nightly_condition("trigger-gitlab-security", **context)
     context["needs.manual-approval.outputs.approved-attempt"] = str(int(attempt) - 1)
     assert not _nightly_condition("build-artifacts", **context)
     assert not _nightly_condition("python-compliance", **context)
+    assert not _nightly_condition("stage-artifactory", **context)
     assert not _nightly_condition("trigger-gitlab-security", **context)
 
 
@@ -2227,28 +2479,65 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     )
     build = jobs["build-artifacts"]
     assert "python-compliance" in build["needs"]
+    assert build["environment"] == "pr-wheel-staging"
     assert "pip-licenses" not in _run_commands(build)
     steps = build["steps"]
-    stage_index = next(i for i, s in enumerate(steps) if s.get("name") == "Stage to Artifactory")
-    fetch_index = next(
-        i for i, s in enumerate(steps) if s.get("name") == "Fetch the staged wheel back from Artifactory"
+    provenance_index = next(i for i, s in enumerate(steps) if s.get("name") == "Write checksums and provenance")
+    handoff_index = next(
+        i for i, s in enumerate(steps) if s.get("name") == "Stage wheel for downstream jobs in Artifactory"
     )
-    smoke_index = next(
-        i for i, s in enumerate(steps) if s.get("name") == "Smoke-test the staged wheel on every supported Python"
-    )
-    assert stage_index < fetch_index < smoke_index
-    for step in steps[:stage_index]:
+    assert provenance_index < handoff_index
+    for step in steps[:handoff_index]:
         if "pip install" in step.get("run", ""):
             assert "--require-hashes" in step["run"]
-    assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(steps[smoke_index:]))
-    assert "ARTIFACTORY_TOKEN" not in steps[smoke_index].get("env", {})
+    smoke = jobs["smoke-test"]
+    assert smoke["environment"] == "pr-wheel-staging"
+    assert set(smoke["needs"]) == {"changes-guard", "build-artifacts"}
+    smoke_steps = smoke["steps"]
+    fetch_index = next(
+        i for i, s in enumerate(smoke_steps) if s.get("name") == "Fetch the built wheel from Artifactory"
+    )
+    smoke_index = next(
+        i for i, s in enumerate(smoke_steps) if s.get("name") == "Smoke-test the wheel on every supported Python"
+    )
+    assert fetch_index < smoke_index
+    assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(smoke_steps[smoke_index:]))
+    assert "ARTIFACTORY_TOKEN" not in smoke_steps[smoke_index].get("env", {})
+    stage = jobs["stage-artifactory"]
+    assert stage["environment"] == "automated-release"
+    assert set(stage["needs"]) == {
+        "changes-guard",
+        "manual-approval",
+        "build-artifacts",
+        "smoke-test",
+        "fpe-support-matrix",
+        "license-evidence",
+    }
+    stage_steps = stage["steps"]
+    upload_index = next(i for i, s in enumerate(stage_steps) if s.get("name") == "Upload to Artifactory")
+    refetch_index = next(
+        i for i, s in enumerate(stage_steps) if s.get("name") == "Fetch the staged wheel back from Artifactory"
+    )
+    final_smoke_index = next(
+        i for i, s in enumerate(stage_steps) if s.get("name") == "Smoke-test the staged wheel on every supported Python"
+    )
+    assert upload_index < refetch_index < final_smoke_index
+    assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(stage_steps[final_smoke_index:]))
+    assert "ARTIFACTORY_TOKEN" not in stage_steps[final_smoke_index].get("env", {})
     evidence = jobs["license-evidence"]
     assert "environment" not in evidence
     assert "pip install" not in _run_commands(evidence)
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None):
+def _nightly_license_report(
+    tmp_path,
+    crates,
+    prior=None,
+    lookup_error=None,
+    workspace_members=(),
+    manual_prior=None,
+):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -2260,7 +2549,12 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
             {
                 "workspace_members": list(workspace_members),
                 "packages": [
-                    {"id": f"getrandom@{version}", "name": "getrandom", "version": version, "license": spdx}
+                    {
+                        "id": f"getrandom@{version}",
+                        "name": "getrandom",
+                        "version": version,
+                        "license": spdx,
+                    }
                     for version, spdx in crates
                 ],
             }
@@ -2277,7 +2571,10 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
             zipped.writestr("deps.csv", prior_csv.getvalue())
         return archive.getvalue()
 
-    archives = {"https://fixture/archive": archived(prior), "https://fixture/manual-archive": archived(manual_prior)}
+    archives = {
+        "https://fixture/archive": archived(prior),
+        "https://fixture/manual-archive": archived(manual_prior),
+    }
 
     responses = []
 
@@ -2294,10 +2591,22 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
                 runs.insert(0, {"id": 3, "artifacts_url": "https://fixture/manual-artifacts"})
             payload = {"workflow_runs": runs}
         elif request.full_url == "https://fixture/artifacts":
-            payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
+            payload = {
+                "artifacts": [
+                    {
+                        "name": "license-artifacts",
+                        "archive_download_url": "https://fixture/archive",
+                    }
+                ]
+            }
         elif request.full_url == "https://fixture/manual-artifacts":
             payload = {
-                "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/manual-archive"}]
+                "artifacts": [
+                    {
+                        "name": "license-artifacts",
+                        "archive_download_url": "https://fixture/manual-archive",
+                    }
+                ]
             }
         elif request.full_url in archives:
             response = io.BytesIO(archives[request.full_url])
@@ -2317,20 +2626,36 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
     source = step["run"].split("<<'EOF'\n", 1)[1].rsplit("\nEOF", 1)[0]
     with (
         patch.object(sys, "argv", ["nightly-evidence", str(tmp_path)]),
-        patch.dict(os.environ, {"GH_API_TOKEN": "fixture", "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "2"}),
+        patch.dict(
+            os.environ,
+            {
+                "GH_API_TOKEN": "fixture",
+                "GITHUB_REPOSITORY": "owner/repo",
+                "GITHUB_RUN_ID": "2",
+            },
+        ),
         patch("urllib.request.urlopen", side_effect=urlopen),
     ):
         exec(compile(source, "nightly-ci-evidence", "exec"), {})
     assert all(response.closed for response in responses)
-    with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
+    with (
+        (tmp_path / "deps.csv").open() as inventory,
+        (tmp_path / "deps-diff.csv").open() as difference,
+    ):
         return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
 
 
-def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(tmp_path):
+def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(
+    tmp_path,
+):
     original = [("0.2.17", "MIT"), ("0.3.4", "MIT"), ("0.4.3", "MIT")]
     inventory, difference = _nightly_license_report(tmp_path, original)
     assert len(inventory) == len(difference) == 4
-    assert {r["version"] for r in difference if r["dependency_type"] == "crate"} == {"0.2.17", "0.3.4", "0.4.3"}
+    assert {r["version"] for r in difference if r["dependency_type"] == "crate"} == {
+        "0.2.17",
+        "0.3.4",
+        "0.4.3",
+    }
     assert all(r["change"] == "added" for r in difference)
     assert _nightly_license_report(tmp_path, original, inventory)[1] == []
     removed = _nightly_license_report(tmp_path, original[1:], inventory)[1]
@@ -2338,7 +2663,11 @@ def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(
     assert (removed[0]["change"], removed[0]["prior_version"]) == ("removed", "0.2.17")
     changed = _nightly_license_report(tmp_path, [("0.2.17", "Apache-2.0"), *original[1:]], inventory)[1]
     assert len(changed) == 1
-    assert (changed[0]["change"], changed[0]["version"], changed[0]["prior_spdx_license"]) == (
+    assert (
+        changed[0]["change"],
+        changed[0]["version"],
+        changed[0]["prior_spdx_license"],
+    ) == (
         "changed",
         "0.2.17",
         "MIT",
@@ -2372,7 +2701,8 @@ def test_nightly_license_inventory_rejects_conflicting_metadata(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "conclusion,expected", [("failure", True), ("timed_out", True), ("success", False), ("skipped", False)]
+    "conclusion,expected",
+    [("failure", True), ("timed_out", True), ("success", False), ("skipped", False)],
 )
 def test_nightly_alert_collector_includes_timeouts(tmp_path, conclusion, expected):
     step = next(s for s in _workflow("nightly-ci.yml")["jobs"]["notify-slack"]["steps"] if s.get("id") == "failed")
@@ -2483,7 +2813,9 @@ def test_python_license_gate_checks_target_environment_before_export(
     # A historical source needs only its manifest; the policy/tool lives in
     # the workflow checkout. A missing default detects accidental fallback.
     monkeypatch.setattr(
-        python_licenses, "PYPROJECT", manifest if manifest_selection == "default" else tmp_path / "missing"
+        python_licenses,
+        "PYPROJECT",
+        manifest if manifest_selection == "default" else tmp_path / "missing",
     )
     python = "/fixture/venv/bin/python"
     inventory = tmp_path / "inventory" / "licenses.csv"
@@ -2539,7 +2871,11 @@ def test_python_license_install_failure_blocks_check_and_export(tmp_path, monkey
     monkeypatch.setattr(python_licenses, "PYPROJECT", manifest)
     inventory = tmp_path / "inventory.csv"
     with (
-        patch.object(python_licenses.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "pip")) as run,
+        patch.object(
+            python_licenses.subprocess,
+            "run",
+            side_effect=subprocess.CalledProcessError(1, "pip"),
+        ) as run,
         pytest.raises(subprocess.CalledProcessError),
     ):
         python_licenses.check_licenses("python", inventory)
@@ -2551,23 +2887,33 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
     jobs = _workflow("nightly-ci.yml")["jobs"]
     steps = jobs["build-artifacts"]["steps"]
     names = [step.get("name") for step in steps]
-    assert names.index("Write checksums and provenance") < names.index("Stage to Artifactory")
-    assert (
-        names.index("Fetch the staged wheel back from Artifactory")
-        < names.index("Upload verified nightly artifacts")
-        < names.index("Smoke-test the staged wheel on every supported Python")
-    )
-    upload = steps[names.index("Upload verified nightly artifacts")]["with"]
-    assert upload["name"] == "nightly-dist-${{ matrix.arch }}"
-    assert upload["path"] == "${{ runner.temp }}/nightly-dist/*"
+    assert names.index("Write checksums and provenance") < names.index("Stage wheel for downstream jobs in Artifactory")
+    upload = steps[names.index("Upload non-wheel build evidence")]["with"]
+    assert upload["name"] == "nightly-build-metadata-${{ matrix.arch }}"
+    assert "!${{ runner.temp }}/nightly-dist/*.whl" in upload["path"]
     assert upload["overwrite"] == "true"
     artifact = upload["name"].replace("${{ matrix.arch }}", "amd64")
-    assert jobs["fpe-support-matrix"]["with"]["wheel_artifact"] == artifact
-    resolver = _workflow("e2e-accuracy.yml")["jobs"]["resolve"]["steps"][0]["with"]["script"]
-    assert f"artifact.name === '{artifact}'" in resolver
-    consumer = _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
-    download = next(step for step in consumer if "download-artifact@" in step.get("uses", ""))
-    assert download["with"]["name"] == artifact
+    assert jobs["fpe-support-matrix"]["with"]["provenance_artifact"] == artifact
+    assert (
+        jobs["fpe-support-matrix"]["with"]["wheel_subpath"]
+        == "nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/amd64"
+    )
+    for workflow_name in ("e2e-accuracy", "fpm-accuracy"):
+        resolver = _workflow(f"{workflow_name}.yml")["jobs"]["resolve"]["steps"][0]["with"]["script"]
+        assert f"artifact.name === '{artifact}'" in resolver
+        branch_workflow = _workflow(f"{workflow_name}-branch.yml")
+        consumer = branch_workflow["jobs"]["wheel"]["steps"]
+        download = next(step for step in consumer if "download-artifact@" in step.get("uses", ""))
+        assert download["with"]["name"] == artifact
+        fetch = next(
+            step for step in consumer if step.get("name") == "Fetch the reusable nightly wheel from Artifactory"
+        )
+        assert "artifactory_wheel_handoff.sh download" in fetch["run"]
+        assert fetch["env"]["EXPECTED_WHEEL_SOURCE_SHA"] == "${{ inputs.sha }}"
+        assert fetch["env"]["EXPECTED_WHEEL_RUN_ID"] == "${{ inputs.nightly_run }}"
+        campaign = branch_workflow["jobs"]["campaign"]
+        assert campaign["environment"] == "pr-wheel-staging"
+        assert "artifactory_wheel_handoff.sh download" in _run_commands(campaign)
 
 
 @pytest.mark.parametrize(
@@ -2623,7 +2969,13 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         for step in _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
         if step.get("name") == "Write checksums and provenance"
     )
-    result = subprocess.run(["bash", "-e", "-c", producer], cwd=tmp_path, env=env, capture_output=True, text=True)
+    result = subprocess.run(
+        ["bash", "-e", "-c", producer],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     provenance = json.loads((directory / "provenance.json").read_text())
     assert provenance["ref"] == source_ref
@@ -2639,7 +2991,13 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
     ).replace("/opt/python/cp312-cp312/bin/python", shlex.quote(sys.executable))
 
     def verify():
-        return subprocess.run(["bash", "-e", "-c", consumer], cwd=tmp_path, env=env, capture_output=True, text=True)
+        return subprocess.run(
+            ["bash", "-e", "-c", consumer],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
 
     result = verify()
     if event == "workflow_dispatch":

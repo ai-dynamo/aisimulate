@@ -2,6 +2,22 @@
 
 This file adds explicit repository-wide development guards.
 
+## Wheel Artifact Handoffs
+
+GitHub Actions artifacts MUST NOT contain Python wheels or directories that
+contain wheels. Transfer wheels between jobs through Artifactory using an
+immutable, context-specific subpath and verify the recorded source SHA, producer
+run, and checksum when downloading them.
+
+Before building a wheel, reuse an existing wheel only when its exact source
+revision, architecture, producer run, and checksum can be verified. Otherwise,
+build it once in a single producer job and upload it to Artifactory; all test,
+qualification, publication, and matrix jobs MUST download that exact wheel
+instead of rebuilding it. Use distinct Artifactory namespaces for CI/PR,
+post-merge, nightly, accuracy, and FPE release handoffs so provenance is clear.
+GitHub Actions artifacts may carry only non-wheel metadata, reports, checksums,
+and publication data.
+
 ## Performance Model Changes
 
 Before changing a performance model, its configuration, or a caller in Rust,

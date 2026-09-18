@@ -10,11 +10,12 @@ name: Main branch nightly CI
 # so consumers (who resolve the newest successful run) never advance to a
 # nightly whose matrix did not refresh. Release artifacts are built via
 # scripts/build_release_artifacts.py, the artifact contract's only sanctioned
-# entry point. Isolated compliance jobs gate the build/staging jobs. Each
-# arch job then builds, stages to Artifactory, and smoke-tests the downloaded
-# wheel on every supported Python. Verified copies, checksums, and
-# provenance remain in nightly-dist-* for FPE, accuracy, and installation
-# consumers; GitHub also retains dependency inventories and license evidence.
+# entry point. Isolated compliance jobs gate artifact production. The build
+# uses hash-pinned tooling and lockfile-resolved crates, then checksum-binds the
+# wheel in the Artifactory handoff area. Dependency installation and smoke tests
+# run later without build credentials. GitHub stores non-wheel provenance,
+# dependency inventories, and license evidence; no Actions artifact contains a
+# wheel.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDDNNNNNNNNNN`, and the crate gets the same
@@ -22,15 +23,24 @@ name: Main branch nightly CI
 # scheduled and manual publications distinct while preserving date ordering.
 # The original run creation date and number are stable across retries.
 #
-# Staging: each arch job uploads its wheel to the internal PyPI repo (and
-# the amd64 leg the crate to the internal Cargo repo) under
-# nightly/<run_id>/ — the ai-dynamo staging path convention (the future
-# release workflow will use a release/ prefix). Uploads are server-side
-# checksum-verified and idempotent across re-runs. Scheduled runs deploy
-# unattended; any other trigger must first pass the manual-approval job,
-# gated by the `manual-release-approver` environment's required reviewers
-# (that environment holds no secrets — all deploy jobs run in
-# `automated-release`).
+# Handoff and staging: build jobs upload wheels to the internal PyPI repo under
+# nightly/<run_id>/<run_attempt>/handoff/<arch>/ with the narrow
+# `pr-wheel-staging` environment. Smoke and FPE jobs pull the exact wheel from
+# there and verify its source SHA and checksum. After those checks pass, the
+# stage job uploads the wheels to the final nightly/<run_id>/ path and the crate
+# to the internal Cargo repo. Final staging remains gated by the
+# `automated-release` environment.
+#
+# Environment prerequisite: allow `main` on `pr-wheel-staging`, and create
+# `automated-release` BEFORE merging. A referenced-but-missing environment is
+# auto-created UNPROTECTED. Store the Artifactory values as environment secrets
+# only (repo-level secrets would flow to modified workflow copies on
+# pull-request/* refs). The URL and PyPI repository must identify the same
+# handoff store in both environments; their tokens have different privileges.
+# Scheduled first attempts run unattended; any other trigger or re-run must
+# pass the `manual-release-approver` gate before the handoff begins. Final
+# promotion uses the stronger `automated-release` environment only after smoke,
+# FPE, and compliance validation complete.
 #
 # Runs on the repository-specific self-hosted runners (OPS-8249). Jobs run
 # in pinned manylinux_2_28 containers: the default runner image has no C
@@ -302,7 +312,7 @@ jobs:
             container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    environment: automated-release
+    environment: pr-wheel-staging
     permissions:
       contents: read
     outputs:
@@ -548,7 +558,7 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      # Capture trusted crate metadata before smoke dependencies execute.
+      # Capture trusted crate metadata before transferring the wheel.
       - name: Capture the locked crate inventory
         if: matrix.arch == 'amd64'
         run: cargo metadata --locked --format-version 1 > "${RUNNER_TEMP}/cargo-metadata.json"
@@ -562,15 +572,302 @@ jobs:
           retention-days: 30
           overwrite: true
 
-      # This leg's wheel; the amd64 leg also uploads the crate (it is
-      # arch-independent source, one canonical copy).
-      - name: Stage to Artifactory
+      - name: Checkout the current Artifactory transfer helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+          persist-credentials: false
+          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Stage wheel for downstream jobs in Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/${{ matrix.arch }}
+          WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+        run: bash .workflow-tools/python/aisimulate/tools/artifactory_wheel_handoff.sh upload "${DIST_DIR}"
+
+      - name: Upload non-wheel build evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-build-metadata-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/nightly-dist/*
+            !${{ runner.temp }}/nightly-dist/*.whl
+          if-no-files-found: error
+          # The crate is already compressed; skip recompression.
+          compression-level: 0
+          # Matches the Dynamo nightly compliance policy's 30-day window.
+          retention-days: 30
+          overwrite: true
+
+  # Installing the wheel pulls its unpinned PyPI dependency tree — untrusted
+  # code that must not share a job with artifact production, so this runs
+  # after the wheel is immutable in the Artifactory handoff area. A red smoke job
+  # fails the run, the signal staging consumers gate on.
+  smoke-test:
+    name: Smoke-test wheel (${{ matrix.arch }})
+    needs: [changes-guard, build-artifacts]
+    environment: pr-wheel-staging
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: prod-aisimulate-default-amd64-v1
+            uv_target: x86_64-unknown-linux-gnu
+            uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            runner: prod-aisimulate-default-arm64-v1
+            uv_target: aarch64-unknown-linux-gnu
+            uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    container:
+      image: ${{ matrix.container_image }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_VERSION: "0.12.6"
+      # The abi3 wheel claims every Python in requires-python; prove each one.
+      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
+      UV_PYTHON_PREFERENCE: only-managed
+      UV_NO_CONFIG: "1"
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
+    steps:
+      # Only the transfer helper is checked out. The package source tree stays
+      # absent so it cannot shadow the wheel during the untrusted dependency
+      # install below.
+      - name: Isolate toolchain paths outside the workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/tmp"
+          {
+            echo "TOOLS_DIR=${RUNNER_TEMP}/tools"
+            echo "DIST_DIR=${RUNNER_TEMP}/nightly-dist"
+            echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache"
+            echo "UV_PYTHON_INSTALL_DIR=${RUNNER_TEMP}/uv-python"
+            echo "TMPDIR=${RUNNER_TEMP}/tmp"
+          } >> "${GITHUB_ENV}"
+
+      - name: Checkout the Artifactory transfer helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Download non-wheel build evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-build-metadata-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist
+
+      - name: Fetch the built wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/${{ matrix.arch }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${DIST_DIR}"
+
+      - name: Install uv (checksum-verified)
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+          UV_SHA256: ${{ matrix.uv_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${TOOLS_DIR}"
+          archive="${TOOLS_DIR}/uv.tar.gz"
+          curl -q --fail --location --silent --show-error --retry 3 \
+            --output "${archive}" \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
+          echo "${UV_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${TOOLS_DIR}" --strip-components=1
+          rm "${archive}"
+          echo "${TOOLS_DIR}" >> "${GITHUB_PATH}"
+          "${TOOLS_DIR}/uv" --version
+
+      - name: Verify artifact checksums
+        run: |
+          set -euo pipefail
+          (cd "${DIST_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
+
+      # The wheel's name is a contract: stamped dev version (catches a
+      # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
+      # arch (catches a build-container regression that would mistag wheels).
+      # The parsed version is re-asserted against installed metadata below.
+      - name: Verify wheel name, tags, and stamped version
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          plat="${UV_TARGET%%-*}"
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+            echo "::error::unexpected wheel name: ${wheel}"
+            exit 1
+          }
+          version="${wheel#aisimulate-}"
+          version="${version%%-*}"
+          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "wheel OK: ${wheel} (version ${version})"
+
+      - name: Smoke-test the wheel on every supported Python
+        run: |
+          set -euo pipefail
+          cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
+          import importlib.metadata as metadata
+          import os
+
+          import aiconfigurator
+          import aiconfigurator_core
+          import aisimulate
+          import aisimulate_core
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert (
+              aisimulate.__version__
+              == aisimulate_core.__version__
+              == metadata.version("aisimulate")
+              == expected
+          ), (aisimulate.__version__, expected)
+          installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
+          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
+          assert installed.isdisjoint(forbidden), installed & forbidden
+          EOF
+          for series in ${PYTHON_SERIES_LIST}; do
+            venv="${TOOLS_DIR}/venv-smoke-${series}"
+            uv venv --python "${series}" "${venv}"
+            uv pip install --python "${venv}/bin/python" "${DIST_DIR}"/aisimulate-*.whl
+            uv pip check --python "${venv}/bin/python"
+            "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
+            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aiconfigurator" version
+            echo "smoke OK on Python ${series}"
+          done
+
+  # Uploads the smoke-tested wheels and crate to internal Artifactory under
+  # nightly/<run_id>/, checksum-verified before upload and server-side on
+  # PUT. Runs only on main (never on pull-request/* copies, which contain
+  # unreviewed PR content), behind the protected environment that scopes the
+  # ARTIFACTORY_* secrets. Scheduled runs additionally require FPE success.
+  stage-artifactory:
+    name: Stage and verify Artifactory wheel (${{ matrix.arch }})
+    needs: [changes-guard, manual-approval, build-artifacts, smoke-test, fpe-support-matrix, license-evidence]
+    if: >-
+      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
+      needs.build-artifacts.result == 'success' &&
+      needs.smoke-test.result == 'success' &&
+      (github.event_name != 'schedule' || needs.fpe-support-matrix.result == 'success') &&
+      needs.license-evidence.result == 'success' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: prod-aisimulate-default-amd64-v1
+            uv_target: x86_64-unknown-linux-gnu
+            uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            runner: prod-aisimulate-default-arm64-v1
+            uv_target: aarch64-unknown-linux-gnu
+            uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    environment: automated-release
+    container:
+      image: ${{ matrix.container_image }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+      ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
+      UV_VERSION: "0.12.6"
+      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
+      UV_PYTHON_PREFERENCE: only-managed
+      UV_NO_CONFIG: "1"
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
+    steps:
+      - name: Checkout the Artifactory transfer helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: python/aisimulate/tools/artifactory_wheel_handoff.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare staging directory
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/stage" "${RUNNER_TEMP}/staged-dist" "${RUNNER_TEMP}/tools"
+          {
+            echo "STAGE_DIR=${RUNNER_TEMP}/stage"
+            echo "FETCH_DIR=${RUNNER_TEMP}/staged-dist"
+            echo "TOOLS_DIR=${RUNNER_TEMP}/tools"
+            echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache"
+            echo "UV_PYTHON_INSTALL_DIR=${RUNNER_TEMP}/uv-python"
+          } >> "${GITHUB_ENV}"
+
+      - name: Download non-wheel build evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-build-metadata-${{ matrix.arch }}
+          path: ${{ runner.temp }}/stage
+
+      - name: Fetch wheels from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+        run: |
+          export ARTIFACTORY_SUBPATH="nightly/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/handoff/${{ matrix.arch }}"
+          bash python/aisimulate/tools/artifactory_wheel_handoff.sh download "${STAGE_DIR}"
+
+      - name: Verify checksums and assemble upload set
+        env:
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # nightly/<run_id>/ — the ai-dynamo staging path convention.
+          echo "STAGE_SUBPATH=nightly/${GH_RUN_ID}" >> "${GITHUB_ENV}"
+          (cd "${STAGE_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
+          wheels=("${STAGE_DIR}"/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "::error::expected one wheel"; exit 1; }
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            crates=("${STAGE_DIR}"/*.crate)
+            [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected one crate"; exit 1; }
+          fi
+
+      - name: Upload to Artifactory
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
           ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
-          GH_RUN_ID: ${{ github.run_id }}
           MATRIX_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -578,8 +875,8 @@ jobs:
                       ARTIFACTORY_PYPI_REPO ARTIFACTORY_CARGO_REPO; do
             [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
           done
-          # nightly/<run_id>/ — the ai-dynamo staging path convention.
-          subpath="nightly/${GH_RUN_ID}"
+          subpath="${STAGE_SUBPATH}"
+          [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
           put() {
             local file="$1" repo="$2" label="$3"
             local sha url existing
@@ -613,7 +910,7 @@ jobs:
               "${url}"
             echo "staged (${label}): $(basename "${file}")"
           }
-          cd "${DIST_DIR}"
+          cd "${STAGE_DIR}"
           if [ "${MATRIX_ARCH}" = "amd64" ]; then
             for file in *.crate; do
               put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
@@ -622,7 +919,6 @@ jobs:
           for file in *.whl; do
             put "${file}" "${ARTIFACTORY_PYPI_REPO}" pypi
           done
-          echo "STAGED_SUBPATH=${subpath}" >> "${GITHUB_ENV}"
           {
             echo "### Staged to Artifactory (${MATRIX_ARCH})"
             echo "Subpath: \`${subpath}/\`"
@@ -641,46 +937,57 @@ jobs:
           ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
-          fetch_dir="${TOOLS_DIR}/staged-dist"
-          mkdir -p "${fetch_dir}"
+          wheel="$(basename "${STAGE_DIR}"/aisimulate-*.whl)"
           curl -q --fail --silent --show-error --retry 3 \
             -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
-            --output "${fetch_dir}/${wheel}" \
-            "${ARTIFACTORY_URL%/}/${ARTIFACTORY_PYPI_REPO}/${STAGED_SUBPATH}/${wheel}"
-          built_sha="$(sha256sum "${DIST_DIR}/${wheel}" | cut -d' ' -f1)"
-          staged_sha="$(sha256sum "${fetch_dir}/${wheel}" | cut -d' ' -f1)"
+            --output "${FETCH_DIR}/${wheel}" \
+            "${ARTIFACTORY_URL%/}/${ARTIFACTORY_PYPI_REPO}/${STAGE_SUBPATH}/${wheel}"
+          built_sha="$(sha256sum "${STAGE_DIR}/${wheel}" | cut -d' ' -f1)"
+          staged_sha="$(sha256sum "${FETCH_DIR}/${wheel}" | cut -d' ' -f1)"
           [ "${staged_sha}" = "${built_sha}" ] || {
             echo "::error::staged wheel differs from the built wheel: ${wheel}"
             exit 1
           }
           echo "fetched ${wheel} (checksum matches the build)"
 
-      # Preserve the established consumer handoff only after the staged
-      # wheel has been downloaded and verified against the build. Upload
-      # before dependency code runs so the artifact remains immutable.
-      - name: Upload verified nightly artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nightly-dist-${{ matrix.arch }}
-          path: ${{ runner.temp }}/nightly-dist/*
-          if-no-files-found: error
-          # Wheels and crates are already compressed; skip recompression.
-          compression-level: 0
-          # Matches the Dynamo nightly compliance policy's 30-day window.
-          retention-days: 30
-          overwrite: true
+      - name: Install uv (checksum-verified)
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+          UV_SHA256: ${{ matrix.uv_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="${TOOLS_DIR}/uv.tar.gz"
+          curl -q --fail --location --silent --show-error --retry 3 \
+            --output "${archive}" \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
+          echo "${UV_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${TOOLS_DIR}" --strip-components=1
+          rm "${archive}"
+          echo "${TOOLS_DIR}" >> "${GITHUB_PATH}"
+          "${TOOLS_DIR}/uv" --version
 
+      - name: Verify staged wheel name and version
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          plat="${UV_TARGET%%-*}"
+          wheel="$(basename "${FETCH_DIR}"/aisimulate-*.whl)"
+          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+            echo "::error::unexpected wheel name: ${wheel}"
+            exit 1
+          }
+          version="${wheel#aisimulate-}"
+          version="${version%%-*}"
+          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
 
-      # Installs the wheel fetched back from Artifactory, not the local
-      # build, so a corrupted or wrong upload fails here instead of at the
-      # consumer. No secrets: dependency build hooks and imported code run
-      # in this step.
+      # Re-run the smoke contract against the final promoted bytes. The token
+      # is scoped to the prior download step and is not exposed here.
       - name: Smoke-test the staged wheel on every supported Python
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
-          fetch_dir="${TOOLS_DIR}/staged-dist"
+          wheel="$(basename "${FETCH_DIR}"/aisimulate-*.whl)"
           cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
           import os
@@ -704,7 +1011,7 @@ jobs:
           for series in ${PYTHON_SERIES_LIST}; do
             venv="${TOOLS_DIR}/venv-smoke-${series}"
             uv venv --python "${series}" "${venv}"
-            uv pip install --python "${venv}/bin/python" "${fetch_dir}/${wheel}"
+            uv pip install --python "${venv}/bin/python" "${FETCH_DIR}/${wheel}"
             uv pip check --python "${venv}/bin/python"
             "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
             "${venv}/bin/aisimulate" --help
@@ -879,7 +1186,8 @@ jobs:
     with:
       expected_sha: ${{ needs.changes-guard.outputs.target-sha }}
       source_branch: ${{ needs.changes-guard.outputs.target-ref }}
-      wheel_artifact: nightly-dist-amd64
+      provenance_artifact: nightly-build-metadata-amd64
+      wheel_subpath: nightly/${{ github.run_id }}/${{ github.run_attempt }}/handoff/amd64
 
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
@@ -889,7 +1197,7 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
+    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, license-evidence, stage-artifactory]
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
@@ -899,6 +1207,7 @@ jobs:
       needs.build-artifacts.result == 'success' &&
       needs.fpe-support-matrix.result == 'success' &&
       needs.license-evidence.result == 'success' &&
+      needs.stage-artifactory.result == 'success' &&
       github.ref == 'refs/heads/main' &&
       ((github.event_name == 'schedule' && github.run_attempt == '1') ||
       (needs.manual-approval.result == 'success' &&
@@ -982,7 +1291,7 @@ jobs:
   notify-slack:
     name: Notify Slack
     if: always()
-    needs: [changes-guard, manual-approval, python-compliance, build-artifacts, license-evidence, fpe-support-matrix, trigger-gitlab-security]
+    needs: [changes-guard, manual-approval, python-compliance, build-artifacts, license-evidence, fpe-support-matrix, stage-artifactory, trigger-gitlab-security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

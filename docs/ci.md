@@ -367,10 +367,12 @@ migration checklist before a stable release.
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
 Artifactory through the protected `automated-release` environment. Each wheel
-is downloaded again and checked against the build. Immutable copies and their
-checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
-before runtime dependencies execute, preserving the accuracy and installation
-consumer contract.
+is downloaded again and checked against the build. Wheels remain in
+attempt-specific Artifactory handoff paths; only their checksums, provenance,
+and other non-wheel build evidence are retained as
+`nightly-build-metadata-<arch>` GitHub artifacts before runtime dependencies
+execute, preserving the accuracy and installation consumer contract without
+uploading wheels to GitHub Actions.
 
 Python license evidence covers the installed audit environment, including
 the runtime dependency closure and audit tools such as `pip` and `pip-licenses`.
