@@ -54,11 +54,9 @@ impl SpeculativeDecodeSampler {
         }
     }
 
-    pub(crate) fn sample_output_tokens(&mut self, remaining_output_tokens: usize) -> usize {
-        if remaining_output_tokens == 0 {
-            return 0;
-        }
-
+    /// Sample verification acceptance including the base token. Callers clamp
+    /// emitted output separately so telemetry retains pre-truncation acceptance.
+    pub(crate) fn sample_accepted_tokens(&mut self) -> usize {
         let mut output_tokens = 1;
         for rate in &self.conditional_accept_rates {
             if !self.rng.random_bool(*rate) {
@@ -66,7 +64,7 @@ impl SpeculativeDecodeSampler {
             }
             output_tokens += 1;
         }
-        output_tokens.min(remaining_output_tokens)
+        output_tokens
     }
 }
 
@@ -77,23 +75,16 @@ mod tests {
     #[test]
     fn zero_and_one_rates_are_exact() {
         let mut zero = SpeculativeDecodeSampler::new(vec![0.0, 1.0], 42);
-        assert_eq!(zero.sample_output_tokens(10), 1);
+        assert_eq!(zero.sample_accepted_tokens(), 1);
 
         let mut one = SpeculativeDecodeSampler::new(vec![1.0, 1.0], 42);
-        assert_eq!(one.sample_output_tokens(10), 3);
+        assert_eq!(one.sample_accepted_tokens(), 3);
     }
 
     #[test]
     fn sampling_stops_at_first_rejection() {
         let mut sampler = SpeculativeDecodeSampler::new(vec![1.0, 0.0, 1.0], 42);
-        assert_eq!(sampler.sample_output_tokens(10), 2);
-    }
-
-    #[test]
-    fn sampling_clamps_to_remaining_output() {
-        let mut sampler = SpeculativeDecodeSampler::new(vec![1.0, 1.0], 42);
-        assert_eq!(sampler.sample_output_tokens(2), 2);
-        assert_eq!(sampler.sample_output_tokens(0), 0);
+        assert_eq!(sampler.sample_accepted_tokens(), 2);
     }
 
     #[test]
@@ -101,8 +92,8 @@ mod tests {
         let rates = vec![0.8, 0.6, 0.4];
         let mut left = SpeculativeDecodeSampler::new(rates.clone(), 123);
         let mut right = SpeculativeDecodeSampler::new(rates, 123);
-        let left_samples: Vec<_> = (0..100).map(|_| left.sample_output_tokens(10)).collect();
-        let right_samples: Vec<_> = (0..100).map(|_| right.sample_output_tokens(10)).collect();
+        let left_samples: Vec<_> = (0..100).map(|_| left.sample_accepted_tokens()).collect();
+        let right_samples: Vec<_> = (0..100).map(|_| right.sample_accepted_tokens()).collect();
         assert_eq!(left_samples, right_samples);
     }
 
@@ -111,8 +102,8 @@ mod tests {
         let rates = vec![0.8, 0.6, 0.4];
         let mut left = SpeculativeDecodeSampler::new(rates.clone(), 42);
         let mut right = SpeculativeDecodeSampler::new(rates, 43);
-        let left_samples: Vec<_> = (0..100).map(|_| left.sample_output_tokens(10)).collect();
-        let right_samples: Vec<_> = (0..100).map(|_| right.sample_output_tokens(10)).collect();
+        let left_samples: Vec<_> = (0..100).map(|_| left.sample_accepted_tokens()).collect();
+        let right_samples: Vec<_> = (0..100).map(|_| right.sample_accepted_tokens()).collect();
         assert_ne!(left_samples, right_samples);
     }
 
@@ -123,7 +114,7 @@ mod tests {
         let mut sampler = SpeculativeDecodeSampler::new(rates, 42);
         let samples = 200_000;
         let mean = (0..samples)
-            .map(|_| sampler.sample_output_tokens(10) as f64)
+            .map(|_| sampler.sample_accepted_tokens() as f64)
             .sum::<f64>()
             / samples as f64;
         assert!(
