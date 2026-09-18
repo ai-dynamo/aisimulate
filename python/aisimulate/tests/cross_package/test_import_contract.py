@@ -31,6 +31,7 @@ CORE_SDK_LEAF_MODULES = [
     "engine",
     "engine_table_view",
     "errors",
+    "fpm_identity",
     "inference_summary",
     "memory",
     "models.base",

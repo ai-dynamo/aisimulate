@@ -466,7 +466,8 @@ def test_afd_rejects_v41_before_search_or_session_construction(decoder_replay):
 
 @pytest.mark.parametrize("is_context", [False, True])
 @pytest.mark.parametrize("batch,seq", [(1, 4), (0, 4), (1, 0)])
-def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batch, seq):
+@pytest.mark.parametrize("database_mode", ["SOL", "SILICON", "HYBRID", "EMPIRICAL"])
+def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batch, seq, database_mode):
     import json
 
     import aisimulate_core._native as native
@@ -483,6 +484,6 @@ def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batc
         if "Dsv41Attention" in child
     )
     op = native.op_from_spec_json(json.dumps({"Dsv41Attention": attention | {"role": "ful", "is_context": is_context}}))
-    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode=database_mode)
     with pytest.raises(ValueError, match="attention role must be"):
         _evaluate_single_op(db, op, is_context=is_context, batch_size=batch, s=seq, prefix=0, x=batch * seq)

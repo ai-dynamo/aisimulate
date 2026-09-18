@@ -1,0 +1,181 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "757ff1f99f716a1d21985723ae534cef4afbb5ab",
+  "profiles": {
+    "gb200-tp4-full": {
+      "admission": "quarantined",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.1.dev20904+g179dd0fa9",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb200",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.full.2edc7f78efe5.parquet",
+          "target": "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet",
+          "sha256": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.full.2edc7f78efe5.metadata.json",
+          "target": "data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json",
+          "sha256": "bd1ac729bedbec8c2d1cdf9594b362662e808010428345990b218e5c55dc06d1"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "237cf18f406a8ac62e824cda4ddf03072bd18a8f0720cb5a87fbd17cc7b15912"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/systems.full.yaml",
+          "target": "gb200.yaml",
+          "sha256": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e"
+        }
+      ]
+    },
+    "gb300-tp4-full": {
+      "admission": "development",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.full.1ba1736776ee.parquet",
+          "target": "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet",
+          "sha256": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.full.1ba1736776ee.metadata.json",
+          "target": "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json",
+          "sha256": "a888f6e14bfea669dd514bb919d281af33cdf75b68f912f3321d898081d038aa"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "237cf18f406a8ac62e824cda4ddf03072bd18a8f0720cb5a87fbd17cc7b15912"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/systems.full.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-tp4-decoder_bounded": {
+      "admission": "development",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.0.0.dev0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.decoder_bounded.0da08ce08b15.parquet",
+          "target": "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.parquet",
+          "sha256": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/fpm_forward_perf.decoder_bounded.0da08ce08b15.metadata.json",
+          "target": "data/gb300/sglang/0.0.0.dev0/fpm_forward_perf.metadata.json",
+          "sha256": "821121b14b92bc4ccaa1a16bb8b0efeb1c5f03b7509cab8527a1b72637bdc396"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "237cf18f406a8ac62e824cda4ddf03072bd18a8f0720cb5a87fbd17cc7b15912"
+        },
+        {
+          "path": "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-dd1fa97add17-pr158/fpm/provenance/systems.decoder_bounded.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    }
+  }
+}
