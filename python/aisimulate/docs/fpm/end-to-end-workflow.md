@@ -5,25 +5,42 @@ SPDX-License-Identifier: Apache-2.0
 
 # Collect FPM data and use it in AISimulate
 
-This guide follows one offline whole-forward FPM campaign from planning to
-request-level prediction. It uses MiniMax-M2.7 on four H200 GPUs with pure tensor
-parallelism, then consumes the newly collected data from an external directory.
-It assumes an existing, working GPU collection environment. Fill in the
-collection inputs from that environment before executing GPU steps.
+Use measured forward-pass data to construct a performance model and predict
+request-level serving behavior. Choose the path that matches your starting point:
+
+| Starting point | Follow |
+| --- | --- |
+| Published self-benchmark data; no collection environment needed | [Check the package](#1-check-the-aisimulate-commands), then [Kimi K3 TP8+DCP8 quickstart](#use-an-existing-profile-kimi-k3-tp8dcp8) |
+| Your own schema-v6 Parquet/metadata pair | [Inspect the pair](#5-inspect-the-published-pair), [construct the model](#6-load-the-new-data-and-query-one-forward-pass), then [predict](#7-run-ais-predict-using-the-same-external-data); substitute your recorded identity |
+| New measurements to collect | [Prepare the environment](#1-check-the-aisimulate-commands), then follow steps 2–9 for MiniMax-M2.7 on four H200 GPUs |
 
 ```text
-Freeze plan -> GPU smoke -> GPU collection -> validate and publish pair
-                                                |
-                                                v
-Independent measurements <- compare <- AIS predict <- SDK FPM query
+Existing measured pair ------------------------+
+                                               |
+GPU plan -> smoke -> self-benchmark -> publish -+-> SDK query -> AIS predict
+                                                                |
+                                                                v
+                                                 Independent accuracy check
 ```
 
-The collector measures complete forward passes in a Dynamo/vLLM runtime. It
-publishes `fpm_forward_perf.parquet` together with
-`fpm_forward_perf.metadata.json`. The Rust performance model loads this pair,
-selects a matching cell, and uses exact lookup, interpolation, and supported SOL
-transfer. There is no separate `train` or `fit` command in this workflow.
-[Online telemetry regression](aic-fpm-regression-design.md) is a separate model.
+The data contract is `fpm_forward_perf.parquet` plus its matching
+`fpm_forward_perf.metadata.json`. The Rust performance model selects a matching
+cell and uses measured lookup/interpolation and, where supported, SOL transfer.
+An existing model architecture needs no new model class or parallelization
+mapping to consume another measured configuration. Place the pair in a systems
+root and pass its exact identity to
+`RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
+There is no separate FPM registration service or `train` command.
+
+Raw benchmark JSON is not a loadable FPM pair. Convert it to the
+[publication schema](../../collector/README.md#whole-forward-fpm-campaign)
+with its measurement provenance before step 5. Collector performs this
+conversion for the campaigns it runs in steps 2–4.
+
+A new architecture still requires a model definition; see
+[How to add a new model](../add_a_new_model.md).
+[Online telemetry regression](aic-fpm-regression-design.md), which learns from
+`tune_with_fpms`, is a separate workflow.
 
 ## Scope and expected outcomes
 
@@ -36,38 +53,283 @@ transfer. There is no separate `train` or `fit` command in this workflow.
 | AIS predict | Machine running AISimulate | `prediction.json` and, when requested, `requests.jsonl` for the configured traffic |
 | Accuracy validation | Machine running AISimulate + independent GPU run | Matched prediction/measurement errors and coverage, assessed against thresholds chosen for the target use case |
 
-The collector currently supports vLLM with `PP=CP=1`. This example uses
-`tp=4, pp=1, dp=1, moe_tp=4, moe_ep=1, cp=1`, default checkpoint quantization,
-and one worker replica. Other supported topologies need their own collected
-cells. The examples specify expected artifact structure and success conditions;
-they do not promise a fixed latency, row count, collection duration, or accuracy.
+The collection walkthrough uses vLLM with
+`tp=4, pp=1, dp=1, moe_tp=4, moe_ep=1, cp=1`, checkpoint-default quantization,
+and one worker replica. The dedicated Collector currently supports `PP=CP=1`;
+its topology presets do not collect DCP configurations. The DCP quickstart
+consumes an existing Dynamo self-benchmark profile.
 
 ## 1. Check the AISimulate commands
 
-Activate an existing environment containing the current AISimulate package,
-then check the commands from the repository root. If AISimulate is not installed,
-follow the [developer setup](../../../../DEVELOPMENT.md) first. Installing the
-development extras is not a required step for each collection campaign.
+Use Python 3.11–3.13 and an AISimulate build containing
+[PR #284](https://github.com/ai-dynamo/aisimulate/pull/284). A package version
+alone does not establish that an unreleased feature is included. If you already
+have that build, activate its environment and continue with the checks below.
+For a source installation while the PR is open:
+
+```bash
+git clone https://github.com/ai-dynamo/aisimulate.git
+cd aisimulate
+git fetch origin pull/284/head
+git switch --detach FETCH_HEAD
+uv sync --project python/aisimulate --extra dev
+source python/aisimulate/.venv/bin/activate
+```
+
+Source installation requires `uv`, Cargo/Rust, and a C/C++ compiler/linker.
+See the [installation guide](../../../../docs/installation.md#use-current-source)
+for platform requirements. No serving GPU or model weights are needed to query
+an existing profile or run the engine-stack simulation.
+
+From the repository root, record the source and package in the activated session:
 
 ```bash
 export AIS_REPO="$PWD"
+git rev-parse HEAD
+python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'from aisimulate_core.sdk import ForwardPassPerfModelConfig; assert "dcp" in ForwardPassPerfModelConfig.__dataclass_fields__'
 aisimulate predict --help
-cd "$AIS_REPO/python/aisimulate"
-python3 -m collector.fpm_forward --help
 ```
 
-Use the same activated Bash or zsh session for the remaining commands. The
-machine running Collector needs model configuration metadata and
-`kubectl` access to the target namespace. It does not need a local GPU.
+Use the same activated Bash or Zsh session for the remaining commands.
+For existing data, continue with the quickstart below or step 5.
 
-For this example, use four H200 GPUs on one node. Obtain the namespace,
-checkpoint PVC/path, collection image reference, and Generator target release
-from the existing collection configuration. Record the AIS commit, image
-digest, model revision, GPU type, and resolved configuration with the results.
+For **new GPU collection**, additionally check:
 
-Before launching, review [recovery and cleanup](#8-recovery-and-cleanup), which
-uses the campaign's generated manifests. Preserve logs before manual
-teardown and verify that no resources from this campaign remain.
+```bash
+cd "$AIS_REPO/python/aisimulate"
+python -m collector.fpm_forward --help
+```
+
+The collection host needs model configuration metadata and `kubectl` access.
+The MiniMax example needs four H200 GPUs on one node and an existing namespace,
+checkpoint PVC/path, collection image, and matching Generator target release.
+Record the image digest, model revision, GPU type, and resolved configuration.
+Before launching, read [recovery and cleanup](#8-recovery-and-cleanup).
+
+## Use an existing profile: Kimi K3 TP8+DCP8
+
+This CPU-only quickstart downloads the published
+[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/6fad3f9a0df5a24603108dcea0d201259254b904/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
+checks one measured point from each phase, and completes a small Replay run.
+It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
+
+### Download and install the measured pair
+
+Choose a new output directory. The public download uses Python's standard
+library; no Hugging Face login or additional download package is required.
+
+```bash
+export FPM_RUN="$PWD/kimi-k3-fpm"
+mkdir "$FPM_RUN"
+python - <<'PY'
+import hashlib
+import json
+import os
+import shutil
+from importlib.resources import files
+from pathlib import Path
+from urllib.request import urlopen
+
+run = Path(os.environ["FPM_RUN"]).resolve()
+revision = "6fad3f9a0df5a24603108dcea0d201259254b904"
+base = f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/{revision}/"
+config_path = "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8"
+
+def download(path):
+    with urlopen(base + path, timeout=60) as response:
+        return response.read()
+
+manifest_bytes = download(f"{config_path}/manifest.json")
+manifest = json.loads(manifest_bytes)
+primary = next(item for item in manifest["fpm"] if item["role"] == "primary")
+parquet = download(primary["path"])
+sidecar = download(primary["metadata_path"])
+metadata = json.loads(sidecar)
+assert hashlib.sha256(parquet).hexdigest() == primary["sha256"] == metadata["parquet_sha256"]
+assert metadata["schema_name"] == "aic_fpm_forward_perf" and metadata["schema_version"] == 6
+assert primary["row_count"] == metadata["row_count"] == 669
+assert manifest["dcp"] == metadata["configuration_selector"]["dcp"] == 8
+
+systems = run / "systems"
+target = systems / "data/gb300/vllm/0.29.0"
+target.mkdir(parents=True)
+(target / "fpm_forward_perf.parquet").write_bytes(parquet)
+(target / "fpm_forward_perf.metadata.json").write_bytes(sidecar)
+packaged = files("aiconfigurator_core") / "systems"
+for name in ("gb300.yaml", "query_versions.yaml", "attention_lane_defaults.yaml"):
+    shutil.copyfile(str(packaged / name), systems / name)
+(run / "manifest.json").write_bytes(manifest_bytes)
+(run / "engine-config.json").write_bytes(download(f"{config_path}/fpm/provenance/engine-config.json"))
+(run / "dataset-revision.txt").write_text(revision + "\n")
+print(f"Installed {primary['row_count']} primary rows under {systems}")
+PY
+```
+
+**Expected:** 669 primary rows: 338 balanced prefill points and 331 decode
+points. Only the filenames change to the loader's canonical names; the Parquet
+and sidecar contents remain unchanged. Retain the manifest, dataset revision,
+and engine configuration beside the imported data. The separate comparator
+with synthetic attention KV and the nonuniform prefill records are not part of
+this primary profile.
+
+The decode measurements use warmed MLA KV and **random KDA state**. They are
+calibration data, not held-out accuracy evidence. See the retained
+`engine-config.json` for measurement conditions and known unknowns.
+
+This profile uses a custom vLLM `0.29.0` build. Allow its literal version to be
+queried outside the copied version-slot policy for this session:
+
+```bash
+export AIC_ALLOW_UNLISTED_VERSIONS=1
+```
+
+This permits version selection; model/topology/precision matching stays strict.
+For another profile whose backend version is already queryable, omit the override.
+
+### Query prefill and decode through the canonical API
+
+Run this in the same session. The script compares its predictions with the
+stored measurements and records the model's resolved configuration.
+
+```bash
+python - <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+
+import pyarrow.parquet as pq
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+run = Path(os.environ["FPM_RUN"]).resolve()
+config = ForwardPassPerfModelConfig(
+    model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
+    backend_version="0.29.0", worker_type="aggregated",
+    tp=8, pp=1, attention_dp=1, moe_tp_size=8, moe_ep_size=1, dcp=8,
+    gemm_quant_mode="bfloat16", moe_quant_mode="w4a16_mxfp4",
+    kvcache_quant_mode="fp8", attention_backend="FLASHINFER_MLA",
+    estimation_mode="fpm_interpolation", fallback_policy="deny",
+    systems_paths=(str(run / "systems"),),
+    estimator_config={
+        "fpm_interpolation": {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]},
+        "correction": {"enabled": False},
+    },
+)
+rows = pq.read_table(run / "systems/data/gb300/vllm/0.29.0/fpm_forward_perf.parquet").to_pylist()
+assert len(rows) == 669
+model = RustForwardPassPerfModel.best_available(config)
+try:
+    for phase, scheduled in (
+        ("prefill", {"num_prefill_requests": 1, "sum_prefill_tokens": 128, "sum_prefill_kv_tokens": 0}),
+        ("decode", {"num_decode_requests": 1, "sum_decode_kv_tokens": 128}),
+    ):
+        row = next(row for row in rows if row["workload_kind"] == phase and row["batch_size"] == 1
+                   and row["total_prefill_tokens"] == (128 if phase == "prefill" else 0)
+                   and row["total_kv_read_tokens"] == (0 if phase == "prefill" else 128))
+        latency = model.estimate_forward_pass_time_ms({"version": 1, "scheduled_requests": scheduled})
+        assert latency is not None and math.isclose(latency, row["latency_ms"], rel_tol=1e-9)
+        print(json.dumps({"phase": phase, "predicted_ms": latency, "measured_ms": row["latency_ms"]}))
+    diagnostics = model.diagnostics()
+    assert diagnostics["readiness"] == "ready"
+    (run / "estimator-provenance.json").write_text(json.dumps(diagnostics, indent=2) + "\n")
+finally:
+    model.close()
+PY
+```
+
+**Expected:** approximately 66.1715 ms for the selected prefill point and
+10.5622 ms for the selected decode point. These are forward-pass latencies;
+request TTFT and end-to-end latency also depend on scheduling and traffic.
+
+`text_only` enables the language profile for Kimi's multimodal architecture
+while retaining resident encoder weights. `unrecorded_quant_modes` matches
+only null FMHA/communication identities in this dataset. Leave the corresponding
+top-level quant fields unset. Missing DCP, DCP1, and DCP8 are distinct identities;
+an explicit DCP8 request never substitutes another configuration.
+
+### Run a small Kimi Replay
+
+Create the complete prediction YAML. The unquoted heredoc below expands
+`FPM_RUN` to the absolute systems path; YAML itself does not expand shell variables.
+
+```bash
+cat > "$FPM_RUN/predict.yaml" <<YAML
+engine:
+  mode: aggregated
+  model: moonshotai/Kimi-K3
+  hardware: gb300
+  backend: vllm
+  backend_version: "0.29.0"
+  context_length: 1048576
+  systems_paths: ["$FPM_RUN/systems"]
+  estimation_mode: fpm_interpolation
+  fallback_policy: deny
+  estimator_config:
+    fpm_interpolation:
+      text_only: true
+      unrecorded_quant_modes: [fmha, comm]
+    correction: {enabled: false}
+  workers:
+    aggregated:
+      parallelism:
+        tensor: 8
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 8
+        moe_expert: 1
+        decode_context: 8
+      scheduler:
+        max_batched_tokens: 8192
+        max_sequences: 32
+      kv_cache:
+        block_size: 12288
+        prefix_caching: false
+        capacity: {type: fixed, blocks: 2175}
+      timing:
+        gemm_quant_mode: bfloat16
+        moe_quant_mode: w4a16_mxfp4
+        kvcache_quant_mode: fp8
+        attention_backend: FLASHINFER_MLA
+traffic:
+  source: {type: synthetic, input_tokens: 128, output_tokens: 2}
+  load: {type: concurrency, concurrency: 1}
+  stop: {requests: 2}
+YAML
+
+aisimulate predict --stack engine -c "$FPM_RUN/predict.yaml" \
+  --output-dir "$FPM_RUN/prediction-fpm" --capture-per-request
+```
+
+**Expected:** `prediction.json` reports 2 completed requests, 4 output tokens,
+and 8 GPUs; `requests.jsonl` contains the two request records. Use a fresh
+output directory for another run.
+
+The source engine reported 2,176 physical pool blocks, including one reserved
+null block. This example supplies 2,175 usable blocks and the **logical DCP
+block size 12,288**, derived from physical block size 1,536 × DCP8. The requested
+engine block size of 64 is not this logical block size. The recorded engine's
+`max_num_seqs` is 32. Keep these values tied to this profile, not to Kimi models
+in general.
+
+This quickstart checks timing consumption. DCP Replay requires explicit capacity;
+if enabling host offload or P/D transfer, also provide explicit bytes per token.
+The generic Replay cache does not model KDA checkpoint/eviction behavior or
+native hybrid prefill chunk alignment. Prefix caching is disabled here to keep
+this smoke run independent of those behaviors. Text profiles do not supply
+vision execution timing. Prediction accepts the precision/backend overrides
+above; recommendation currently rejects those overrides, and DCP is not a
+recommendation search dimension.
+
+Only measured points and supported interpolation are available for DCP;
+SOL-dependent transfer paths fail explicitly. Arbitrary cached-prefix/chunk
+shapes may be unsupported even inside the axis minima/maxima. Expand traffic
+only after checking query coverage and perform an
+[independent accuracy check](#9-validate-accuracy-separately) before using the
+results for deployment decisions.
+
+The existing-data quickstart is complete. Continue below only to collect a new
+MiniMax profile; use a separate campaign directory.
 
 ## 2. Choose the example's output paths
 
@@ -86,12 +348,15 @@ cp "$AIS_REPO/python/aisimulate/src/aiconfigurator_core/systems/h200_sxm.yaml" \
   "$FPM_RUN/systems/"
 cp "$AIS_REPO/python/aisimulate/src/aiconfigurator_core/systems/query_versions.yaml" \
   "$FPM_RUN/systems/"
+cp "$AIS_REPO/python/aisimulate/src/aiconfigurator_core/systems/attention_lane_defaults.yaml" \
+  "$FPM_RUN/systems/"
 ```
 
 `h200_sxm.yaml` provides hardware specifications for the later SDK/prediction
 steps when they load this external systems root. `query_versions.yaml` preserves
-the version-slot policy chosen for this example. Neither file is measured FPM
-data, and copying them does not collect data or train a model. The collector's
+the version-slot policy, and `attention_lane_defaults.yaml` preserves backend
+lane defaults. These files describe hardware and query policy; they contain no
+measured FPM rows. The collector's
 `--fpm-database-root` override is optional; the later examples select it
 explicitly so they publish and consume data from the same directory.
 
@@ -285,6 +550,7 @@ $FPM_RUN/
   systems/
     h200_sxm.yaml
     query_versions.yaml
+    attention_lane_defaults.yaml
     data/h200_sxm/vllm/<actual-vllm-version>/
       fpm_forward_perf.parquet
       fpm_forward_perf.metadata.json
@@ -329,12 +595,13 @@ identity = [
     "moe_quant_mode", "fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype",
     "moe_backend", "attention_backend", "enable_wideep", "enable_eplb",
 ]
+identity += ["dcp"] if "dcp" in table.column_names else []
 frame = table.to_pandas()
 report = {
     "hash_match": True,
     "row_count": table.num_rows,
     "phase_cells": frame[identity].drop_duplicates().to_dict(orient="records"),
-    "kv_seed_regimes": frame["kv_seed_regime"].value_counts().to_dict(),
+    "kv_seed_regimes": frame["kv_seed_regime"].value_counts().to_dict() if "kv_seed_regime" in frame else {},
 }
 print(json.dumps(report, indent=2))
 PY
@@ -352,7 +619,7 @@ Keep these paths distinct:
 | Setting | Value in this guide |
 | --- | --- |
 | Collector `--fpm-database-root` | `$FPM_RUN/systems/data` |
-| SDK `systems_path` / Python systems root | `$FPM_RUN/systems` |
+| Canonical SDK/Replay `systems_paths` entry | `$FPM_RUN/systems` |
 | Pair directory | `$FPM_RUN/systems/data/h200_sxm/vllm/$FPM_VLLM_VERSION` |
 
 Whole-forward FPM has no extra model-family directory between the system and
@@ -372,19 +639,30 @@ import math
 import sys
 from pathlib import Path
 
-from aisimulate_core.sdk import EngineHandle
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-engine = EngineHandle.compile(
-    "MiniMaxAI/MiniMax-M2.7", "h200_sxm", "vllm",
-    backend_version=sys.argv[2],
-    systems_path=str(Path(sys.argv[1]).resolve(strict=True)),
-    forward_model="fpm",
-    tp_size=4, pp_size=1, attention_dp_size=1,
-    moe_tp_size=4, moe_ep_size=1,
+config = ForwardPassPerfModelConfig(
+    model="MiniMaxAI/MiniMax-M2.7", system="h200_sxm", backend="vllm",
+    worker_type="aggregated", backend_version=sys.argv[2],
+    systems_paths=(str(Path(sys.argv[1]).resolve(strict=True)),),
+    estimation_mode="fpm_interpolation", fallback_policy="deny",
+    tp=4, pp=1, attention_dp=1, moe_tp_size=4, moe_ep_size=1,
+    estimator_config={"correction": {"enabled": False}},
 )
-latency_ms = engine.predict_prefill_latency(bs=4, isl=1024, prefix=0)
-assert math.isfinite(latency_ms) and latency_ms > 0
-print(json.dumps({"prefill_ms": latency_ms}))
+model = RustForwardPassPerfModel.best_available(config)
+try:
+    latency_ms = model.estimate_forward_pass_time_ms({
+        "version": 1,
+        "scheduled_requests": {
+            "num_prefill_requests": 4,
+            "sum_prefill_tokens": 4096,
+            "sum_prefill_kv_tokens": 0,
+        },
+    })
+    assert latency_ms is not None and math.isfinite(latency_ms) and latency_ms > 0
+    print(json.dumps({"prefill_ms": latency_ms, "provenance": model.diagnostics()["provenance"]}))
+finally:
+    model.close()
 PY
 ```
 
@@ -398,7 +676,7 @@ knobs must match the collected identity. This example uses checkpoint defaults.
 For explicitly collected nondefault precision, use the SDK's
 `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, and
 `comm_quant_mode` arguments with the corresponding enum names as strings. See
-[the compile API](../../src/aiconfigurator_core/sdk/engine.py).
+[the canonical API](../../../../docs/core-api.md#choosing-a-forward-pass-api).
 
 This guide copies the version policy file and uses literal backend versions.
 If the collected version is already queryable, omit
@@ -411,7 +689,8 @@ this workflow.
 ## 7. Run AIS predict using the same external data
 
 Save this as `$FPM_RUN/predict.yaml`. Replace the backend version with the
-collected version. Confirm block size, context length, scheduler limits, and
+collected version and `systems_paths` with the absolute `$FPM_RUN/systems`
+directory. Confirm block size, context length, scheduler limits, and
 prefix-cache policy against the resolved runtime configuration and the target
 workload. These settings are explicit simulation inputs, not reconstructed
 automatically from the FPM table.
@@ -424,6 +703,11 @@ engine:
   backend: vllm
   backend_version: "REPLACE_WITH_ACTUAL_COLLECTED_VLLM_VERSION"
   context_length: 8192
+  systems_paths: ["REPLACE_WITH_ABSOLUTE_SYSTEMS_DIRECTORY"]
+  estimation_mode: fpm_interpolation
+  fallback_policy: deny
+  estimator_config:
+    correction: {enabled: false}
   workers:
     aggregated:
       parallelism:
@@ -440,42 +724,20 @@ engine:
         block_size: 64
         prefix_caching: false
         capacity: {type: default}
-      timing: {type: default, forward_model: fpm}
+      timing: {type: default}
 traffic:
   source: {type: synthetic, input_tokens: 1024, output_tokens: 32}
   load: {type: concurrency, concurrency: 4}
   stop: {requests: 8}
 ```
 
-The unified CLI currently has no `--systems-paths` option. The following
-inline Python example sets existing Python and Rust root-selection APIs to the
-same directory, then invokes `predict` in that process. It needs no additional
-helper file and does not add a new CLI flag:
+`engine.systems_paths` selects the data root for this prediction. No global
+Python root overrides are needed. Run the CLI directly:
 
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 \
-python3 - "$FPM_RUN/systems" "$FPM_RUN/predict.yaml" \
-  "$FPM_RUN/prediction-fpm" <<'PY'
-import os
-import runpy
-import sys
-from pathlib import Path
-
-root = str(Path(sys.argv[1]).resolve(strict=True))
-config = str(Path(sys.argv[2]).resolve(strict=True))
-output = str(Path(sys.argv[3]).resolve())
-os.environ["AICONFIGURATOR_SYSTEMS_PATH"] = root
-
-from aiconfigurator_core.sdk.perf_database import set_systems_paths
-
-set_systems_paths([root])
-print(f"FPM systems_root={root}", file=sys.stderr)
-sys.argv = [
-    "aisimulate", "predict", "--stack", "engine",
-    "--config", config, "--output-dir", output, "--capture-per-request",
-]
-runpy.run_module("aisimulate", run_name="__main__")
-PY
+aisimulate predict --stack engine --config "$FPM_RUN/predict.yaml" \
+  --output-dir "$FPM_RUN/prediction-fpm" --capture-per-request
 ```
 
 **Expected:** exit code 0 and a new `prediction-fpm/` directory containing:
@@ -484,8 +746,8 @@ PY
   against the eight requested completions and inspect the reported metrics.
 - `requests.jsonl`: per-request records enabled by `--capture-per-request`.
 
-Keep the input YAML, printed external root, package/source revision, and pair
-hash with the report so its data source can be reproduced. Use a new output
+Keep the input YAML, resolved estimator provenance, package/source revision,
+and pair hash with the report so its data source can be reproduced. Use a new output
 directory for another prediction; the CLI rejects nonempty output directories
 unless overwrite is explicitly requested.
 
@@ -494,11 +756,21 @@ missing cell fails rather than silently switching to `op_level`. With default
 capacity estimation, FPM also caps KV capacity at the collected decode-KV
 ceiling. Inspect that cap when explaining concurrency and throughput.
 
-This example covers `predict --stack engine` in one process. It does not cover
-propagating Python root overrides to multiprocessing `recommend` workers. The
-unified YAML also has no explicit per-operation quantization overrides; use the
-SDK or compatibility CLI for those cells. See the
-[migration limitations](../../../../docs/cli/migrate-from-aiconfigurator.md).
+New configurations use `estimation_mode` and `fallback_policy`. Without
+explicit selection, the defaults are `auto` + `deny`: construction tries
+op-level, measured FPM interpolation, then regression. For a measured-profile
+workflow, explicitly select `fpm_interpolation` + `deny` as above. An untrained
+regression cannot run offline prediction, and a selected estimator never switches
+models on a query miss.
+
+For nondefault precision, put `gemm_quant_mode`, `moe_quant_mode`,
+`fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, and
+`attention_backend` under `engine.workers.<role>.timing`, using the exact
+recorded identity. These overrides require default timing and regular language
+workers. Recommendation rejects them until its feasibility preflight supports
+the same identity. See the [Core API](../../../../docs/core-api.md) for estimator
+controls and the [DCP quickstart](#use-an-existing-profile-kimi-k3-tp8dcp8) for
+a complete configuration with text-only and unrecorded-precision settings.
 
 ## 8. Recovery and cleanup
 

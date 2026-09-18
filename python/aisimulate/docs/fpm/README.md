@@ -5,16 +5,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [end-to-end FPM workflow](end-to-end-workflow.md) to collect
-whole-forward measurements, publish a performance-data pair, load it through
-the SDK, and run an AISimulate prediction. The guide includes prerequisites,
-commands, expected artifacts, acceptance checks, and recovery steps.
+Start with the [end-to-end FPM workflow](end-to-end-workflow.md) to import
+published self-benchmark data or collect new whole-forward measurements, load
+the performance-data pair through the canonical SDK, and run an AISimulate
+prediction. The [Kimi K3 TP8+DCP8 quickstart](end-to-end-workflow.md#use-an-existing-profile-kimi-k3-tp8dcp8)
+uses existing data and runs entirely on CPU. The guide also includes collection
+prerequisites, expected artifacts, acceptance checks, and recovery steps.
 
 There are two distinct workflows:
 
 | Workflow | Input | Consumer |
 | --- | --- | --- |
-| Offline whole-forward FPM | Collector-produced `fpm_forward_perf.parquet` and its metadata sidecar | `forward_model="fpm"`: lookup, interpolation, and supported SOL transfer |
+| Offline whole-forward FPM | Validated `fpm_forward_perf.parquet` and its metadata sidecar | `best_available` with `estimation_mode="fpm_interpolation"`: lookup, interpolation, and supported SOL transfer |
 | Online regression | Observed per-iteration, per-rank telemetry | A role-bound model updated with `tune_with_fpms` |
 
 Offline FPM does not require an additional regression-training step. Predicting
