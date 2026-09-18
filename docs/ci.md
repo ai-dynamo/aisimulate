@@ -271,10 +271,10 @@ need explained before/after evidence; do not refresh goldens merely to pass CI.
 
 Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
 fixture after removal of its invalid FP8-block rows. Installed-wheel checks
-include the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
-exports. The AFD qualification golden retains all numerical values; its replay
-hash includes the empty `forward_pass_estimators` field added by the unified
-estimator schema.
+resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports and verify their object identity. The AFD qualification golden retains
+all numerical values; its replay hash includes the empty
+`forward_pass_estimators` field added by the unified estimator schema.
 
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains

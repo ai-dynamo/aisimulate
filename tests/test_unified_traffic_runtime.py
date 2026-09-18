@@ -477,6 +477,8 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
     assert "aic_forward_model" not in deployment.prefill_engine_args
     assert "aic_forward_model" not in deployment.decode_engine_args
     assert deployment.prefill_engine_args["timing_model"]["config"]["estimation_mode"] == "auto"
+    assert deployment.decode_engine_args["timing_model"]["type"] == "external"
+    assert deployment.decode_engine_args["timing_model"]["provider"] == "aic"
     assert deployment.decode_engine_args["timing_model"]["config"]["estimation_mode"] == "fpm_interpolation"
     assert deployment.decode_engine_args["timing_model"]["config"]["fallback_policy"] == "deny"
     assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
