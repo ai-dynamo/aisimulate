@@ -508,6 +508,22 @@ impl Engine {
         Ok(())
     }
 
+    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+        let Some((prefill, decode)) = self.fpm_ops() else {
+            return super::readiness::validate(
+                &self.db,
+                self.context_ops.iter().chain(&self.generation_ops),
+            );
+        };
+        self.db
+            .fpm_forward
+            .select_cell(&prefill.match_identity, &prefill.model_path)?;
+        self.db
+            .fpm_forward
+            .select_cell(&decode.match_identity, &decode.model_path)?;
+        Ok(())
+    }
+
     /// Shared perf database handle.
     pub fn database(&self) -> &Arc<PerfDatabase> {
         &self.db
@@ -1858,7 +1874,8 @@ mod tests {
                 scale_factor: 1.0,
                 n: 4096,
                 k: 4096,
-                quant_mode: GemmQuantMode::Fp8Block,
+                // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+                quant_mode: GemmQuantMode::Fp8,
                 scale_num_tokens: 0,
                 low_precision_input: false,
                 seq_split: 1,
@@ -1942,7 +1959,18 @@ mod tests {
 
     /// Build an `Engine` from the hand-built op lists over the real fixture DB.
     fn build_engine(nextn: Option<u32>) -> Engine {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        // Match SILICON's shared-layer default and honor the declared reuse
+        // of graph-timed FP8-block GEMM measurements from vLLM 0.25.0.
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
         let spec = EngineSpec::new(
             fixture_engine_config(nextn),
             context_ops(),
@@ -2319,9 +2347,17 @@ mod tests {
 
         for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
             let db = Arc::new(
-                PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
-                    .unwrap()
-                    .with_mode(mode, TransferPolicy::default()),
+                PerfDatabase::load_resolved(
+                    &systems_root(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.24.0",
+                    mode == DatabaseMode::Silicon,
+                    false,
+                    false,
+                )
+                .unwrap()
+                .with_mode(mode, TransferPolicy::default()),
             );
             let mut config = fixture_engine_config(Some(3));
             config.database_mode = mode;

@@ -19,26 +19,36 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
 
-
-def validate_cases(manifest: dict, *, fetch_baseline: bool = False) -> list[dict]:
+def resolve_baseline(manifest: dict, *, fetch: bool = False, repository_root: Path | None = None) -> str:
     baseline = manifest.get("baseline_source_sha")
     if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
         raise ValueError("baseline_source_sha must be a full commit SHA")
-    verify = ["git", "cat-file", "-e", f"{baseline}^{{commit}}"]
-    resolved = subprocess.run(verify, cwd=ROOT, capture_output=True, timeout=10)
-    if resolved.returncode and fetch_baseline:
-        # Full branch history need not contain a baseline from a squashed PR.
+    root = repository_root or Path(__file__).resolve().parents[1]
+    command = ["git", "cat-file", "-e", f"{baseline}^{{commit}}"]
+    resolved = subprocess.run(
+        command,
+        cwd=root,
+        capture_output=True,
+        timeout=10,
+    )
+    if resolved.returncode and fetch:
+        # Squashed PR commits may be absent even after fetching all branch history.
+        # Fetch only the recorded source; never replace it or refresh expected values.
         subprocess.run(
-            ["git", "fetch", "--no-tags", "origin", baseline],
-            cwd=ROOT,
+            ["git", "fetch", "--no-tags", "--depth=1", "--no-write-fetch-head", "origin", baseline],
+            cwd=root,
             check=True,
             timeout=60,
         )
-        resolved = subprocess.run(verify, cwd=ROOT, capture_output=True, timeout=10)
+        resolved = subprocess.run(command, cwd=root, capture_output=True, timeout=10)
     if resolved.returncode:
         raise ValueError(f"baseline_source_sha does not resolve to a commit: {baseline}")
+    return baseline
+
+
+def validate_cases(manifest: dict) -> list[dict]:
+    resolve_baseline(manifest)
     cases = manifest["cases"]
     if manifest["schema_version"] != 1 or not cases:
         raise ValueError("sentinel manifest must have schema 1 and nonempty cases")
@@ -111,19 +121,17 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parents[1] / ".github/prediction-numerical-sentinels.json",
     )
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--fetch-baseline", action="store_true", help="Fetch a missing baseline commit from origin")
-    parser.add_argument(
-        "--validate-only", action="store_true", help="Validate the manifest without loading the runtime"
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--output", type=Path)
+    mode.add_argument(
+        "--fetch-baseline-only", action="store_true", help="Fetch the recorded commit without running predictions"
     )
     args = parser.parse_args()
-    if not args.validate_only and args.output is None:
-        parser.error("--output is required unless --validate-only is set")
     manifest = json.loads(args.manifest.read_text())
-    cases = validate_cases(manifest, fetch_baseline=args.fetch_baseline)
-    if args.validate_only:
-        print(f"Native prediction manifest: {len(cases)} valid cases")
+    if args.fetch_baseline_only:
+        print(f"Numerical baseline available: {resolve_baseline(manifest, fetch=True)}")
         return 0
+    cases = validate_cases(manifest)
     rows = collect(cases)
     failures = check_results(cases, rows)
     result = {

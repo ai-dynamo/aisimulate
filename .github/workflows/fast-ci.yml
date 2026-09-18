@@ -89,7 +89,7 @@ jobs:
           fi
       - name: Check active workflow contracts
         run: |
-          python scripts/check_prediction_numerics.py --fetch-baseline --validate-only
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
           python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py tests/test_release_fpe.py -q \
             -p no:cacheprovider \
             --override-ini="addopts=" \

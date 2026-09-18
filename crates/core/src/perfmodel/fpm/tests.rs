@@ -49,7 +49,8 @@ fn context_ops() -> Vec<Op> {
             scale_factor: 1.0,
             n: 4096,
             k: 4096,
-            quant_mode: GemmQuantMode::Fp8Block,
+            // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+            quant_mode: GemmQuantMode::Fp8,
             scale_num_tokens: 0,
             low_precision_input: false,
             seq_split: 1,
@@ -135,10 +136,7 @@ fn fixture_engine_config() -> EngineConfig {
 /// public `from_native` constructors compile via Python; `from_engine` lets
 /// the pure-Rust tests build the native variant directly.
 fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-    let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
-    let engine = Engine::build(spec, Arc::new(db)).unwrap();
-    ForwardPassPerfModel::from_engine(Arc::new(engine), options)
+    ForwardPassPerfModel::from_engine(fixture_engine(), options)
 }
 
 fn regression_model(
@@ -149,7 +147,18 @@ fn regression_model(
 }
 
 fn fixture_engine() -> Arc<Engine> {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    // Match SILICON's shared-layer default: 0.24.0 declares reuse of the
+    // corrected, graph-timed FP8-block GEMM measurements from 0.25.0.
+    let db = PerfDatabase::load_resolved(
+        &systems_root(),
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        true,
+        false,
+        false,
+    )
+    .unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     Arc::new(Engine::build(spec, Arc::new(db)).unwrap())
 }
@@ -570,6 +579,13 @@ fn options_default_directional_correction_factors() {
         serde_json::from_str(r#"{"max_slower_correction_factor": null}"#).unwrap();
     assert_eq!(no_ceiling.min_faster_correction_factor, Some(0.5));
     assert_eq!(no_ceiling.max_slower_correction_factor, None);
+}
+
+#[test]
+fn options_reject_unknown_fields() {
+    let err =
+        serde_json::from_str::<ForwardPassPerfOptions>(r#"{"min_observation": 5}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
 #[test]

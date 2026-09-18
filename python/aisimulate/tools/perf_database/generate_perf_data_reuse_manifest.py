@@ -42,6 +42,11 @@ so the compiled source resolver
 reads it as package data and decides, per (op_file, kernel_source), which
 sibling backend/version directories the active backend may inherit from. No
 perf data is moved or rewritten on disk.
+
+Regenerate the complete manifest after adding tables, including ordinary MLA
+context modules. Primary and same-backend sources load independently of this
+manifest; an entry records kernel identity for cross-backend reuse. A kernel
+listed for only SGLang does not authorize reuse by another framework.
 """
 
 from __future__ import annotations

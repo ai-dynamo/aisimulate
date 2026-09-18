@@ -32,6 +32,13 @@ and row count match. Rejection leaves the existing manifest unchanged.
 All 85 tables have zero reported null cells, duplicate physical keys, and
 nonfinite or nonpositive latency values.
 
+The Collector backend-facts registry records 221 new vLLM 0.25.0 slices
+from these tables (49 each for B300, GB200, and GB300; 37 each for H100 and
+H200). Six direct vLLM 0.24.0 FP8-block GEMM facts are removed for the
+corrected tables described below. Their replacements remain identified as
+0.25.0 measurements. Existing backend/kernel mappings are unchanged; the
+registry check still compares every fact against the collected labels.
+
 Cases and rows are different units: a single MoE/GDN case can emit many rows.
 Zero unattempted cases means every **retained** case reached a final checkpoint
 outcome. It does not mean every possible shape succeeded or that capability
