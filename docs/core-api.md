@@ -107,6 +107,9 @@ metadata, while TRT-LLM and SGLang leave the scheduler limit unset.
 This is the simulator's normalized context-limit contract. It does not model
 backend-version-specific frontend validation margins or automatic prompt
 truncation. Successful replay alone does not establish silicon timing accuracy.
+See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045)
+for stricter boundary behavior; they do not establish a fixed token offset
+across versions or configurations.
 
 ## KV-cache capacity reservation
 

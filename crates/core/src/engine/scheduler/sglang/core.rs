@@ -443,6 +443,12 @@ impl SglangCore {
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
+        // This is the normalized context budget, without SGLang frontend margins.
+        // GPU parity at context_length=128: a 16-token prompt requesting 112
+        // tokens yielded 110; requesting 113 or using a prompt >=122 was rejected.
+        // Reproduce with a pinned version/config before
+        // modeling these differences; they do not establish a fixed token offset.
+        // https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045
         let max_output_tokens = request.effective_max_output_tokens().min(
             self.config
                 .max_model_len
