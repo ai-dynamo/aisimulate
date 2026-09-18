@@ -216,8 +216,8 @@ The compatibility CLI preserves six workflows:
 | `support` | Check model and system coverage |
 
 Read the [Legacy AIC CLI User Guide](docs/cli/legacy-aic-user-guide.md) for
-command examples and the [AIC CLI and Python API overview](python/aisimulate/README.md)
-for the complete compatibility surface. The
+command examples and the [package overview](python/aisimulate/README.md)
+for installation and current AISimulate workflows. The
 [AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
@@ -258,7 +258,7 @@ APIs:
 - [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
-- [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
+- [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)
 
 ## Support and accuracy
 
