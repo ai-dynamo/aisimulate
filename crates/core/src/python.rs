@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase,
+    Backend, EngineConfig, TimingEvidenceAccumulator, TimingEvidenceSource, TimingEvidenceSummary,
+    TimingModel, TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+    ValidatedTimingPhase,
 };
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
@@ -394,7 +395,7 @@ struct AicTimingModel {
     decoder_replay: bool,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
-    evidence: Mutex<TimingEvidenceSummary>,
+    evidence: Mutex<TimingEvidenceAccumulator>,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, Arc<ValidatedTimingPhase>>,
 }
 
@@ -443,7 +444,7 @@ impl AicTimingModel {
             decoder_replay: config.decoder_replay,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
-            evidence: Mutex::new(TimingEvidenceSummary::default()),
+            evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
         })
     }
@@ -522,12 +523,7 @@ impl AicTimingModel {
             .evidence
             .lock()
             .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))?;
-        if prefill {
-            evidence.prefill.try_accumulate(phase.as_phase().clone())?;
-        } else {
-            evidence.decode.try_accumulate(phase.as_phase().clone())?;
-        }
-        Ok(())
+        evidence.record(phase, prefill)
     }
 }
 
@@ -640,7 +636,10 @@ impl TimingModel for AicTimingModel {
         if self.use_fpm_decode_totals {
             return None;
         }
-        self.evidence.lock().ok().map(|evidence| evidence.clone())
+        self.evidence
+            .lock()
+            .ok()
+            .map(|evidence| evidence.snapshot())
     }
 }
 
@@ -2127,7 +2126,7 @@ mod tests {
             decoder_replay: false,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
-            evidence: Mutex::new(TimingEvidenceSummary::default()),
+            evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
         }
     }
