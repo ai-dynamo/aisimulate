@@ -230,3 +230,19 @@ The remaining attribution requires a matched full-model serving trace:
 actual expert routing and decode shapes, MoE tactics, and per-step timing.
 The expired original server artifacts prevent checking those historical facts.
 A new matched serving run can test the mechanism but cannot recover them.
+
+## Full serving reproduction: activation mapping correction
+
+The [GPT-OSS/B200 reproduction](gym-tpot-serving-20260917.md) supersedes the
+assumption that W4A16 was the effective serving precision. The real rc14 server
+selects **W4A8 MXFP4/MXFP8** by its Blackwell runtime default. Source, live model
+metadata, and executed GPU kernels agree. The earlier W4A16 collector ablation
+remains valid for that operator, but did not establish full serving parity.
+
+At config131/ISL1024/OSL1024/C256, uninstrumented TPOT is **16.54925 ms**
+(historical **16.79212 ms**). Replaying the exact client lengths changes TPOT
+**65.16758 → 17.17212 ms** when only `aic_moe_dtype` changes from W4A16 to W4A8;
+APE falls **293.78% → 3.76%**. All 2,560 requests complete in both arms.
+This is a one-point verification, not a replacement 31/263-point MAPE.
+The automatic Gym mapping and missing W4A8 TP2/4/8 profiles still need correction;
+the earlier W4A16 timings must not be relabeled as W4A8.
