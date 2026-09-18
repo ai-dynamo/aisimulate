@@ -639,3 +639,26 @@ def test_search_normalizes_role_database_and_transfer_policy():
         role_estimator_controls={"agg": {"database_mode": "hybrid", "transfer_policy": "off"}},
     )
     assert config.role_estimator_controls["agg"] == {"database_mode": "HYBRID", "transfer_policy": []}
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_explicit_default_moe_backend_compiles_and_preserves_canonical_identity(backend):
+    from aisimulate_core.sdk.config_builders import build_model_config
+    from aisimulate_core.sdk.engine import compile_engine
+
+    assert build_model_config(1, 1, 1, 1, 1, moe_backend="default").moe_backend is None
+    # A dense model is valid because the default does not request a MoE override.
+    compiled = compile_engine("Qwen/Qwen3-32B", "h200_sxm", backend, moe_backend="default")
+    assert compiled is not None
+    config = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend=backend,
+        worker_type="aggregated",
+        estimation_mode="op_level",
+        moe_backend="default",
+    )
+    resolved = RustForwardPassPerfModel.best_available(config).diagnostics()["provenance"]["config"]
+    assert resolved["moe_backend"] == "default"
+    reloaded = RustForwardPassPerfModel.best_available(resolved).diagnostics()["provenance"]["config"]
+    assert reloaded == resolved

@@ -60,7 +60,7 @@ def build_model_config(
         forward_model=forward_model or "op_level",
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
-        moe_backend=moe_backend,
+        moe_backend=None if moe_backend == "default" else moe_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
         speculation=speculation,
