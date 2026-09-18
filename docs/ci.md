@@ -276,6 +276,12 @@ exactly. With corrected data, the prefill baselines change from
 The four Qwen baselines and all tolerances remain unchanged. These are
 prediction-stability values, not measured whole-model accuracy.
 
+After the PR #244 squash merge, its original baseline commit was no longer
+reachable in fresh CI checkouts. All eight sentinels were revalidated at
+`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest now references that
+permanent main-branch merge commit, which survives subsequent squash merges.
+Expected values, query inputs, and tolerances are unchanged.
+
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
 previously working cases becoming broken. If the comparison base predates the
