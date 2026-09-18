@@ -52,6 +52,7 @@ from aiconfigurator.sdk.models import (
     resolve_vllm_moe_execution_mode,
 )
 from aiconfigurator.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
+from aiconfigurator.sdk.models.helpers import resolve_sglang_mla_compute
 from aiconfigurator.sdk.moe_comm_resolver import (
     a2a_covers_parallel,
     moe_compute_coverage,
@@ -2138,6 +2139,15 @@ class Task:
                 fmha_quant_mode_explicit=self._fmha_explicit.get(role, False),
                 kvcache_quant_mode_explicit=self._kvcache_explicit.get(role, False),
                 coverage_snapshot=self._large_ep_coverage(role),
+            )
+        if role != "decode":
+            resolve_sglang_mla_compute(
+                model_config,
+                self._role_attr(role, "model_path"),
+                self._role_attr(role, "backend_name"),
+                self._role_attr(role, "backend_version"),
+                load_system_spec(self._role_attr(role, "system_name")),
+                fmha_quant_mode_explicit=self._fmha_explicit.get(role, False),
             )
         return model_config
 

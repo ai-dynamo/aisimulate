@@ -934,19 +934,26 @@ def resolve_sglang_mla_compute(
     backend_name: str,
     backend_version: str | None,
     system_spec: dict,
+    *,
+    fmha_quant_mode_explicit: bool | None = None,
 ) -> None:
     """Resolve the measured Hopper MLA execution dtype before building ops.
 
     This is a runtime mapping, independent of performance-table availability.
     Explicit precision and whole-model FPM identities remain caller-owned.
+    Task supplies provenance when its config already contains inferred modes.
     """
+    if fmha_quant_mode_explicit is None:
+        fmha_quant_mode_explicit = model_config.fmha_quant_mode is not None
     if (
-        model_config.fmha_quant_mode is not None
+        fmha_quant_mode_explicit
         or model_config.forward_model == "fpm"
         or backend_name != "sglang"
         or backend_version != "0.5.14"
         or system_spec.get("gpu", {}).get("sm_version") != 90
         or model_config.attention_backend not in (None, "fa3")
+        # Wide-EP defaults to FlashInfer, not the audited ordinary FA3 path.
+        or (model_config.moe_comm_backend and model_config.attention_backend is None)
     ):
         return
     info = _get_model_info(model_path)

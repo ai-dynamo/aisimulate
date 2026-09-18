@@ -78,7 +78,7 @@ def _build_afd_session_with_phase_metrics(
     monkeypatch.setattr(
         AFDInferenceSession,
         "_build_models",
-        lambda self: (SimpleNamespace(_num_layers=4), SimpleNamespace(_num_layers=4)),
+        lambda self, **_kwargs: (SimpleNamespace(_num_layers=4), SimpleNamespace(_num_layers=4)),
     )
     monkeypatch.setattr(AFDInferenceSession, "_simulate_phase", fake_simulate_phase)
 

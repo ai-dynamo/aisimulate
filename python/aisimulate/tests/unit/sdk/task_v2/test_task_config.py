@@ -8,14 +8,48 @@ against the legacy CLI; these tests focus on construction, defaulting,
 prefix discipline, and the build_* helpers.
 """
 
+import json
+
 import pytest
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 from aiconfigurator.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
+@pytest.mark.parametrize("wide_ep", [False, True])
+def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatch, explicit, wide_ep):
+    # FP8 table availability must not change the audited FA3 execution dtype.
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    task = Task(
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        attention_backend="fa3",
+        fmha_quant_mode=explicit,
+    )
+    expected = explicit or common.FMHAQuantMode.bfloat16
+    assert task.fmha_quant_mode == common.FMHAQuantMode.fp8
+    mc = task.build_model_config(role="agg")
+    assert mc.fmha_quant_mode == expected
+    if wide_ep:
+        mc.moe_comm_backend = {"context": "deepep_ht", "generation": "deepep_ll"}
+        mc.moe_tp_size = 1
+        mc.moe_ep_size = mc.attention_dp_size = 32
+    model = get_model(task.model_path, mc, "sglang")
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    if wide_ep:
+        attention = next(spec["WideEpContextMla"] for spec in specs if "WideEpContextMla" in spec)
+    else:
+        block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
+        attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == expected.name
 
 
 # ---------------------------------------------------------------------------
