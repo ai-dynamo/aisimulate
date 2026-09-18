@@ -353,6 +353,7 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+        **({f"{prefix}dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
     }
 
 
@@ -370,11 +371,24 @@ def _worker_performance_model_metadata(
             "model_path": engine.model,
             "tp_size": parallel.tensor,
             "attention_dp_size": parallel.attention_data,
+            **({"dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
             **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
+            **{
+                field: getattr(worker.timing, field)
+                for field in (
+                    "gemm_quant_mode",
+                    "moe_quant_mode",
+                    "fmha_quant_mode",
+                    "kvcache_quant_mode",
+                    "comm_quant_mode",
+                    "attention_backend",
+                )
+                if getattr(worker.timing, field) is not None
+            },
         },
     }
 
@@ -391,6 +405,27 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    )
+    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+        getattr(worker.timing, field) is not None for field in identity_fields
+    ):
+        raise ValueError("explicit timing identity requires the canonical forward-pass provider")
+    if parallel.decode_context is not None:
+        if parallel.tensor % parallel.decode_context:
+            raise ValueError("decode_context must divide tensor parallelism")
+        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+            raise ValueError("DCP requires the canonical forward-pass timing provider")
+        if parallel.decode_context > 1 and capacity.type != "fixed":
+            raise ValueError(
+                "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+            )
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -478,9 +513,11 @@ def _worker_engine_args(
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
+            dcp=parallel.decode_context,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
             kv_block_size=block_size,
+            **{field: getattr(timing, field) for field in identity_fields},
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,

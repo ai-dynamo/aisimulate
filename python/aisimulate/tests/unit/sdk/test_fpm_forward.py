@@ -603,3 +603,121 @@ class TestFPMStaticAndMixed:
         )
         assert per_op["fpm_forward_decode"] == pytest.approx(7.0)
         assert total == pytest.approx(7.0)
+
+
+def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
+    cfg = _model_config(
+        forward_model="fpm",
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        fpm_text_only=True,
+        fpm_unrecorded_quant_modes=("fmha", "comm"),
+        fpm_attention_backend="FLASHINFER_MLA",
+    )
+    model = models.get_model("moonshotai/Kimi-K3", cfg, "vllm")
+    assert model.encoder_ops
+    assert sum(op.get_weights() for op in model.encoder_ops) > 0
+    assert all(isinstance(op, FPMForwardOp) for op in (*model.context_ops, *model.generation_ops))
+    identity = model.context_ops[0]._match_identity
+    assert identity[2:4] == ("", "")
+    assert identity[12] == "FLASHINFER_MLA"
+    assert identity[-1] == "8"
+    assert cfg.total_gpus_per_worker == 8
+    from aiconfigurator_core.sdk.engine import _fpm_spec_dict
+
+    prefill = model.context_ops[0]
+    resident = _fpm_spec_dict(prefill)["FpmForward"]["weight_bytes"]
+    assert resident == prefill.get_weights() + sum(op.get_weights() for op in model.encoder_ops)
+
+
+def test_canonical_kimi_dcp_profile_queries_measured_points(tmp_path):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    systems = tmp_path / "systems"
+    systems.mkdir()
+    shutil.copyfile(os.path.join(_CORE_SYSTEMS, "h200_sxm.yaml"), systems / "h200_sxm.yaml")
+    data = systems / "data" / SYSTEM / BACKEND / VERSION
+    identity = {
+        "tp": "8",
+        "moe_tp": "8",
+        "moe_ep": "1",
+        "fmha_quant_mode": "",
+        "comm_quant_mode": "",
+        "moe_quant_mode": "w4a16_mxfp4",
+        "kv_cache_dtype": "fp8",
+        "attention_backend": "FLASHINFER_MLA",
+    }
+    rows = [
+        _row("prefill", 1, 128, 0, 7.0, model_path="moonshotai/Kimi-K3", identity=identity),
+        _row("decode", 1, 0, 128, 3.0, model_path="moonshotai/Kimi-K3", identity=identity),
+    ]
+    for row in rows:
+        row.update(dcp=8, measurement_policy="kvwarm_median_of_3", measurement_repeats=3)
+    # Independent oracle: the synthetic measured records above define 7 ms
+    # prefill and 3 ms decode, irrespective of the model's operator estimates.
+    _write_pair(
+        str(data),
+        rows,
+        sidecar_overrides={
+            "measurement_policy": "per_row_single_sample_or_median_of_3",
+            "configuration_selector": {"dcp": 8},
+        },
+    )
+    config = ForwardPassPerfModelConfig(
+        model="moonshotai/Kimi-K3",
+        system=SYSTEM,
+        backend=BACKEND,
+        backend_version=VERSION,
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp=8,
+        kvcache_quant_mode="fp8",
+        attention_backend="FLASHINFER_MLA",
+        estimation_mode="fpm_interpolation",
+        systems_paths=(str(systems),),
+        estimator_config={
+            "fpm_interpolation": {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]},
+            "correction": {"enabled": False},
+        },
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_prefill_requests": 1,
+                    "sum_prefill_tokens": 128,
+                },
+            }
+        ) == pytest.approx(7.0)
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 128,
+                },
+            }
+        ) == pytest.approx(3.0)
+        assert model.diagnostics()["provenance"]["config"]["dcp"] == 8
+    finally:
+        model.close()
+    from dataclasses import replace
+
+    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+
+    for dcp in (None, 1):
+        with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+            RustForwardPassPerfModel.best_available(replace(config, dcp=dcp))
+    automatic = RustForwardPassPerfModel.best_available(replace(config, estimation_mode="auto"))
+    try:
+        provenance = automatic.diagnostics()["provenance"]
+        assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+        assert provenance["config"]["dcp"] == 8
+    finally:
+        automatic.close()

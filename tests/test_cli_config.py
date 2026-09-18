@@ -1304,3 +1304,51 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     (branch,) = enumerate_branches(smart, max_seq_len=4096)
     assert branch.parallel_configs
     assert branch.deployment_mode == ("agg" if mode == "aggregated" else "disagg")
+
+
+def test_prediction_dcp_identity_roundtrip_and_explicit_capacity():
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    raw = {
+        "engine": {
+            "model": "moonshotai/Kimi-K3",
+            "hardware": "gb300",
+            "backend": "vllm",
+            "backend_version": "0.29.0",
+            "context_length": 1048576,
+            "estimation_mode": "fpm_interpolation",
+            "fallback_policy": "deny",
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"tensor": 8, "decode_context": 8, "moe_tensor": 8},
+                    "kv_cache": {"block_size": 12288, "capacity": {"type": "fixed", "blocks": 2175}},
+                    "scheduler": {"max_sequences": 32},
+                }
+            },
+        }
+    }
+    config = CorePredictionConfig.model_validate(raw)
+    restored = CorePredictionConfig.model_validate(config.model_dump(mode="json"))
+    deployment = prediction_to_replay_spec(restored).backend_deployment
+    timing = deployment.agg_engine_args["timing_model"]["config"]
+    assert timing["dcp"] == 8 and timing["tp"] == 8
+    assert timing["estimation_mode"] == "fpm_interpolation"
+    assert deployment.agg_engine_args["num_gpu_blocks"] == 2175
+    assert deployment.parallel_config["dcp"] == 8
+    raw["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {"type": "default"}
+    with pytest.raises(ValueError, match="explicit KV block capacity"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"type": "fixed", "prefill_ms": 1, "decode_ms": 1, "attention_backend": "FLASHINFER_MLA"},
+        {"type": "polynomial", "kvcache_quant_mode": "fp8"},
+    ],
+)
+def test_prediction_rejects_identity_that_custom_timing_would_ignore(timing):
+    raw = _engine()
+    raw["workers"]["aggregated"] = {"timing": timing}
+    with pytest.raises(ValidationError, match="identity require default timing"):
+        CorePredictionConfig.model_validate({"engine": raw})

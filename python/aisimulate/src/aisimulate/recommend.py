@@ -853,6 +853,20 @@ def _candidate_prediction(
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None
+            timing.update(
+                {
+                    field: resolved[field]
+                    for field in (
+                        "gemm_quant_mode",
+                        "moe_quant_mode",
+                        "fmha_quant_mode",
+                        "kvcache_quant_mode",
+                        "comm_quant_mode",
+                        "attention_backend",
+                    )
+                    if resolved.get(field) is not None
+                }
+            )
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -878,6 +892,11 @@ def _candidate_prediction(
                 "attention_data": sample[f"{prefix}attention_dp"],
                 "moe_tensor": sample[f"{prefix}moe_tp"],
                 "moe_expert": sample[f"{prefix}moe_ep"],
+                **(
+                    {"decode_context": estimator.config["dcp"]}
+                    if estimator is not None and estimator.config.get("dcp") is not None
+                    else {}
+                ),
             },
             "scheduler": {
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],

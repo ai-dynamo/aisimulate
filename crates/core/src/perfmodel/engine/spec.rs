@@ -769,6 +769,7 @@ mod tests {
             forward_model: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
+                dcp_size: None,
                 tp_size: 8,
                 pp_size: 1,
                 attention_dp_size: Some(8),
@@ -1166,9 +1167,20 @@ mod tests {
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 got: 17,
-                expected: 18,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
         ));
+    }
+    #[test]
+    fn recorded_dcp_and_legacy_absence_round_trip() {
+        let mut spec = handshake_spec();
+        spec.engine.parallel.dcp_size = Some(2);
+        let decoded = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+        assert_eq!(decoded.engine.parallel.dcp_size, Some(2));
+        let mut legacy = serde_json::to_value(&spec.engine).unwrap();
+        legacy.as_object_mut().unwrap().remove("dcp_size");
+        let legacy: EngineConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.parallel.dcp_size, None);
     }
 }

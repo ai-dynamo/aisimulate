@@ -111,6 +111,7 @@ class ForwardPassPerfModelConfig:
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
+    dcp: int | None = dataclass_field(default=None, kw_only=True)
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
     gemm_quant_mode: str | None = None

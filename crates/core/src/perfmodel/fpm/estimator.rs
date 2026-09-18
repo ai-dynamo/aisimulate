@@ -23,8 +23,26 @@ pub struct EstimatorConfig {
 pub struct OpLevelConfig {}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FpmInterpolationConfig {}
+#[serde(default, deny_unknown_fields)]
+pub struct FpmInterpolationConfig {
+    /// The profile covers text prefill/decode; encoder weights remain resident.
+    #[serde(skip_serializing_if = "is_false")]
+    pub text_only: bool,
+    /// Match null profile identities only for these unspecified quant modes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unrecorded_quant_modes: Vec<UnrecordedFpmQuantMode>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnrecordedFpmQuantMode {
+    Fmha,
+    Comm,
+}
 
 /// These weights currently affect regression. Native correction keeps its
 /// established workload coordinates until a replacement is accuracy-qualified.

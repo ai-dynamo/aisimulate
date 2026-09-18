@@ -146,6 +146,10 @@ def materialize_aic_num_gpu_blocks(
 
     if lowered.get("num_gpu_blocks") is not None:
         return finish_lowering(lowered)
+    if canonical_result is not None and (resolved.get("dcp") or 1) > 1:
+        raise ValueError(
+            "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+        )
     backend = lowered.get("aic_backend")
     if backend is None:
         return finish_lowering(lowered)

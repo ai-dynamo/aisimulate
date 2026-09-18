@@ -88,6 +88,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             forward_model: None,
             kv_block_size: None,
             parallel: ParallelMapping {
+                dcp_size: None,
                 tp_size: 1,
                 pp_size: 1,
                 attention_dp_size: Some(1),

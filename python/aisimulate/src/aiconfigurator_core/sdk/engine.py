@@ -159,7 +159,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
-            "weight_bytes": op._weight_bytes,
+            "weight_bytes": op._resident_weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
             # draft scheme is materialized.
@@ -324,6 +324,7 @@ def _engine_config_dict(
         "moe_tp_size": _opt_int(getattr(cfg, "moe_tp_size", None)),
         "moe_ep_size": _opt_int(getattr(cfg, "moe_ep_size", None)),
         "cp_size": _opt_int(getattr(cfg, "cp_size", None)),
+        "dcp_size": _opt_int(getattr(cfg, "dcp_size", None)),
         # QuantizationConfig (flattened)
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
@@ -407,6 +408,8 @@ def compile_engine(
     tp_size: int = 1,
     pp_size: int = 1,
     attention_dp_size: int = 1,
+    dcp_size: int | None = None,
+    fpm_options: dict | None = None,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
     gemm_quant_mode: str | None = None,
@@ -437,12 +440,17 @@ def compile_engine(
     # does not take a model_path (quant inference is done inside `get_model`).
     from aiconfigurator_core.sdk.speculation import SpeculationConfig
 
+    fpm_options = fpm_options or {}
+    recorded_attention_backend = attention_backend
+    if forward_model == "fpm" and backend == "vllm" and attention_backend == "FLASHINFER_MLA":
+        attention_backend = "flashinfer"
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
         resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
+            dcp_size=dcp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
             moe_tp_size=resolved_moe_tp,
@@ -456,6 +464,9 @@ def compile_engine(
             attention_backend=attention_backend,
             speculation=resolved_speculation,
         )
+        model_config.fpm_text_only = fpm_options.get("text_only", False)
+        model_config.fpm_unrecorded_quant_modes = tuple(fpm_options.get("unrecorded_quant_modes", ()))
+        model_config.fpm_attention_backend = recorded_attention_backend
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
         apply_nextn(model_config, nextn)

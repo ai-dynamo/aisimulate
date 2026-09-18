@@ -91,6 +91,7 @@ def test_stable_function_signatures() -> None:
     assert str(inspect.signature(compile_engine)) == (
         "(model_path: 'str', system: 'str', backend: 'str', backend_version: 'str | None' = None, *, "
         "tp_size: 'int' = 1, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
+        "dcp_size: 'int | None' = None, fpm_options: 'dict | None' = None, "
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "

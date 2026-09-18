@@ -208,6 +208,8 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field
