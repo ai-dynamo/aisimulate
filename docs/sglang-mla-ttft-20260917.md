@@ -75,10 +75,14 @@ Source checks:
 - [Original H200 benchmark 409939 log](https://inferencex.semianalysis.com/inference/logs/409939).
 
 Cause attribution: **GAP-005 confirmed**, mitigated in the diagnostic replay;
-**GAP-017 confirmed budget-contract mismatch**, production correction open.
-Logged capacity should be preserved through the benchmark importer. An estimator
-fix needs backend-specific static-pool accounting and neighboring memory cases;
-changing attention precision or latency cannot repair this admission error.
+**GAP-017 confirmed budget-contract mismatch**. The capacity substitution above
+is a diagnostic experiment only. The production estimator correction is isolated
+in [PR #263](https://github.com/ai-dynamo/aisimulate/pull/263), using static-pool
+semantics and resident-weight accounting without importing logged capacity.
+Its independent estimate is 497973 tokens (2.22% below the typical log); the
+original 84-point replay reaches H200 TTFT/TPOT MAPE 33.92%/10.29% and overall
+58.83%/6.30%. This data/precision PR contains no KV estimator correction.
+Changing attention precision or latency alone cannot repair the admission error.
 
 ## Blackwell: prefill timing gap, not the H200 capacity cliff
 
