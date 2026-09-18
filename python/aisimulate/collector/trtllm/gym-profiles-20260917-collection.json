@@ -1,0 +1,636 @@
+{
+  "collector_commit": "ce9a396642674e8008fda2b778580dc8d9e310b4",
+  "trtllm_version": "1.3.0rc20",
+  "latency_unit": "milliseconds",
+  "upstream_commit": "c25c23f71786bad54d192893d696ce8043426eca",
+  "image": "nvcr.io/nvidia/tensorrt-llm/release@sha256:9b3b4dfb811caa9420fa99a6f958155f6a1f727ffc2b5a5c2d9d2ce51fdc323d",
+  "squashfs_sha256": "5aaf1c87eeea80fe396ad63df7e8c3c448a17e90e93a4bc93dee0c306d63b656",
+  "collector_closure_hashes": {
+    "collector.trtllm.collect_mla": "sha256:9d396ec69d649ddfeb9c3450f0cd35881309628c5ca1ded9b4259c98cf074e2e",
+    "collector.trtllm.collect_moe": "sha256:d7a50a258be2fa9d139a6983be5b92709bf79f14e8e6a99a9a410eb8c5c6d4d2"
+  },
+  "runner_sha256": {
+    "collect.py": "e2f1d7e061050a25e78b86d542f0fb5dac4ec99396ff8290657e502fcc84372c",
+    "probe.py": "a48acecd94757b12aef7d17dbb9c00cf589547099c0350a900e16f6d2b441511",
+    "production.sh": "11d109c260d48746d9b94054c72ddeabea6246d1f8814d07fc588541b4e4e829",
+    "smoke-fixed.sh": "d110cebe65f7d806dfa8f2d3ffb62c652b8dbb30db8bb0f672b75d2fda1c0ec4",
+    "production-pmix.sh": "3d5c9e3bdb97577b7d79d38897c2a3009a18829f3bc8722c7fe78ff1c958129a",
+    "smoke-fixed-pmix.sh": "541f8a1e93f531b77ab0b5a8001222507728a6fc138066d2635307e55ed4a6ab",
+    "h200-computelab-pmix.sh": "f0ac99b3035e0e8007dd78a22f79a9fe497c4e20faf8ce0363c970add1534af5",
+    "recheck_h200_outliers.py": "47cce356f5df781bf8914b1d4516bb69e9504961a68d892935c5cb761c58451d",
+    "recheck-h200-outliers.sh": "d7b328e4223b668585cade6a64191f89e5df3cf135cd461c4f73ca3e08bbfae5",
+    "collector-fixed.tar.gz": "aad1c962e75124b9fa82e705fbc77a28eb53103426a88061542007bc6cf114de",
+    "publish_profiles.py": "f3333760db62581ea1b7581149552ed2c5cae0af44a55cf61fd6c8d6487be413"
+  },
+  "runs": {
+    "b200": {
+      "host": "nsc-svg-slurm-1-login-02.nvidia.com",
+      "job_id": 1993260,
+      "node": "nsc-svg-slurm-1-gpu-145",
+      "gpus": 4,
+      "state": "COMPLETED",
+      "exit_code": "0:0",
+      "elapsed": "00:04:57",
+      "results": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/trt-62-20260917/production-b200",
+      "stdout": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/logs/trt62-production-b200-1993260.out",
+      "stderr": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/logs/trt62-production-b200-1993260.err",
+      "publication": {
+        "summary": {
+          "planned": 3083,
+          "passed": 3083,
+          "failed": 0,
+          "unattempted": 0,
+          "worker_exit_codes": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "runner_sha256": "e2f1d7e061050a25e78b86d542f0fb5dac4ec99396ff8290657e502fcc84372c"
+        },
+        "plan_sha256": "58c451994b841b112a69c4842df1f7f850ae9a3d2b6f404d44d4efd7618e72bc",
+        "tables": {
+          "context_mla_perf": {
+            "new_rows": 3080,
+            "total_rows": 3080,
+            "old_rows": 1760,
+            "new_duplicate_keys": 0,
+            "preserved_old_duplicate_keys": 0,
+            "sha256": "905f09a335f56c3a4c37cc7eb74113c1c026e3c57a8ff3dfc40a7c98d1fab30a",
+            "raw_sha256": {
+              "shard-0/context_mla_perf.txt": "33369b7074ffc81079246f94185d6bc4fa854da888c06b52445b5c8a59753e4c",
+              "shard-1/context_mla_perf.txt": "04c443fbcf510b75d7532b7ecfe88248be7cdfe64f24ad7730a0471cf4a3f8cd",
+              "shard-2/context_mla_perf.txt": "ed6bf7fcaf7e3ac49d167bfc127e6ede12e26269964d9bc92ba58fef80938435",
+              "shard-3/context_mla_perf.txt": "4d5283828931b2dda41b504032e375c5112e67cf4d268023eed8146f189e3b6b"
+            }
+          },
+          "moe_perf": {
+            "new_rows": 81,
+            "total_rows": 218376,
+            "old_rows": 218295,
+            "new_duplicate_keys": 0,
+            "preserved_old_duplicate_keys": 36045,
+            "sha256": "0bc472446e0993221f28c454645fc4054eb73162270868c2ea1332b5572d7803",
+            "raw_sha256": {
+              "shard-0/moe_perf.txt": "81b1a57c0cea0bce8126c6c53615f295c4e170c68d2a7d6ecf6ea588a58163b1",
+              "shard-1/moe_perf.txt": "3d365f88674d52dd0a7f0647b1ce6404429218b2de693166ea9c5f85848a4aa3",
+              "shard-2/moe_perf.txt": "dcec978c34319bf7fc7a410497c51d5b8613ff2651345db1992201bd36b0862d"
+            }
+          }
+        },
+        "mla_provenance": {
+          "collector_ref": "ce9a396642674e8008fda2b778580dc8d9e310b4",
+          "collector_hash": "sha256:9d396ec69d649ddfeb9c3450f0cd35881309628c5ca1ded9b4259c98cf074e2e",
+          "case_plan_hash": "sha256:984b7c01ed49ccc195f4b9668b59865da2b367a9c270800f9850275e7ae16150",
+          "collected_at": "2026-09-17",
+          "rows": 3080,
+          "classified_failures": 0,
+          "status": "complete"
+        }
+      },
+      "hardware": [
+        {
+          "name": "NVIDIA B200",
+          "uuid": "GPU-d420a4c4-9b52-15b2-1537-eb22183b113f",
+          "driver_version": "580.82.07",
+          "power.limit [W]": "1000.00 W",
+          "clocks.current.sm [MHz]": "120 MHz",
+          "clocks.current.memory [MHz]": "3996 MHz"
+        },
+        {
+          "name": "NVIDIA B200",
+          "uuid": "GPU-ef87e4a9-479b-2297-0dfe-6e44a2565b0d",
+          "driver_version": "580.82.07",
+          "power.limit [W]": "1000.00 W",
+          "clocks.current.sm [MHz]": "120 MHz",
+          "clocks.current.memory [MHz]": "3996 MHz"
+        },
+        {
+          "name": "NVIDIA B200",
+          "uuid": "GPU-00a767de-2002-93bc-9751-23f79b3fd34e",
+          "driver_version": "580.82.07",
+          "power.limit [W]": "1000.00 W",
+          "clocks.current.sm [MHz]": "120 MHz",
+          "clocks.current.memory [MHz]": "3996 MHz"
+        },
+        {
+          "name": "NVIDIA B200",
+          "uuid": "GPU-5bc7ea44-0aec-ccb3-f990-737a8c6afd12",
+          "driver_version": "580.82.07",
+          "power.limit [W]": "1000.00 W",
+          "clocks.current.sm [MHz]": "120 MHz",
+          "clocks.current.memory [MHz]": "3996 MHz"
+        }
+      ],
+      "mla_latency_new_over_old_by_kv_dtype": {
+        "bfloat16": {
+          "count": 880,
+          "0": 0.866952780764719,
+          "0.05": 0.9241575099229368,
+          "0.5": 0.9955788789882782,
+          "0.95": 1.015815337558837,
+          "1": 1.0994007955142837
+        },
+        "fp8": {
+          "count": 880,
+          "0": 0.8394674979123624,
+          "0.05": 0.9302425753491017,
+          "0.5": 0.9952240950000397,
+          "0.95": 1.0075401769330723,
+          "1": 1.095697827682327
+        }
+      },
+      "mla_smoke": [
+        {
+          "case": "mla-bf16",
+          "runtime": "1.3.0rc20",
+          "torch": "2.11.0a0+eb65b36914.nv26.02",
+          "device": "NVIDIA B200",
+          "capability": [
+            10,
+            0
+          ],
+          "source_hashes": {
+            "_torch/attention_backend/trtllm.py": "bf935b2562fb3e0bc198753a146e6eafa6c5a7a076f8a4b16162903e37b0f54d",
+            "_torch/modules/attention.py": "70fb8c8750d759da734fa839cbd51361354fdb36398d5d7533ab639b747fa091",
+            "_torch/modules/fused_moe/quantization.py": "97daa1cbcd3d4f0157df3b74d518ad11d55833c67a5f701998a1f34657b1a878"
+          },
+          "input_dtypes": [
+            "torch.bfloat16",
+            "torch.bfloat16",
+            "torch.bfloat16"
+          ],
+          "quant_config": "quant_algo=None kv_cache_quant_algo=None group_size=128 smoothquant_val=0.5 clamp_val=None use_meta_recipe=False has_zero_point=False pre_quant_scale=False exclude_modules=None mamba_ssm_cache_dtype=None mamba_ssm_stochastic_rounding=False mamba_ssm_philox_rounds=10",
+          "cuda_kernels": [
+            "fmhaSm100fKernel_QkvBfloat16OBfloat16HQk192HV128SeparateQkvCausalVarSeqQ128Kv128StaticContext",
+            "void tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext<__nv_bfloat16, 256, 512, 64, tensorrt_llm::_v1::kernels::KVBlockArray>(__nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16 const*, tensorrt_llm::_v1::kernels::KVBlockArray, int, int, float2 const*, unsigned long, int, int, int*, int const*, unsigned int, tensorrt_llm::_v1::kernels::KvCacheDataType, float const*, int const*, bool)",
+            "void tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets<__nv_bfloat16, 256>(tensorrt_llm::_v1::kernels::BuildDecoderInfoParams<__nv_bfloat16>)"
+          ],
+          "status": "passed",
+          "exit_code": 0
+        },
+        {
+          "case": "mla-fp8",
+          "runtime": "1.3.0rc20",
+          "torch": "2.11.0a0+eb65b36914.nv26.02",
+          "device": "NVIDIA B200",
+          "capability": [
+            10,
+            0
+          ],
+          "source_hashes": {
+            "_torch/attention_backend/trtllm.py": "bf935b2562fb3e0bc198753a146e6eafa6c5a7a076f8a4b16162903e37b0f54d",
+            "_torch/modules/attention.py": "70fb8c8750d759da734fa839cbd51361354fdb36398d5d7533ab639b747fa091",
+            "_torch/modules/fused_moe/quantization.py": "97daa1cbcd3d4f0157df3b74d518ad11d55833c67a5f701998a1f34657b1a878"
+          },
+          "input_dtypes": [
+            "torch.bfloat16",
+            "torch.bfloat16",
+            "torch.bfloat16"
+          ],
+          "quant_config": "quant_algo=None kv_cache_quant_algo=<QuantAlgo.FP8: 'FP8'> group_size=128 smoothquant_val=0.5 clamp_val=None use_meta_recipe=False has_zero_point=False pre_quant_scale=False exclude_modules=None mamba_ssm_cache_dtype=None mamba_ssm_stochastic_rounding=False mamba_ssm_philox_rounds=10",
+          "cuda_kernels": [
+            "fmhaSm100fKernel_QkvE4m3OBfloat16HQk192HV128SeparateQkvCausalVarSeqQ128Kv128StaticContext",
+            "void tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext<__nv_bfloat16, 256, 512, 64, tensorrt_llm::_v1::kernels::KVBlockArray>(__nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16 const*, tensorrt_llm::_v1::kernels::KVBlockArray, int, int, float2 const*, unsigned long, int, int, int*, int const*, unsigned int, tensorrt_llm::_v1::kernels::KvCacheDataType, float const*, int const*, bool)",
+            "void tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets<__nv_bfloat16, 256>(tensorrt_llm::_v1::kernels::BuildDecoderInfoParams<__nv_bfloat16>)",
+            "void tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel<__nv_bfloat16, 384, 128, 64, 128, false>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_bfloat16 const*, __nv_fp8_e4m3*, int, int, float const*, float*, float*, float const*, float const*, float const*, float)"
+          ],
+          "status": "passed",
+          "exit_code": 0
+        }
+      ],
+      "telemetry": {
+        "hard_clock_lock": false,
+        "active_samples": 91,
+        "active_ranges": {
+          "power.draw [W]": {
+            "min": 213.38,
+            "max": 693.35
+          },
+          "power.limit [W]": {
+            "min": 1000.0,
+            "max": 1000.0
+          },
+          "clocks.current.sm [MHz]": {
+            "min": 1402.0,
+            "max": 1965.0
+          },
+          "clocks.current.memory [MHz]": {
+            "min": 3996.0,
+            "max": 3996.0
+          }
+        }
+      },
+      "artifacts_sha256": {
+        "gpu-before.csv": "8af46526085e43bae001bbf261f57e401f56fdbea50fb9f5369f83026de4196e",
+        "gpu-samples.csv": "1383314c98298fba043a0e2cbf82bcf35004cb8f8fb641b587d98006b5d5eca9",
+        "plan.json": "58c451994b841b112a69c4842df1f7f850ae9a3d2b6f404d44d4efd7618e72bc",
+        "shard-0/context_mla_perf.txt": "33369b7074ffc81079246f94185d6bc4fa854da888c06b52445b5c8a59753e4c",
+        "shard-0/moe_perf.txt": "81b1a57c0cea0bce8126c6c53615f295c4e170c68d2a7d6ecf6ea588a58163b1",
+        "shard-0/outcomes.jsonl": "73b3d9f7d0ecd512c2ae39621e5ebf646330b5e4c1e0feeadb979adeaffac266",
+        "shard-1/context_mla_perf.txt": "04c443fbcf510b75d7532b7ecfe88248be7cdfe64f24ad7730a0471cf4a3f8cd",
+        "shard-1/moe_perf.txt": "3d365f88674d52dd0a7f0647b1ce6404429218b2de693166ea9c5f85848a4aa3",
+        "shard-1/outcomes.jsonl": "ce9c04763cffc7c870601dc83cb65394219dbec0d0451517c5999c97738ed63e",
+        "shard-2/context_mla_perf.txt": "ed6bf7fcaf7e3ac49d167bfc127e6ede12e26269964d9bc92ba58fef80938435",
+        "shard-2/moe_perf.txt": "dcec978c34319bf7fc7a410497c51d5b8613ff2651345db1992201bd36b0862d",
+        "shard-2/outcomes.jsonl": "7f39a45d4165e7f7bfdc1f2048ceb81f7ed7a6027a0e18f4070abdd86f9e5de4",
+        "shard-3/context_mla_perf.txt": "4d5283828931b2dda41b504032e375c5112e67cf4d268023eed8146f189e3b6b",
+        "shard-3/outcomes.jsonl": "e697120664591a6337288a67adc47a6984c4c06ca7ea5d7630a975dac77b4877",
+        "source.sha256": "673442c40c7b1f50224ae040022f55c831239fc04f90afefe5dc5d06aaaa1488",
+        "summary.json": "cacaa1f86e5ad364a9226cee8fa886643b4e5c1c5cea92833753f31c01602d7e",
+        "trtllm-rc20-9b3b4dfb.sqsh.sha256": "736540c04926e748f12c34406a2d0e4b6348ec775ff0f78e20f5d7053c06b0c9"
+      }
+    },
+    "h200": {
+      "host": "computelab-sc-01",
+      "job_id": 4375636,
+      "node": "viking-prod-214",
+      "gpus": 2,
+      "state": "COMPLETED",
+      "exit_code": "0:0",
+      "elapsed": "00:10:46",
+      "smoke_elapsed": "00:01:46",
+      "production_elapsed": "00:08:52",
+      "mpi": "pmix",
+      "results": "/home/scratch.simonec_gpu/results/trt-62-20260917/production-h200",
+      "stdout": "/home/scratch.simonec_gpu/logs/trt62-h200-pmix-4375636.out",
+      "stderr": "/home/scratch.simonec_gpu/logs/trt62-h200-pmix-4375636.err",
+      "publication": {
+        "summary": {
+          "planned": 3080,
+          "passed": 3080,
+          "failed": 0,
+          "unattempted": 0,
+          "worker_exit_codes": [
+            0,
+            0
+          ],
+          "runner_sha256": "e2f1d7e061050a25e78b86d542f0fb5dac4ec99396ff8290657e502fcc84372c"
+        },
+        "plan_sha256": "8f9117995de2d54841e7704b8f4310f6333326d13d9e68a1c2f0d1144dc49d87",
+        "tables": {
+          "context_mla_perf": {
+            "new_rows": 3080,
+            "total_rows": 3080,
+            "old_rows": 1760,
+            "new_duplicate_keys": 0,
+            "preserved_old_duplicate_keys": 0,
+            "sha256": "72a342dadc601b8a183ca614f9cc18bf0e14b3a501fcade518c47c90732b7c97",
+            "raw_sha256": {
+              "shard-0/context_mla_perf.txt": "4a16319ffecda0e445723293e86dcd32061a2d5e9c3e075759105ab70c337bd1",
+              "shard-1/context_mla_perf.txt": "c7348aa367f629a81a5c304660a9b447002d93e138cba02b145a12e7ea1d4b3a"
+            }
+          }
+        },
+        "mla_provenance": {
+          "collector_ref": "ce9a396642674e8008fda2b778580dc8d9e310b4",
+          "collector_hash": "sha256:9d396ec69d649ddfeb9c3450f0cd35881309628c5ca1ded9b4259c98cf074e2e",
+          "case_plan_hash": "sha256:c0fd09dd4f806c0c23a84de0e452f6093b889ec3bc4adcdf1fdf4f30d2b66606",
+          "collected_at": "2026-09-17",
+          "rows": 3080,
+          "classified_failures": 0,
+          "status": "complete"
+        }
+      },
+      "hardware": [
+        {
+          "name": "NVIDIA H200",
+          "uuid": "GPU-8806907d-d1c2-65f6-775b-79462bf69ac5",
+          "driver_version": "595.58.03",
+          "power.limit [W]": "700.00 W",
+          "clocks.current.sm [MHz]": "345 MHz",
+          "clocks.current.memory [MHz]": "3201 MHz"
+        },
+        {
+          "name": "NVIDIA H200",
+          "uuid": "GPU-bedb0afa-7fb5-484a-5abf-f4afc0fff9ba",
+          "driver_version": "595.58.03",
+          "power.limit [W]": "700.00 W",
+          "clocks.current.sm [MHz]": "345 MHz",
+          "clocks.current.memory [MHz]": "3201 MHz"
+        }
+      ],
+      "mla_latency_new_over_old_by_kv_dtype": {
+        "bfloat16": {
+          "count": 880,
+          "0": 0.02169219598693033,
+          "0.05": 0.9514747575137581,
+          "0.5": 0.9933915693409964,
+          "0.95": 1.0270679156503228,
+          "1": 1.3147809244539361
+        },
+        "fp8": {
+          "count": 880,
+          "0": 0.025165438421725764,
+          "0.05": 0.9595226271714019,
+          "0.5": 0.9949348961309541,
+          "0.95": 1.01720251468336,
+          "1": 1.1663598497881915
+        }
+      },
+      "mla_smoke": [
+        {
+          "case": "mla-bf16",
+          "runtime": "1.3.0rc20",
+          "torch": "2.11.0a0+eb65b36914.nv26.02",
+          "device": "NVIDIA H200",
+          "capability": [
+            9,
+            0
+          ],
+          "source_hashes": {
+            "_torch/attention_backend/trtllm.py": "bf935b2562fb3e0bc198753a146e6eafa6c5a7a076f8a4b16162903e37b0f54d",
+            "_torch/modules/attention.py": "70fb8c8750d759da734fa839cbd51361354fdb36398d5d7533ab639b747fa091",
+            "_torch/modules/fused_moe/quantization.py": "97daa1cbcd3d4f0157df3b74d518ad11d55833c67a5f701998a1f34657b1a878"
+          },
+          "input_dtypes": [
+            "torch.bfloat16",
+            "torch.bfloat16",
+            "torch.bfloat16"
+          ],
+          "quant_config": "quant_algo=None kv_cache_quant_algo=None group_size=128 smoothquant_val=0.5 clamp_val=None use_meta_recipe=False has_zero_point=False pre_quant_scale=False exclude_modules=None mamba_ssm_cache_dtype=None mamba_ssm_stochastic_rounding=False mamba_ssm_philox_rounds=10",
+          "cuda_kernels": [
+            "Memset (Device)",
+            "fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel",
+            "void tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext<__nv_bfloat16, 256, 512, 64, tensorrt_llm::_v1::kernels::KVBlockArray>(__nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16 const*, tensorrt_llm::_v1::kernels::KVBlockArray, int, int, float2 const*, unsigned long, int, int, int*, int const*, unsigned int, tensorrt_llm::_v1::kernels::KvCacheDataType, float const*, int const*, bool)",
+            "void tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets<__nv_bfloat16, 256>(tensorrt_llm::_v1::kernels::BuildDecoderInfoParams<__nv_bfloat16>)"
+          ],
+          "status": "passed",
+          "exit_code": 0
+        },
+        {
+          "case": "mla-fp8",
+          "runtime": "1.3.0rc20",
+          "torch": "2.11.0a0+eb65b36914.nv26.02",
+          "device": "NVIDIA H200",
+          "capability": [
+            9,
+            0
+          ],
+          "source_hashes": {
+            "_torch/attention_backend/trtllm.py": "bf935b2562fb3e0bc198753a146e6eafa6c5a7a076f8a4b16162903e37b0f54d",
+            "_torch/modules/attention.py": "70fb8c8750d759da734fa839cbd51361354fdb36398d5d7533ab639b747fa091",
+            "_torch/modules/fused_moe/quantization.py": "97daa1cbcd3d4f0157df3b74d518ad11d55833c67a5f701998a1f34657b1a878"
+          },
+          "input_dtypes": [
+            "torch.bfloat16",
+            "torch.bfloat16",
+            "torch.bfloat16"
+          ],
+          "quant_config": "quant_algo=None kv_cache_quant_algo=<QuantAlgo.FP8: 'FP8'> group_size=128 smoothquant_val=0.5 clamp_val=None use_meta_recipe=False has_zero_point=False pre_quant_scale=False exclude_modules=None mamba_ssm_cache_dtype=None mamba_ssm_stochastic_rounding=False mamba_ssm_philox_rounds=10",
+          "cuda_kernels": [
+            "Memset (Device)",
+            "fmha_v2_flash_attention_e4m3_64_128_S_q_k_v_192x128_causal_output_bf16_tma_ws_sm90_kernel",
+            "void tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext<__nv_bfloat16, 256, 512, 64, tensorrt_llm::_v1::kernels::KVBlockArray>(__nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16 const*, tensorrt_llm::_v1::kernels::KVBlockArray, int, int, float2 const*, unsigned long, int, int, int*, int const*, unsigned int, tensorrt_llm::_v1::kernels::KvCacheDataType, float const*, int const*, bool)",
+            "void tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets<__nv_bfloat16, 256>(tensorrt_llm::_v1::kernels::BuildDecoderInfoParams<__nv_bfloat16>)",
+            "void tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel<__nv_bfloat16, 384, 128, 64, 128, false>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_bfloat16 const*, __nv_fp8_e4m3*, int, int, float const*, float*, float*, float const*, float const*, float const*, float)"
+          ],
+          "status": "passed",
+          "exit_code": 0
+        }
+      ],
+      "telemetry": {
+        "hard_clock_lock": false,
+        "active_samples": 96,
+        "active_ranges": {
+          "power.draw [W]": {
+            "min": 119.22,
+            "max": 691.92
+          },
+          "power.limit [W]": {
+            "min": 700.0,
+            "max": 700.0
+          },
+          "clocks.current.sm [MHz]": {
+            "min": 1665.0,
+            "max": 1980.0
+          },
+          "clocks.current.memory [MHz]": {
+            "min": 3201.0,
+            "max": 3201.0
+          }
+        }
+      },
+      "artifacts_sha256": {
+        "gpu-before.csv": "471ff331e51cb47cd30981b66e87626879aefdfeb2c995bc18cbbce060ac85da",
+        "gpu-samples.csv": "7cb669c2c13e60f6768df2abd5a8b1f9b51b48e1e57b1b28342f5ff3c51bd56d",
+        "plan.json": "8f9117995de2d54841e7704b8f4310f6333326d13d9e68a1c2f0d1144dc49d87",
+        "shard-0/context_mla_perf.txt": "4a16319ffecda0e445723293e86dcd32061a2d5e9c3e075759105ab70c337bd1",
+        "shard-0/outcomes.jsonl": "e5e7c6e3595e7d86c745f9370c4e38d8365440b002fa75064152783fed16b02c",
+        "shard-1/context_mla_perf.txt": "c7348aa367f629a81a5c304660a9b447002d93e138cba02b145a12e7ea1d4b3a",
+        "shard-1/outcomes.jsonl": "76fe27475994ea81a2675d953e7e01bc8219d1191603e614857572a549dcec61",
+        "source.sha256": "673442c40c7b1f50224ae040022f55c831239fc04f90afefe5dc5d06aaaa1488",
+        "summary.json": "c979e8cf119160cbe9d2182c360ede84e3c700de7d1a1d55ce1e8368ac6bdd58",
+        "trtllm-rc20-9b3b4dfb.sqsh.sha256": "b7639a94178fa077c2bdaba122583254e9a781fba8411cee3005baebddf9b194"
+      }
+    }
+  },
+  "h200_outlier_recheck": {
+    "job_id": 4375895,
+    "node": "viking-prod-216",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "elapsed": "00:04:39",
+    "gpus": 1,
+    "summary": {
+      "planned": 18,
+      "passed": 18,
+      "failed": 0,
+      "unattempted": 0,
+      "shapes": [
+        [
+          "fp8",
+          4,
+          8,
+          1
+        ],
+        [
+          "fp8",
+          4,
+          2,
+          32
+        ],
+        [
+          "bfloat16",
+          8,
+          1,
+          128
+        ],
+        [
+          "fp8",
+          128,
+          16,
+          128
+        ],
+        [
+          "bfloat16",
+          16,
+          32,
+          1024
+        ],
+        [
+          "bfloat16",
+          1,
+          32,
+          2048
+        ]
+      ],
+      "runtime": "1.3.0rc20"
+    },
+    "results": "/home/scratch.simonec_gpu/results/trt-62-20260917/recheck-h200-outliers",
+    "stdout": "/home/scratch.simonec_gpu/logs/trt62-h200-recheck-4375895.out",
+    "stderr": "/home/scratch.simonec_gpu/logs/trt62-h200-recheck-4375895.err",
+    "points": [
+      {
+        "key": {
+          "kv_cache_dtype": "bfloat16",
+          "num_heads": 1,
+          "batch_size": 32,
+          "isl": 2048
+        },
+        "old_latency_ms": 0.9880053202311198,
+        "production_latency_ms": 0.1635413368542989,
+        "repeat_latencies_ms": [
+          0.1635466714700063,
+          0.1631253361701965,
+          0.1627466678619384
+        ],
+        "repeat_over_production": [
+          1.0000326193720195,
+          0.9974562964195834,
+          0.9951408676995928
+        ]
+      },
+      {
+        "key": {
+          "kv_cache_dtype": "bfloat16",
+          "num_heads": 8,
+          "batch_size": 1,
+          "isl": 128
+        },
+        "old_latency_ms": 0.7806186676025391,
+        "production_latency_ms": 0.0169333331286907,
+        "repeat_latencies_ms": [
+          0.0170719996094703,
+          0.017205332716306,
+          0.0172266662120819
+        ],
+        "repeat_over_production": [
+          1.0081889654993355,
+          1.0160629679666813,
+          1.0173228200946567
+        ]
+      },
+      {
+        "key": {
+          "kv_cache_dtype": "bfloat16",
+          "num_heads": 16,
+          "batch_size": 32,
+          "isl": 1024
+        },
+        "old_latency_ms": 1.3052000204722087,
+        "production_latency_ms": 0.4743359883626302,
+        "repeat_latencies_ms": [
+          0.47489066918691,
+          0.4750826756159464,
+          0.4744373162587483
+        ],
+        "repeat_over_production": [
+          1.0011693838078668,
+          1.0015741737326187,
+          1.0002136205107859
+        ]
+      },
+      {
+        "key": {
+          "kv_cache_dtype": "fp8",
+          "num_heads": 4,
+          "batch_size": 2,
+          "isl": 32
+        },
+        "old_latency_ms": 0.7970720132191976,
+        "production_latency_ms": 0.0200586666663487,
+        "repeat_latencies_ms": [
+          0.0204426671067873,
+          0.0202400001386801,
+          0.0198773331940174
+        ],
+        "repeat_over_production": [
+          1.019143866679973,
+          1.0090401558262898,
+          0.990959844173715
+        ]
+      },
+      {
+        "key": {
+          "kv_cache_dtype": "fp8",
+          "num_heads": 4,
+          "batch_size": 8,
+          "isl": 1
+        },
+        "old_latency_ms": 0.37910934289296466,
+        "production_latency_ms": 0.0181813339392344,
+        "repeat_latencies_ms": [
+          0.0179039997359116,
+          0.0177920001248518,
+          0.0178240003685156
+        ],
+        "repeat_over_production": [
+          0.9847462125579066,
+          0.9785860698844304,
+          0.9803461301622268
+        ]
+      },
+      {
+        "key": {
+          "kv_cache_dtype": "fp8",
+          "num_heads": 128,
+          "batch_size": 16,
+          "isl": 128
+        },
+        "old_latency_ms": 1.0207466284434001,
+        "production_latency_ms": 0.2195840080579122,
+        "repeat_latencies_ms": [
+          0.2199359933535258,
+          0.2198293407758077,
+          0.2198719978332519
+        ],
+        "repeat_over_production": [
+          1.001602964162676,
+          1.001117261316365,
+          1.001311524358658
+        ]
+      }
+    ],
+    "raw_sha256": {
+      "case-0-repeat-0.txt": "699a889dfe109fda753b9253c1ce01c00afe934f4af2029da181a966583e70c1",
+      "case-0-repeat-1.txt": "013afffdd72d7fa709bb16a82ffaac483b6a1103007ed81a3e1c3b8399fc4274",
+      "case-0-repeat-2.txt": "987d7f74b79898ed01e6e14c16984592b9074251209238d7c1a9d0c7a80965d5",
+      "case-1-repeat-0.txt": "d57e00ff465108a35197c9139e8856164aeb7a37823c091b13ce340a562a2c73",
+      "case-1-repeat-1.txt": "7d8b507785fe5b71bddc21b7698ef1d9b9082135bd2d6bcb38afd7d78ce4bf7e",
+      "case-1-repeat-2.txt": "0f941611bdc8bf936d395c100b62ea42a850e487618db6eeda2220651a31e008",
+      "case-2-repeat-0.txt": "c62f0fda944fdbdc5b6490e1dae1d44d36623c416966429b0248b431ddf7f0de",
+      "case-2-repeat-1.txt": "722794a85c5978f590267e1ffa71351323bbf7032319687fec9466c97f0f1290",
+      "case-2-repeat-2.txt": "dedffe6175da60651a654982db2dd6c2d7b4183716ac6dfc6a300b7dbf2b7273",
+      "case-3-repeat-0.txt": "eb7516eaf9b376722c89376bffe67be62b680374de6e614c957aaafc50970776",
+      "case-3-repeat-1.txt": "bd0de4af91945471b4226e39cae68d1bdfc78acdfb0de609e926a9004379a68c",
+      "case-3-repeat-2.txt": "ab045e2526f8e987d08ef13032d280db0dc4144f38a40c1e75726e2d9f4414c5",
+      "case-4-repeat-0.txt": "97b1a741a14baa08e9b1859b217af369a1947d468ac16b3f3ec223327a465385",
+      "case-4-repeat-1.txt": "dd3b15de76ff99abf8b9bf3b3b6121292c48e493654b81c50e98169990e6b56b",
+      "case-4-repeat-2.txt": "2330b1baf1777b2272eae4a11910c840cb4d381c5087bd8d5937f01e87d5d8ce",
+      "case-5-repeat-0.txt": "2196548ba6d05aea88c81c0c8745e708bee355b389d7ffcc2f143222dca69d40",
+      "case-5-repeat-1.txt": "58b32fd25ff3a236b34b33eb54fe153348cf4974767064f02369138433d3791e",
+      "case-5-repeat-2.txt": "1936e6ebb82aa06185ab03809cb04231722929540fcb859ba0471bb8c13ae43e",
+      "gpu-before.csv": "20422a3f3131c15b6b8dacd6cd8cfd18fb5f9fefe5841dc216bb988c01d055c1",
+      "summary.json": "463531b661def9f547c33268f5b39509f6c25a8dccb915ae734397df56bd81b3"
+    },
+    "interpretation": "All six shapes reproduced the new measurements on a different H200 node. The cause of the larger old values is not established. Diagnostic repeats are separate from published production rows."
+  },
+  "limitations": [
+    "Native TRT-LLM operator measurements; no timing borrowed from another backend or GPU.",
+    "Replay verifies profile availability and request completion, not prediction accuracy against matched serving measurements.",
+    "Original silicon recipe image versions remain unchanged; database query and collector runtime are both 1.3.0rc20.",
+    "GPU clocks were observed, not locked. Production timings have no profiler wrapper.",
+    "Existing MoE rows and power values are preserved exactly; new MoE power fields are null."
+  ]
+}
