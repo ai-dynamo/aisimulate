@@ -61,9 +61,44 @@ def test_release_migration_gate_blocks_publication_until_reviewed_clearance(tmp_
     assert next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "target") < index
     assert index < next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "decide")
     assert "if" not in guard["steps"][index]
+    checkouts = [step for step in guard["steps"][:index] if step.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) == 2
+    assert checkouts[0]["with"]["ref"] == "${{ steps.target.outputs.sha }}"
+    assert "path" not in checkouts[0]["with"]
+    assert checkouts[1]["with"]["ref"] == "${{ github.sha }}"
+    assert checkouts[1]["with"]["path"] == "release-policy"
+    assert all("if" not in step and step["with"]["persist-credentials"] == "false" for step in checkouts)
+    assert guard["steps"][index]["run"] == (
+        "python3 release-policy/scripts/check_release_migrations.py --target-gates .github/release-gates.json"
+    )
     assert "build-artifacts" in jobs["trigger-gitlab-security"]["needs"]
     assert "changes-guard" in jobs["build-artifacts"]["needs"]
     assert "needs.changes-guard.outputs.should-build == 'true'" in jobs["build-artifacts"]["if"]
+
+
+@pytest.mark.parametrize(
+    "current,target,expected",
+    [
+        ("clear", "clear", 0),
+        ("clear", "pending", 1),
+        ("pending", "clear", 1),
+        ("clear", "missing", 1),
+        ("clear", "malformed", 1),
+    ],
+)
+def test_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
+    from scripts import check_release_migrations as checker
+
+    paths = {}
+    for name, state in (("current", current), ("target", target)):
+        paths[name] = tmp_path / f"{name}.json"
+        if state == "missing":
+            continue
+        pending = [] if state == "clear" else [{"pull_request": "migration/pr/1", "requirement": "Migrate consumer"}]
+        document = {} if state == "malformed" else {"pending_migrations": pending}
+        paths[name].write_text(json.dumps(document))
+    monkeypatch.setattr(checker, "GATES", paths["current"])
+    assert checker.main(["--target-gates", str(paths["target"])]) == expected
 
 
 def test_forward_perf_selects_before_allocating_the_benchmark_runner():

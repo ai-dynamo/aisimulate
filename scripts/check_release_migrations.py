@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -32,9 +33,16 @@ def require_completed_migrations(path: Path = GATES) -> None:
         raise RuntimeError(f"Release publication is blocked by pending downstream migrations:\n{details}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--target-gates", type=Path, help="Also require the publication target's migrations to be complete"
+    )
+    args = parser.parse_args(argv)
     try:
-        require_completed_migrations()
+        require_completed_migrations(GATES)
+        if args.target_gates is not None:
+            require_completed_migrations(args.target_gates)
     except (OSError, ValueError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 1

@@ -133,10 +133,17 @@ jobs:
       # Both scheduled and approved manual publication require completed migrations.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+      # Keep the checker/current policy trusted while also checking the exact
+      # publication target's migration declarations. Neither can bypass the other.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ github.sha }}
+          path: release-policy
           persist-credentials: false
       - name: Require completed downstream API migrations
-        run: python3 scripts/check_release_migrations.py
+        run: python3 release-policy/scripts/check_release_migrations.py --target-gates .github/release-gates.json
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
       - name: Compute unique nightly version

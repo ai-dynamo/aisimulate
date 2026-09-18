@@ -310,7 +310,9 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   merged, and its Planner/wheel smoke validated against this API. Both scheduled
   nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
   before staging and the downstream publish trigger. Manual dispatch may select
-  a main/release commit, but must pass the same migration gate before publication.
+  a main/release commit, but both the workflow revision's policy and the selected
+  commit's migration declarations must pass before publication. The checker runs
+  from the workflow revision; missing or malformed target gates fail closed.
   Clear the pending entry in a reviewed change only after the migration evidence
   is available.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
