@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::{
     Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase,
 };
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
@@ -420,7 +420,7 @@ struct AicTimingModel {
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
-    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
+    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, Arc<ValidatedTimingPhase>>,
 }
 
 impl AicTimingModel {
@@ -481,10 +481,10 @@ impl AicTimingModel {
         osl: u32,
         prefix: u32,
         mode: &str,
-    ) -> Result<TimingPhaseEvidence> {
+    ) -> Result<Arc<ValidatedTimingPhase>> {
         let prefill = mode == "static_ctx";
         if batch_size == 0 || (prefill && isl <= prefix) {
-            return Ok(TimingPhaseEvidence::default());
+            return Ok(Arc::new(ValidatedTimingPhase::default()));
         }
         let key = (batch_size, isl, osl, prefix, prefill);
         if let Some(phase) = self.phase_cache.get(&key) {
@@ -538,20 +538,20 @@ impl AicTimingModel {
             !entries.is_empty(),
             "AIC {mode} returned empty operation evidence for nonzero work"
         );
-        let phase = phase_evidence_from_python(entries)?;
-        self.phase_cache.insert(key, phase.clone());
+        let phase = Arc::new(phase_evidence_from_python(entries)?);
+        self.phase_cache.insert(key, Arc::clone(&phase));
         Ok(phase)
     }
 
-    fn record_evidence(&self, phase: TimingPhaseEvidence, prefill: bool) -> Result<()> {
+    fn record_evidence(&self, phase: &ValidatedTimingPhase, prefill: bool) -> Result<()> {
         let mut evidence = self
             .evidence
             .lock()
             .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))?;
         if prefill {
-            evidence.prefill.try_accumulate(phase)?;
+            evidence.prefill.try_accumulate(phase.as_phase().clone())?;
         } else {
-            evidence.decode.try_accumulate(phase)?;
+            evidence.decode.try_accumulate(phase.as_phase().clone())?;
         }
         Ok(())
     }
@@ -559,7 +559,7 @@ impl AicTimingModel {
 
 fn phase_evidence_from_python(
     entries: Vec<(String, f64, f64, String)>,
-) -> Result<TimingPhaseEvidence> {
+) -> Result<ValidatedTimingPhase> {
     let operations = entries
         .into_iter()
         .map(|(name, latency_ms, energy_wms, source)| {
@@ -575,7 +575,7 @@ fn phase_evidence_from_python(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    TimingPhaseEvidence::try_from_operations(operations)
+    ValidatedTimingPhase::from_operations(operations)
 }
 
 impl TimingModel for AicTimingModel {
@@ -606,8 +606,8 @@ impl TimingModel for AicTimingModel {
         if !self.use_fpm_decode_totals {
             let evidence =
                 self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
-            let latency_ms = evidence.latency_ms;
-            self.record_evidence(evidence, true)?;
+            let latency_ms = evidence.as_phase().latency_ms;
+            self.record_evidence(&evidence, true)?;
             return Ok(latency_ms);
         }
         Python::with_gil(|py| {
@@ -657,8 +657,8 @@ impl TimingModel for AicTimingModel {
             .context("mean decode context must include the current input token")?;
         let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
         let evidence = self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?;
-        let latency_ms = evidence.latency_ms;
-        self.record_evidence(evidence, false)?;
+        let latency_ms = evidence.as_phase().latency_ms;
+        self.record_evidence(&evidence, false)?;
         Ok(latency_ms)
     }
 
@@ -2655,9 +2655,9 @@ mod tests {
             ("no-op".into(), 0.0, 0.0, "silicon".into()),
         ])
         .unwrap();
-        assert_eq!(summary.energy_wms, Some(50_000.0));
-        assert_eq!(summary.latency_ms, 125.0);
-        assert_eq!(summary.covered_latency_ms, 100.0);
+        assert_eq!(summary.as_phase().energy_wms, Some(50_000.0));
+        assert_eq!(summary.as_phase().latency_ms, 125.0);
+        assert_eq!(summary.as_phase().covered_latency_ms, 100.0);
     }
 
     #[test]
@@ -3225,6 +3225,10 @@ mod tests {
             timing.evidence_summary().unwrap().decode.energy_wms,
             Some(1_600_000.0)
         );
+        let cached = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
+        let again = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
+        assert!(Arc::ptr_eq(&cached, &again));
+        assert_eq!(cached.as_phase().energy_wms, Some(1_600.0));
         // Distinct coordinates must never reuse the preceding shape's result.
         timing.predict_decode_ms(2, 260, 129, 1024).unwrap();
         Python::with_gil(|py| {
