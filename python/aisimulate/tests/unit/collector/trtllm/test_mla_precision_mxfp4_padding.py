@@ -14,7 +14,7 @@ pytestmark = pytest.mark.unit
 COLLECTOR = Path(__file__).resolve().parents[4] / "collector" / "trtllm"
 
 
-@pytest.mark.parametrize("sm", [90, 100, 103, 120])
+@pytest.mark.parametrize("sm", [80, 89, 90, 100, 103, 120, 121])
 @pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
 @pytest.mark.parametrize("context", [True, False])
 def test_mla_logged_compute_precision(sm, kv_dtype, context):
@@ -41,18 +41,18 @@ def test_mla_logged_compute_precision(sm, kv_dtype, context):
             "get_sm_version": lambda: sm,
         },
     )
-    assert actual == (kv_dtype if context else "bfloat16")
+    assert actual == (kv_dtype if context and sm in (90, 100, 103, 120) else "bfloat16")
 
 
 class ReachedNativeBuilder(Exception):
     pass
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [90, 100, 103, 120])
 @pytest.mark.parametrize("tp", [2, 4, 8])
 @pytest.mark.parametrize("quant", ["w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
 @pytest.mark.parametrize("model_name", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "other-mxfp4-model"])
-def test_unaligned_mxfp4_reaches_native_weight_padding(sm, tp, quant, model_name):
+def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name):
     tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_moe_torch")
     native_builder = MagicMock(side_effect=ReachedNativeBuilder)
@@ -74,6 +74,11 @@ def test_unaligned_mxfp4_reaches_native_weight_padding(sm, tp, quant, model_name
         "inspect": SimpleNamespace(signature=lambda _: SimpleNamespace(parameters={})),
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), "collect_moe.py", "exec"), namespace)
+    if sm in (90, 120):
+        with pytest.raises(ValueError, match="weight-layout alignment"):
+            namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
+        native_builder.assert_not_called()
+        return
     with pytest.raises(ReachedNativeBuilder):
         namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
     assert native_builder.call_args.kwargs["intermediate_size"] == 2880

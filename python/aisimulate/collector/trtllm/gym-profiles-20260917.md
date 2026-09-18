@@ -67,7 +67,10 @@ warnings remain.
 - Context MLA with FP8 KV internally quantizes Q/K/V to FP8 on
   SM90/100/103/120. The Python inputs remain BF16; logging their dtype as
   compute precision mislabels the measurements. Record FP8/FP8 for that path
-  and BF16/BF16 for the control. Generation tables are outside this refresh.
+  and BF16/BF16 for the control. The SM list mirrors the upstream
+  `mFP8ContextMLA` condition, whose false branch leaves context compute BF16;
+  it is not a list of the only architectures audited by this campaign.
+  Generation tables are outside this refresh.
 - Blackwell MXFP4 MoE pads weights before TP sharding through its native
   weight loader. Do not reject the logical intermediate dimension using
   the CUTLASS plugin's physical-weight alignment rule. Keep the original

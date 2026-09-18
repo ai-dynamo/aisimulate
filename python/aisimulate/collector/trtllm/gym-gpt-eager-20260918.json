@@ -1574,6 +1574,7 @@
     "trace-summary.json": "ae70c52323374cd663b389c69d7cc3477ad55797daa28761f82c6f1f3de4c924"
   },
   "limits": [
+    "predicted_ops use TRT-LLM rc20 performance data, while the traced runtime is rc14; this is a cross-version diagnostic, not version-matched timing qualification.",
     "Profiler and lightweight wrapper timings are diagnostic, not performance-database rows.",
     "CPU module boundaries are nested and overlap GPU work. Collective waiting is not an additional independent penalty.",
     "The 886-token probe matches MoE combined tokens but uses approximate decode KV; it is not a complete exact-forward query.",

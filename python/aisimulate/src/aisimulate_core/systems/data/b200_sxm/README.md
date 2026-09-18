@@ -79,3 +79,11 @@ other rows exactly. MoE now has 178,875 positive power pairs and 39,582 paired
 zero sentinels. The context MLA refresh has no measured power columns.
 The two corresponding file-integrity pins reflect these reviewed updates;
 the other 16 pins and the attention preservation checks are unchanged.
+
+The 324 refreshed rows form 12 complete token curves (two quantizations, six
+TP/EP configurations, `power_law_1.2`). Every point in each refreshed curve
+has unavailable power, so these curves do not interpolate between measured
+and unavailable power. Runtime zero energy is the existing missing-evidence
+sentinel: it contributes no covered latency, and the public power result is
+subject to the 90% coverage gate described in `docs/power-model.md`. The data
+refresh does not qualify power accuracy or change power interpolation rules.

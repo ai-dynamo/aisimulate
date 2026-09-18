@@ -47,6 +47,8 @@ unmatched evidence, not assigned to a transformer operation.
   This is a controlled shape probe; its decode KV is an approximation, not
   a reconstructed exact scheduler query. The MoE coordinate is exact:
   889 combined tokens, TP2/EP1, MXFP4 weights and MXFP8 activation.
+  The trace uses TRT-LLM rc14, while the predicted operations use rc20 data;
+  this cross-version comparison does not qualify rc14 timing accuracy.
 - MoE kernel sums are close to the corrected prediction. Increasing the
   shared MoE graph table is not supported by this trace.
 - Fused all-reduce/norm kernel sums differ sharply between ranks:
