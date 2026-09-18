@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import aiconfigurator.sdk.models.helpers as helpers
-from aiconfigurator.sdk import common, config, inference_session, models, pareto_analysis, sweep
+from aiconfigurator.sdk import common, config, inference_session, memory, models, pareto_analysis, sweep
 from aiconfigurator.sdk.models import resolve_context_fmha_by_data
 from aiconfigurator_core.sdk import models as canonical_models
 
@@ -29,6 +29,7 @@ pytestmark = pytest.mark.unit
     [
         "agg",
         "agg_pareto",
+        "kv_memory",
         "prefill",
         "decode",
         "static_ctx",
@@ -56,15 +57,29 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
 
     monkeypatch.setattr(sweep, "get_model", capture)
     monkeypatch.setattr(pareto_analysis, "get_model", capture)
+    monkeypatch.setattr(memory, "get_model", capture)
     monkeypatch.setattr(models, "get_model", capture)
     db = SimpleNamespace(version="0.5.14", system_spec={"gpu": {"sm_version": 90}})
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *args, **kwargs: db)
     backend = SimpleNamespace(name=SimpleNamespace(value="sglang"))
     mc = config.ModelConfig(tp_size=8, moe_tp_size=8, fmha_quant_mode=explicit)
     rt = config.RuntimeConfig(isl=1024, osl=1, ttft=1000, tpot=50)
     path = "deepseek-ai/DeepSeek-V3"
     parallel = [(8, 1, 1, 8, 1, 1)]
     with pytest.raises(ModelBuilt):
-        if entry == "agg_pareto":
+        if entry == "kv_memory":
+            memory.KVCacheEstimator.from_request(
+                path,
+                "h200_sxm",
+                "sglang",
+                backend_version="0.5.14",
+                tp_size=8,
+                moe_tp_size=8,
+                max_num_tokens=8192,
+                max_batch_size=256,
+                fmha_quant_mode=explicit.name if explicit is not None else None,
+            )
+        elif entry == "agg_pareto":
             pareto_analysis.agg_pareto(path, rt, db, "sglang", mc, parallel)
         elif entry == "agg":
             sweep.sweep_agg(

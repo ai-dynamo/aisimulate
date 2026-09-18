@@ -82,6 +82,9 @@ specification. External callers, including Dynamo's legacy estimator, must call
 the resolver with their database context before construction to adopt this mapping.
 It is exported by both `aiconfigurator_core.sdk.models` and the legacy
 `aiconfigurator.sdk.models` package.
+`tests/unit/sdk/models/test_context_fmha_compat.py` checks the real constructed
+context-op identities through these callers, including `KVCacheEstimator.from_request()`,
+for inferred precision and explicit FP8 overrides.
 
 ### `create()` Classmethod
 
