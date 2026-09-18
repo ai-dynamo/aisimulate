@@ -175,7 +175,11 @@ def materialize_aic_num_gpu_blocks(
         gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
         mem_fraction_static=lowered.get("mem_fraction_static"),
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
-        backend_version=lowered.get("aic_backend_version", lowered.get("backend_version")),
+        backend_version=(
+            lowered.get("aic_backend_version")
+            if lowered.get("aic_backend_version") is not None
+            else lowered.get("backend_version")
+        ),
         pp_size=(lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1),
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),

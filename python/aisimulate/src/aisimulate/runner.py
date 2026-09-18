@@ -1151,6 +1151,9 @@ def _materialize_engine_role(
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
+        for name in ("aic_backend_version", "backend_version"):
+            if role_config.get(name) is None:
+                role_config.pop(name, None)
         # Propagate authored versions before capacity preflight. Otherwise a
         # deployment pin reaches timing only after capacity has used current.
         timing = role_config.get("timing_model")
@@ -1366,6 +1369,8 @@ def _materialize_engine_role(
             roots = identity.get("systems_paths")
             if roots is None and identity.get("systems_path") is not None:
                 roots = [identity["systems_path"]]
+            if roots is None and aic_timing_overrides.get("systems_path") is not None:
+                roots = [aic_timing_overrides["systems_path"]]
             return resolve_query_version(
                 identity.get("system", system),
                 backend,

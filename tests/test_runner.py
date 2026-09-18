@@ -1399,7 +1399,7 @@ def test_runner_rejects_overflowing_ordinary_metric():
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
 
 
-@pytest.mark.parametrize("layout", ["flat", "canonical", "nested"])
+@pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "nested"])
 @pytest.mark.parametrize("version", ["", "next", "literal_next"])
 def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, layout, version):
     from aisimulate import _runtime
@@ -1447,7 +1447,9 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, la
         "aic_tp_size": 2,
         "block_size": 64,
     }
-    if layout == "canonical":
+    if layout == "null_flat":
+        args["aic_backend_version"] = None
+    elif layout == "canonical":
         timing["config"]["estimation_mode"] = "op_level"
         timing["config"]["worker_type"] = "aggregated"
         args = {"tensor_parallel_size": 2, "block_size": 64, "timing_model": timing}
@@ -1463,3 +1465,45 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, la
     assert set(consumed_versions["native"]) == {expected}
     assert set(consumed_versions["python"]) == (set() if layout == "nested" else {expected})
     assert args == original
+
+
+def test_direct_replay_resolves_aliases_in_the_role_systems_root(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    import yaml
+
+    from aisimulate_core.sdk import perf_database
+
+    bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
+    system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
+    system["data_dir"] = str(bundled / system["data_dir"])
+    (tmp_path / "h200_sxm.yaml").write_text(yaml.safe_dump(system))
+    custom_version = "0.25.0"
+    (tmp_path / "query_versions.yaml").write_text(yaml.safe_dump({"defaults": {"vllm": {"current": custom_version}}}))
+    assert perf_database.get_version_slots("h200_sxm", "vllm")["current"] != custom_version
+    assert perf_database.get_version_slots("h200_sxm", "vllm", systems_paths=str(tmp_path))["current"] == custom_version
+    get_database = perf_database.get_database
+    versions = []
+
+    def recorded_database(*args, **kwargs):
+        database = get_database(*args, **kwargs)
+        versions.append(database.version)
+        return database
+
+    monkeypatch.setattr(perf_database, "get_database", recorded_database)
+    args = {
+        "aic_backend": "vllm",
+        "aic_model_path": "Qwen/Qwen3-32B-FP8",
+        "aic_system": "h200_sxm",
+        "aic_tp_size": 2,
+        "systems_path": str(tmp_path),
+        "block_size": 64,
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
+    )
+    report = EngineReplayRunnerFactory().create(0).run(_spec(deployment=deployment))
+
+    assert report.metrics["completed_requests"] == 1
+    assert set(versions) == {custom_version}
+    assert "aic_backend_version" not in args
