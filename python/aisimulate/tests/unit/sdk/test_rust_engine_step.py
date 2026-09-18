@@ -895,7 +895,8 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
             assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
-def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> None:
+@pytest.mark.parametrize("rebuild_interval", [23, None])
+def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, rebuild_interval) -> None:
     import aisimulate_core
 
     calls = []
@@ -916,7 +917,10 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> 
         "fallback_policy": "deny",
         "estimator_config": {
             "features": {"attention_kv_weight": 2.0, "prefill_attention_pair_weight": 3.0, "ffn_token_weight": 4.0},
-            "fpm_regression": {"sampling": {"bins_per_axis": [4, 16], "max_observations": 128}},
+            "fpm_regression": {
+                "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
+                "fit": {"rebuild_interval": rebuild_interval},
+            },
             "correction": {"enabled": False},
         },
     }
@@ -935,6 +939,87 @@ def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
     assert config.estimation_mode == "auto"
     assert config.fallback_policy == "deny"
     assert config.estimator_config == {}
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+@pytest.mark.parametrize(
+    ("fit", "expected_interval"),
+    [({}, 4096), ({"rebuild_interval": 17}, 17), ({"rebuild_interval": None}, None)],
+)
+def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping, fit, expected_interval):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={"fpm_regression": {"fit": fit}},
+    )
+    payload = config.to_dict() if as_mapping else config
+    model = RustForwardPassPerfModel.best_available(payload)
+    provenance = model.diagnostics()["provenance"]
+    resolved = provenance["config"]
+    assert resolved["estimator_config"]["fpm_regression"]["fit"]["rebuild_interval"] == expected_interval
+    assert resolved["estimator_config"]["fpm_regression"]["sampling"] == {
+        "bins_per_axis": [4, 4],
+        "max_observations": 64,
+    }
+    assert resolved["worker_type"] == "decode"
+    assert resolved["estimation_mode"] == "fpm_regression"
+    assert resolved["fallback_policy"] == "deny"
+    assert config.estimator_config == {"fpm_regression": {"fit": fit}}
+    if not fit:
+        # Default expansion belongs to Rust, not the Python request object.
+        assert "rebuild_interval" not in config.estimator_config["fpm_regression"]["fit"]
+
+    saved = json.loads(json.dumps(resolved))
+    restored = RustForwardPassPerfModel.best_available(saved)
+    assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert restored.regression_store_diagnostics() == [
+        {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
+    ]
+
+
+@pytest.mark.parametrize("rebuild_interval", [1, 7, None])
+def test_canonical_regression_updates_after_evictions_with_custom_rebuild_schedule(rebuild_interval):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={
+            "fpm_regression": {
+                "sampling": {"bins_per_axis": [2, 2], "max_observations": 8},
+                "fit": {"rebuild_interval": rebuild_interval},
+            }
+        },
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+
+    def sample(index):
+        batch = index % 7 + 1
+        kv = index * index * 13 + 11
+        # Hand-specified affine surface in Decode's KV and batch features.
+        latency_ms = 2.0 + 0.001 * kv + 0.1 * batch
+        return {
+            "version": 1,
+            "wall_time": latency_ms / 1000,
+            "scheduled_requests": {"num_decode_requests": batch, "sum_decode_kv_tokens": kv},
+        }
+
+    query = sample(11)
+    assert model.estimate_forward_pass_time_ms(query) is None
+    for index in range(1, 81):
+        model.tune_with_fpms(sample(index))
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": "pure_decode", "ready": True, "retained_observations": 8}
+    ]
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(query["wall_time"] * 1000, rel=1e-8)
 
 
 def _supported_fpm_config() -> dict[str, object]:

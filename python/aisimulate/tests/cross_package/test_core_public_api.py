@@ -223,6 +223,64 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
     assert prediction is not None and prediction > 0.0
 
 
+@pytest.mark.parametrize(
+    ("fit", "expected_interval"),
+    [({}, 4096), ({"rebuild_interval": 31}, 31), ({"rebuild_interval": None}, None)],
+)
+def test_raw_canonical_regression_rebuild_interval_normalizes_and_reloads(fit, expected_interval):
+    raw = aisimulate_core.RustForwardPassPerfModel
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    normalized = json.loads(raw.normalize_config(json.dumps(request)))
+    assert normalized["estimator_config"]["fpm_regression"]["fit"] == {
+        "kind": "standardized_nnls",
+        "singular_ridge_scale": 1e-9,
+        "rebuild_interval": expected_interval,
+    }
+    model = raw.best_available(json.dumps(normalized))
+    resolved = json.loads(model.diagnostics())["provenance"]["config"]
+    assert resolved["estimator_config"] == normalized["estimator_config"]
+    restored = raw.best_available(json.dumps(resolved))
+    assert json.loads(restored.diagnostics())["provenance"]["config"] == resolved
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}])
+def test_raw_canonical_regression_rebuild_interval_rejects_invalid_values_with_path(entrypoint, invalid):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "auto",
+        "fallback_policy": "allow",
+        "estimator_config": {"fpm_regression": {"fit": {"rebuild_interval": invalid}}},
+    }
+    # Invalid configuration fails before automatic selection or fallback.
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.fit\.rebuild_interval"):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
+def test_legacy_options_inherit_rust_rebuild_default_without_a_new_flat_control():
+    migrated = json.loads(aisimulate_core.RustForwardPassPerfModel.legacy_estimator_config("{}"))
+    assert migrated["fpm_regression"]["fit"]["rebuild_interval"] == 4096
+    assert migrated["fpm_regression"]["sampling"] == {"bins_per_axis": [4, 4], "max_observations": 64}
+    assert "rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__
+    assert "regression_rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__
+    assert (
+        sdk.ForwardPassPerfModelConfig(
+            model="test/model", system="test", backend="vllm", worker_type="decode"
+        ).estimator_config
+        == {}
+    )
+
+
 def test_raw_fpm_binding_validates_regression_weights() -> None:
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
         _raw_regression_model(

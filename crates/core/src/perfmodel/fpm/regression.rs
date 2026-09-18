@@ -8,7 +8,10 @@
 //! coordinates, while fitting and prediction use standardized raw features.
 
 use super::options::ForwardPassPerfOptions;
-use super::samples::{BucketedSamples, StoreStats};
+use super::samples::{BucketedSamples, SampleInsertion, StoreStats};
+
+mod recursive;
+use recursive::RecursiveFit;
 
 const FEATURE_DIMENSION: usize = 2;
 const INACTIVE_SCALE_RELATIVE_TOLERANCE: f64 = 1e-12;
@@ -25,7 +28,7 @@ pub(crate) struct BucketedRegression {
     samples: BucketedSamples<RegressionObservation>,
     min_observations: usize,
     fit: Option<LinearFit>,
-    ridge_scale: f64,
+    recursive: RecursiveFit,
 }
 
 impl StoreStats for BucketedRegression {
@@ -39,16 +42,16 @@ impl StoreStats for BucketedRegression {
 }
 
 impl BucketedRegression {
-    pub(crate) fn new(options: &ForwardPassPerfOptions) -> Self {
+    pub(crate) fn new(options: &ForwardPassPerfOptions, rebuild_interval: Option<usize>) -> Self {
         Self {
             samples: BucketedSamples::new_dynamic(options, FEATURE_DIMENSION),
             min_observations: options.min_observations,
             fit: None,
-            ridge_scale: options.regression_ridge_scale,
+            recursive: RecursiveFit::new(options.regression_ridge_scale, rebuild_interval),
         }
     }
 
-    /// Retain an observation and refit from the currently retained raw data.
+    /// Retain an observation and update the fit for the retained raw data.
     ///
     /// Returns `false` without changing the model when a feature is negative
     /// or non-finite, or when the target is not finite and strictly positive.
@@ -63,17 +66,28 @@ impl BucketedRegression {
 
         let bucket_x = raw_x.map(f64::ln_1p);
         let observation = RegressionObservation { raw_x, observed_ms };
-        if !self.samples.add(bucket_x.to_vec(), observation) {
-            return false;
-        }
-
-        let retained = self
+        let SampleInsertion::Accepted { evicted } = self
             .samples
-            .observations()
-            .into_iter()
-            .map(|(_, observation)| observation)
-            .collect::<Vec<_>>();
-        self.fit = fit_regression_with_ridge(&retained, self.min_observations, self.ridge_scale);
+            .add_with_eviction(bucket_x.to_vec(), observation)
+        else {
+            return false;
+        };
+
+        self.recursive.add(observation);
+        if let Some(evicted) = evicted {
+            self.recursive.remove(evicted);
+        }
+        debug_assert_eq!(
+            self.recursive.observation_count(),
+            self.samples.total_observations
+        );
+        self.fit = self.recursive.fit_lazy(self.min_observations, || {
+            self.samples
+                .observations()
+                .into_iter()
+                .map(|(_, observation)| observation)
+                .collect()
+        });
         true
     }
 
@@ -83,6 +97,11 @@ impl BucketedRegression {
         }
         let prediction = self.fit.as_ref()?.predict(raw_x)?;
         Some(prediction.max(MIN_POSITIVE_PREDICTION_MS))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mutations_since_rebuild(&self) -> usize {
+        self.recursive.mutations_since_rebuild()
     }
 }
 
@@ -186,14 +205,6 @@ impl LinearFit {
 struct StandardizedObservation {
     x: [f64; FEATURE_DIMENSION],
     observed_ms: f64,
-}
-
-#[cfg(test)]
-fn fit_regression(
-    observations: &[RegressionObservation],
-    min_observations: usize,
-) -> Option<LinearFit> {
-    fit_regression_with_ridge(observations, min_observations, 1e-9)
 }
 
 fn fit_regression_with_ridge(
@@ -379,6 +390,7 @@ mod tests {
         RegressionObservation, Standardization, StandardizedObservation, StoreStats,
         fit_linear_active_set,
     };
+    use crate::RegressionFitConfig;
     use crate::fpm::options::ForwardPassPerfOptions;
 
     fn regression_options() -> ForwardPassPerfOptions {
@@ -398,7 +410,10 @@ mod tests {
 
     #[test]
     fn buckets_on_log_coordinates_but_retains_raw_observation() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         let raw_x = [99.0, 9_999.0];
 
         assert!(regression.add_observation(raw_x, 12.0));
@@ -415,7 +430,8 @@ mod tests {
             bucket_count: 4,
             ..regression_options()
         };
-        let mut regression = BucketedRegression::new(&options);
+        let mut regression =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
         assert!(regression.add_observation([0.0, 0.0], 1.0));
         assert!(regression.add_observation([1.0, 1.0], 2.0));
 
@@ -444,7 +460,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_raw_features_and_targets_without_mutation() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         assert!(!regression.add_observation([-1.0, 1.0], 1.0));
         assert!(!regression.add_observation([f64::NAN, 1.0], 1.0));
         assert!(!regression.add_observation([1.0, f64::INFINITY], 1.0));
@@ -457,7 +476,10 @@ mod tests {
 
     #[test]
     fn fits_standardized_raw_features_instead_of_log_features() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for raw_x in [
             [1.0, 2.0],
             [2.0, 7.0],
@@ -476,7 +498,10 @@ mod tests {
 
     #[test]
     fn standardization_handles_large_feature_scale_disparity() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for raw_x in [
             [1.0e12, 1.0],
             [2.0e12, 8.0],
@@ -499,7 +524,10 @@ mod tests {
 
     #[test]
     fn constant_axis_is_inactive_and_predicts_with_fit_snapshot() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for attention in 1..=6 {
             let raw_x = [attention as f64, 7.0];
             assert!(regression.add_observation(raw_x, 2.0 + 4.0 * raw_x[0]));
@@ -521,7 +549,8 @@ mod tests {
             bucket_count: 1,
             ..ForwardPassPerfOptions::default()
         };
-        let mut regression = BucketedRegression::new(&options);
+        let mut regression =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
         for value in 0..=5 {
             let raw_x = [value as f64, (value * value) as f64];
             assert!(regression.add_observation(raw_x, 1.0 + raw_x[0] + raw_x[1]));
@@ -554,7 +583,10 @@ mod tests {
 
     #[test]
     fn all_constant_features_never_make_regression_ready() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for observed_ms in 1..=6 {
             assert!(regression.add_observation([4.0, 9.0], observed_ms as f64));
         }
@@ -565,7 +597,10 @@ mod tests {
 
     #[test]
     fn identifiable_intercept_only_boundary_is_not_ready() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for attention in 1..=6 {
             let value = attention as f64;
             assert!(regression.add_observation([value, 0.0], 100.0 - value));
@@ -574,8 +609,34 @@ mod tests {
     }
 
     #[test]
+    fn negative_underlying_slope_selects_the_nonnegative_boundary() {
+        let options = ForwardPassPerfOptions {
+            regression_ridge_scale: 0.25,
+            ..regression_options()
+        };
+        let mut regression = BucketedRegression::new(&options, None);
+        // A complete Cartesian grid has independent feature columns. For
+        // y=20-2*x0+3*x1, constraining the first slope to zero replaces -2*x0
+        // by its mean -2. The constrained optimum is therefore 18+3*x1.
+        for x0 in 0..3 {
+            for x1 in 0..3 {
+                let raw_x = [x0 as f64, x1 as f64];
+                assert!(regression.add_observation(raw_x, 20.0 - 2.0 * raw_x[0] + 3.0 * raw_x[1]));
+            }
+        }
+        let fit = regression.fit.as_ref().unwrap();
+        assert_eq!(fit.coefficients[0], 0.0);
+        assert!(fit.coefficients[1] > 0.0);
+        assert_close(regression.predict(&[100.0, 4.0]).unwrap(), 30.0, 1e-10);
+        assert_close(regression.predict(&[0.0, 0.0]).unwrap(), 18.0, 1e-10);
+    }
+
+    #[test]
     fn positive_slope_extrapolation_is_clamped_to_prediction_floor() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for attention in 6..=10 {
             let attention = attention as f64;
             assert!(regression.add_observation([attention, 0.0], attention - 5.0));
@@ -636,8 +697,9 @@ mod tests {
             1e-12,
         );
 
-        let mut regression = BucketedRegression::new(&options);
-        assert_eq!(regression.ridge_scale, 0.25);
+        let mut regression =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
+        assert_eq!(options.regression_ridge_scale, 0.25);
         for observation in observations {
             assert!(regression.add_observation(observation.raw_x, observation.observed_ms));
         }
@@ -655,7 +717,8 @@ mod tests {
             bucket_count: 4,
             ..ForwardPassPerfOptions::default()
         };
-        let mut regression = BucketedRegression::new(&options);
+        let mut regression =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
 
         // The global oldest sample lives in the lower cell. The extreme is
         // instead the oldest sample in the upper cell, which is made uniquely
@@ -703,7 +766,8 @@ mod tests {
             ..regression_options()
         };
 
-        let mut two_active_axes = BucketedRegression::new(&options);
+        let mut two_active_axes =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
         assert!(two_active_axes.add_observation([0.0, 0.0], 2.0));
         assert!(two_active_axes.add_observation([1.0, 1.0], 1.0));
         assert_eq!(
@@ -712,7 +776,8 @@ mod tests {
         );
         assert!(two_active_axes.is_ready());
 
-        let mut one_active_axis = BucketedRegression::new(&options);
+        let mut one_active_axis =
+            BucketedRegression::new(&options, RegressionFitConfig::default().rebuild_interval);
         assert!(one_active_axis.add_observation([0.0, 0.0], 2.0));
         assert!(one_active_axis.add_observation([1.0, 0.0], 1.0));
         assert!(!one_active_axis.is_ready());
@@ -720,7 +785,10 @@ mod tests {
 
     #[test]
     fn prediction_rejects_invalid_features() {
-        let mut regression = BucketedRegression::new(&regression_options());
+        let mut regression = BucketedRegression::new(
+            &regression_options(),
+            RegressionFitConfig::default().rebuild_interval,
+        );
         for raw_x in [[1.0, 2.0], [2.0, 7.0], [4.0, 3.0], [8.0, 11.0], [16.0, 5.0]] {
             assert!(regression.add_observation(raw_x, 5.0 + raw_x[0] + raw_x[1]));
         }

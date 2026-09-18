@@ -101,7 +101,14 @@ class RustEngineUnsupportedError(RuntimeError):
 
 @dataclass(frozen=True)
 class ForwardPassPerfModelConfig:
-    """Canonical immutable identity and selection policy for the estimator."""
+    """Canonical immutable identity and selection policy for the estimator.
+
+    Estimator controls pass through to Rust unchanged. For regression,
+    ``estimator_config["fpm_regression"]["fit"]["rebuild_interval"]`` accepts
+    a positive integer mutation count or ``None`` to disable periodic
+    statistics rebuilding. Omitting it uses the Rust default of 4096;
+    numerical recovery and batch fallbacks remain enabled with ``None``.
+    """
 
     model: str
     system: str
@@ -214,6 +221,13 @@ class RustForwardPassPerfModel:
     own fit and retention state. ``max_observations`` (default ``64``) and
     ``min_observations`` (default ``5``) apply independently to each store.
 
+    Regression updates centered sufficient statistics as retained samples are
+    inserted or evicted. The canonical ``fpm_regression.fit.rebuild_interval``
+    control counts one mutation per insertion and one per eviction. A scheduled
+    rebuild occurs after the complete update transaction, then resets its
+    counter to zero. The Rust default is 4096 mutations; ``None`` disables only
+    scheduled rebuilds, preserving numerical recovery and batch fallbacks.
+
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
     as a workload descriptor: scheduled request fields are used, while
@@ -257,6 +271,8 @@ class RustForwardPassPerfModel:
         Auto searches op_level, fpm_interpolation, then fpm_regression even
         with fallback_policy=deny. Explicit modes default to strict selection.
         Native correction retains its existing workload feature space.
+        Nested estimator controls, including an explicit ``None`` rebuild
+        interval, are preserved in resolved configuration and provenance.
         """
         import aisimulate_core
 
