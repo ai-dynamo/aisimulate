@@ -107,7 +107,7 @@ to the intended environment.
 ## Use an internal nightly
 
 The [nightly workflow](../.github/workflows/nightly-ci.yml) produces a wheel
-version such as `0.12.0.devYYYYMMDD`, then stages artifacts to access-controlled
+version such as `0.13.0.devYYYYMMDD`, then stages artifacts to access-controlled
 Artifactory through the protected release environment. The run subsequently
 checks the downloaded wheel and qualifies its FPE support matrix. Use a
 successful completed nightly: a successful build, staging step, or dev suffix

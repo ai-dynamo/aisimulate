@@ -1,6 +1,6 @@
 # AISimulate Python source migration
 
-This draft targets the next minor release, AISimulate 0.13.0. It removes the
+AISimulate 0.13.0 removes the
 `aiconfigurator` and `aiconfigurator_core` Python import namespaces. The legacy
 `aiconfigurator` executable remains available, implemented by
 `aisimulate.legacy_cli.entrypoint`. Published 0.12.0 wheels retain their existing
@@ -58,7 +58,7 @@ Callers must update imports before using the new wheel. Old pickles that encode
 removed module paths also require conversion in the old environment. There is
 no automatic legacy import hook.
 
-The draft needs exact-wheel Dynamo Router, Planner, Mocker, and deployment
+Release qualification requires exact-wheel Dynamo Router, Planner, Mocker, and deployment
 adapter qualification before release. Removing import namespaces does not prove
 those downstream consumers have migrated. Coordinate the wheel/crate minor
 version with the release change; do not backport this break to 0.12.x.
@@ -67,4 +67,4 @@ Historical migration examples, upstream source/license attribution, and retained
 legacy command names continue to identify AIConfigurator accurately. Existing
 `aic_*` replay transport fields, native `AicEngine` type names, and FPM resource
 labels are separate downstream contracts; their coordinated rename remains a
-follow-up in this draft's issue before the broader naming cleanup is complete.
+follow-up in AIC-1995 before the broader naming cleanup is complete.

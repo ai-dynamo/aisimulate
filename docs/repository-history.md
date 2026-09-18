@@ -12,20 +12,20 @@ migration is tracked by
 
 ### API mapping
 
-| AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
+| AIC 0.11 surface | AISimulate 0.13 surface | Compatibility |
 | --- | --- | --- |
-| Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
+| Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command remains; the Python import namespace is removed in 0.13.0 |
 | CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See the [AIC migration guide](cli/migrate-from-aiconfigurator.md); this is not a flag-compatible rename |
 | Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
-| `aisimulate_core` | `aisimulate_core` from the `aisimulate` wheel | Existing import remains available in 0.12.0 |
-| `aisimulate_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.12.0 |
-| Rust package/import `aiconfigurator-core` / `aisimulate_core` | `aisimulate-core` / `aisimulate_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
+| `aiconfigurator_core` | `aisimulate_core` from the `aisimulate` wheel | Update Python imports for 0.13.0 |
+| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` in the same wheel | The old import path is removed in 0.13.0 |
+| Rust package/import `aiconfigurator-core` / `aiconfigurator_core` | `aisimulate-core` / `aisimulate_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
 
 Temporary Cargo alias:
 
 ```toml
 [dependencies]
-aiconfigurator-core = { package = "aisimulate-core", version = "0.12", features = ["python"] }
+aiconfigurator-core = { package = "aisimulate-core", version = "0.13", features = ["python"] }
 ```
 
 The former AIC crate-root types and builders remain available through this
@@ -73,7 +73,7 @@ fetched, for example:
 git log --follow -- crates/core/src/perfmodel/mod.rs
 git log --follow -- python/aisimulate/src/aisimulate_core/sdk/engine.py
 git -C ../aiconfigurator fetch origin
-diff -u <(git -C ../aiconfigurator show c8aee02f0887547a334c3d6cd192c42757e4b40e:src/aisimulate/legacy_cli/entrypoint.py) <(git show HEAD:python/aisimulate/src/aisimulate/legacy_cli/entrypoint.py)
+diff -u <(git -C ../aiconfigurator show c8aee02f0887547a334c3d6cd192c42757e4b40e:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aisimulate/legacy_cli/entrypoint.py)
 ```
 
 ### Selective speculative-decoding migration
@@ -145,7 +145,7 @@ manual-path decisions and the bounded final-tree adaptations are recorded in
 
 ### Intentional AISimulate adaptations
 
-- Source paths map to the combined AIS layout: `aic-core/rust/aiconfigurator-core/src/` to `crates/core/src/perfmodel/`, `src/aisimulate_core/` to `python/aisimulate/src/aisimulate_core/`, and the upper application, Collector, tests, docs, and tools beneath `python/aisimulate/`. Migration-introduced crate, distribution, package-data, and tool references follow those destinations; pre-existing source-provenance comments may retain historical AIC paths.
+- Source paths map to the combined AIS layout: `aic-core/rust/aiconfigurator-core/src/` to `crates/core/src/perfmodel/`, `aic-core/src/aiconfigurator_core/` to `python/aisimulate/src/aisimulate_core/`, and the upper application, Collector, tests, docs, and tools beneath `python/aisimulate/`. Migration-introduced crate, distribution, package-data, and tool references follow those destinations; pre-existing source-provenance comments may retain historical AIC paths.
 - The source `.gitattributes` snapshot remains byte-identical under `python/aisimulate/`. Root `.gitattributes` carries equivalent mapped rules for the active AIS data and generated model-config paths and is owned by AISimulate Infra plus maintainers.
 - The source engine-step golden is byte-identical. Source model configs, collection metadata, reuse declarations, Parquet files, `collector_ref` values, framework image digests, and other pinned SHAs are preserved unless a row is explicitly named here.
 - `perf_data_reuse_manifest.yaml` is intentionally regenerated from the final AIS data tree because the source snapshot predates the data added by #1507 and #1486. Its generator defaults and rendered instructions use the unified `python/aisimulate/src/aisimulate_core` path.
@@ -175,8 +175,8 @@ will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
 artifacts and then be archived; ongoing development, releases, issues, and pull
 requests move to AISimulate.
 
-The compatibility command remains in the AISimulate 0.12.0 wheel and is
-targeted for removal in AISimulate 0.13.0. Removal is gated on verified unified
+The compatibility command remains in the AISimulate 0.13.0 wheel and is
+targeted for removal in AISimulate 0.14.0. Removal is gated on verified unified
 CLI replacements for every remaining workflow in the migration guide.
 
 For features already implemented by the standalone Sweeper, see

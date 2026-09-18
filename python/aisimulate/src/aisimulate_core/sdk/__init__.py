@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 __all__ = [
     "AttentionBackend",
     "EngineHandle",
+    "ForwardPassPerfModelConfig",
+    "ForwardPassPerfOptions",
     "MoEBackend",
     "ModelConfig",
     "RuntimeConfig",
@@ -32,6 +34,14 @@ __all__ = [
 _PUBLIC_EXPORTS = {
     "AttentionBackend": ("aisimulate_core.sdk.common", "AttentionBackend"),
     "EngineHandle": ("aisimulate_core.sdk.engine", "EngineHandle"),
+    "ForwardPassPerfModelConfig": (
+        "aisimulate_core.sdk.rust_engine_step",
+        "ForwardPassPerfModelConfig",
+    ),
+    "ForwardPassPerfOptions": (
+        "aisimulate_core.sdk.rust_engine_step",
+        "ForwardPassPerfOptions",
+    ),
     "ModelConfig": ("aisimulate_core.sdk.config", "ModelConfig"),
     "MoEBackend": ("aisimulate_core.sdk.common", "MoEBackend"),
     "RuntimeConfig": ("aisimulate_core.sdk.config", "RuntimeConfig"),
@@ -68,4 +78,8 @@ if TYPE_CHECKING:
     from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
     from aisimulate_core.sdk.engine import EngineHandle, compile_engine
     from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
-    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+    from aisimulate_core.sdk.rust_engine_step import (
+        ForwardPassPerfModelConfig,
+        ForwardPassPerfOptions,
+        RustForwardPassPerfModel,
+    )

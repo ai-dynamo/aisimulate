@@ -45,6 +45,7 @@ from typing import Any
 
 import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
@@ -436,27 +437,30 @@ def compile_engine(
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
 
-    resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
-    model_config = build_model_config(
-        tp_size=tp_size,
-        pp_size=pp_size,
-        attention_dp_size=attention_dp_size,
-        moe_tp_size=resolved_moe_tp,
-        moe_ep_size=resolved_moe_ep,
-        gemm_quant_mode=gemm_quant_mode,
-        kvcache_quant_mode=kvcache_quant_mode,
-        fmha_quant_mode=fmha_quant_mode,
-        moe_quant_mode=moe_quant_mode,
-        comm_quant_mode=comm_quant_mode,
-        forward_model=forward_model,
-        attention_backend=attention_backend,
-        speculation=resolved_speculation,
-    )
-    # Apply MTP BEFORE get_model so the walked op lists carry the
-    # (L+nextn)/L compute scale; accepted-token progress is applied above core.
-    apply_nextn(model_config, nextn)
+    try:
+        resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
+        model_config = build_model_config(
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=resolved_moe_tp,
+            moe_ep_size=resolved_moe_ep,
+            gemm_quant_mode=gemm_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            forward_model=forward_model,
+            attention_backend=attention_backend,
+            speculation=resolved_speculation,
+        )
+        # Apply MTP BEFORE get_model so the walked op lists carry the
+        # (L+nextn)/L compute scale; accepted-token progress is applied above core.
+        apply_nextn(model_config, nextn)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
     model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a

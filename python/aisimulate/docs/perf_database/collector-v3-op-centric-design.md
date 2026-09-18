@@ -322,6 +322,23 @@ have been invalidated by it, so backward fill preserves historical
 reproducibility; forward fill silently answers "how fast is 0.5.14" with
 0.5.15's kernels.
 
+### Corrected vLLM 0.24.0 FP8-block measurements
+
+For B200/B300/GB200/GB300 and H100/H200 SXM, the 0.24.0 GEMM tables
+exclude FP8-block rows measured eagerly with host launch gaps (PR #219).
+All other rows are retained unchanged. Their standard collection sidecars mark
+the reduced tables partial, and existing declared reuse points to 0.25.0.
+With shared-layer reuse enabled, explicit 0.24.0 requests load retained primary
+rows first and fill missing keys from 0.25.0 graph-timed measurements.
+Newer versions are never selected implicitly. With reuse disabled, the removed
+FP8-block measurements remain unavailable.
+The six-GPU regression test compares the entire native loaded table with the
+first-source-wins merge of all primary and donor rows, including exact latency
+preservation. Table-wide reuse also fills missing BF16, FP8, and (on Blackwell)
+NVFP4 keys. The [PR #244 evidence bundle](../../../../docs/data/pr244/README.md)
+records the per-precision counts, unchanged kernel source paths, cross-version
+limitations, and reproducible collection coverage for all 85 new tables.
+
 ### 6.3 Channel 2 — declared reuse (`reuse.yaml`, same backend, any direction)
 
 When we *know* data is valid for a version we never collected — typically a

@@ -130,6 +130,8 @@ jobs:
               }
             }
             core.setFailed('commit_sha is not on main or any release/* branch');
+      # Downstream migrations consume this development wheel before they can
+      # merge. Their completion is a stable-release prerequisite, not a nightly gate.
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
       - name: Compute unique nightly version

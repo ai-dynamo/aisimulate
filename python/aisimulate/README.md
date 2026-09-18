@@ -6,10 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # AISimulate application (AIConfigurator compatibility source)
 
 > This directory contains the complete AIConfigurator application migrated to
-> the standalone AISimulate repository. It builds the `aisimulate` 0.12.0
-> wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
-> `aiconfigurator` executable remain compatibility surfaces alongside the public
-> `aisimulate` prediction CLI. The original AIC
+> the standalone AISimulate repository. It builds the `aisimulate` 0.13.0
+> wheel, not a separate `aiconfigurator` wheel. The
+> `aiconfigurator` executable remains a compatibility surface alongside the public
+> `aisimulate` prediction CLI. Command removal is targeted for AISimulate 0.14.0,
+> after every remaining workflow has a verified unified-CLI replacement. The original AIC
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
@@ -76,8 +77,9 @@ pip3 install aisimulate
 One `aisimulate` wheel contains the compatibility CLI and application, the
 estimator SDK, model/system data, Replay, Sweeper, and the native extension.
 It installs no separate `aiconfigurator`, `aiconfigurator-core`, or Python
-`aisimulate-core` distribution. The `aiconfigurator`, `aisimulate_core`,
-and `aisimulate_core` import namespaces remain available from this wheel.
+`aisimulate-core` distribution. The canonical import namespaces are `aisimulate` and `aisimulate_core`.
+The removed `aiconfigurator` and `aiconfigurator_core` imports must be migrated;
+see the [Python source migration guide](../../docs/python-source-migration.md).
 
 `Task` and the orchestration APIs remain available:
 

@@ -97,6 +97,26 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### FP8-block correction in PR #244
+
+The selective refresh from `0a51476b6ab90bc0e475bd41d4b1c7abbef07b95`
+covers 68 engine-step records, 19 compiled-engine references, and three
+per-op cases. It follows removal of eager vLLM 0.24.0 FP8-block timings
+and explicit reuse of the graph-timed 0.25.0 GEMM table. Declared reuse
+also fills missing GEMM shapes for the other retained precisions.
+
+The three per-op cases change only 12 QKV/projection GEMM latency values;
+other per-op latencies, energies, and source labels are unchanged. For
+MiniMax-M2.5 (B200, ISL 1024, OSL 2), context QKV GEMM changes from
+11.926155 to 0.948021 ms and generation QKV GEMM from 16.582272 to
+0.565109 ms. Static, mixed-step, aggregated/disaggregated, chunked-prefill,
+and imbalance-scale references inherit these data changes.
+
+Only records implicated by the failed golden comparisons were refreshed,
+using `pin_goldens.py --refresh`. Each refreshed record retains its source
+commit in `post_freeze_pins`; test matrices and tolerances are unchanged.
+These are prediction-regression baselines, not whole-model silicon validation.
+
 ## Engine-Step Benchmark
 
 Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in

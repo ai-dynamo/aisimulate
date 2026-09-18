@@ -23,6 +23,8 @@ unless the task actually targets `src/aisimulate/generator/`.
 
 ## Governed areas
 
+- Performance models and their Rust/Python/CLI/Sweeper/Replay/Planner consumers
+  → read [perfmodel-api.md](perfmodel-api.md) before extending or migrating an API.
 - Editing `src/aisimulate/generator/**` → generator rules auto-load; entry
   point `.claude/rules/generator-development.md`.
 - Editing `collector/**` → collector rules auto-load; read

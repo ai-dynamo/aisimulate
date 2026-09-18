@@ -8,11 +8,19 @@ last_synced = "c8aee02f0887547a334c3d6cd192c42757e4b40e"
 # These are stable mirror boundaries. Keep AISimulate-specific integration
 # changes outside them so an upstream diff can be path-rewritten mechanically.
 [[mirror]]
-source = "src/aiconfigurator"
-target = "python/aisimulate/src/aiconfigurator"
+source = "src/aiconfigurator/sdk"
+target = "python/aisimulate/src/aisimulate/sdk"
 
 [[mirror]]
-source = "src/aisimulate_core"
+source = "src/aiconfigurator/generator"
+target = "python/aisimulate/src/aisimulate/generator"
+
+[[mirror]]
+source = "src/aiconfigurator/cli"
+target = "python/aisimulate/src/aisimulate/legacy_cli"
+
+[[mirror]]
+source = "aic-core/src/aiconfigurator_core"
 target = "python/aisimulate/src/aisimulate_core"
 
 [[mirror]]
@@ -76,3 +84,8 @@ reason = "Only AISimulate repository-root workflows are active."
 [[manual]]
 source = "CODEOWNERS"
 reason = "AISimulate generates CODEOWNERS from .github/codeowners/areas.yaml."
+
+# Package consolidation moves entrypoints and removes redundant resource aliases.
+[[manual]]
+source = "src/aiconfigurator"
+reason = "Review application imports and root entrypoints against the two canonical packages; SDK, generator, and CLI directory patches are mapped above, but main.py/deprecation.py move into legacy_cli and redundant resource aliases are removed."

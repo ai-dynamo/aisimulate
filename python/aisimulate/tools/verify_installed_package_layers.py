@@ -134,6 +134,8 @@ def _verify_imports() -> None:
     expected_facade = {
         "AttentionBackend",
         "EngineHandle",
+        "ForwardPassPerfModelConfig",
+        "ForwardPassPerfOptions",
         "MoEBackend",
         "ModelConfig",
         "RuntimeConfig",

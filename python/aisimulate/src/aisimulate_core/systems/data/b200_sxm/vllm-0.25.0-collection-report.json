@@ -2193,8 +2193,8 @@
         "source_commit": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
         "changed_paths": [
           "python/aisimulate/collector/framework_manifest.yaml",
-          "python/aisimulate/src/aisimulate_core/model_configs",
-          "python/aisimulate/src/aisimulate_core/systems"
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
         ],
         "runtime_manifest_sha256": "eb8beaaf0649afd1b05208c91e50b4f12ee444c4708f34c10449482b9b07c347",
         "patch_sha256": "797f810bd4452f3bd0306a48cd841040ce344b03e8f9486d3215fe43209ff40d",
@@ -2205,8 +2205,8 @@
         "source_commit": "c79cc132552deb677becc37f8139b0cca2b08d75",
         "changed_paths": [
           "python/aisimulate/collector/framework_manifest.yaml",
-          "python/aisimulate/src/aisimulate_core/model_configs",
-          "python/aisimulate/src/aisimulate_core/systems"
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
         ],
         "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
         "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
@@ -2217,8 +2217,8 @@
         "source_commit": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
         "changed_paths": [
           "python/aisimulate/collector/framework_manifest.yaml",
-          "python/aisimulate/src/aisimulate_core/model_configs",
-          "python/aisimulate/src/aisimulate_core/systems"
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
         ],
         "runtime_manifest_sha256": "04c7646128ee7dd5e1fd7dd6d007ce47acb90385a1b2d025581956a2b0ca1c60",
         "patch_sha256": "2798ff1f02bba9aa86637312766f30b47c2685797d0a732988d6a8828321153c",
@@ -2229,8 +2229,8 @@
         "source_commit": "0df459fa62de6529d4e1585536da64fd8e917818",
         "changed_paths": [
           "python/aisimulate/collector/framework_manifest.yaml",
-          "python/aisimulate/src/aisimulate_core/model_configs",
-          "python/aisimulate/src/aisimulate_core/systems"
+          "python/aisimulate/src/aiconfigurator/model_configs",
+          "python/aisimulate/src/aiconfigurator/systems"
         ],
         "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
         "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",

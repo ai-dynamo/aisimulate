@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from ..config.engine import NgramSpeculationConfig
 
@@ -474,7 +474,7 @@ class SearchSpace(BaseModel):
     # deployment: branch + backend + legal parallel shapes
     deployment_mode: list[str] = ["disagg", "agg"]  # branches to explore; pin with one
     backend: list[str] = ["vllm"]  # vllm | sglang | trtllm
-    backend_version: str | None = None
+    backend_version: str | dict[str, str] | None = None
     parallel_configs: list[dict[str, Any]] = Field(default_factory=list)  # generated when empty
     parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     flat_parallel_modes: list[str] = Field(default_factory=list)
@@ -484,6 +484,13 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
+    transfer_policy: str | list[str] | None = None
+    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    fallback_policy: Literal["deny", "allow"] = "deny"
+    estimator_config: dict[str, Any] = Field(default_factory=dict)
+    role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
     decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
@@ -520,7 +527,7 @@ class SearchSpace(BaseModel):
     prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
-    prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    prefill_forward_model: str = "op_level"
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -534,7 +541,7 @@ class SearchSpace(BaseModel):
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
-    decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    decode_forward_model: str = "op_level"
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -548,7 +555,7 @@ class SearchSpace(BaseModel):
     agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
-    agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    agg_forward_model: str = "op_level"
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -557,6 +564,34 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_estimator_selection(cls, value):
+        if not isinstance(value, dict):
+            return value
+        modes = value.get("deployment_mode")
+        if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
+            "encoder"
+        ) is not None:
+            return value
+        value = dict(value)
+        raw_controls = value.get("role_estimator_controls", {})
+        if not isinstance(raw_controls, dict) or any(
+            not isinstance(settings, dict) for settings in raw_controls.values()
+        ):
+            return value
+        controls = {role: dict(settings) for role, settings in raw_controls.items()}
+        for role in ("agg", "prefill", "decode"):
+            legacy = value.get(f"{role}_forward_model")
+            if legacy == "op_level" and value.get(f"{role}_timing_model") is not None:
+                continue
+            if isinstance(legacy, str) and legacy in {"op_level", "fpm"}:
+                controls.setdefault(role, {}).setdefault(
+                    "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
+                )
+        value["role_estimator_controls"] = controls
+        return value
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -602,7 +637,25 @@ class SearchSpace(BaseModel):
             value = getattr(self, field_name)
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
+        if not self._uses_legacy_estimator_provider():
+            for role in ("agg", "prefill", "decode"):
+                mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
+                setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
         return self
+
+    def _uses_legacy_estimator_provider(self) -> bool:
+        return bool(set(self.deployment_mode) & {"afd", "afd+pd"}) or self.encoder is not None
+
+    @model_serializer(mode="wrap")
+    def _serialize_estimator_selection(self, handler):
+        result = handler(self)
+        # Ordinary workers serialize only the canonical controls. Existing AFD
+        # and encoder providers still consume the legacy selector, including
+        # when a saved search is reloaded.
+        if not self._uses_legacy_estimator_provider():
+            for role in ("agg", "prefill", "decode"):
+                result.pop(f"{role}_forward_model", None)
+        return result
 
     @model_validator(mode="after")
     def _validate_role_hardware(self) -> SearchSpace:
@@ -622,6 +675,9 @@ class SearchSpace(BaseModel):
         if role == "decode":
             return self.decode_hardware_sku or self.hardware_sku
         raise ValueError(f"unknown engine role {role!r}")
+
+    def systems_paths_for(self, role: str) -> list[str] | None:
+        return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
 
     @field_validator(
         "afd_tp_a_candidates",
@@ -701,6 +757,109 @@ class SearchSpace(BaseModel):
             if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
                 raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
         return self
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_estimator_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("systems_paths")
+    @classmethod
+    def _validate_estimator_roots(cls, value):
+        if value is None:
+            return value
+        if any(not path.strip() for path in value):
+            raise ValueError("systems_paths entries must be nonempty")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_estimator_controls(self):
+        allowed = {
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+            "systems_paths",
+            "database_mode",
+            "transfer_policy",
+        }
+        for role, controls in self.role_estimator_controls.items():
+            if role not in {"agg", "prefill", "decode"}:
+                raise ValueError(f"unknown estimator role {role!r}; expected agg, prefill, or decode")
+            if set(controls) - allowed:
+                raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
+            if controls and self._uses_legacy_estimator_provider():
+                raise ValueError(
+                    "role_estimator_controls require regular language workers; "
+                    "AFD and encoder providers are unsupported"
+                )
+            if controls and getattr(self, f"{role}_timing_model") is not None:
+                raise ValueError(f"{role} estimator settings require default timing")
+            mode = controls.get("database_mode")
+            if isinstance(mode, str) and mode.upper() == "SOL_FULL":
+                raise ValueError(
+                    f"role_estimator_controls.{role}.database_mode cannot be SOL_FULL; it is a per-call diagnostic"
+                )
+            if "systems_paths" in controls:
+                paths = controls["systems_paths"]
+                if (
+                    not isinstance(paths, list)
+                    or not paths
+                    or any(not isinstance(p, str) or not p.strip() for p in paths)
+                ):
+                    raise ValueError(f"{role} systems_paths must contain nonempty strings")
+        nondefault = (
+            self.database_mode != "SILICON"
+            or self.transfer_policy is not None
+            or self.systems_paths not in (None, ["default"])
+            or self.estimation_mode != "auto"
+            or self.fallback_policy != "deny"
+            or bool(self.estimator_config)
+        )
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        if nondefault and (
+            set(self.deployment_mode) & {"afd", "afd+pd"}
+            or self.encoder is not None
+            or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing in every role")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_backend_versions(self) -> SearchSpace:
+        configured = list(dict.fromkeys(self.backend))
+        if isinstance(self.backend_version, str):
+            if not self.backend_version.strip():
+                raise ValueError("backend_version must be a non-empty version")
+            if len(configured) != 1:
+                raise ValueError(
+                    "a string backend_version requires exactly one configured backend; "
+                    "use a {backend: version} mapping for a multi-backend search"
+                )
+            self.backend_version = self.backend_version.strip()
+        elif isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - set(configured))
+            if unknown:
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
+            invalid = [
+                backend
+                for backend, version in self.backend_version.items()
+                if not isinstance(version, str) or not version.strip()
+            ]
+            if invalid:
+                raise ValueError(f"backend_version needs a non-empty version for {sorted(invalid)}")
+            self.backend_version = {backend: version.strip() for backend, version in self.backend_version.items()}
+        return self
+
+    def requested_backend_version(self, backend: str) -> str | None:
+        """Return the version pin for ``backend``; ``None`` means resolve latest."""
+
+        if isinstance(self.backend_version, str):
+            return self.backend_version
+        if isinstance(self.backend_version, dict):
+            return self.backend_version.get(backend)
+        return None
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:
