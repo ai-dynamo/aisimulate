@@ -18,9 +18,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 # Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
-# PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-dev.YYYYMMDD` in
+# PEP 440 `0.13.0.devYYYYMMDD` in the wheel, SemVer `0.13.0-dev.YYYYMMDD` in
 # the crate (cargo rejects the PEP 440 spelling). The release contract still
 # anchors on VERSION; only this suffix pair is additionally accepted.
 DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}")

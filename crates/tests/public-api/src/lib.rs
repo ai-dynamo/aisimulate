@@ -350,3 +350,82 @@ mod tests {
         assert_eq!(driver.next_ready_time_ms(), Some(0.0));
     }
 }
+
+/// Exhaustive downstream literals for the coordinated 0.13 report migration.
+/// Cold callers explicitly leave both newly introduced phase fields absent.
+/// Keeping this in an external crate catches public-field source changes.
+pub fn rebuild_replay_report_literals(
+    report: aiconfigurator_core::ReplayReport,
+    record: aiconfigurator_core::replay::PerRequestRecord,
+) -> (
+    aiconfigurator_core::ReplayReport,
+    aiconfigurator_core::replay::PerRequestRecord,
+) {
+    use aiconfigurator_core::{replay::PerRequestRecord, ReplayReport};
+    (
+        ReplayReport {
+            g3_offload: report.g3_offload,
+            request_counts: report.request_counts,
+            throughput: report.throughput,
+            prefix_cache_reused_ratio: report.prefix_cache_reused_ratio,
+            first_admission_prefix_cache_reused_ratio: report
+                .first_admission_prefix_cache_reused_ratio,
+            latency: report.latency,
+            trajectories: report.trajectories,
+            agentic_graph: report.agentic_graph,
+            agentic_snapshots: report.agentic_snapshots,
+            agentic_phases: None,
+            agentic_lifecycle: report.agentic_lifecycle,
+            agentic_play_outcomes: report.agentic_play_outcomes,
+            goodput: report.goodput,
+            power: report.power,
+            power_diagnostics: report.power_diagnostics,
+            per_request: report.per_request,
+            runtime_evidence: report.runtime_evidence,
+        },
+        PerRequestRecord {
+            request_id: record.request_id,
+            play_id: record.play_id,
+            session_id: record.session_id,
+            turn_index: record.turn_index,
+            metadata: record.metadata,
+            agentic: record.agentic,
+            agentic_phase: None,
+            uuid: record.uuid,
+            arrival_time_ms: record.arrival_time_ms,
+            dispatched_at_ms: record.dispatched_at_ms,
+            first_admit_ms: record.first_admit_ms,
+            terminal_time_ms: record.terminal_time_ms,
+            first_token_ms: record.first_token_ms,
+            last_token_ms: record.last_token_ms,
+            ttft_ms: record.ttft_ms,
+            ttst_ms: record.ttst_ms,
+            e2e_latency_ms: record.e2e_latency_ms,
+            itl_ms: record.itl_ms,
+            input_length: record.input_length,
+            requested_output_length: record.requested_output_length,
+            output_length: record.output_length,
+            reused_input_tokens: record.reused_input_tokens,
+            first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
+            first_admission_host_reused_input_tokens: record
+                .first_admission_host_reused_input_tokens,
+            prefill_worker_idx: record.prefill_worker_idx,
+            decode_worker_idx: record.decode_worker_idx,
+            prefill_admit_ms: record.prefill_admit_ms,
+            source_held_ms: record.source_held_ms,
+            destination_reserved_ms: record.destination_reserved_ms,
+            destination_activated_ms: record.destination_activated_ms,
+            decode_admit_ms: record.decode_admit_ms,
+            source_released_ms: record.source_released_ms,
+            decode_reused_input_tokens: record.decode_reused_input_tokens,
+            prefill_route_overlap_tokens: record.prefill_route_overlap_tokens,
+            decode_route_overlap_tokens: record.decode_route_overlap_tokens,
+            routing_history: record.routing_history,
+            admission_history: record.admission_history,
+            admission_count: record.admission_count,
+            readmission_count: record.readmission_count,
+            pressure_record_ordinals: record.pressure_record_ordinals,
+            terminal_status: record.terminal_status,
+        },
+    )
+}

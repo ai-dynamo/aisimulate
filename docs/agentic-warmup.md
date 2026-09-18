@@ -117,6 +117,36 @@ runtime-clock contract, and the first tick runs no earlier than the barrier.
 
 ## Reference boundary
 
+**Attribution review is pending; this work is not cleared for merge/release.**
+The repository attribution gate also covers adapted behavior. The statement
+that no upstream code was copied does not by itself satisfy that gate.
+
+Source audit (2026-09-18):
+
+- Original snapshot reference: NVIDIA AIPerf,
+  [`src/aiperf/timing/trajectory_source.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/trajectory_source.py)
+  at `7db2ba37a62aa80c882bc90eaf61cc8073e2387b`,
+  [Apache-2.0](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/LICENSE).
+- Additional corroborating reference located during this review: SemiAnalysisAI
+  AgentX harness,
+  [`docs/tutorials/agentx-mvp.md`](https://github.com/SemiAnalysisAI/agentx-harness/blob/56a0cf70f4c0359454ee4bd15a17770b541a3e3e/docs/tutorials/agentx-mvp.md),
+  at `56a0cf70f4c0359454ee4bd15a17770b541a3e3e`,
+  [Apache-2.0](https://github.com/SemiAnalysisAI/agentx-harness/blob/56a0cf70f4c0359454ee4bd15a17770b541a3e3e/LICENSE).
+  This is not a claim that this later audit reference was the original source.
+- The original AgentX methodology website links to SemiAnalysisAI InferenceX-app.
+  Its methodology article source is
+  [`packages/app/src/components/datasets/agentx-methodology-article.tsx`](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx)
+  at `9bb7b13eb4985217a6282f340459fd5948613276`; the repository
+  [license is GPL-3.0](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/LICENSE).
+  No website code, figures, or prose were copied into this implementation.
+  Maintainer/OSRB guidance is required on the behavioral-reference boundary;
+  neither the harness license nor the dataset license resolves that question.
+
+After that guidance, complete the derived-file inventory and canonical/packaged
+notices as required. Byte-identical notice copies alone do not establish that
+all required attribution is present. This audit does not grant an exemption or
+relicense any source.
+
 [AgentX methodology](https://inferencex.semianalysis.com/agentx/methodology)
 defines one-output-token primers and ten additional warmup requests per lane.
 The pinned [AIPerf implementation](https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing)
