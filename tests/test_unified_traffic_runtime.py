@@ -449,14 +449,38 @@ def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
 
 
-def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> None:
+@pytest.mark.parametrize("explicit_mode", [False, True])
+def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level(monkeypatch, explicit_mode: bool) -> None:
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
+    if explicit_mode:
+        engine["workers"]["aggregated"]["timing"]["estimation_mode"] = "op_level"
     parsed = CorePredictionConfig.model_validate({"engine": engine})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
+    config = deployment.performance_model_metadata["aggregated"]["config"]
+    requested_mode = "op_level" if explicit_mode else "auto"
+    assert "forward_model" not in config
+    assert config["estimation_mode"] == requested_mode
+    assert config["model"] == engine["model"]
+    assert config["system"] == engine["hardware"]
+    assert config["backend_version"] == engine["backend_version"]
+    assert config["worker_type"] == "aggregated"
+    assert config["tp"] == config["moe_tp_size"] == 4
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        provenance = model.diagnostics()["provenance"]
+    finally:
+        model.close()
+    assert provenance["requested_estimation_mode"] == requested_mode
+    assert provenance["selected_estimation_mode"] == "op_level"
+    assert provenance["config"]["estimation_mode"] == "op_level"
+    for field in ("model", "system", "backend", "backend_version", "worker_type", "tp", "moe_tp_size"):
+        assert provenance["config"][field] == config[field]
 
 
 def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -> None:

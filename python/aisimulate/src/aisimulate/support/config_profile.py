@@ -23,8 +23,8 @@ from typing import Any
 
 import yaml
 
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
+from aisimulate import quantization
+from aisimulate.fpm_profile import FpmModelProfile
 
 from .schema import SupportRequest
 
@@ -39,11 +39,11 @@ _RESOURCE_FIELDS = (
     "max_batch_size",
 )
 _MODE_ENUMS = {
-    "gemm_quant_mode": common.GEMMQuantMode,
-    "moe_quant_mode": common.MoEQuantMode,
-    "fmha_quant_mode": common.FMHAQuantMode,
-    "comm_quant_mode": common.CommQuantMode,
-    "kv_cache_dtype": common.KVCacheQuantMode,
+    "gemm_quant_mode": quantization.GEMMQuantMode,
+    "moe_quant_mode": quantization.MoEQuantMode,
+    "fmha_quant_mode": quantization.FMHAQuantMode,
+    "comm_quant_mode": quantization.CommQuantMode,
+    "kv_cache_dtype": quantization.KVCacheQuantMode,
 }
 _DEPLOYMENT_FIELDS = (*_MODE_ENUMS, "moe_backend", "attention_backend")
 _MODEL_FIELDS = ("architecture", "context_length", "num_experts")
@@ -699,7 +699,7 @@ def derive_profile(
             and ordinary_kv
         ):
             layers, local_kv, head_dim = (geometry[key] for key in needed)
-            element_bytes = common.KVCacheQuantMode[values["kv_cache_dtype"]].value.memory
+            element_bytes = quantization.KVCacheQuantMode[values["kv_cache_dtype"]].value.memory
             values["kv_bytes_per_token"] = int(2 * layers * local_kv * head_dim * element_bytes)
             sources["kv_bytes_per_token"] = (
                 f"exact linear tensor geometry: 2 K/V * {layers} layers * {local_kv} rank-local KV heads "

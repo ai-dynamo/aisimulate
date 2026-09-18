@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import importlib.resources
 import json
+import pickle
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -135,11 +136,36 @@ def test_fpm_profile_alias_preserves_module_and_type_identity(namespace: str) ->
     alias_name = f"{namespace}.fpm_profile"
     alias = importlib.import_module(alias_name)
     canonical = importlib.import_module("aiconfigurator_core.sdk.fpm_profile")
+    lightweight = importlib.import_module("aisimulate.fpm_profile")
 
     assert alias is canonical
     assert sys.modules[alias_name] is canonical
     for name in ("FpmModelProfile", "FpmDeploymentProfile", "FpmResourceProfile"):
         assert getattr(alias, name) is getattr(canonical, name)
+        assert getattr(canonical, name) is getattr(lightweight, name)
+        legacy_global = f"c{namespace}.fpm_profile\n{name}\n.".encode()
+        assert pickle.loads(legacy_global) is getattr(lightweight, name)
+    assert alias.load_fpm_profile is lightweight.load_fpm_profile
+
+
+@pytest.mark.parametrize("namespace", ["aiconfigurator.sdk", "aiconfigurator_core.sdk", "aisimulate_core.sdk"])
+@pytest.mark.parametrize(
+    "name", ["GEMMQuantMode", "MoEQuantMode", "FMHAQuantMode", "KVCacheQuantMode", "CommQuantMode", "QuantMapping"]
+)
+def test_quantization_exports_preserve_shared_types_and_pickles(namespace: str, name: str) -> None:
+    from aisimulate import quantization
+
+    alias = importlib.import_module(f"{namespace}.common")
+    shared = getattr(quantization, name)
+    assert getattr(alias, name) is shared
+    # Historic pickle GLOBAL references resolve through the SDK re-exports.
+    assert pickle.loads(f"c{namespace}.common\n{name}\n.".encode()) is shared
+    if name != "QuantMapping":
+        for member in shared:
+            assert pickle.loads(pickle.dumps(member)) is member
+            value = pickle.loads(pickle.dumps(member.value))
+            assert type(value) is quantization.QuantMapping
+            assert value == member.value
 
 
 @pytest.mark.parametrize("namespace", ["aiconfigurator.sdk", "aisimulate_core.sdk"])
