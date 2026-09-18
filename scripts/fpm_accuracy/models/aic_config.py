@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from fpm_accuracy.exceptions import ConfigurationError
 from fpm_accuracy.types.worker_config import WorkerConfigRecord, moe_mapping_from_expert_parallelism
 
 _DTYPE_ALIASES = {
@@ -69,10 +69,8 @@ def map_worker_config_to_aic(
     record: WorkerConfigRecord,
     overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the strict AISim EngineConfig used by op and FPM predictors."""
+    """Map shared AISim engine fields; adapters enforce estimator capabilities."""
 
-    if record.config.parallelism.decode_context_parallel_size != 1:
-        raise DependencyError("Native FPM does not support decode context parallelism (dcp > 1).")
     unknown = set(overrides or {}) - AIC_ENGINE_CONFIG_FIELDS
     if unknown:
         raise ConfigurationError(f"unknown AISim EngineConfig override fields: {sorted(unknown)}")
