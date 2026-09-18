@@ -121,3 +121,23 @@ hashes are under `/Users/simonec/.cache/aisim-e2e-gym/trt-62-20260917/`.
   and collector source.
 - These are preparation/launch failures, separate from measured case results.
   Their logs remain in each cluster's `logs/trt62-*` paths.
+
+## GPT-OSS TPOT follow-up
+
+The coverage replay exposed a large GPT-OSS/B200 TPOT gap. An independent
+same-input graph benchmark confirmed that explicit MXFP4 autotuning lowers
+TP1/tokens256 MoE latency from 1.7934 to 1.3227 ms (-26.25%). This is an
+operator measurement, not an E2E accuracy result.
+
+The collector now matches native GPT-OSS expert bias and routing-weight dtype,
+and warms TRTLLMGen MXFP4 tactics instead of skipping them. GPT-OSS cache names
+are separate from the earlier unbiased configuration. Native source evidence:
+
+- [GPT-OSS bias and routing dtype, rc14](https://github.com/NVIDIA/TensorRT-LLM/blob/93cb6518b6d6dbd6095748189e626db731f44545/tensorrt_llm/_torch/models/modeling_gpt_oss.py#L159-L190).
+- [Serving autotuner warmup, rc14](https://github.com/NVIDIA/TensorRT-LLM/blob/93cb6518b6d6dbd6095748189e626db731f44545/tensorrt_llm/_torch/pyexecutor/model_engine.py#L827-L842).
+- [Autotuner enabled by default](https://github.com/NVIDIA/TensorRT-LLM/blob/93cb6518b6d6dbd6095748189e626db731f44545/tensorrt_llm/llmapi/llm_args.py#L3715-L3719).
+
+The original coverage and collection results above remain historical evidence.
+The follow-up refresh is scoped to GPT-OSS-120B/B200 MXFP4; other hardware
+corpora are not implicitly recollected by this source change. Source-level
+parity with the recipe does not replace an original serving kernel trace.

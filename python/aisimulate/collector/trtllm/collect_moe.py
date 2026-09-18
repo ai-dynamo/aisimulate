@@ -357,6 +357,7 @@ def run_moe_torch(
     model_config.mapping = mapping
     model_config.quant_config = quant_config
     model_config.moe_max_num_tokens = num_tokens_lists[-1]  # to avoid multi-chunk auxi stream in cuda-graph mode.
+    is_gpt_oss = model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
     swiglu_alpha = None
     swiglu_beta = None
     swiglu_limit = None
@@ -431,7 +432,7 @@ def run_moe_torch(
             f"{inter_size // moe_tp_size}"
         )
 
-    if model_name in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+    if is_gpt_oss:
         swiglu_alpha = torch.tensor([1.702] * (num_experts // moe_ep_size), dtype=torch.float32).to(
             torch.device(device)
         )
@@ -505,7 +506,14 @@ def run_moe_torch(
         router_logits_dtype = torch.float32
     else:
         # for low latency mode in fp4, experts > 128 is not supported.
-        routing_method = RenormalizeMoeRoutingMethod(topk)
+        # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
+        # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
+        if is_gpt_oss:
+            routing_method = RenormalizeMoeRoutingMethod(
+                topk, output_dtype=torch.bfloat16 if model_config.moe_backend == "trtllm" else torch.float32
+            )
+        else:
+            routing_method = RenormalizeMoeRoutingMethod(topk)
 
     create_moe_kwargs = {
         "routing_method": routing_method,
@@ -513,6 +521,9 @@ def run_moe_torch(
         "hidden_size": hidden_size,
         "intermediate_size": inter_size,
         "dtype": dtype,
+        # Native GPT-OSS expert construction requests bias=True:
+        # modeling_gpt_oss.py:183@1.3.0rc14 (93cb6518), :189@1.3.0rc20.
+        "bias": is_gpt_oss,
         # In both low latency and attention dp scenarios, create_moe needs not to do allreduce
         # inside op.
         "reduce_results": False,
@@ -640,7 +651,11 @@ def run_moe_torch(
             else:
                 continue
 
-    if moe_type != "w4a16_mxfp4":
+    # TRTLLMGen MXFP4 must warm its tactic cache just like serving:
+    # model_engine.py:827-842@1.3.0rc14 (93cb6518). A B200 GPT-OSS
+    # TP1/256-token graph measurement drops 26% after explicit tuning. Keep the
+    # separate Triton/CUTLASS MXFP4 tuning behavior unchanged.
+    if moe_type != "w4a16_mxfp4" or model_config.moe_backend == "trtllm":
         cleanup_empty_json_files(moe_tune_path)
         # The tuned-tactic cache MUST be SM-scoped: tactic indices are positions
         # in the runner's per-arch config table, and replaying another arch's
@@ -654,6 +669,7 @@ def run_moe_torch(
         cache_path = (
             f"{moe_tune_path}/sm{get_sm_version()}_"
             f"{moe_type}_{hidden_size}_{inter_size // moe_tp_size}_{num_experts // moe_ep_size}"
+            f"{'_gptoss_bias' if is_gpt_oss else ''}"
         )
         existing_files = glob.glob(f"{cache_path}*")
         cache_loaded = False

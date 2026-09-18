@@ -51,7 +51,8 @@ class ReachedNativeBuilder(Exception):
 @pytest.mark.parametrize("sm", [100, 103])
 @pytest.mark.parametrize("tp", [2, 4, 8])
 @pytest.mark.parametrize("quant", ["w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
-def test_unaligned_mxfp4_reaches_native_weight_padding(sm, tp, quant):
+@pytest.mark.parametrize("model_name", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "other-mxfp4-model"])
+def test_unaligned_mxfp4_reaches_native_weight_padding(sm, tp, quant, model_name):
     tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_moe_torch")
     native_builder = MagicMock(side_effect=ReachedNativeBuilder)
@@ -74,8 +75,11 @@ def test_unaligned_mxfp4_reaches_native_weight_padding(sm, tp, quant):
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), "collect_moe.py", "exec"), namespace)
     with pytest.raises(ReachedNativeBuilder):
-        namespace["run_moe_torch"](
-            quant, [1], 2880, 2880, 4, 128, tp, 1, False, "openai/gpt-oss-120b", perf_filename="unused"
-        )
+        namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
     assert native_builder.call_args.kwargs["intermediate_size"] == 2880
     assert native_builder.call_args.kwargs["model_config"].mapping.moe_tp_size == tp
+    assert native_builder.call_args.kwargs["bias"] == model_name.startswith("openai/gpt-oss-")
+    if model_name.startswith("openai/gpt-oss-"):
+        assert namespace["RenormalizeMoeRoutingMethod"].call_args.kwargs["output_dtype"] is namespace["torch"].bfloat16
+    else:
+        assert not namespace["RenormalizeMoeRoutingMethod"].call_args.kwargs
