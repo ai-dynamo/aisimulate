@@ -141,3 +141,92 @@ The original coverage and collection results above remain historical evidence.
 The follow-up refresh is scoped to GPT-OSS-120B/B200 MXFP4; other hardware
 corpora are not implicitly recollected by this source change. Source-level
 parity with the recipe does not replace an original serving kernel trace.
+
+### Refreshed B200 profiles and replay
+
+- Source `3830b5a4`; B200 job `1994597` completed `0:0` in 1m46s on two GPUs.
+  All six canonical TP/EP cases passed: `(1,1)`, `(2,1)`, `(4,1)`, `(8,1)`,
+  `(1,2)`, `(1,4)`, each with 27 token counts. All 162 timings used CUDA graphs.
+- Replaced exactly those 162 MXFP4/power_law_1.2 rows. The other **218,214**
+  MoE rows retain their exact values. Shape identities and Arrow schema are
+  unchanged. This supersedes the earlier 81-row append for these GPT-OSS keys.
+- Reran all **263 native specs**, with byte-identical spec serialization and
+  the frozen runtime. Only one of 1,773 installed package files changed:
+  B200/TRT-LLM rc20 `moe_perf.parquet`. All **293,180 requests** completed with
+  identical sampled lengths, zero truncations, and zero context violations.
+- All 232 points outside GPT-OSS/B200 retain exactly the same TTFT and TPOT.
+  Among the 31 affected points, nine have worse TPOT APE; the largest increase
+  is config283/ISL1024/concurrency64, **191.71% to 200.14%**. No rows were
+  selected or discarded based on improved error.
+
+| Backend / subset | Points | TTFT MAPE before / after | TPOT MAPE before / after |
+| --- | ---: | ---: | ---: |
+| TRT-LLM, all | 166 | 66.25% / 66.00% | 68.16% / 66.72% |
+| TRT-LLM, GPT-OSS/B200 | 31 | 86.99% / 85.67% | 176.52% / 168.78% |
+| SGLang, all | 97 | 69.61% / 69.61% | 12.55% / 12.55% |
+
+MAPE is the unweighted mean of per-point absolute percentage errors against
+positive silicon measurements. This is a data-only E2E ablation; it does not
+claim exact runtime-version parity or that the remaining large gap is fixed.
+Silicon uses rc14/rc18, while these profiles use rc20.
+
+The controlled four-arm job `1994556` keeps routing hashes identical. At
+TP1/tokens256, baseline/tuned/bias+tuned/full-contract medians are
+1.82016/1.34733/1.34962/1.34993 ms. Kernel traces show a `128x8` to `128x16`
+Bfloat16/MXFP4 GEMM tactic change. Bias and routing dtype fix correctness but
+have negligible timing impact in this experiment.
+
+[Follow-up evidence](gym-tpot-20260917.json) contains each paired point,
+source/data hashes, coverage, and validation provenance. Raw reports, scripts,
+and diagnostics remain under `trt-62-20260917/tpot-fix` in the local cache and
+B200 storage. Validation: 52 focused tests, Ruff, and seven data checks passed.
+
+An independent EP4 check (`1994626`, one B200, exit `0:0`) also shows that
+alignment need not improve every shape. With identical routing hashes,
+baseline/full-contract TP1/EP4 latencies at tokens160/192/256 are
+0.29861/0.33427, 0.30739/0.34978, and 0.35100/0.42240 ms. The slowdown is
+reproducible in direction, but does not isolate the full production change
+(up to +51.3%): production uses balanced maximum-shape warmup, while this
+controlled probe tunes the measured routing inputs. Neither result is used
+to discard higher timings or select a better MAPE.
+
+Original GPT-OSS config131 server artifacts from InferenceX run
+`26016885799` are expired. Source-level recipe alignment and new same-version
+microbenchmarks cannot establish its historical executed kernel/tactic.
+
+The pinned original [GPT-OSS/B200 launch script](https://github.com/SemiAnalysisAI/InferenceX/blob/2baba8e27be8529b4453afc953f9859ec092c73d/benchmarks/single_node/gptoss_fp4_b200_trt.sh)
+sets `TRTLLM_ENABLE_PDL=1`. The native environment helper defaults PDL to true
+in both [rc14](https://github.com/NVIDIA/TensorRT-LLM/blob/93cb6518b6d6dbd6095748189e626db731f44545/cpp/tensorrt_llm/common/envUtils.cpp#L249-L275)
+and [rc20](https://github.com/NVIDIA/TensorRT-LLM/blob/c25c23f71786bad54d192893d696ce8043426eca/cpp/tensorrt_llm/common/envUtils.cpp#L234-L260).
+No PDL-default mismatch was identified. This source check does not establish
+full serving-environment parity or a historical executed-kernel match.
+
+### rc14 runtime cross-check
+
+CPU image import `1994625` and one-B200 probe `1994650` both completed `0:0`.
+The latter produced 18/18 graph timings (two arms, three shapes, three repeats)
+in 1m33s. Its pinned amd64 image is
+`sha256:fe2f17d0c9698bafeb9f437929003c6badc56d17e8382a02505233145a07f61f`.
+The runner verifies runtime version `1.3.0rc14` and SM100. Routing hashes match
+both arms and the rc20 probe. Each timed closure contains five forwards;
+the following medians divide its elapsed time by five, like the collector.
+
+| Tokens | rc14 baseline / aligned (ms) | rc20 baseline / aligned (ms) |
+| ---: | ---: | ---: |
+| 64 | 0.95476 / 0.93937 | 0.89840 / 0.89107 |
+| 256 | 1.92882 / 1.40442 | 1.82016 / 1.34993 |
+| 16,384 | 12.52036 / 12.56028 | 11.35655 / 11.26267 |
+
+At 256 tokens, rc14 also switches the native BF16/MXFP4 GEMM tactic from
+`128x8` to `128x16`. The aligned rc14 timing is 4.04% higher than rc20;
+the other two shapes are 5.42% and 11.52% higher. These observations do not
+support the runtime version alone explaining the original roughly 5x E2E
+overprediction. Different B200 nodes and image dependencies prevent treating
+this as an isolated version-only effect. The tag's resolved image is not
+proof of the historical May serving image digest. No rc14 timings replace
+rc20 production data.
+
+The remaining attribution requires a matched full-model serving trace:
+actual expert routing and decode shapes, MoE tactics, and per-step timing.
+The expired original server artifacts prevent checking those historical facts.
+A new matched serving run can test the mechanism but cannot recover them.
