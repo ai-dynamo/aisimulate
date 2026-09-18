@@ -44,6 +44,7 @@ from aiconfigurator_core.sdk.backends.factory import get_backend
 from aiconfigurator_core.sdk.common import DefaultHFModels
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config, validate_nextn
 from aiconfigurator_core.sdk.models import get_model
+from aiconfigurator_core.sdk.models.helpers import resolve_sglang_mla_compute
 from aiconfigurator_core.sdk.utils import (
     _download_hf_config,
     _load_local_config,
@@ -322,9 +323,10 @@ class KVCacheEstimator:
         # Memory is cost-side only; accepted-token progress never enters
         # capacity math.
         apply_nextn(model_config, nextn)
+        database = perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)
-        database = perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
 
         # num_tokens = max_num_tokens -> activations track BuildConfig.max_num_tokens
         # (TRT-LLM `_memory_usage_kwargs_for_agg`). With num_tokens > 0 passed

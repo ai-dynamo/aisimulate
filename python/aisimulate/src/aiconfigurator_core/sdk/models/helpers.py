@@ -928,6 +928,51 @@ def resolve_nvfp4_for_system(
         model_config.moe_quant_mode = common.MoEQuantMode.nvfp4_wo
 
 
+def resolve_sglang_mla_compute(
+    model_config: config.ModelConfig,
+    model_path: str,
+    backend_name: str,
+    backend_version: str | None,
+    system_spec: dict,
+    *,
+    fmha_quant_mode_explicit: bool | None = None,
+) -> None:
+    """Resolve the measured Hopper MLA execution dtype before building ops.
+
+    This is a runtime mapping, independent of performance-table availability.
+    Explicit precision and whole-model FPM identities remain caller-owned.
+    Task supplies provenance when its config already contains inferred modes.
+    """
+    if fmha_quant_mode_explicit is None:
+        fmha_quant_mode_explicit = model_config.fmha_quant_mode is not None
+    if (
+        fmha_quant_mode_explicit
+        or model_config.forward_model == "fpm"
+        or backend_name != "sglang"
+        or backend_version != "0.5.14"
+        or system_spec.get("gpu", {}).get("sm_version") != 90
+        or model_config.attention_backend not in (None, "fa3")
+        # Wide-EP defaults to FlashInfer, not the audited ordinary FA3 path.
+        or (model_config.moe_comm_backend and model_config.attention_backend is None)
+    ):
+        return
+    info = _get_model_info(model_path)
+    raw = info.get("raw_config", {})
+    if (
+        info.get("architecture") != "DeepseekV3ForCausalLM"
+        or raw.get("kv_lora_rank") != 512
+        or raw.get("qk_rope_head_dim") != 64
+        or raw.get("dtype", raw.get("torch_dtype")) != "bfloat16"
+    ):
+        return
+    # SGLang 4289f36ef960fad8268a6b94935686e792a81432:
+    # flashattention_backend.py:861-872 excludes absorbed MLA (head_dim=576)
+    # from FP8 Q casting; :1176-1181 casts KV to Q's BF16 dtype.
+    # Tensor/kernel measurements are recorded in PR #262.
+    model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
+    logger.info("Resolved SGLang 0.5.14 SM90 MLA attention compute to bfloat16 (FA3 execution dtype)")
+
+
 def resolve_context_fmha_by_data(
     model_config: config.ModelConfig,
     model_path: str,
@@ -975,6 +1020,14 @@ def resolve_context_fmha_by_data(
 
     if not is_context_role:
         return
+
+    resolve_sglang_mla_compute(
+        model_config,
+        model_path,
+        backend_name,
+        getattr(database, "version", None),
+        getattr(database, "system_spec", {}),
+    )
 
     from aiconfigurator_core.sdk.perf_database import context_fmha_supported_modes
 
