@@ -19,6 +19,13 @@ reads:
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.parquet
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.metadata.json
 
+An explicit ``fpm_fmha_quant_mode`` selects a recorded table label while
+preserving the model's arithmetic and memory modes. The compiled selector emits
+a WARNING containing those modes and all matched ``cell_ids`` once per loaded
+cell/model mode. A different recorded label remains an exact-match miss. Neither
+the selector nor that comparison independently proves the runtime's resolved
+attention precision; an engine-derived precision contract remains separate.
+
 (The former Python-side query/loader machinery — the per-call ``query()``
 family, the parquet/sidecar validators, and the per-op ``DatabaseMode.SOL``
 roofline closure — was retired with the Python engine-step path; the Rust
@@ -29,6 +36,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 from aisimulate_core.sdk.operations.base import PythonOperation
 
 _PHASES = ("prefill", "decode")
@@ -38,7 +46,7 @@ _PHASES = ("prefill", "decode")
 # handled separately (exact-match, never borrowed); ``weight_quantization``
 # is redundant with ``gemm_quant_mode`` (the collector falls one back to the
 # other) so only ``gemm_quant_mode`` participates in matching. The Rust
-# loader's cell keying mirrors this order and arity (15).
+# loader's cell keying mirrors this order and arity (19), with schema-6 default execution identity.
 _CELL_MATCH_COLUMNS = (
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -60,6 +68,7 @@ _CELL_MATCH_COLUMNS = (
     "attention_backend",
     "enable_wideep",
     "enable_eplb",
+    *EXECUTION_COLUMNS,
 )
 
 
@@ -125,10 +134,12 @@ class FPMForwardOp(PythonOperation):
         self._phase = phase
         self._model_path = str(model_path)
         self._weight_bytes = float(weight_bytes)
+        fmha_selector = getattr(model_config, "fpm_fmha_quant_mode", None)
+        self._original_fmha_quant_mode = None if fmha_selector is None else _norm_identity(model_config.fmha_quant_mode)
         self._match_identity = (
             _norm_identity(model_config.gemm_quant_mode),
             _norm_identity(model_config.moe_quant_mode),
-            _norm_identity(model_config.fmha_quant_mode),
+            _norm_identity(model_config.fmha_quant_mode if fmha_selector is None else fmha_selector),
             _norm_identity(model_config.comm_quant_mode),
             _norm_identity(model_config.kvcache_quant_mode),
             _norm_identity(model_config.tp_size),
@@ -144,6 +155,7 @@ class FPMForwardOp(PythonOperation):
             _norm_identity(bool(getattr(model_config, "enable_wideep", False))),
             _norm_identity(bool(getattr(model_config, "enable_eplb", False))),
         )
+        self._match_identity += LEGACY_EXECUTION_IDENTITY
         self._sol_ops = list(sol_ops)
         # Speculative verify width for the equivalent-AR decode mapping
         # (1 = plain AR). Set post-construction by the fpm model rewrite for

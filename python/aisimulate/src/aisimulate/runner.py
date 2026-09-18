@@ -85,6 +85,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
+    "fpm_fmha_dtype": ("fpm_fmha_dtype", "aic_fpm_fmha_dtype"),
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),

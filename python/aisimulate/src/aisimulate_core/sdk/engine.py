@@ -161,6 +161,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "original_fmha_quant_mode": op._original_fmha_quant_mode,
             "weight_bytes": op._weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
@@ -319,6 +320,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "kv_block_size": kv_block_size,
+        "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
@@ -331,6 +333,7 @@ def _engine_config_dict(
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
         "activation_dtype": _rust_quant_to_dtype(getattr(cfg, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _rust_quant_to_dtype(getattr(cfg, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _rust_quant_to_dtype(getattr(cfg, "kvcache_quant_mode", None)),
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
@@ -416,6 +419,7 @@ def compile_engine(
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     nextn: int = 0,
@@ -454,6 +458,7 @@ def compile_engine(
             gemm_quant_mode=gemm_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
             fmha_quant_mode=fmha_quant_mode,
+            fpm_fmha_quant_mode=fpm_fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,

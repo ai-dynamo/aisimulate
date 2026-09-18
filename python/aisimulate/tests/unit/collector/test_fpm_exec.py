@@ -214,6 +214,7 @@ def _stage(
     values.update(env_overrides or {})
     exports = "\n".join(f"export {name}={shlex.quote(str(values[name]))}" for name in FPM_ENV_EXPORTED_VARS)
     (workdir / "fpm_env.sh").write_text(f"#!/usr/bin/env bash\n{exports}\n")
+    (workdir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
     (workdir / "preflight.py").write_text("")
     (workdir / "run.sh").write_text(run_script)
     if etcd_stub is None:
@@ -881,14 +882,16 @@ def test_fpm_exec_dp_follower_reports_its_rank_to_the_leader_barrier(tmp_path):
 
 def test_fpm_exec_consumes_only_contract_environment():
     """Everything fpm_exec.sh needs from the Generator travels through the
-    fpm_env.sh exports; the only extra FPM_* input is the operator-tunable
-    barrier timeout, which is defaulted in-script and never rendered."""
+    fpm_env.sh exports. The Collector separately stages the configurable
+    readiness budget; completion-barrier timeout remains operator-tunable."""
 
     script = FPM_EXEC.read_text()
-    consumed = set(re.findall(r"FPM_[A-Z0-9_]+", script))
+    # Match complete shell identifiers. DYN_FPM_* exports configure the native
+    # producer and must not be mistaken for Generator-owned FPM_* inputs.
+    consumed = set(re.findall(r"\bFPM_[A-Z0-9_]+\b", script))
 
     assert {"FPM_NODE_RANK", "FPM_MASTER_ADDR", "FPM_BENCHMARK_OUTPUT_PATH"} <= consumed
-    allowed = set(FPM_ENV_EXPORTED_VARS) | {"FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS"}
+    allowed = set(FPM_ENV_EXPORTED_VARS) | {"FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS", "FPM_READINESS_TIMEOUT_SECONDS"}
     assert consumed <= allowed, sorted(consumed - allowed)
 
 
@@ -951,3 +954,53 @@ def test_fpm_exec_result_naming_matches_contract_on_shared_vectors(
     assert completed.returncode == 0, completed.stderr
     for path in expected_paths:
         assert Path(path).is_file(), path
+
+
+@pytest.mark.parametrize("budget, expected_status", [(1, 1), (3, 0)])
+def test_follower_readiness_budget_covers_delayed_leader_start(tmp_path, budget, expected_status):
+    marker = tmp_path / "engine-started"
+    staged = _stage(
+        tmp_path,
+        run_script=f"#!/bin/bash\ntouch {shlex.quote(str(marker))}\nexit 0\n",
+        env_overrides={"FPM_NODE_RANK": 1, "FPM_NODE_COUNT": 2},
+    )
+    (staged.workdir / "collector-runtime-env.sh").write_text(f"export FPM_READINESS_TIMEOUT_SECONDS={budget}\n")
+    stop = threading.Event()
+    ready = threading.Event()
+
+    def delayed_leader():
+        if stop.wait(1.4):
+            return
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", staged.etcd_port))
+            server.listen(8)
+            ready.set()
+            stop.wait(10)
+
+    thread = threading.Thread(target=delayed_leader)
+    thread.start()
+    try:
+        result = _run(staged, timeout=10)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result.returncode == expected_status, result.stderr
+    assert marker.exists() == (expected_status == 0)
+    if expected_status:
+        assert "etcd readiness timeout" in result.stderr
+    else:
+        assert ready.is_set()
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "3601", "999999999999999999999999999999999999"])
+def test_invalid_startup_budget_fails_before_etcd_or_engine(tmp_path, value):
+    staged = _stage(tmp_path, run_script="#!/bin/bash\nexit 0\n")
+    (staged.workdir / "collector-runtime-env.sh").write_text(
+        f"export FPM_READINESS_TIMEOUT_SECONDS={shlex.quote(value)}\n"
+    )
+    result = _run(staged, timeout=5)
+    assert result.returncode == 2
+    assert "must be an integer from 1 through 3600" in result.stderr
+    assert not staged.etcd_trace.exists()
