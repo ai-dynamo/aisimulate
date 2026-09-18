@@ -87,7 +87,7 @@ from .result import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate
+from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -927,7 +927,7 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
-    if goal.strict_sla:
+    if goal.requires_aggregate_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
         violations = aggregate_sla_violations(report, goal.sla)
         if violations:
@@ -940,6 +940,18 @@ def _score_prepared(
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
+    load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
+    if load_violations:
+        missing_metric = "goodput_request_throughput_rps" not in report
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed" if missing_metric else "infeasible",
+            reason=f"minimum goodput constraint: {'; '.join(load_violations)}",
+            reason_category=ReasonCategory.RUNNER_CONTRACT if missing_metric else ReasonCategory.LOAD_CONSTRAINT,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     # A completed replay with no qualifying latency samples is a modeled
     # infeasible outcome, not a runner failure. This preserves the intent of the
     # former worst-rank sentinel without putting non-finite scores in SweepResult.

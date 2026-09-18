@@ -378,8 +378,9 @@ optimization:
 
 `goodput_per_gpu` rewards SLA-compliant throughput per GPU. `strict_sla: true` additionally
 filters candidates by the configured aggregate mean latency bounds. This is an efficiency search;
-see the [minimum-GPU migration example](migrate-from-aiconfigurator.md#keep-minimum-gpu-sizing-on-the-compatibility-cli)
-for the legacy sizing workflow.
+use `target: min_gpus` to select the smallest qualifying configuration found instead. See the
+[minimum-GPU migration example](migrate-from-aiconfigurator.md#minimum-gpu-sizing) for load
+constraints and the bundled AIC sizing alternative.
 
 <a id="predict-a-recommended-configuration"></a>
 
@@ -1480,16 +1481,24 @@ optimization:
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft` or `e2e_latency`; or compute `pareto`. |
+| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. |
 | `optimization.hardware` | `null` | `x` | `-` | One nonempty hardware identifier; required for `engine.hardware: auto`. |
 | `optimization.strict_sla` | `false` | `x` | `-` | When true, reject candidates whose aggregate mean metrics exceed any configured SLA bound before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
+| `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with request-rate traffic and cannot exceed the offered rate. Optional with fixed concurrency. |
 
 `pareto` is always the fixed `throughput_per_gpu` and `throughput_per_user` frontier. Goodput targets
 require at least one `evaluation.sla` bound. Strict SLA requires at least one bound and controls only
 the additional aggregate-mean filter. `optimization.hardware` never accepts a list or inventory
 mapping; it supplies the fallback hardware identifier, which P/D workers may override.
+
+`min_gpus` always requires and enforces aggregate-mean SLA bounds, regardless of `strict_sla`.
+It supports fixed synthetic request-rate or concurrency traffic on static engine pools without
+adapters. It rejects searched loads and KV-capacity-relative traffic. The optimizer and final
+selection both prefer fewer provisioned GPUs after feasibility checks; results mean the smallest
+qualifying configuration found within the trial budget. Equal GPU counts prefer higher goodput,
+then lower mean E2E latency. See the [scoring contract](../sweeper/optimization-goals.md#minimum-gpus).
 
 <a id="optimizer-controls"></a>
 

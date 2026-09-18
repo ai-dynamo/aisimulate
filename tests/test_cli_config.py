@@ -28,6 +28,51 @@ def _engine() -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    "load",
+    [
+        {"type": "concurrency", "concurrency": 32},
+        {"type": "constant_rate", "requests_per_second": 10},
+        {"type": "poisson", "requests_per_second": 10},
+    ],
+)
+def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load):
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
+            "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": 9}},
+        }
+    )
+    lowered = recommendation_to_sweeper(config)
+    assert lowered.goal.target.value == "min_gpus"
+    assert lowered.goal.requires_aggregate_sla
+    assert lowered.goal.min_goodput_rps == 9
+    assert lowered.goal.sla.itl_ms == 30
+
+
+@pytest.mark.parametrize(
+    ("load", "minimum", "error"),
+    [
+        ({"type": "constant_rate", "requests_per_second": 10}, None, "requires constraints.min_goodput_rps"),
+        ({"type": "constant_rate", "requests_per_second": 10}, 11, "cannot exceed"),
+        ({"type": "concurrency", "concurrency": {"choices": [1, 32]}}, None, "fixed synthetic"),
+        ({"type": "kv_capacity_fraction", "fraction": 0.5}, None, "fixed synthetic"),
+    ],
+)
+def test_min_gpus_rejects_missing_capacity_target_or_variable_load(load, minimum, error):
+    with pytest.raises(ValidationError, match=error):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "mode": "aggregated"},
+                "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+                "evaluation": {"sla": {"itl_ms": 30}},
+                "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+            }
+        )
+
+
 def test_prediction_uses_reviewed_default_traffic() -> None:
     config = CorePredictionConfig.model_validate({"engine": _engine()})
 

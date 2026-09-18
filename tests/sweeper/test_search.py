@@ -179,6 +179,78 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert factory.runner.closed
 
 
+@pytest.mark.parametrize(
+    ("small_report", "reason", "failed"),
+    [
+        ({"goodput_request_throughput_rps": 4.99}, "load_constraint", False),
+        ({"mean_e2e_latency_ms": 101.0}, "sla_constraint", False),
+        ({"num_e2e_latency_samples": 0.0}, "sla_constraint", False),
+        ({"goodput_request_throughput_rps": None}, "runner_contract", True),
+    ],
+)
+def test_min_gpus_gates_before_optimizer_feedback_and_top_n(monkeypatch, small_report, reason, failed):
+    shapes = tuple(_pc(tp=gpus, replicas=1) for gpus in (4, 1, 2))
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=shapes,
+        supported_backends={shape: frozenset({"trtllm"}) for shape in shapes},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    _stub(monkeypatch, branch)
+    observations = []
+
+    class Sampler(_FakeSampler):
+        def __init__(self, branch, study_id, objectives=None, **kwargs):
+            super().__init__(branch, study_id, objectives)
+
+        def suggest(self, count):
+            return [
+                Suggestion(selection=_selection(256 * (i + 1)), parallel_config=shape, handle=None)
+                for i, shape in enumerate(shapes[:count])
+            ]
+
+        def observe(self, suggestion, metrics):
+            observations.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            observations.append(("infeasible", reason))
+
+    class Runner(_FakeRunner):
+        def run(self, spec):
+            seqs = spec.backend_deployment.agg_engine_args["max_num_seqs"]
+            metrics = {
+                "completed_requests": 10.0,
+                "num_e2e_latency_samples": 10.0,
+                "mean_e2e_latency_ms": 50.0,
+                "goodput_request_throughput_rps": 5.0,
+                "goodput_output_throughput_tok_s": 1000.0 if seqs == 256 else 100.0,
+            }
+            if seqs == 512:
+                metrics.update(small_report)
+            return ReplayReport(metrics={key: value for key, value in metrics.items() if value is not None})
+
+    config = SmartSearchConfig(
+        search_space=_config().search_space,
+        workload={"isl": 1024, "osl": 128, "request_rate": 10, "num_request_ratio": 2},
+        sweep={"max_trials": 3, "parallel_evals": 1, "candidates_per_round": 3, "max_eval_seconds": None},
+        goal={"target": "min_gpus", "sla": {"e2e_ms": 100}, "min_goodput_rps": 5},
+    )
+    result = Sweeper(runner_factory=_FakeRunnerFactory(Runner()), sampler_factory=Sampler, show_progress=False).run(
+        config,
+        top_n=1,
+    )
+    assert [candidate.used_gpus for candidate in result.selected_candidates] == [2]
+    assert [entry["objective"] for entry in observations if isinstance(entry, dict)] == [-4.0, -2.0]
+    rejected = [candidate for candidate in result.candidates if candidate.reason_category is not None]
+    assert len(rejected) == 1
+    assert rejected[0].reason_category.value == reason
+    assert rejected[0].used_gpus == 1
+    assert result.counts.failed == int(failed)
+    assert result.counts.infeasible == int(not failed)
+    assert result.counts.feasible == 2
+    assert result.selected_candidates[0].metrics["goodput_request_throughput_rps"] == 5
+
+
 def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     branch = _branch(_pc())
     monkeypatch.setattr(

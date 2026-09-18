@@ -44,7 +44,7 @@ installed above.
 | `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
 | `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
-| `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
+| `recommend` | [`aisimulate recommend` with `target: min_gpus`](#minimum-gpu-sizing). | Select the smallest qualifying configuration found under fixed traffic and SLA constraints. Keep AIC for its analytical replica-sizing result. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
 | `exp` | Keep AIC for existing experiment files. | Translate individual experiments to `predict` or `recommend`; no equivalent file orchestration. |
 
@@ -226,8 +226,8 @@ instead, use `--set 'traffic.load={type: concurrency, concurrency: 32}'`.
 
 **What changed:** offered request rate and in-flight concurrency describe traffic; they do not
 ask AISimulate for the smallest fleet that can serve it. Ranking by `goodput_per_gpu` can select
-more GPUs than the smallest SLA-compliant configuration. If minimum GPU or replica count is your
-required result, keep the AIC command above.
+more GPUs than the smallest SLA-compliant configuration. Use [minimum-GPU selection](#minimum-gpu-sizing)
+when GPU count is the objective, or keep AIC for its analytical replica-sizing result.
 
 ## 4. Advanced migration examples
 
@@ -1044,8 +1044,49 @@ sizing result. This H200 example measures your local workload; it does not
 reproduce the dated B200 benchmark table or establish equivalent AIC/AISimulate answers.
 
 <a id="keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
+<a id="52-keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
+<a id="minimum-gpu-sizing"></a>
 
-### 5.2 Keep minimum-GPU sizing on the compatibility CLI
+### 5.2 Select the smallest qualifying GPU configuration
+
+Use `optimization.target: min_gpus` to minimize provisioned GPUs among evaluated configurations
+that meet your workload and latency requirements. For a required four SLA-compliant requests/s,
+reuse `budget-search.yaml` from section 3.2:
+
+```bash
+aisimulate recommend --config budget-search.yaml \
+  --set 'traffic.load={type: constant_rate, requests_per_second: 5}' \
+  --set traffic.stop.requests=500 \
+  --set optimization.target=min_gpus \
+  --set optimization.constraints.min_goodput_rps=4 \
+  --output-dir ./minimum-gpu-search
+```
+
+**Result to inspect:** `recommendation.json` records provisioned `used_gpus`, measured
+`goodput_request_throughput_rps`, and rejected candidates. Selected YAML files are ordered by fewest
+GPUs, then higher goodput and lower E2E latency. The optimizer receives the same feasibility checks
+and GPU-count objective used for final selection, before top-N truncation. No qualifying result
+exits with status 1 and produces no selected YAML.
+
+The example offers five requests/s and requires four completed within the per-request SLA per
+second over the full replay, including startup and drain. These are separate controls; offering
+exactly four requests/s may not deliver four over a short finite replay. Increase the duration and
+trial budget for your workload. This result is the **smallest qualifying configuration found**,
+not a proof of a global minimum or an extrapolated replica estimate.
+
+For fixed-concurrency sizing, reuse the original `budget-search.yaml` and set only the objective:
+
+```bash
+aisimulate recommend --config budget-search.yaml \
+  --set optimization.target=min_gpus \
+  --output-dir ./minimum-gpu-concurrency
+```
+
+`min_gpus` always enforces the configured aggregate-mean SLA bounds. A delivered-goodput floor is
+optional for fixed concurrency and required for fixed request-rate traffic. This initial path
+supports static engine pools and fixed synthetic request-rate or concurrency traffic; it rejects
+adapters, traces, sessions, searched traffic loads, and candidate-relative KV load. Analytical EPD
+supports fixed concurrency and aggregate latency only. See the [scoring contract](../sweeper/optimization-goals.md#minimum-gpus).
 
 Use `aiconfigurator cli recommend` with `--target-request-rate` or `--target-concurrency` for
 AIC's minimum-GPU and replica-sizing result. For four requests/s under explicit latency limits:

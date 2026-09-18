@@ -86,7 +86,8 @@ def _recommendation(mode="aggregated"):
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
-def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
+@pytest.mark.parametrize("target", ["throughput_per_gpu", "min_gpus"])
+def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop, target):
     raw = _recommendation("disaggregated" if mode == "heterogeneous" else mode)
     if mode == "heterogeneous":
         raw["engine"]["workers"]["decode"]["hardware"] = "gb200"
@@ -94,7 +95,8 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
         raw["traffic"]["stop"] = {"requests_per_load_unit": 2.0}
     # Exercise strict aggregate SLA and retention in the selected prediction.
     raw["evaluation"] = {"sla": {"ttft_ms": 10000.0}}
-    raw["optimization"]["strict_sla"] = True
+    raw["optimization"]["target"] = target
+    raw["optimization"]["strict_sla"] = target != "min_gpus"
     path = tmp_path / "search.yaml"
     path.write_text(yaml.safe_dump(raw))
     root = tmp_path / "recommend"
@@ -103,6 +105,9 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
     result = SweepResult.from_json((root / "recommendation.json").read_text())
     assert result.selected_candidates
     candidate = result.selected_candidates[0]
+    if target == "min_gpus":
+        assert candidate.used_gpus == min(c.used_gpus for c in result.selected_candidates)
+        assert candidate.score == -candidate.used_gpus
     saved = root / "recommendations" / "0001.yaml"
     concrete = CorePredictionConfig.from_yaml(saved)
     spec = prediction_to_replay_spec(concrete)

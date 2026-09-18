@@ -31,6 +31,10 @@ run provenance, and counts remain available on the same result envelope.
 
 Strict aggregate SLA filtering happens before scalar ranking or Pareto dominance. Rejected candidates
 remain in the ledger with status `infeasible` and reason category `sla_constraint`.
+With `min_gpus`, measured goodput below the requested rate floor is `infeasible` with
+`load_constraint`; missing rate evidence is `failed` with `runner_contract`. Candidate metrics
+retain `request_throughput_rps`, `goodput_request_throughput_rps`, and `goodput_completed_requests`
+when supplied by the runner. GPU-count selection happens before the top-N view is truncated.
 
 ## Envelope
 

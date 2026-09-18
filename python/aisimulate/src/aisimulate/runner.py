@@ -360,9 +360,13 @@ class EngineReplayRunner:
             if spec.adapters or spec.execution_mode != "offline":
                 raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
             goal = OptimizationGoal.model_validate(spec.goal)
-            if (goal.sla is not None and not goal.strict_sla) or any(
-                target.value.startswith("goodput")
-                for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+            if (
+                goal.min_goodput_rps is not None
+                or (goal.sla is not None and not goal.requires_aggregate_sla)
+                or any(
+                    target.value.startswith("goodput")
+                    for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                )
             ):
                 raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
             workload = Workload.model_validate(spec.workload)
@@ -801,6 +805,7 @@ def _run_afd_replay(
         metrics["goodput_completed_requests"] = float(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
+        metrics["goodput_request_throughput_rps"] = metrics["goodput_completed_requests"] / duration_s
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
     metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {

@@ -246,6 +246,9 @@ def test_goodput_and_implicit_sla_are_not_claimed():
         with pytest.raises(ValueError, match="goodput"):
             _config(goal=goal)
     _config(goal={"target": "throughput", "sla": {"ttft_ms": 500.0}, "strict_sla": True})
+    _config(goal={"target": "min_gpus", "sla": {"ttft_ms": 500.0}})
+    with pytest.raises(ValueError, match="analytical EPD cannot enforce min_goodput_rps"):
+        _config(goal={"target": "min_gpus", "sla": {"ttft_ms": 500.0}, "min_goodput_rps": 1})
 
 
 def test_runner_and_export_guards():

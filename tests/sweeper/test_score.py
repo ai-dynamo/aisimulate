@@ -19,6 +19,7 @@ from aisimulate.sweeper.score import (
     is_feasible,
     make_candidate,
     meets_aggregate_sla,
+    minimum_goodput_violations,
     objective_value,
     objective_vector,
     pareto_front,
@@ -46,6 +47,48 @@ REPORT = {
     "power_w": 487.5,
     "power_coverage": 0.95,
 }
+
+
+def test_min_gpus_uses_provisioned_count_not_time_average_or_throughput():
+    candidate = make_candidate({"used_gpus": 2}, REPORT, OptimizationTarget.MIN_GPUS)
+    assert candidate.score == -2.0  # REPORT's time-averaged GPU count is four.
+    assert not OptimizationTarget.MIN_GPUS.maximize
+    with pytest.raises(ValueError, match="concrete positive"):
+        score_report(REPORT, OptimizationTarget.MIN_GPUS)
+
+
+def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput():
+    goal = OptimizationGoal(target="min_gpus", sla=SLATarget(itl_ms=30), min_goodput_rps=10)
+
+    def candidate(gpus, goodput, *, rps=10, itl=20):
+        return make_candidate(
+            {"used_gpus": gpus, "name": str(goodput)},
+            dict(REPORT, goodput_request_throughput_rps=rps, goodput_output_throughput_tok_s=goodput, mean_tpot_ms=itl),
+            OptimizationTarget.MIN_GPUS,
+        )
+
+    large = candidate(8, 10000)
+    smaller = candidate(2, 1000)
+    tied_better = candidate(2, 2000)
+    insufficient_rate = candidate(1, 20000, rps=9.99)
+    fails_latency = candidate(1, 20000, itl=31)
+    selected = analyze_candidates([large, insufficient_rate, fails_latency, smaller, tied_better], goal)
+    assert selected == [tied_better, smaller, large]
+    assert selected[0].metrics["goodput_request_throughput_rps"] == 10
+    assert selected[0].metrics["goodput_output_throughput_tok_s"] == 2000
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -1, 0, 9.999, True])
+def test_min_goodput_rejects_missing_invalid_or_insufficient_measurements(value):
+    report = {"request_throughput_rps": 100, "output_throughput_tok_s": 100000}
+    if value is not None:
+        report["goodput_request_throughput_rps"] = value
+    assert minimum_goodput_violations(report, 10)
+
+
+def test_min_goodput_accepts_equality_and_is_optional_for_concurrency():
+    assert minimum_goodput_violations({"goodput_request_throughput_rps": 10}, 10) == ()
+    assert minimum_goodput_violations({}, None) == ()
 
 
 def test_objective_per_target():

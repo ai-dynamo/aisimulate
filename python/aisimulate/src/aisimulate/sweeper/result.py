@@ -63,6 +63,7 @@ class ReasonCategory(str, Enum):
     GPU_BUDGET = "gpu_budget"
     KV_CAPACITY = "kv_capacity"
     SLA_CONSTRAINT = "sla_constraint"
+    LOAD_CONSTRAINT = "load_constraint"
     BACKEND_TOPOLOGY = "backend_topology"
     RUNTIME_TIMEOUT = "runtime_timeout"
     RESOURCE_LIMIT = "resource_limit"
