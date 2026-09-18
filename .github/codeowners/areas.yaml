@@ -19,6 +19,7 @@ areas:
       - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
+      - pages/
       - python/aisimulate/src/aisimulate/__init__.py
       - tests/conftest.py
   - label: forward-pass-engine
@@ -53,6 +54,7 @@ areas:
       - tests/test_stack_discovery.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
+      - tests/test_ngram_cli.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
       - tests/fixtures/power-contract-v1.json
@@ -87,6 +89,8 @@ areas:
       - tests/test_pages_site.py
       - tests/test_release_fpe.py
       - tests/test_e2e_accuracy_overview.py
+      - tests/fpm_accuracy/
+      - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
       - tests/test_e2e_accuracy_workflow.mjs
@@ -97,6 +101,12 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: pages/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/fpm_accuracy/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_fpm_accuracy_workflow.mjs
+    owners: [infra, maintainers]
   # The full AIC product and estimator migration belongs to the Forward Pass
   # Engine area. Maintainers remain co-owners across the compatibility window.
   - glob: crates/core/src/perfmodel/
@@ -165,9 +175,29 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_worker.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/cli_args.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_scheduler.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_host_resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: docs/local-resources.md
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_power_diagnostics.py
     owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]

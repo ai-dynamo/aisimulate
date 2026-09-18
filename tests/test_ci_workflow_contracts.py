@@ -2362,13 +2362,21 @@ def test_nightly_license_matrix_covers_the_smoked_python_versions():
     assert upload["with"]["name"] == "nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}"
 
 
-@pytest.mark.parametrize("spdx,allowed", [("MIT", True), ("GPL-3.0-only", False)])
-def test_real_pip_licenses_enforces_the_policy(tmp_path, spdx, allowed):
+@pytest.mark.parametrize(
+    "metadata_field,spdx,allowed",
+    [
+        ("License", "MIT", True),
+        ("License", "GPL-3.0-only", False),
+        ("License-Expression", "BSD-3-Clause AND ISC", True),
+        ("License-Expression", "BSD-3-Clause AND GPL-3.0-only", False),
+    ],
+)
+def test_real_pip_licenses_enforces_the_policy(tmp_path, metadata_field, spdx, allowed):
     assert importlib.metadata.version("pip-licenses") == "5.5.5"
     metadata = tmp_path / "license_policy_fixture-1.0.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: license-policy-fixture\nVersion: 1.0\nLicense: {spdx}\n"
+        f"Metadata-Version: 2.4\nName: license-policy-fixture\nVersion: 1.0\n{metadata_field}: {spdx}\n"
     )
     result = subprocess.run(
         [
