@@ -866,3 +866,17 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## AISim FPM Gym
+
+- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
+- Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
+  `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
+- Derived files: `scripts/fpm_accuracy/`, `pages/fpm-accuracy/`, and
+  `tests/fpm_accuracy/test_hf_dataset.py`.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
+  publish this code under Apache-2.0.
+- Modified: development-only two-predictor evaluation, public overview export,
+  GitHub Pages presentation, and local import paths. No Plotly assets included.

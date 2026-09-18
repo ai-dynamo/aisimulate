@@ -1,0 +1,33 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+/* E2E supplies the shared page styles; only FPM table details belong here. */
+.fpm-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.snapshot-value { overflow-wrap: anywhere; }
+.snapshot-value a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
+.snapshot-value a:hover, .overview-config-row a:hover, .overview-method-cell a:hover { text-decoration: underline; }
+.branch-status:empty { display: none; }
+.branch-status.stale { border-left: 3px solid var(--accent); }
+#table-count { float: right; font-size: 12px; font-weight: 400; }
+.overview-model-row th { background: transparent; color: var(--text); }
+.overview-model-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.overview-model-button:hover { color: var(--accent); }
+.overview-chevron { display: inline-block; color: var(--accent); transition: transform 120ms ease; }
+.overview-model-button[aria-expanded="true"] .overview-chevron { transform: rotate(90deg); }
+.overview-model-count { margin-left: auto; color: var(--muted); font-weight: 400; }
+.overview-config-row th { padding-left: 40px; background: transparent; }
+.overview-config-row:hover { background: var(--accent-soft); }
+.overview-config-row[hidden] { display: none; }
+.overview-config-name { display: block; }
+.overview-slice-tags, .overview-cell-note { margin-top: 3px; font-size: 11px; }
+.overview-cell-note, .overview-measurement-cell span, .overview-method-cell span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.overview-measurement-cell strong { display: block; color: var(--text); font-weight: 500; }
+.overview-measurement-cell a { display: inline-block; margin-top: 3px; font-size: 11px; }
+.overview-method-cell { text-align: right; }
+.overview-method-cell strong { color: var(--aisimulate); font-size: 13px; font-weight: 600; }
+.overview-method-cell[data-label="Regression"] strong { color: var(--aic); }
+.overview-method-cell.missing strong { color: var(--muted); }
+.overview-method-cell a { display: inline-block; margin-top: 3px; font-size: 11px; }
+@media (max-width: 760px) {
+  .fpm-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #table-count { display: block; float: none; margin-top: 4px; }
+}

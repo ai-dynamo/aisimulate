@@ -4,12 +4,12 @@
 from pathlib import Path
 
 AISIMULATE_ROOT = Path(__file__).resolve().parents[2]
-DOCS_ROOT = AISIMULATE_ROOT / "docs"
+PAGES_ROOT = next(root / "pages" for root in (AISIMULATE_ROOT, *AISIMULATE_ROOT.parents) if (root / "pages").is_dir())
 PACKAGE_README = AISIMULATE_ROOT / "README.md"
 
 
 def test_landing_page_is_aisimulate_branded_and_hides_outdated_universe():
-    page = (DOCS_ROOT / "index.html").read_text()
+    page = (PAGES_ROOT / "index.html").read_text()
 
     assert "<title>AISimulate</title>" in page
     assert ">AISimulate</h1>" in page
@@ -24,7 +24,7 @@ def test_landing_page_is_aisimulate_branded_and_hides_outdated_universe():
 
 
 def test_support_matrix_uses_aisimulate_navigation_and_data():
-    page = (DOCS_ROOT / "support-matrix" / "index.html").read_text()
+    page = (PAGES_ROOT / "support-matrix" / "index.html").read_text()
 
     assert "<title>AISimulate — Legacy AIC Support Matrix</title>" in page
     assert "const DEPLOYED_SUPPORT_MATRIX_PATH = '../data/support-matrix';" in page
@@ -46,7 +46,7 @@ def test_support_matrix_uses_aisimulate_navigation_and_data():
 
 
 def test_fpe_support_matrix_uses_packaged_pages_data():
-    page = (DOCS_ROOT / "fpe-support-matrix" / "index.html").read_text()
+    page = (PAGES_ROOT / "fpe-support-matrix" / "index.html").read_text()
 
     assert "<title>AISimulate — FPE Support Matrix</title>" in page
     assert "const DEPLOYED_SUPPORT_MATRIX_PATH = '../data/fpe-support-matrix';" in page
