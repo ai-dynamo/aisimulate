@@ -253,6 +253,24 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
     assert isinstance(config.engine, EngineRecommendationConfig)
 
 
+def test_parallel_preset_entries_round_trip_with_context_knobs() -> None:
+    # A ParallelismPredictionConfig dumped back to a mapping carries the two
+    # context-parallel knobs; recommend must accept them (at 1) so a config can
+    # be re-validated from model_dump, while unrelated keys stay rejected.
+    from aisimulate.config.engine import ParallelismRecommendationConfig
+
+    entry = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 1, "moe_tensor": 1, "moe_expert": 1}
+    parallelism = ParallelismRecommendationConfig.model_validate({"preset": [entry]})
+    dumped = parallelism.model_dump()["preset"][0]
+    assert dumped["prefill_context"] == 1 and dumped["decode_context"] == 1
+
+    again = ParallelismRecommendationConfig.model_validate({"preset": [dumped]})
+    assert again.preset[0].tensor == 2
+
+    with pytest.raises(ValidationError, match="unknown=\\['mystery'\\]"):
+        ParallelismRecommendationConfig.model_validate({"preset": [{**entry, "mystery": 1}]})
+
+
 def test_parallel_preset_modes_lower_without_conflating_semantics() -> None:
     independent = {
         "preset": False,

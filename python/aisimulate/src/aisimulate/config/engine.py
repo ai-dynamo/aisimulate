@@ -307,13 +307,17 @@ class ParallelismRecommendationConfig(StrictModel):
             "moe_tensor",
             "moe_expert",
         }
+        # The context-parallel knobs are not searched by recommend, but a
+        # ParallelismPredictionConfig round-tripped through model_dump carries
+        # them; accept them here and let recommend reject values above 1.
+        optional = {"prefill_context", "decode_context"}
         if not preset:
             raise ValueError("parallelism preset list must be nonempty")
         for index, entry in enumerate(preset):
             if not isinstance(entry, dict):
                 raise ValueError(f"parallelism preset entry {index} must be a mapping")
             missing = required - set(entry)
-            unknown = set(entry) - required
+            unknown = set(entry) - required - optional
             if missing or unknown:
                 raise ValueError(
                     "parallelism preset entries must cover exactly all knobs; "

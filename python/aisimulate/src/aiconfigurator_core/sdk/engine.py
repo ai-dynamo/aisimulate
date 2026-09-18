@@ -127,6 +127,8 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 19 (decode context parallelism): Generation/Context attention, MLA, DSA
+#   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -457,9 +459,9 @@ def compile_engine(
         comm_quant_mode=comm_quant_mode,
         forward_model=forward_model,
         attention_backend=attention_backend,
-        speculation=resolved_speculation,
         cp_size=cp_size,
         dcp_size=dcp_size,
+        speculation=resolved_speculation,
     )
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
