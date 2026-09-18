@@ -8,7 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 AISimulate predicts LLM serving behavior and searches for deployment
 configurations offline, without bringing up a GPU serving cluster. The Python
 package includes the simulation engine, performance estimator and profiles,
-Replay, Sweeper, and deployment generation.
+Replay, Sweeper, and deployment generation through the compatibility CLI and
+generator SDK.
 
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [Repository](https://github.com/ai-dynamo/aisimulate) ·
@@ -78,10 +79,12 @@ aisimulate recommend --config recommendation.yaml --output-dir ./recommendation
 ```
 
 Inspect `recommendation/recommendation.json` for search results and
-`recommendation/recommendations/` for concrete prediction configurations.
+`recommendation/recommendations/` for concrete prediction YAML files to replay.
 The [CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/user-guide.md)
-covers workload inputs, latency constraints, detailed output, and deployment
-artifact generation.
+covers workload inputs, latency constraints, and detailed output. To create
+deployment manifests and launch scripts, use the bundled compatibility CLI or
+generator SDK; see the
+[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md#deployment-artifacts).
 
 ## Documentation and coverage
 
