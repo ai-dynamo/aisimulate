@@ -145,7 +145,7 @@ class ModelConfig:
 
     def __post_init__(self) -> None:
         for name, value in (("cp_size", self.cp_size), ("dcp_size", self.dcp_size)):
-            if isinstance(value, bool) or int(value) != value or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or value <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}.")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(

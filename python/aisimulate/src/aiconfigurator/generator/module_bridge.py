@@ -12,7 +12,7 @@ from aiconfigurator.sdk.perf_database import get_database
 from aiconfigurator.sdk.task_v2 import Task
 
 from .aggregators import collect_generator_params
-from .context_parallel import context_parallel_params
+from .context_parallel import ContextParallelUnsupportedError, context_parallel_params
 from .rendering import apply_defaults
 
 
@@ -232,11 +232,17 @@ def task_config_to_generator_config(
                 model_family=_task_model_family(task_config),
             )
             effective_cp = effective.get("context_parallel_size", 1)
+            # cp_strategy is derived from the model architecture (SGLang rejects
+            # zigzag for DSA at startup); an override may only restate it.
+            requested_strategy = extra_overrides.get("cp_strategy")
+            if requested_strategy is not None and requested_strategy != effective.get("cp_strategy"):
+                raise ContextParallelUnsupportedError(
+                    f"Workers override cp_strategy={requested_strategy!r} does not match the strategy this "
+                    f"model requires ({effective.get('cp_strategy')!r}); drop the override or fix the model"
+                )
             for key in _CONTEXT_PARALLEL_KEYS:
                 worker_payload.pop(key, None)
             worker_payload.update(effective)
-            if "cp_strategy" in extra_overrides and effective_cp > 1:
-                worker_payload["cp_strategy"] = extra_overrides["cp_strategy"]
             if "gpus_per_worker" not in extra_overrides:
                 worker_payload["gpus_per_worker"] = (
                     _safe_int(worker_payload.get("tensor_parallel_size"), tp)

@@ -1569,21 +1569,27 @@ def _require_nested_context_parallel_match(
     parallel_config: Mapping[str, JSONValue],
     role: str,
 ) -> None:
-    """Reject ``timing_model.config.cp_size/dcp_size`` that disagree with ``parallel_config``."""
-    timing = role_config.get("timing_model")
+    """Reject ``timing_model.config.cp_size/dcp_size`` that disagree with ``parallel_config``.
+
+    The timing model may sit at the top level (flat CLI/Sweeper form) or under
+    the nested ``rank`` descriptor (execution-level input); both are checked.
+    """
+    rank_config = role_config.get("rank")
+    timing_source: Mapping[str, JSONValue] = rank_config if isinstance(rank_config, Mapping) else role_config
+    timing = timing_source.get("timing_model")
     if not isinstance(timing, dict) or timing.get("type") != "external" or timing.get("provider") != "aic":
         return
     nested = timing.get("config")
     if not isinstance(nested, dict):
         return
     prefix = "" if role == "aggregated" else f"{role}_"
-    for target, field in (("cp_size", "cp"), ("dcp_size", "dcp")):
+    for target, parallel_field in (("cp_size", "cp"), ("dcp_size", "dcp")):
         value = nested.get(target)
         if value is None:
             continue
         _require_parallel_match(
             parallel_config,
-            f"{prefix}{field}",
+            f"{prefix}{parallel_field}",
             _positive_int(value, f"engine provider {role} timing_model.config.{target}"),
             f"engine provider {role} timing_model.config.{target}",
         )

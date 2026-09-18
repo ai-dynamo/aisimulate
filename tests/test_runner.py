@@ -1144,11 +1144,13 @@ def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_arg
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize(("field", "target"), [("dcp", "dcp_size"), ("cp", "cp_size")])
-def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_parallel_config(field, target):
-    # The canonical timing config nests the knobs under timing_model.config;
-    # they are checked against parallel_config BEFORE capacity materialization
-    # could resolve them into AIC inputs.
+def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_parallel_config(field, target, nested_rank):
+    # The canonical timing config nests the knobs under timing_model.config
+    # (flat form or under the execution-level `rank` descriptor); they are
+    # checked against parallel_config BEFORE capacity materialization could
+    # resolve them into AIC inputs.
     timing = {
         "type": "external",
         "provider": "aic",
@@ -1164,6 +1166,8 @@ def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_paral
     }
     engine_args = _engine_args(timing=timing)
     engine_args.pop("num_gpu_blocks")
+    if nested_rank:
+        engine_args = {"rank": engine_args}
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",

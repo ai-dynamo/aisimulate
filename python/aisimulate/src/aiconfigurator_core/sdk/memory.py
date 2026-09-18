@@ -1246,8 +1246,10 @@ def estimate_num_gpu_blocks(
         attention_dp_size=int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
-        cp_size=int(cp_size),
-        dcp_size=int(dcp_size),
+        # Raw values: estimate_kv_cache validates them (positive, integral, not
+        # bool) before any coercion, so True / 1.9 cannot become cp=dcp=1 here.
+        cp_size=cp_size,
+        dcp_size=dcp_size,
         gemm_quant_mode=gemm_quant_mode,
         moe_quant_mode=moe_quant_mode,
         kvcache_quant_mode=kvcache_quant_mode,

@@ -90,6 +90,23 @@ fn default_cp_size() -> u32 {
     1
 }
 
+/// DSA indexer key width per cached token (bf16, `index_head_dim` = 128):
+/// 128 x 2 bytes = 128 comm half-elements.
+const DSA_INDEXER_K_ELEMS: f64 = 128.0;
+
+/// Per-token volume (comm half-elements) a striped DSA worker gathers per
+/// cached token: the compressed latent KV plus the indexer K cache weighted by
+/// the effective full-indexer fraction (skip-indexer layers never read it, so
+/// GLM-5.2's shared-index amortization pays only its `w` share; full-only
+/// tables use `w = 1.0`).
+pub(crate) fn dsa_cached_context_gather_elems(
+    kv_cache_dtype: KvCacheQuantMode,
+    full_fraction: f64,
+) -> f64 {
+    crate::operators::mla::MLA_LATENT_KV_ELEMS * kv_cache_dtype.mapping().memory / 2.0
+        + full_fraction.clamp(0.0, 1.0) * DSA_INDEXER_K_ELEMS
+}
+
 /// Add the (optional) striped-KV context gather to an already-scaled CP
 /// composition: `None` (dcp = 1 or nothing cached) leaves the CP total
 /// untouched; `Some` adds exactly that one collective, scaled like the
@@ -256,7 +273,7 @@ impl DsaModuleOp {
             // cross-check them) still holds its cached context as 1/dcp
             // stripes: the gather is owed on the CP path too. query_context_cp
             // already applies scale_factor, so scale only the added gather.
-            let gather = self.dcp_context_gather(db, batch_size, prefix)?;
+            let gather = self.dcp_context_gather(db, batch_size, prefix, w)?;
             result = compose_cp_result_with_dcp_gather(result, gather, self.scale_factor);
             return Ok(result);
         }
@@ -288,29 +305,29 @@ impl DsaModuleOp {
             blended
         };
         // Decode CP on the same engine: gather the cached latent-KV stripes
-        // (the indexer K cache rides along in the same pass and is ignored).
+        // plus the indexer K cache the full-indexer layers read (weighted by w).
         let mut result = result;
-        if let Some(gather) = self.dcp_context_gather(db, batch_size, prefix)? {
+        if let Some(gather) = self.dcp_context_gather(db, batch_size, prefix, w)? {
             result = result.plus(gather);
         }
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
 
-    /// The cached latent-KV all-gather a striped (dcp > 1) worker pays before a
-    /// prefill can attend to its context; `None` when nothing is striped or
-    /// nothing is cached (see `attention::dcp_context_gather`).
+    /// The cached-context all-gather a striped (dcp > 1) worker pays before a
+    /// prefill can attend to its context: latent KV plus the indexer K cache
+    /// weighted by the effective full-indexer fraction; `None` when nothing is
+    /// striped or nothing is cached (see `attention::dcp_context_gather`).
     fn dcp_context_gather(
         &self,
         db: &PerfDatabase,
         batch_size: u32,
         prefix: u32,
+        full_fraction: f64,
     ) -> Result<Option<PerformanceResult>, AicError> {
-        let kv_elems =
-            crate::operators::mla::MLA_LATENT_KV_ELEMS * self.kv_cache_dtype.mapping().memory / 2.0;
         crate::operators::attention::dcp_context_gather(
             db,
             &self.name,
-            kv_elems,
+            dsa_cached_context_gather_elems(self.kv_cache_dtype, full_fraction),
             self.dcp_size,
             batch_size,
             prefix,
@@ -1198,6 +1215,27 @@ mod tests {
             g.entry(bs).or_default().insert((isl, step), lat);
         }
         g
+    }
+
+    /// The striped DSA worker gathers latent KV plus the indexer K cache; the
+    /// indexer share follows the effective full-indexer fraction.
+    #[test]
+    fn dsa_cached_context_gather_volume_adds_weighted_indexer_k() {
+        let latent = crate::operators::mla::MLA_LATENT_KV_ELEMS
+            * KvCacheQuantMode::Bfloat16.mapping().memory
+            / 2.0;
+        assert_eq!(
+            dsa_cached_context_gather_elems(KvCacheQuantMode::Bfloat16, 1.0),
+            latent + 128.0
+        );
+        assert_eq!(
+            dsa_cached_context_gather_elems(KvCacheQuantMode::Bfloat16, 0.25),
+            latent + 32.0
+        );
+        assert_eq!(
+            dsa_cached_context_gather_elems(KvCacheQuantMode::Bfloat16, 0.0),
+            latent
+        );
     }
 
     /// The CP path owes the striped-KV context gather exactly once: `None`

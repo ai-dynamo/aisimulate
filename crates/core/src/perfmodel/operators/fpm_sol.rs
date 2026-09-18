@@ -397,11 +397,11 @@ fn dsa_context_module_sol(
     } else {
         w * sol(false) + (1.0 - w) * sol(true)
     };
-    // Decode CP on the same engine: all-gather the cached latent-KV stripes
-    // (mirrors `DsaModuleOp::query_context`'s `dcp_context_gather`).
+    // Decode CP on the same engine: all-gather the cached latent-KV stripes plus
+    // the indexer K cache weighted by the full-indexer fraction (mirrors
+    // `DsaModuleOp::query_context`'s `dcp_context_gather`).
     let gather = if op.dcp_size > 1 && p > 0 {
-        let kv_elems =
-            crate::operators::mla::MLA_LATENT_KV_ELEMS * op.kv_cache_dtype.mapping().memory / 2.0;
+        let kv_elems = crate::operators::dsa::dsa_cached_context_gather_elems(op.kv_cache_dtype, w);
         nccl_sol(
             spec,
             op.dcp_size,

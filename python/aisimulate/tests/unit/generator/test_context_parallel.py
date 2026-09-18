@@ -577,6 +577,21 @@ def test_bridge_revalidates_context_parallel_overrides_and_resizes_the_worker():
             generator_overrides={"Workers": {"agg": {"decode_context_parallel_size": 4}}},
             num_gpus_per_node=8,
         )
+    # cp_strategy is model-derived: an override may restate it but not contradict it.
+    restated = task_config_to_generator_config(
+        task,
+        row,
+        generator_overrides={"Workers": {"agg": {"context_parallel_size": 2, "cp_strategy": "zigzag"}}},
+        num_gpus_per_node=8,
+    )["params"]["agg"]
+    assert restated["cp_strategy"] == "zigzag"
+    with pytest.raises(ContextParallelUnsupportedError, match="cp_strategy='interleave' does not match"):
+        task_config_to_generator_config(
+            task,
+            row,
+            generator_overrides={"Workers": {"agg": {"context_parallel_size": 2, "cp_strategy": "interleave"}}},
+            num_gpus_per_node=8,
+        )
     # Malformed override values are rejected, never coerced into another topology.
     for bad in ("invalid", 2.5, True, 0):
         with pytest.raises(ContextParallelUnsupportedError, match="must be a positive integer"):
