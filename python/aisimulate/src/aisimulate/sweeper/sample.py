@@ -130,8 +130,8 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
-    if search_space.systems_path is not None:
-        sample["systems_path"] = search_space.systems_path
+    if search_space.systems_paths is not None:
+        sample["systems_paths"] = search_space.systems_paths
 
     if mode == "disagg":
         sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")
@@ -163,4 +163,6 @@ def unroll_sample(
             "kv_transfer_timing_mode",
         ):
             sample[key] = getattr(search_space, key)
+    if search_space.speculation is not None:
+        sample["speculation"] = search_space.speculation.model_dump(mode="json")
     return sample

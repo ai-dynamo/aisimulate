@@ -1,0 +1,294 @@
+{
+  "provenance": {
+    "kind": "synthetic_contract_fixture",
+    "measured": false,
+    "accuracy_evidence": false,
+    "units": {
+      "latency_ms": "milliseconds",
+      "energy_wms": "watt-milliseconds",
+      "power_w": "watts per GPU",
+      "power_coverage": "ratio"
+    },
+    "aic_semantics_revision": "7b71c9227836845b8588e2d52898f7b8f85dcdb4",
+    "fpe_energy_revision": "0c1bee0867da5b5cc545e35cbea173a55afd90e0",
+    "reference_paths": [
+      "python/aisimulate/src/aiconfigurator_core/sdk/inference_summary.py",
+      "python/aisimulate/src/aiconfigurator/cli/api.py",
+      "crates/core/src/perfmodel/engine/runtime.rs"
+    ]
+  },
+  "cases": [
+    {
+      "name": "finite_evidence_overflows_derived_power",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 1e-300, "energy_wms": 1e300}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 1.0}
+    },
+    {
+      "name": "decimal_exact_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 0.27, "energy_wms": 135.0},
+            {"latency_ms": 0.03, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": 450.0, "power_coverage": 0.9}
+    },
+    {
+      "name": "decimal_just_below_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 0.26999999999999996, "energy_wms": 135.0},
+            {"latency_ms": 0.03000000000000004, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 0.8999999999999999}
+    },
+    {
+      "name": "aggregate_exact_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 90.0, "energy_wms": 45000.0},
+            {"latency_ms": 10.0, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": 450.0, "power_coverage": 0.9}
+    },
+    {
+      "name": "aggregate_below_gate",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 89.0, "energy_wms": 44500.0},
+            {"latency_ms": 11.0, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 0.89}
+    },
+    {
+      "name": "disaggregated_latency_weighting",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 20.0, "energy_wms": 8000.0}
+          ]
+        },
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 80.0, "energy_wms": 40000.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": 480.0, "power_coverage": 1.0}
+    },
+    {
+      "name": "phase_speedup_scales_energy_and_latency",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.5,
+          "operations": [
+            {"latency_ms": 20.0, "energy_wms": 8000.0}
+          ]
+        },
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 80.0, "energy_wms": 40000.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": 488.8888888888889, "power_coverage": 1.0}
+    },
+    {
+      "name": "energy_aware_but_uncovered",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 100.0, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 0.0}
+    },
+    {
+      "name": "zero_active_latency",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 0.0, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": 0.0}
+    },
+    {
+      "name": "mixed_energy_aware_and_unaware_roles",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 20.0, "energy_wms": 8000.0}
+          ]
+        },
+        {
+          "energy_aware": false,
+          "operations": [
+            {"latency_ms": 80.0, "energy_wms": 0.0}
+          ]
+        }
+      ],
+      "expected": {"power_w": null, "power_coverage": null}
+    }
+  ],
+  "invalid_evidence_cases": [
+    {
+      "name": "negative_subnormal_latency_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": "-1e-400", "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_latency_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": -1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_energy_with_zero_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": 0.0,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": -10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": -1.0,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "non_finite_scale",
+      "roles": [
+        {
+          "energy_aware": true,
+          "scale": "Infinity",
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_latency",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": -1.0, "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative_energy",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": -10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "non_finite_latency",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": "NaN", "energy_wms": 10.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "non_finite_energy",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {"latency_ms": 1.0, "energy_wms": "Infinity"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mixed_provider_invalid_energy",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {
+              "latency_ms": 20.0,
+              "energy_wms": 8000.0
+            }
+          ]
+        },
+        {
+          "energy_aware": false,
+          "operations": [
+            {
+              "latency_ms": 80.0,
+              "energy_wms": -1.0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -37,9 +37,8 @@ reviews:
   enable_prompt_for_ai_agents: true
 
   auto_review:
-    # Keep the pilot opt-in: applying the review-ready label triggers review
-    # even while automatic review is disabled globally.
-    enabled: false
+    # Review non-draft PRs automatically; no opt-in label is required.
+    enabled: true
     drafts: false
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 5
@@ -50,7 +49,6 @@ reviews:
       - "[skip review]"
       - "[no review]"
     labels:
-      - "review-ready"
       - "!wip"
       - "!do-not-review"
 

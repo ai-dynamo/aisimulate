@@ -68,13 +68,13 @@ def _configs(
         "hardware": request.identity.gpu,
         "backend": request.identity.framework,
         "backend_version": request.identity.framework_version,
-        "systems_path": str(root / "systems"),
+        "systems_paths": [str(root / "systems")],
         "context_length": request.search.context_length,
     }
     # Recommendation otherwise expands scheduler defaults into extra domains.
     worker = {
         "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
-        "timing": {"type": "default", "forward_model": "fpm"},
+        "timing": {"type": "default", "estimation_mode": "fpm_interpolation", "fallback_policy": "deny"},
     }
     prediction = {
         **common,

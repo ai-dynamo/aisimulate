@@ -8,4 +8,6 @@ runtime:
   version: 0.24.0
 tables:
   gemm_perf:
-    status: complete
+    status: partial
+    rows: 107226
+    # Eager FP8-block timings removed; reuse.yaml declares the 0.25.0 donor.

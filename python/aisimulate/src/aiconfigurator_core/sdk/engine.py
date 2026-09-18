@@ -45,6 +45,7 @@ from typing import Any
 
 import aiconfigurator_core
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config
+from aiconfigurator_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aiconfigurator_core.sdk.models import get_model
 from aiconfigurator_core.sdk.operations import FPMForwardOp
 from aiconfigurator_core.sdk.operations.base import Operation
@@ -258,8 +259,8 @@ def _literal_backend_version(
     (an omitted version means the ``current`` slot). Slot-policy errors
     (unlisted versions, unpopulated aliases) PROPAGATE — the spec builder is
     a user-level surface and must not smuggle ungated coordinates onto the
-    wire. Trees without a slots file (synthetic/external) keep the ungated
-    passthrough.
+    wire. Trees without a slots file (synthetic/external) keep explicit
+    versions unchanged and resolve an omitted version to the latest database.
     """
     resolved = getattr(database, "version", None) if database is not None else None
     if resolved:
@@ -268,7 +269,11 @@ def _literal_backend_version(
 
     slots = perf_database.get_version_slots(system, backend, systems_paths=systems_path)
     if slots is None:
-        return backend_version
+        return (
+            backend_version
+            if backend_version is not None
+            else perf_database.get_latest_database_version(system, backend, systems_paths=systems_path)
+        )
     requested = "current" if backend_version is None else backend_version
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 
@@ -415,6 +420,7 @@ def compile_engine(
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
@@ -433,25 +439,32 @@ def compile_engine(
     """
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
+    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
-    model_config = build_model_config(
-        tp_size=tp_size,
-        pp_size=pp_size,
-        attention_dp_size=attention_dp_size,
-        moe_tp_size=resolved_moe_tp,
-        moe_ep_size=resolved_moe_ep,
-        gemm_quant_mode=gemm_quant_mode,
-        kvcache_quant_mode=kvcache_quant_mode,
-        fmha_quant_mode=fmha_quant_mode,
-        moe_quant_mode=moe_quant_mode,
-        comm_quant_mode=comm_quant_mode,
-        forward_model=forward_model,
-        attention_backend=attention_backend,
-    )
-    # Apply MTP BEFORE get_model so the walked op lists carry the
-    # (L+nextn)/L compute scale; accepted-token progress is applied above core.
-    apply_nextn(model_config, nextn)
+    try:
+        resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
+        model_config = build_model_config(
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=resolved_moe_tp,
+            moe_ep_size=resolved_moe_ep,
+            gemm_quant_mode=gemm_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            forward_model=forward_model,
+            attention_backend=attention_backend,
+            speculation=resolved_speculation,
+        )
+        # Apply MTP BEFORE get_model so the walked op lists carry the
+        # (L+nextn)/L compute scale; accepted-token progress is applied above core.
+        apply_nextn(model_config, nextn)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
     model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a

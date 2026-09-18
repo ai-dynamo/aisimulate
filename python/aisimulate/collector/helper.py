@@ -2743,6 +2743,10 @@ def sample_power_law(size, alpha, xmin, xmax):
     import torch
 
     u = torch.rand(size)
+    if alpha == 1:
+        # The bounded x**-1 density has a logarithmic CDF. The general
+        # inverse below is undefined at this otherwise valid exponent.
+        return xmin * torch.exp(u * math.log(xmax / xmin))
     inv_cdf = ((xmax ** (1 - alpha) - xmin ** (1 - alpha)) * u + xmin ** (1 - alpha)) ** (1 / (1 - alpha))
     return inv_cdf
 

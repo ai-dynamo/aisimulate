@@ -4,13 +4,15 @@
 //! Physical-capacity model for vLLM's GPU block pool.
 //!
 //! A cached hash may have several physical copies. Copy identity is internal;
-//! the pool models occupancy, reference/pin state, and LRU eviction without
+//! the pool models occupancy, reference/pin state, and cache eviction without
 //! reproducing vLLM's numeric block IDs or null block.
 
+use crate::engine::belady::BeladyOracle;
 use crate::engine::common::hashing::SequenceHash;
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::{SlotMap, new_key_type};
-use std::collections::{VecDeque, hash_map::Entry};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, VecDeque, hash_map::Entry};
 
 new_key_type! {
     pub(crate) struct BlockCopyId;
@@ -129,7 +131,6 @@ impl HashCopies {
         CopyRemoval::Remaining
     }
 
-    #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = BlockCopyId> + '_ {
         std::iter::once(self.primary).chain(
             self.duplicates
@@ -137,6 +138,25 @@ impl HashCopies {
                 .flat_map(|duplicates| duplicates.iter().copied()),
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct BeladyCandidate {
+    redundant: Reverse<bool>,
+    next_use: Reverse<usize>,
+    released_at: u64,
+    id: BlockCopyId,
+}
+
+/// Optional, resident-bounded ranking metadata; native refs/pins still decide
+/// eligibility. Global input demand deliberately does not predict the worker
+/// that will serve it, or invent future output/recomputation accesses.
+struct BeladyCandidates {
+    oracle: BeladyOracle,
+    cursor: usize,
+    release_order: u64,
+    ranked: BTreeSet<BeladyCandidate>,
+    by_copy: FxHashMap<BlockCopyId, BeladyCandidate>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -292,6 +312,7 @@ pub(crate) struct VllmBlockPool {
     /// follows a token through release, eviction, reservation, and reuse.
     free: FreshCapacity,
     source_reuse: Option<Box<SourceReuseTracker>>,
+    belady: Option<Box<BeladyCandidates>>,
 }
 
 impl VllmBlockPool {
@@ -307,7 +328,22 @@ impl VllmBlockPool {
             reserved: 0,
             free: FreshCapacity::Untracked(capacity),
             source_reuse: None,
+            belady: None,
         }
+    }
+
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        assert!(
+            self.copies.is_empty() && self.reserved == 0,
+            "eviction policy must be configured before allocation"
+        );
+        self.belady = Some(Box::new(BeladyCandidates {
+            oracle,
+            cursor: 0,
+            release_order: 0,
+            ranked: BTreeSet::new(),
+            by_copy: FxHashMap::default(),
+        }));
     }
 
     pub(crate) fn prefix_hit(&self, hash: SequenceHash) -> Option<PrefixHit> {
@@ -550,16 +586,21 @@ impl VllmBlockPool {
         {
             state.write_after_source_reuse = false;
         }
-        match self.by_hash.entry(hash) {
+        let (became_visible, became_redundant) = match self.by_hash.entry(hash) {
             Entry::Occupied(mut entry) => {
+                let became_redundant = entry.get().duplicates.is_none();
                 entry.get_mut().push(id);
-                false
+                (false, became_redundant)
             }
             Entry::Vacant(entry) => {
                 entry.insert(HashCopies::new(id));
-                true
+                (true, false)
             }
+        };
+        if became_redundant {
+            self.refresh_belady_hash(hash);
         }
+        became_visible
     }
 
     /// Release one request-owned reference. Private copies return capacity
@@ -895,6 +936,66 @@ impl VllmBlockPool {
             .inactive_len
             .checked_add(1)
             .unwrap_or_else(|| panic!("inactive block count overflow"));
+        self.insert_belady_candidate(id);
+    }
+
+    fn insert_belady_candidate(&mut self, id: BlockCopyId) {
+        let Some(belady) = self.belady.as_mut() else {
+            return;
+        };
+        let CopyState::Cached { hash, .. } = self.copies[id].state else {
+            unreachable!("inactive candidate must be cached")
+        };
+        let candidate = BeladyCandidate {
+            redundant: Reverse(self.by_hash[&hash].duplicates.is_some()),
+            next_use: Reverse(belady.oracle.next_use(hash)),
+            released_at: belady.release_order,
+            id,
+        };
+        belady.release_order = belady
+            .release_order
+            .checked_add(1)
+            .expect("Belady release order overflow");
+        assert!(belady.by_copy.insert(id, candidate).is_none());
+        assert!(belady.ranked.insert(candidate));
+    }
+
+    fn refresh_belady_hash(&mut self, hash: SequenceHash) {
+        let Some(belady) = &self.belady else {
+            return;
+        };
+        let next_use = belady.oracle.next_use(hash);
+        self.rekey_belady_hash(hash, next_use);
+    }
+
+    fn rekey_belady_hash(&mut self, hash: SequenceHash, next_use: usize) {
+        let Some(belady) = self.belady.as_mut() else {
+            return;
+        };
+        let Some(copies) = self.by_hash.get(&hash) else {
+            return;
+        };
+        for id in copies.iter() {
+            let Some(candidate) = belady.by_copy.get_mut(&id) else {
+                continue;
+            };
+            assert!(belady.ranked.remove(candidate));
+            candidate.redundant = Reverse(copies.duplicates.is_some());
+            candidate.next_use = Reverse(next_use);
+            assert!(belady.ranked.insert(*candidate));
+        }
+    }
+
+    fn sync_belady_candidates(&mut self) {
+        let Some(belady) = self.belady.as_mut() else {
+            return;
+        };
+        // Retirements on any worker can increase a hidden candidate's priority.
+        // Refresh changed hashes before choosing a victim, not just the head.
+        let changes = belady.oracle.changes_since(&mut belady.cursor);
+        for (hash, next_use) in changes {
+            self.rekey_belady_hash(hash, next_use);
+        }
     }
 
     fn inactive_links_mut(
@@ -913,6 +1014,13 @@ impl VllmBlockPool {
     }
 
     fn unlink_inactive(&mut self, id: BlockCopyId) {
+        if let Some(belady) = self.belady.as_mut() {
+            let candidate = belady
+                .by_copy
+                .remove(&id)
+                .expect("inactive copy is missing from Belady candidates");
+            assert!(belady.ranked.remove(&candidate));
+        }
         debug_assert!(
             self.is_inactive(id),
             "only an unreferenced, unpinned cached copy can leave the inactive LRU"
@@ -964,6 +1072,14 @@ impl VllmBlockPool {
 
     #[cfg(test)]
     fn assert_lru_consistent(&self) {
+        if let Some(belady) = &self.belady {
+            assert_eq!(belady.ranked.len(), self.inactive_len);
+            assert_eq!(belady.by_copy.len(), self.inactive_len);
+            for candidate in &belady.ranked {
+                assert!(self.is_inactive(candidate.id));
+                assert_eq!(belady.by_copy[&candidate.id], *candidate);
+            }
+        }
         self.assert_hash_index_consistent();
 
         let mut linked = FxHashSet::default();
@@ -1070,16 +1186,25 @@ impl VllmBlockPool {
 
     /// Evict one physical copy. A hash is returned only on its final copy.
     fn evict_one(&mut self) -> EvictedCapacity {
-        let Some(id) = self.inactive_head else {
+        self.sync_belady_candidates();
+        let victim = match &self.belady {
+            Some(belady) => belady.ranked.first().map(|candidate| candidate.id),
+            None => self.inactive_head,
+        };
+        let Some(id) = victim else {
             panic!("prechecked inactive capacity disappeared")
         };
-        let CopyState::Cached { inactive_prev, .. } = &self.copies[id].state else {
-            panic!("inactive LRU points to a private copy")
-        };
-        assert!(
-            inactive_prev.is_none(),
-            "inactive LRU head has a predecessor"
-        );
+        if self.inactive_head == Some(id) {
+            let CopyState::Cached { inactive_prev, .. } = &self.copies[id].state else {
+                panic!("inactive LRU points to a private copy")
+            };
+            assert!(
+                inactive_prev.is_none(),
+                "inactive LRU head has a predecessor"
+            );
+        }
+        // The oracle only selects an eligible resident copy. Removal, logical
+        // visibility, and source-reuse fences stay on this native causal path.
         self.unlink_inactive(id);
         let Some(copy) = self.copies.remove(id) else {
             panic!("inactive LRU points to a missing copy")
@@ -1094,13 +1219,13 @@ impl VllmBlockPool {
         assert_eq!(refs, 0, "evicted cached copy still has references");
         assert_eq!(pins, 0, "evicted cached copy is still pinned");
 
-        let remove_hash = {
+        let (remove_hash, became_unique) = {
             let Some(copies) = self.by_hash.get_mut(&hash) else {
                 panic!("evicted cached hash is missing from its index")
             };
             match copies.remove(id) {
-                CopyRemoval::Last => true,
-                CopyRemoval::Remaining => false,
+                CopyRemoval::Last => (true, false),
+                CopyRemoval::Remaining => (false, copies.duplicates.is_none()),
                 CopyRemoval::Missing => {
                     panic!("evicted copy is missing from its hash index")
                 }
@@ -1110,6 +1235,9 @@ impl VllmBlockPool {
             self.by_hash.remove(&hash);
             Some(hash)
         } else {
+            if became_unique {
+                self.refresh_belady_hash(hash);
+            }
             None
         };
         EvictedCapacity {
@@ -1139,10 +1267,165 @@ fn unique_pending_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn reserve(pool: &mut VllmBlockPool, prefix: &[u64], fresh: usize) -> ReserveOutcome {
         pool.reserve(prefix, fresh)
             .unwrap_or_else(|| panic!("unexpected capacity exhaustion"))
+    }
+
+    fn input_oracle(hashes: &[SequenceHash]) -> BeladyOracle {
+        BeladyOracle::new(
+            hashes
+                .iter()
+                .enumerate()
+                .map(|(index, &hash)| (Uuid::from_u128(index as u128 + 1), vec![hash]))
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn cache_copy(pool: &mut VllmBlockPool, hash: SequenceHash) -> BlockCopyId {
+        let mut reservation = reserve(pool, &[], 1).reservation;
+        pool.allocate_cached(&mut reservation, hash).0
+    }
+
+    #[test]
+    fn belady_evicts_never_then_farthest_use_instead_of_oldest_release() {
+        let mut pool = VllmBlockPool::new(3);
+        pool.set_belady_oracle(input_oracle(&[7, 8, 7]));
+        for hash in [7, 8, 9] {
+            let copy = cache_copy(&mut pool, hash);
+            pool.release(copy);
+        }
+
+        let pressure = reserve(&mut pool, &[], 2);
+        assert_eq!(pressure.removed, vec![9, 8]);
+        assert!(pool.prefix_hit(7).is_some());
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
+        pool.assert_hash_index_consistent();
+    }
+
+    #[test]
+    fn belady_duplicate_becomes_unique_before_next_victim_selection() {
+        let mut pool = VllmBlockPool::new(3);
+        pool.set_belady_oracle(input_oracle(&[7, 9]));
+        for hash in [7, 9, 7] {
+            let copy = cache_copy(&mut pool, hash);
+            pool.release(copy);
+        }
+
+        let pressure = reserve(&mut pool, &[], 2);
+        assert_eq!(pressure.removed, vec![9]);
+        assert!(pool.prefix_hit(7).is_some());
+        assert_eq!(pool.by_hash[&7].iter().count(), 1);
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
+        pool.assert_hash_index_consistent();
+
+        let pressure = reserve(&mut pool, &[], 3);
+        assert_eq!(pressure.removed, vec![7]);
+        pool.cancel(pressure.reservation);
+    }
+
+    #[test]
+    fn belady_active_duplicate_rekeys_eligible_sibling_without_evicting_owner() {
+        let mut pool = VllmBlockPool::new(3);
+        pool.set_belady_oracle(input_oracle(&[7, 8]));
+        let first = cache_copy(&mut pool, 7);
+        pool.release(first);
+        let other = cache_copy(&mut pool, 8);
+        pool.release(other);
+        let active_duplicate = cache_copy(&mut pool, 7);
+
+        let pressure = reserve(&mut pool, &[], 1);
+        assert!(pressure.removed.is_empty());
+        assert!(!pool.copies.contains_key(first));
+        assert!(pool.copies.contains_key(active_duplicate));
+        assert!(pool.prefix_hit(8).is_some());
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
+        pool.assert_hash_index_consistent();
+    }
+
+    #[test]
+    fn belady_never_evicts_pinned_copy_even_without_future_demand() {
+        let mut pool = VllmBlockPool::new(2);
+        pool.set_belady_oracle(input_oracle(&[8]));
+        for hash in [7, 8] {
+            let copy = cache_copy(&mut pool, hash);
+            pool.release(copy);
+        }
+
+        let pressure = reserve(&mut pool, &[7], 1);
+        assert_eq!(pressure.removed, vec![8]);
+        assert!(pool.prefix_hit(7).is_some_and(|hit| hit.is_active));
+        pool.assert_lru_consistent();
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
+    }
+
+    #[test]
+    fn belady_global_retirement_updates_hidden_candidates_on_every_worker() {
+        let oracle = input_oracle(&[7, 8]);
+        let mut workers = [VllmBlockPool::new(2), VllmBlockPool::new(2)];
+        for pool in &mut workers {
+            pool.set_belady_oracle(oracle.clone());
+            for hash in [8, 7] {
+                let copy = cache_copy(pool, hash);
+                pool.release(copy);
+            }
+        }
+        // A request served elsewhere retires global demand. Hash 7 must move
+        // ahead of the formerly worst candidate even though it was hidden.
+        oracle.retire_requests([Uuid::from_u128(1)]);
+        for pool in &mut workers {
+            let pressure = reserve(pool, &[], 1);
+            assert_eq!(pressure.removed, vec![7]);
+            assert!(pool.prefix_hit(8).is_some());
+            pool.cancel(pressure.reservation);
+            pool.assert_lru_consistent();
+        }
+    }
+
+    #[test]
+    fn belady_ties_follow_worker_local_release_order_after_reactivation() {
+        let mut pool = VllmBlockPool::new(2);
+        pool.set_belady_oracle(input_oracle(&[]));
+        for hash in [7, 8] {
+            let copy = cache_copy(&mut pool, hash);
+            pool.release(copy);
+        }
+        let mut hit = reserve(&mut pool, &[7], 0).reservation;
+        let (_, copy) = pool.activate_prefix(&mut hit).next().unwrap();
+        pool.release(copy);
+
+        let pressure = reserve(&mut pool, &[], 1);
+        assert_eq!(pressure.removed, vec![8]);
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
+    }
+
+    #[test]
+    fn belady_victim_preserves_source_reuse_dependency() {
+        let mut pool = VllmBlockPool::new(2);
+        pool.set_belady_oracle(input_oracle(&[8]));
+        let retained = cache_copy(&mut pool, 8);
+        pool.release(retained);
+        let victim = cache_copy(&mut pool, 7);
+        let dependency = SourceReuseDependency::from_adapter_id(41);
+        pool.attach_source_reuse_dependency(&[victim], dependency);
+        pool.release(victim);
+
+        let pressure = reserve(&mut pool, &[], 1);
+        assert_eq!(pressure.removed, vec![7]);
+        assert_eq!(
+            pool.reservation_pending_dependencies(&pressure.reservation),
+            vec![dependency]
+        );
+        pool.cancel(pressure.reservation);
+        pool.assert_lru_consistent();
     }
 
     #[test]

@@ -272,6 +272,56 @@ def test_breakdown_accepts_nextn_without_acceptance_field(monkeypatch):
     assert captured["has_nextn_accepted"] is False
 
 
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("extra_graph_gib", [0, 1])
+def test_prefill_workspace_respects_backend_kv_pool(monkeypatch, backend, extra_graph_gib):
+    """A larger prefill budget must not consume SGLang's static KV pool."""
+
+    class Model:
+        def get_kvcache_bytes_per_sequence(self, seq_len):
+            return 1024 * seq_len
+
+        def get_kvcache_max_tokens(self, budget):
+            return int(budget // 1024)
+
+    class Backend:
+        def _get_memory_usage(self, *args, num_tokens, **kwargs):
+            return {"weights": 59, "activations": num_tokens / 1024, "others": 2, "nccl": 1}
+
+    class Database:
+        def __init__(self):
+            self.version = "0.5.12"
+            self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
+
+    monkeypatch.setattr(memory, "get_model", lambda *args: Model())
+    monkeypatch.setattr(memory, "get_backend", lambda *args: Backend())
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *args, **kwargs: Database())
+    budgets = []
+    for tokens in (1024, 16384):
+        result = memory.estimate_kv_cache(
+            "test-model",
+            "test-system",
+            backend,
+            max_num_tokens=tokens,
+            max_batch_size=128,
+            memory_fraction_kind="of_free" if backend == "trtllm" else "of_total",
+            memory_fraction_value=0.8,
+            cuda_graph_reserved_bytes=extra_graph_gib * _GIB,
+        )
+        # Diagnostics describe the forward footprint even when it is outside
+        # the static pool. Explicit extra graph reservation still consumes KV.
+        assert result["memory_breakdown"]["activations_bytes"] == tokens / 1024 * _GIB
+        assert result["memory_breakdown"]["cuda_graph_reserved_bytes"] == extra_graph_gib * _GIB
+        budgets.append(result["total_kv_size_bytes"])
+        assert result["total_kv_size_tokens"] == result["total_kv_size_bytes"] // 1024
+    expected_gib = {
+        "sglang": [18.6 - extra_graph_gib, 18.6 - extra_graph_gib],
+        "vllm": [17 - extra_graph_gib, 2 - extra_graph_gib],
+        "trtllm": [(37 - extra_graph_gib) * 0.8, (22 - extra_graph_gib) * 0.8],
+    }
+    assert budgets == pytest.approx([value * _GIB for value in expected_gib[backend]], abs=1)
+
+
 def test_native_capacity_override_wins():
     capacity, non_kv, kv_per_token, f = 141.0 * _GIB, 60.0 * _GIB, 327_680.0, 0.9
     override = 200 * _GIB

@@ -18,8 +18,9 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aiconfigurator_core.sdk import models, perf_database
+from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, models, perf_database
 from aiconfigurator_core.sdk.config import ModelConfig
+from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
 from aiconfigurator_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -58,8 +59,9 @@ def test_systems_root_is_absolute_and_reloadable_before_collection(config_type, 
     saved = config.model_dump(mode="json", exclude_none=True)
     monkeypatch.chdir(tmp_path.parent)
 
-    assert saved["engine"]["systems_path"] == str(tmp_path / "local profiles")
-    assert config_type.model_validate(saved).engine.systems_path == config.engine.systems_path
+    assert "systems_path" not in saved["engine"]
+    assert saved["engine"]["systems_paths"] == [str(tmp_path / "local profiles")]
+    assert config_type.model_validate(saved).engine.systems_paths == config.engine.systems_paths
 
 
 @pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
@@ -71,6 +73,37 @@ def test_systems_root_rejects_empty_or_multiple_roots(config_type, value):
         raw["optimization"] = {"target": "throughput"}
 
     with pytest.raises(ValidationError, match="systems_path"):
+        config_type.model_validate(raw)
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+def test_legacy_systems_root_rejects_conflicting_canonical_roots(config_type, tmp_path):
+    raw = _request()
+    raw["engine"].update(systems_path=str(tmp_path / "legacy"), systems_paths=[str(tmp_path / "canonical")])
+    if config_type is CoreRecommendationConfig:
+        raw["optimization"] = {"target": "throughput"}
+
+    with pytest.raises(ValidationError, match="systems_path conflicts with systems_paths"):
+        config_type.model_validate(raw)
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
+@pytest.mark.parametrize("timing", [{"type": "fixed", "prefill_ms": 1, "decode_ms": 2}, {"type": "polynomial"}])
+def test_shared_roots_with_custom_timing_preserve_estimator_control_guards(config_type, root_key, timing, tmp_path):
+    raw = _request()
+    raw["engine"][root_key] = str(tmp_path) if root_key == "systems_path" else [str(tmp_path)]
+    raw["engine"]["workers"]["aggregated"]["timing"] = timing
+    if config_type is CoreRecommendationConfig:
+        raw["optimization"] = {"target": "throughput"}
+
+    config = config_type.model_validate(raw)
+    saved = config.model_dump(mode="json", exclude_none=True)
+    assert saved["engine"]["systems_paths"] == [str(tmp_path)]
+    assert config_type.model_validate(saved).engine.workers.aggregated.timing.type == timing["type"]
+
+    raw["engine"]["estimation_mode"] = "fpm_interpolation"
+    with pytest.raises(ValidationError, match="estimator policies require.*default timing"):
         config_type.model_validate(raw)
 
 
@@ -203,15 +236,120 @@ def test_prediction_consumes_local_fpm_timings_without_changing_default_roots(lo
     ).backend_deployment
     assert deployment.performance_model_metadata
     for metadata in deployment.performance_model_metadata.values():
-        assert metadata["config"]["systems_path"] == str(fast)
+        assert metadata["config"]["systems_paths"] == [str(fast)]
+
+
+@pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
+@pytest.mark.parametrize("timing", [{"type": "fixed", "prefill_ms": 1, "decode_ms": 2}, {"type": "polynomial"}])
+@pytest.mark.parametrize("fixed_capacity", [False, True])
+def test_custom_timing_can_use_local_profiles_for_kv_capacity(local_profiles, timing, root_key, fixed_capacity):
+    capacities = []
+    for root in local_profiles:
+        raw = _local_request(root)
+        worker = raw["engine"]["workers"]["aggregated"]
+        worker["timing"] = timing
+        if fixed_capacity:
+            worker["kv_cache"]["capacity"] = {"type": "fixed", "blocks": 128}
+        if root_key == "systems_paths":
+            raw["engine"]["systems_paths"] = [raw["engine"].pop("systems_path")]
+
+        deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+        assert "systems_path" not in deployment.agg_engine_args
+        assert deployment.performance_model_metadata["aggregated"]["config"]["systems_paths"] == [str(root)]
+        capacities.append(deployment.agg_engine_args["num_gpu_blocks"])
+        assert _predict(raw).metrics["completed_requests"] == 1
+
+    if fixed_capacity:
+        assert capacities == [128, 128]
+    else:
+        assert capacities[1] > capacities[0] > 0
+
+
+@pytest.mark.parametrize("backend_version", [None, _VERSION])
+def test_canonical_estimator_resolves_no_slot_local_version(local_profiles, backend_version):
+    root = str(local_profiles[0])
+    assert perf_database.get_version_slots(_SYSTEM, "vllm", systems_paths=root) is None
+    request = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-0.6B",
+        system=_SYSTEM,
+        backend="vllm",
+        backend_version=backend_version,
+        worker_type="aggregated",
+        kv_block_size=64,
+        estimation_mode="fpm_interpolation",
+        systems_paths=(root,),
+    )
+    model = RustForwardPassPerfModel.best_available(request)
+    try:
+        diagnostics = model.diagnostics()
+        assert diagnostics["readiness"] == "ready"
+        provenance = diagnostics["provenance"]
+        assert provenance["selected_systems_root"] == root
+        assert provenance["config"]["backend_version"] == _VERSION
+        assert provenance["config"]["systems_paths"] == [root]
+        assert provenance["config"]["estimation_mode"] == "fpm_interpolation"
+        assert provenance["config"]["fallback_policy"] == "deny"
+        assert model.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 0}}
+        ) == pytest.approx(20.0)
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("backend_version", [None, _VERSION])
+def test_canonical_estimator_rejects_no_slot_root_without_data(local_profiles, tmp_path, backend_version):
+    root = tmp_path / "uncollected"
+    root.mkdir()
+    (root / f"{_SYSTEM}.yaml").write_text((local_profiles[0] / f"{_SYSTEM}.yaml").read_text())
+    assert perf_database.get_latest_database_version(_SYSTEM, "vllm", systems_paths=str(root)) is None
+    request = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-0.6B",
+        system=_SYSTEM,
+        backend="vllm",
+        backend_version=backend_version,
+        worker_type="aggregated",
+        estimation_mode="fpm_interpolation",
+        systems_paths=(str(root),),
+    )
+    error_type = ValueError if backend_version is None else PerfDataNotAvailableError
+    message = "no backend version is available" if backend_version is None else "perf data directory not found"
+    with pytest.raises(error_type, match=message):
+        RustForwardPassPerfModel.best_available(request)
 
 
 @pytest.mark.parametrize("timing", [{"type": "fixed", "prefill_ms": 1, "decode_ms": 2}, {"type": "polynomial"}])
-def test_custom_timing_can_use_local_profiles_for_inferred_kv_capacity(local_profiles, timing):
-    raw = _local_request(local_profiles[0])
-    raw["engine"]["workers"]["aggregated"]["timing"] = timing
+@pytest.mark.parametrize("fixed_capacity", [False, True])
+def test_custom_timing_recommendation_preserves_local_roots(local_profiles, timing, fixed_capacity, tmp_path):
+    root = local_profiles[0]
+    raw = _local_request(root)
+    raw["engine"]["systems_paths"] = [raw["engine"].pop("systems_path")]
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["timing"] = timing
+    worker["parallelism"] = {
+        "preset": [{"replicas": 1, "tensor": 1, "pipeline": 1, "attention_data": 1, "moe_tensor": 1, "moe_expert": 1}]
+    }
+    if fixed_capacity:
+        worker["kv_cache"]["capacity"] = {"type": "fixed", "blocks": 128}
+    raw["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+    raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1}
 
-    assert _predict(raw).metrics["completed_requests"] == 1
+    result = run_recommendation(
+        CoreRecommendationConfig.model_validate(raw),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    assert candidate.config["systems_paths"] == [str(root)]
+    assert candidate.prediction_config["engine"]["systems_paths"] == [str(root)]
+    for metadata in result.candidates[0].provenance.performance_data:
+        assert metadata["config"]["systems_paths"] == [str(root)]
+    [saved] = write_recommendations(tmp_path / "custom-timing-export", [candidate.prediction_config])
+    prediction = CorePredictionConfig.from_yaml(saved)
+    assert prediction.engine.workers.aggregated.timing.model_dump(exclude_none=True) == timing
+    assert _predict(prediction.model_dump(mode="json", exclude_none=True)).metrics["completed_requests"] == 1
 
 
 @pytest.mark.parametrize("explicit_version", [False, True])
@@ -282,12 +420,12 @@ def test_recommendation_resolves_local_capacity_and_exports_replayable_profiles(
 
         assert result.counts.feasible == 1, [record.reason for record in result.candidates]
         candidate = result.selected_candidates[0]
-        assert candidate.config["systems_path"] == str(root)
-        assert candidate.prediction_config["engine"]["systems_path"] == str(root)
+        assert candidate.config["systems_paths"] == [str(root)]
+        assert candidate.prediction_config["engine"]["systems_paths"] == [str(root)]
         assert candidate.prediction_config["engine"]["backend_version"] == _VERSION
         assert result.candidates[0].provenance.performance_data
         for metadata in result.candidates[0].provenance.performance_data:
-            assert metadata["config"]["systems_path"] == str(root)
+            assert metadata["config"]["systems_paths"] == [str(root)]
         [saved] = write_recommendations(tmp_path / f"export-{root.name}", [candidate.prediction_config])
         rerun = subprocess.run(
             [

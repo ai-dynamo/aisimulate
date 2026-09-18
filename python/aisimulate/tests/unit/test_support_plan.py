@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import builtins
 import fcntl
+import inspect
 import json
 import os
 import select
@@ -15,6 +16,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
@@ -45,6 +47,60 @@ class _OfflineRunnerFactory:
 
     def create(self, worker_id):
         return _OfflineRunner()
+
+
+class _OfflinePerfModel:
+    requests: ClassVar[list[dict]] = []
+
+    @classmethod
+    def best_available(cls, request):
+        import aiconfigurator_core
+
+        payload = request.to_dict()
+        cls.requests.append(payload)
+        config = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+        return cls(config)
+
+    def __init__(self, config):
+        self.config = config
+
+    def diagnostics(self):
+        return {
+            "readiness": "ready",
+            "provenance": {
+                "config": self.config,
+                "selected_systems_root": self.config["systems_paths"][0],
+                "requested_estimation_mode": "fpm_interpolation",
+                "selected_estimation_mode": "fpm_interpolation",
+                "selection_failures": [],
+            },
+        }
+
+    def close(self):
+        pass
+
+
+def _assert_estimator_requests(requests, systems_root, moe_tensor):
+    expected = {
+        "model": "unregistered/Example Model",
+        "system": "h200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.25.1",
+        "worker_type": "aggregated",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp_size": moe_tensor if moe_tensor > 1 else None,
+        "moe_ep_size": 1 if moe_tensor > 1 else None,
+        "kv_block_size": 64,
+        "systems_paths": [str(systems_root)],
+        "estimation_mode": "fpm_interpolation",
+        "fallback_policy": "deny",
+        "database_mode": "SILICON",
+        "estimator_config": {},
+    }
+    for request in requests:
+        assert {key: request[key] for key in expected} == expected
 
 
 def _request(**updates) -> SupportRequest:
@@ -107,12 +163,13 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
     assert SupportRequest.from_yaml(root / "request.yaml") == request
     assert json.loads((root / "support-plan.json").read_text()) == plan
-    assert prediction.engine.systems_path == str(root / "systems")
-    assert recommendation.engine.systems_path == prediction.engine.systems_path
+    assert prediction.engine.systems_paths == [str(root / "systems")]
+    assert recommendation.engine.systems_paths == prediction.engine.systems_paths
     assert prediction.engine.model == "unregistered/Example Model"
     worker = prediction.engine.workers.aggregated
     assert worker.timing.type == "default"
-    assert worker.timing.forward_model == "fpm"
+    assert worker.timing.estimation_mode == "fpm_interpolation"
+    assert worker.timing.fallback_policy == "deny"
     assert worker.parallelism.model_dump() == {
         "replicas": 1,
         "tensor": 4,
@@ -121,7 +178,8 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
         "moe_tensor": 4,
         "moe_expert": 1,
     }
-    assert recommendation.engine.workers.aggregated.timing.forward_model == "fpm"
+    assert recommendation.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
+    assert recommendation.engine.workers.aggregated.timing.fallback_policy == "deny"
     assert recommendation.optimizer.max_trials == 1
     assert recommendation.optimizer.parallelism == 1
     assert plan["search"]["candidate_count"] == 1
@@ -173,12 +231,16 @@ def test_one_worker_allocation_keeps_one_pilot_even_with_two_candidate_limit(tmp
 @pytest.mark.parametrize("seed", [0, 7, 42])
 @pytest.mark.parametrize("model_kind,moe_tensor", [("dense", 1), ("moe", 4)])
 def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeypatch, seed, model_kind, moe_tensor):
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
     from aisimulate.main import build_parser
     from aisimulate.recommend import run_recommendation
     from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 
-    # Supply only offline model/runtime/data legality. Both replica choices are
-    # legal for every command; the real config lowering, sampler and budget run.
+    # Keep process-local doubles in this orchestration test. The real lowering,
+    # estimator resolver, sampler, resource admission and scoring still run.
+    monkeypatch.setattr("aisimulate.supervision.in_supervised_process", lambda: True)
+    monkeypatch.setattr(_OfflinePerfModel, "requests", [])
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", _OfflinePerfModel.best_available)
     legal = [
         ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=moe_tensor, moe_ep=1), replicas=count)
         for count in (1, 2)
@@ -204,6 +266,8 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     assert outputs == plan["outputs"]["recommendation_results"]
     assert len(set(outputs)) == 2
     assert all(result.counts.evaluated == 1 and result.counts.cache_hits == 0 for result in results)
+    assert len(_OfflinePerfModel.requests) == 2
+    _assert_estimator_requests(_OfflinePerfModel.requests, tmp_path / "systems", moe_tensor)
 
 
 @pytest.mark.parametrize(
@@ -239,21 +303,35 @@ def test_documented_recommendation_loop_attempts_every_candidate(
         )
         command_file.write_text(json.dumps(payload))
     evaluated = tmp_path / "evaluated.txt"
+    estimator_requests = tmp_path / "estimator-requests.jsonl"
     wrapper = tmp_path / "bin/aisimulate"
     wrapper.parent.mkdir()
-    # Substitute only offline legality and replay metrics. The snippet executes
-    # real subprocesses, public CLI dispatch, sampling, scoring and output export.
+    # Install the same Core double in each supervised child. The snippet executes
+    # real subprocesses, CLI dispatch, estimator resolution, sampling and export.
     wrapper.write_text(
         f"#!{sys.executable}\n"
         f"""
 import os
 import sys
+import json
 from pathlib import Path
+from typing import ClassVar
 
+from aiconfigurator_core.sdk import RustForwardPassPerfModel
 import aisimulate.main as cli
 import aisimulate.sweeper.search_space as search_space
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+
+{inspect.getsource(_OfflinePerfModel)}
+
+def best_available(request):
+    model = _OfflinePerfModel.best_available(request)
+    with Path(os.environ["SUPPORT_TEST_ESTIMATOR_REQUESTS"]).open("a") as stream:
+        stream.write(json.dumps(request.to_dict()) + "\\n")
+    return model
+
+RustForwardPassPerfModel.best_available = best_available
 
 legal = [
     ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=1, moe_ep=1), replicas=count)
@@ -292,6 +370,7 @@ if __name__ == "__main__":
             **os.environ,
             "PATH": str(wrapper.parent) + os.pathsep + os.environ.get("PATH", ""),
             "SUPPORT_TEST_EVALUATED": str(evaluated),
+            "SUPPORT_TEST_ESTIMATOR_REQUESTS": str(estimator_requests),
         },
         capture_output=True,
         text=True,
@@ -302,6 +381,9 @@ if __name__ == "__main__":
     assert not injected_marker.exists()
     assert result.returncode == (1 if any(statuses) else 0), result.stderr
     assert evaluated.read_text().splitlines() == [str(index) for index in range(1, max_candidates + 1)]
+    resolved_requests = [json.loads(line) for line in estimator_requests.read_text().splitlines()]
+    assert len(resolved_requests) == max_candidates
+    _assert_estimator_requests(resolved_requests, workdir / "aisimulate-support/systems", 1)
     for index, (output, status) in enumerate(zip(plan["outputs"]["recommendation_results"], statuses, strict=True), 1):
         root = Path(output)
         payload = json.loads((root / "recommendation.json").read_text())
@@ -316,7 +398,11 @@ if __name__ == "__main__":
         else:
             prediction = CorePredictionConfig.from_yaml(exported)
             assert prediction.engine.workers.aggregated.parallelism.replicas == index
-            assert prediction.engine.systems_path == str(workdir / "aisimulate-support/systems")
+            assert prediction.engine.systems_paths == [str(workdir / "aisimulate-support/systems")]
+            timing = prediction.engine.workers.aggregated.timing
+            assert timing.estimation_mode == "fpm_interpolation"
+            assert timing.fallback_policy == "deny"
+            assert timing.systems_paths == prediction.engine.systems_paths
     assert [line for line in result.stdout.splitlines() if line.startswith("exit ")] == [
         f"exit {status}: {shlex.join(command)}" for command, status in zip(commands, statuses, strict=True)
     ]

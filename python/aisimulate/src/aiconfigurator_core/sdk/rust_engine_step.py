@@ -21,12 +21,16 @@ import math
 import os
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from importlib import resources as pkg_resources
 from pathlib import Path
 from typing import Any
 
 from aiconfigurator_core.sdk.config import RuntimeConfig
 from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
+from aiconfigurator_core.sdk.step_estimate import StepEstimate
 
 logger = logging.getLogger(__name__)
 ENGINE_STEP_BACKEND_ENV = "AICONFIGURATOR_ENGINE_STEP_BACKEND"
@@ -95,6 +99,87 @@ class RustEngineUnsupportedError(RuntimeError):
     error-symmetric between the engines."""
 
 
+@dataclass(frozen=True)
+class ForwardPassPerfModelConfig:
+    """Canonical immutable identity and selection policy for the estimator."""
+
+    model: str
+    system: str
+    backend: str
+    worker_type: str
+    backend_version: str | None = None
+    tp: int = 1
+    pp: int = 1
+    attention_dp: int = 1
+    moe_tp_size: int | None = None
+    moe_ep_size: int | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    nextn: int = 0
+    speculation: dict[str, Any] | None = None
+    kv_block_size: int | None = None
+    estimation_mode: str = "auto"
+    database_mode: str = "SILICON"
+    transfer_policy: str | tuple[str, ...] | None = None
+    systems_paths: tuple[str, ...] = ()
+    fallback_policy: str = "deny"
+    estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
+    attention_backend: str | None = None
+    enable_shared_layer: bool | None = None
+    strict_provenance: bool = False
+
+    @classmethod
+    def from_legacy_engine_config(
+        cls,
+        config: Mapping[str, Any],
+        worker_type: str,
+        options: ForwardPassPerfOptions | Mapping[str, Any] | None = None,
+        *,
+        allow_regression: bool = False,
+    ) -> ForwardPassPerfModelConfig:
+        """Migrate saved configuration while preserving strict/native-only selection."""
+        import aiconfigurator_core
+
+        payload = aiconfigurator_core.RustForwardPassPerfModel.migrate_legacy_config(
+            _json_dumps(dict(config)),
+            worker_type,
+            _optional_json_dumps(options.to_dict() if isinstance(options, ForwardPassPerfOptions) else options),
+            allow_regression,
+        )
+        return cls(**json.loads(payload))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+        return payload
+
+
+@dataclass(frozen=True)
+class ForwardPassPerfOptions:
+    """Runtime observation, regression, correction, and capacity controls."""
+
+    max_observations: int = 64
+    min_observations: int = 5
+    min_faster_correction_factor: float | None = 0.5
+    max_slower_correction_factor: float | None = 2.0
+    bucket_count: int = 16
+    max_num_tokens: int = 8192
+    max_batch_size: int = 512
+    max_kv_tokens: int = 2_000_000
+    regression_attention_kv_weight: float = 1.0
+    regression_prefill_attention_pair_weight: float = 1.0
+    regression_ffn_token_weight: float = 1.0
+    bucket_shape: tuple[int, int] | None = None
+    regression_ridge_scale: float = 1e-9
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class RustForwardPassPerfModel:
     """Facade over the compiled Rust forward-pass perf model (PR #1152).
 
@@ -123,7 +208,11 @@ class RustForwardPassPerfModel:
     construction: ``"prefill"``, ``"decode"``, or ``"aggregated"``. All DP
     ranks in an iteration use that worker type's two-dimensional critical-
     attention/global-FFN feature schema. ``"agg"`` and other aliases are not
-    accepted.
+    accepted. Each instance belongs to one worker, selected by the caller.
+    Prefill and Decode own one regression store each; Aggregated owns four
+    stores routed by the composition of all active ranks. Each store has its
+    own fit and retention state. ``max_observations`` (default ``64``) and
+    ``min_observations`` (default ``5``) apply independently to each store.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -135,7 +224,8 @@ class RustForwardPassPerfModel:
     iter1_rank1]]``. Each backend derives its own cross-rank features, and the
     maximum positive ``wall_time`` across ranks is the latency target.
 
-    Correction grids use fixed constructor-time ranges from ``options``:
+    Correction grids use fixed constructor-time ranges from
+    ``config.estimator_config["correction"]``:
     ``max_num_tokens`` bounds ``sum_prefill_tokens`` and defaults to ``8192``,
     ``max_batch_size`` bounds ``num_decode_requests`` and defaults to ``512``,
     and ``max_kv_tokens`` bounds ``sum_decode_kv_tokens`` and defaults to
@@ -161,79 +251,29 @@ class RustForwardPassPerfModel:
         self._inner = inner
 
     @classmethod
-    def from_native(
-        cls,
-        config: dict[str, Any],
-        options: dict[str, Any] | None = None,
-    ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.from_native(config, options=None)``.
+    def best_available(cls, config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> RustForwardPassPerfModel:
+        """Construct one estimator from the canonical role-bound configuration.
 
-        Description: create a strict native AIC forward-pass model.
-
-        Crosses into the Rust core, which compiles ``config`` via
-        ``aiconfigurator_core.sdk.engine.compile_engine``. Raises if the config is
-        unsupported by the native estimator. Use ``best_available()`` when
-        unsupported configs should fall back to the learned regression model.
+        Auto searches op_level, fpm_interpolation, then fpm_regression even
+        with fallback_policy=deny. Explicit modes default to strict selection.
+        Native correction retains its existing workload feature space.
         """
-        _configure_default_data_roots()
         import aiconfigurator_core
 
-        inner = aiconfigurator_core.RustForwardPassPerfModel.from_native(
-            _json_dumps(config),
-            _optional_json_dumps(options),
-        )
-        return cls(inner)
-
-    @classmethod
-    def best_available(
-        cls,
-        config: dict[str, Any],
-        worker_type: str,
-        options: dict[str, Any] | None = None,
-    ) -> RustForwardPassPerfModel:
-        """API: ``best_available(config, worker_type, options=None)``.
-
-        Description: create a native model when possible, otherwise fall back to
-        regression bound to ``worker_type``. Fallback reason is available from
-        ``diagnostics()["last_warning"]``. ``worker_type`` must be exactly
-        ``"prefill"``, ``"decode"``, or ``"aggregated"``; a successful native
-        construction does not otherwise use it.
-        """
-        worker_type = _validate_worker_type(worker_type)
-        _configure_default_data_roots()
-        import aiconfigurator_core
-
-        inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
-            _json_dumps(config),
-            worker_type,
-            _optional_json_dumps(options),
-        )
-        return cls(inner)
-
-    @classmethod
-    def from_regression(
-        cls,
-        worker_type: str,
-        options: dict[str, Any] | None = None,
-    ) -> RustForwardPassPerfModel:
-        """API: ``from_regression(worker_type, options=None)``.
-
-        Description: create a regression-only forward-pass model bound to one
-        engine-level ``worker_type``. It returns ``None`` for non-empty estimates
-        until enough compatible samples have been provided through
-        ``tune_with_fpms()``. Correction factor getters return ``None`` in this
-        mode. ``worker_type`` must be exactly ``"prefill"``, ``"decode"``, or
-        ``"aggregated"``.
-        """
-        worker_type = _validate_worker_type(worker_type)
-        _configure_default_data_roots()
-        import aiconfigurator_core
-
-        inner = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
-            worker_type,
-            _optional_json_dumps(options),
-        )
-        return cls(inner)
+        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+        if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+        if "transfer_policy" in payload:
+            payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
+        estimator_config = payload.get("estimator_config")
+        if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
+            features = dict(estimator_config["features"])
+            for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
+                weight = features.get(name)
+                if isinstance(weight, float) and not math.isfinite(weight):
+                    features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
+            payload["estimator_config"] = {**estimator_config, "features": features}
+        return cls(aiconfigurator_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
@@ -245,7 +285,8 @@ class RustForwardPassPerfModel:
         convenience form. Native workload inference and role-bound regression
         feature extraction use only ``scheduled_requests``; queued fields and
         ``wall_time`` are ignored for estimation. Regression models return
-        ``None`` until their single store has enough tuned observations. Empty
+        ``None`` until the selected store has a ready fit. A different store's
+        readiness does not supply a fallback prediction. Empty
         scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
@@ -267,9 +308,22 @@ class RustForwardPassPerfModel:
         """API: ``model.diagnostics() -> dict[str, Any]``.
 
         Description: return source, readiness, retained sample count, and
-        fallback warning.
+        fallback warning. Regression retained count is summed across stores;
+        ``ready`` means at least one store has a ready fit. Consult
+        ``regression_store_diagnostics()`` for individual store readiness.
         """
         return json.loads(self._inner.diagnostics())
+
+    def regression_store_diagnostics(self) -> list[dict[str, Any]]:
+        """Return each regression store's label, readiness, and retained count.
+
+        Entries have ``workload_kind``, ``ready``, and ``retained_observations``.
+        Aggregated models include all four stores, including empty ones, in
+        order: ``pure_decode``, ``contains_locally_mixed``,
+        ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
+        their single store; native AIC models return an empty list.
+        """
+        return json.loads(self._inner.regression_store_diagnostics())
 
     def get_min_correction_factor(self) -> float | None:
         """API: ``model.get_min_correction_factor() -> float | None``.
@@ -303,10 +357,10 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
-def _optional_json_dumps(value: dict[str, Any] | None) -> str | None:
+def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:
     if value is None:
         return None
-    wire_value = value.copy()
+    wire_value = dict(value)
     for field in _REGRESSION_WEIGHT_FIELDS:
         weight = wire_value.get(field)
         if isinstance(weight, float) and not math.isfinite(weight):
@@ -323,6 +377,36 @@ def _validate_worker_type(worker_type: str) -> str:
     if worker_type not in ("prefill", "decode", "aggregated"):
         raise ValueError(f"invalid worker_type {worker_type!r}: expected 'prefill', 'decode', or 'aggregated'")
     return worker_type
+
+
+def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
+    packaged = os.fspath(pkg_resources.files("aiconfigurator_core") / "systems")
+    if not entries:
+        from aiconfigurator_core.sdk.perf_database import get_systems_paths
+
+        configured = get_systems_paths()
+        env_root = os.environ.get("AICONFIGURATOR_SYSTEMS_PATH")
+        entries = tuple([env_root] if configured == [packaged] and env_root is not None else configured)
+    resolved: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError("systems_paths entries must be nonempty strings")
+        path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
+        if not os.path.isdir(path):
+            raise ValueError(f"forward-pass systems path is not a directory: {path}")
+        if path not in resolved:
+            resolved.append(path)
+    return resolved
+
+
+def _resolve_forward_pass_transfer_policy(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        from aiconfigurator_core.sdk.common import resolve_transfer_policy
+
+        return sorted(kind.value for kind in resolve_transfer_policy(value))
+    return [getattr(token, "value", str(token)) for token in value]
 
 
 def _normalize_tuning_iterations(iterations: dict[str, Any] | list[Any]) -> list[Any]:
@@ -656,13 +740,14 @@ def estimate_mixed_step_breakdown_with_rust(
         "context_attention": "context_attention (scaled)",
         "fpm_forward_decode": "generation_attention",
     }
-    per_op_latency_ms, _, per_op_source, fallbacks = _fold_per_op(
+    per_op_latency_ms, per_op_energy_wms, per_op_source, fallbacks = _fold_per_op(
         (public_names.get(entry[0], entry[0]), *entry[1:])
         for group in (shared_ops, ctx_attn_ops, decode_attn_ops)
         for entry in group
     )
     for name in ("context_attention (scaled)", "generation_attention"):
         per_op_latency_ms.setdefault(name, 0.0)
+        per_op_energy_wms.setdefault(name, 0.0)
         per_op_source.setdefault(name, "silicon")
 
     ctx_attention_latency = sum(ctx_latency.values())
@@ -685,6 +770,10 @@ def estimate_mixed_step_breakdown_with_rust(
         "component_latency_ms": component_latency_ms,
         "component_energy_wms": component_energy_wms,
         "per_op_latency_ms": per_op_latency_ms,
+        "per_op_energy_wms": per_op_energy_wms,
+        "covered_latency_ms": sum(
+            entry[1] for group in (shared_ops, ctx_attn_ops, decode_attn_ops) for entry in group if entry[2] > 0
+        ),
         "per_op_source": per_op_source,
         "moe_comm_fallbacks": fallbacks,
     }
@@ -738,16 +827,49 @@ def estimate_decode_step_breakdown_with_rust(
     Python step, with real op names and per-op energies folded from the
     compiled engine's per-op results.
     """
-    handle = _cached_engine_handle(model, database)
-    entries = handle._decode_step_per_op_with_metadata(
-        int(gen_tokens),
-        int(isl),
-        int(osl),
-        gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+    estimate = _estimate_decode_step_with_rust(
+        model,
+        database,
+        gen_tokens=gen_tokens,
+        isl=isl,
+        osl=osl,
+        gen_seq_imbalance_correction_scale=gen_seq_imbalance_correction_scale,
     )
+    return (*estimate.legacy_tuple(), estimate.moe_comm_fallbacks)
+
+
+def _estimate_decode_step_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    gen_tokens: int,
+    isl: int,
+    osl: int,
+    gen_seq_imbalance_correction_scale: float = 1.0,
+) -> StepEstimate:
+    """Retain native decode energy and covered latency for aggregate reporting."""
+    handle = _cached_engine_handle(model, database)
+    try:
+        entries = handle._decode_step_per_op_with_metadata(
+            int(gen_tokens),
+            int(isl),
+            int(osl),
+            gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
+        )
+    except ValueError as exc:
+        _reraise_engine_error(exc)
     _note_rust_provenance(handle)
     latency, energy, source, fallbacks = _fold_per_op(entries)
-    return sum(latency.values()), sum(energy.values()), latency, source, fallbacks
+    return StepEstimate(
+        latency_ms=sum(latency.values()),
+        energy_wms=sum(energy.values()),
+        per_op_latency_ms=latency,
+        per_op_energy_wms=energy,
+        per_op_source=source,
+        moe_comm_fallbacks=fallbacks,
+        covered_latency_ms=sum(entry[1] for entry in entries if entry[2] > 0),
+        num_decode_requests=gen_tokens,
+    )
 
 
 def evaluate_context_ops_with_rust(

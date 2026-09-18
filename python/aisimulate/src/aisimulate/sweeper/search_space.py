@@ -209,6 +209,13 @@ def _runner_supports_parallel_config(
     )
 
 
+def _estimator_root_kwargs(search_space, role):
+    paths = search_space.systems_paths_for(role)
+    from .forward_pass_estimator import resolve_systems_paths
+
+    return {"systems_paths": list(resolve_systems_paths(paths))}
+
+
 def _role_runtime(search_space, backend: str, role: str) -> tuple[int, int, float, int | None]:
     token_name = f"{role}_max_num_batched_tokens"
     sequence_name = f"{role}_max_num_seqs"
@@ -244,10 +251,10 @@ def _heterogeneous_disagg_configs(
 ) -> list[DisaggParallelConfig]:
     """Enumerate each P/D role against its own hardware, then apply the shared budget."""
     role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
-    backend_version = search_space.backend_version
+    backend_version = search_space.requested_backend_version(backend)
     if backend_version is None:
         role_versions = {
-            role: resolve_backend_version(hardware, backend, systems_path=search_space.systems_path)
+            role: resolve_backend_version(hardware, backend, **_estimator_root_kwargs(search_space, role))
             for role, hardware in role_hardware.items()
         }
         if len(set(role_versions.values())) != 1:
@@ -271,7 +278,7 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
-                systems_path=search_space.systems_path,
+                **_estimator_root_kwargs(search_space, role),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -388,7 +395,7 @@ def _afd_branch(
                     gpu_budget=ss.gpu_budget,
                     deployment_mode="agg",
                     backend=backend,
-                    backend_version=ss.backend_version,
+                    backend_version=ss.requested_backend_version(backend),
                     min_gpu_budget=None,
                     max_seq_len=max_seq_len,
                     role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
@@ -578,7 +585,10 @@ def enumerate_branches(
             ):
                 continue
             try:
-                if deployment_mode == "disagg" and (ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")):
+                if deployment_mode == "disagg" and (
+                    ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")
+                    or ss.systems_paths_for("prefill") != ss.systems_paths_for("decode")
+                ):
                     legal = _heterogeneous_disagg_configs(
                         ss,
                         backend=backend,
@@ -591,11 +601,11 @@ def enumerate_branches(
                         gpu_budget=ss.gpu_budget,
                         deployment_mode=deployment_mode,
                         backend=backend,
-                        backend_version=ss.backend_version,
+                        backend_version=ss.requested_backend_version(backend),
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
-                        systems_path=ss.systems_path,
+                        **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

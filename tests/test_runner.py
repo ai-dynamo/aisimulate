@@ -4,6 +4,7 @@
 """Engine-only implementation of the canonical Sweeper Runner contract."""
 
 import json
+import math
 import pickle
 
 import pytest
@@ -56,6 +57,20 @@ class RecordingRuntime:
                 "completed_requests": 1,
             }
         )
+
+
+class PowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload.update({"power_w": 487.5, "power_coverage": 0.95})
+        return json.dumps(payload)
+
+
+class WithheldPowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload["power_coverage"] = 0.42
+        return json.dumps(payload)
 
 
 def _engine_args(*, role="aggregated", backend="vllm", timing=None):
@@ -216,7 +231,8 @@ def test_agentic_qualification_survives_default_python_report():
 
     report = EngineReplayRunnerFactory(runtime=QualifiedRuntime()).create(0).run(_spec())
 
-    assert report.metadata == qualification
+    assert {key: report.metadata[key] for key in qualification} == qualification
+    assert report.metadata["power"]["publication_status"] == "unavailable"
     assert report.metrics["completed_requests"] == 1
     assert "native_report" not in report.metadata
 
@@ -243,6 +259,51 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert traffic["agentic_lanes"] == 2
     assert traffic["execution_model"] == "test-model"
     assert "trace_block_size" not in traffic
+
+
+@pytest.mark.parametrize("model_key", ["model", "model_path"])
+def test_agentic_runner_reads_canonical_model_identity(model_key):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+        performance_model_metadata={"aggregated": {"provider": "aic", "config": {model_key: "test-model"}}},
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=deployment,
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "agentic.jsonl",
+                "trace_format": "agentic_mooncake",
+            },
+        )
+    )
+    assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("payload", [{}, {"config": None}, {"config": []}, {"config": "invalid"}])
+def test_runner_rejects_nonmapping_aic_timing_before_materialization(nested_rank, payload, monkeypatch):
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("invalid timing reached capacity"))
+    runtime = RecordingRuntime()
+    args = _engine_args(timing={"type": "external", "provider": "aic", **payload})
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 def test_runner_rejects_agentic_execution_without_a_target_model():
@@ -387,7 +448,9 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["requests"][0]["input_tokens"] == 8
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
-    assert report.metadata == {}
+    assert report.metadata["power"]["publication_status"] == "unavailable"
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
@@ -513,7 +576,8 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
-def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rank_only_controls", [False, True])
+def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch, rank_only_controls):
     reserved_bytes = 14_559_947_612
     path = tmp_path / "prediction.yaml"
     path.write_text(
@@ -542,8 +606,27 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    import aiconfigurator_core
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    class Estimator:
+        def __init__(self, config):
+            self.config = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
     public = CorePredictionConfig.from_yaml(path)
     spec = prediction_to_replay_spec(public)
+    if rank_only_controls:
+        timing = spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        timing.pop("cuda_graph_reserved_bytes")
+        timing.pop("gpu_memory_utilization")
     runtime = RecordingRuntime()
 
     assert public.engine.workers.aggregated is not None
@@ -711,6 +794,30 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
     assert runtime.execution_spec["record_per_request"] is True
     assert report.metadata["native_report"]["completed_requests"] == 1
+
+
+def test_runner_preserves_native_power_provenance_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=PowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_w"] == 487.5
+    assert report.metrics["power_coverage"] == 0.95
+    assert report.metadata["power"] == {
+        "source": "modeled",
+        "scope": "active_forward_pass_per_gpu",
+        "power_w_unit": "W",
+        "coverage_gate": 0.9,
+        "publication_status": "available",
+    }
+
+
+def test_runner_preserves_withheld_power_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_coverage"] == 0.42
+    assert report.metrics["power_w"] is None
+    assert report.metadata["power"]["publication_status"] == "withheld"
 
 
 def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
@@ -959,6 +1066,32 @@ def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
 
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["backend_version"] == "0.11.1"
+
+
+def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
+    runtime = RecordingRuntime()
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "tp": 2,
+            "attention_dp": 1,
+        },
+    }
+    args = {"tensor_parallel_size": 2, "rank": {"block_size": 4, "num_gpu_blocks": 128, "timing_model": timing}}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
+    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+    assert actual == resolve_query_version("h200_sxm", "vllm", "current")
+    assert timing["config"]["backend_version"] == "current"
 
 
 def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
@@ -1210,3 +1343,57 @@ def test_memory_detail_with_explicit_blocks_does_not_guess_components():
     data = report.metadata["native_report"]["memory_diagnostics"]["aggregated"]
     assert data["status"] == "unavailable"
     assert "memory_breakdown" not in data
+
+
+def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    class HostResourceError(RuntimeError):
+        pass
+
+    resources = ModuleType("aisimulate.resources")
+    resources.ResourceLimitError = HostResourceError
+    monkeypatch.setitem(sys.modules, "aisimulate.resources", resources)
+
+    class LimitedRuntime:
+        def run_replay_json(self, payload):
+            raise MemoryError("report storage: No space left on device")
+
+    with pytest.raises(HostResourceError, match="report storage: No space left on device"):
+        EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())
+
+
+@pytest.mark.parametrize(
+    "watts,coverage",
+    [
+        (500.0, 0.89),
+        (500.0, None),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (None, 1.1),
+        (None, -0.1),
+        (True, 1.0),
+        (None, True),
+        (math.nan, 1.0),
+        (math.inf, 1.0),
+        (-math.inf, 1.0),
+        (None, math.nan),
+        (None, math.inf),
+        (None, -math.inf),
+        (10**400, 1.0),
+        (None, 10**400),
+    ],
+)
+def test_runner_rejects_invalid_power_publication(watts, coverage):
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError):
+        _normalize_engine_replay_report({"power_w": watts, "power_coverage": coverage}, include_native_report=False)
+
+
+def test_runner_rejects_overflowing_ordinary_metric():
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
+        _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)

@@ -569,7 +569,7 @@ errors, and pass/fail criteria. FPM forward error alone does not establish
 TTFT/TPOT or throughput accuracy. The
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) reports existing
 accuracy results; it is not a substitute for validating a new cell. See the
-[snapshot and regeneration details](../e2e-accuracy/README.md) for how that evidence
+[snapshot and regeneration details](../../../../pages/e2e-accuracy/README.md) for how that evidence
 is produced.
 
 ## FPM data and prediction troubleshooting

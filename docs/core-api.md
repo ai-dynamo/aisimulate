@@ -82,6 +82,22 @@ options.
 
 ## KV-cache capacity reservation
 
+SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
+pool. Peak activation/workspace estimates remain visible in
+`memory_breakdown.activations_bytes`, but are not deducted from that pool;
+transient execution headroom is already outside the static fraction. Increasing
+the prefill token budget alone therefore does not reduce SGLang KV capacity.
+Resident runtime/communication estimates reduce the pre-load free-memory pool
+before applying the fraction; weights are deducted afterward. The budget is
+`(capacity - resident_overhead) * mem_fraction_static - weights`, less any
+explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
+(non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
+checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
+the unchanged timing graph. Other model layouts retain their prior weight
+accounting.
+vLLM and TRT-LLM continue to deduct activation memory under their own budget
+semantics. No measured server capacity is required by this calculation.
+
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
 non-negative integer no greater than `2**53` and defaults to zero. It is treated
@@ -108,103 +124,126 @@ minor API update.
 
 ## Choosing a forward-pass API
 
-For adaptive forward-pass modeling, use
-`RustForwardPassPerfModel.best_available(config, worker_type, options=None)`
-from Python or
-`ForwardPassPerfModel::best_available(config, worker_type, options)` from Rust.
-`worker_type` is an immutable property of the engine model, not an inferred
-property of one FPM iteration. Python accepts exactly `"prefill"`, `"decode"`,
-or `"aggregated"`; Rust uses
-`ForwardPassWorkerType::{Prefill, Decode, Aggregated}`.
-
-This path uses the native AIC estimate when the native estimator can be built,
-learns online correction factors from FPM observations, and falls back to the
-regression associated with `worker_type` for eligible native build or
-data-availability failures. These include unsupported models and missing or
-unreadable model, system, or performance data, plus malformed system YAML. A
-successful native build keeps the existing workload-kind inference and
-correction behavior; `worker_type` and regression-only weights do not alter
-native estimates. Check
-`diagnostics()` to determine whether the active source is `aic`,
-`aic_with_correction`, or `fallback_regression`, and to inspect any fallback
-warning.
-
-Native online corrections default to an absolute factor range of `[0.5, 2.0]`.
-Pass `None` explicitly as `min_faster_correction_factor` or
-`max_slower_correction_factor` in the options dictionary to remove the bound
-in that direction. Regression fallback ignores both options.
-
-Use `from_native(...)` instead when native AIC support is required and an
-unsupported configuration or native data failure should surface rather than
-fall back. This strict-native constructor does not take `worker_type`.
-
-`EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
-`SOL` for native forward-pass construction. The Python dictionary form uses
-those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the
-SOL/util path and is intended for research estimates when matching silicon
-data is unavailable. Set `enable_shared_layer=true` when empirical estimation
-may reuse sibling or cross-version calibration data; `transfer_policy` can
-limit the allowed transfer kinds. `strict_provenance=true` makes missing,
-malformed, or incomplete collection and reuse metadata fail the database load.
-`SOL_FULL` remains a per-call diagnostic and is rejected as an engine default.
-Version-slot validation is unchanged; raw versions outside the maintained slots
-still require the existing explicit SDK or environment escape hatch.
-
-`AicEngineBuilder` exposes `.database_mode(...)`, `.shared_layer(...)`,
-`.transfer_policy(...)`, and `.strict_provenance(...)`. Python `compile_engine`
-accepts the corresponding keyword names; `shared_layer` is serialized as
-`EngineConfig.enable_shared_layer`.
-
-Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
-`ForwardPassPerfModel::from_regression(worker_type, options)` for a
-regression-only model. It owns one two-dimensional retained sample set and one
-fit for the engine's fixed role. Its axes are consistently ordered as
-`[critical attention, global FFN/MoE]`; bucket retention uses `log1p` of those
-raw features, while fitting uses standardized raw features. The optional
-regression weights below default to `1.0` and must be finite and strictly
-positive:
-
-- `regression_attention_kv_weight` (`alpha`);
-- `regression_prefill_attention_pair_weight` (`beta`);
-- `regression_ffn_token_weight` (`gamma`).
-
-The ergonomic Python facade accepts ordinary Python floats. For these three
-fields only, it marshals nonfinite values on a shallow copy of the options
-dictionary as the exact valid-JSON string sentinels `"NaN"`, `"Infinity"`, and
-`"-Infinity"`; finite values remain JSON numbers. Callers of the JSON-oriented
-raw PyO3 API may use the same sentinels directly. The sentinels preserve values
-for backend-dependent validation rather than making them valid regression
-weights: `from_native` and a successful native `best_available` ignore all
-three fields, while `from_regression` and a fallback `best_available` reject a
-decoded nonfinite value with the corresponding field-specific error. Other
-strings and value types remain invalid.
-
-The formulas, role-compatibility rules, and fitting pipeline are specified in
-the [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md).
-
-`AicEngineBuilder` serves a different purpose: it constructs the strict native
-Rust engine for direct public prefill and decode latency calls. It does not
-provide regression fallback or online correction, so it is not a replacement
-for `best_available(...)`.
+Use `RustForwardPassPerfModel.best_available(config)` from Python or
+`ForwardPassPerfModel::best_available(config)` from Rust. The canonical
+`ForwardPassPerfModelConfig` owns model, hardware, backend, topology, data
+policies, a required immutable `worker_type`, and the complete nested
+`estimator_config`. Worker roles are `prefill`, `decode`, and `aggregated`.
 
 ```python
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-# Engine-config and per-rank FPM dictionary setup is omitted here.
-model = RustForwardPassPerfModel.best_available(config, "decode")
-diagnostics = model.diagnostics()
-print(diagnostics["source"])
-if diagnostics["last_warning"] is not None:
-    print(diagnostics["last_warning"])
-
-estimate_ms = model.estimate_forward_pass_time_ms(metrics_by_rank)
-if estimate_ms is None:
-    # Regression fallback starts without observations for this worker type.
-    # Supply observed FPM iterations with positive wall_time until the configured
-    # min_observations threshold is reached, then retry the estimate.
-    model.tune_with_fpms(observed_iterations)  # Observed-iteration setup omitted.
-    estimate_ms = model.estimate_forward_pass_time_ms(metrics_by_rank)
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="aggregated",
+    tp=2,
+    estimation_mode="auto",
+    fallback_policy="deny",
+    estimator_config={
+        "features": {"attention_kv_weight": 1.0},
+        "fpm_regression": {
+            "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
+            "min_observations": 5,
+        },
+        "correction": {"enabled": True},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+print(model.diagnostics()["provenance"])
 ```
+
+### Selection and fallback
+
+`estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
+Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
+including when fallback is denied. For an explicit mode, deny permits only
+that estimator; allow tries the requested estimator first, then the remaining
+estimators in the same global priority order. Each native mode tries the
+ordered `systems_paths` before moving to another estimator. Omitted roots preserve
+configured SDK discovery (or the systems-path environment override when the SDK
+uses its packaged default); an explicit `default` entry selects the packaged root.
+The resolved paths are shared by preflight, construction and capacity estimation.
+Selection occurs
+at construction; queries do not silently switch estimators on a data-domain error.
+
+Invalid caller configuration does not trigger fallback. A constructed regression
+may be unready: nonempty queries return `None` until their selected workload
+store has a usable fit. Offline prediction/recommendation reject an untrained
+regression instead of fabricating a latency. The current aggregated regression
+retains its four workload stores; dedicated roles retain one each.
+
+The returned provenance records the requested and selected modes, failed
+selection attempts, effective backend version, data policy, selected root,
+and complete estimator configuration. Its resolved config pins the selected
+mode with deny so saved replay input repeats that selection.
+
+Prompt-lookup verification uses the same constructor: set `speculation` to
+`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
+`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
+It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
+select op-level but cannot fall back to an unsupported speculative estimator.
+The cost configuration is retained in provenance and saved recommendations.
+Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
+configuration; they do not change the model's target-verification graph.
+
+### Estimator controls
+
+`estimator_config` is passed intact through the Python facade, CLI, Sweeper,
+and Replay, then parsed and validated in Rust. Unknown fields report their
+nested paths. The supported namespaces are:
+
+- `features`: `attention_kv_weight`, `prefill_attention_pair_weight`, and
+  `ffn_token_weight`, each defaulting to 1.0. These currently affect regression
+  only; positive finite values are required when regression is constructed.
+- `fpm_regression`: independent `sampling`, `min_observations` (5), and `fit`.
+  The fit kind is `standardized_nnls`, with a free intercept and nonnegative
+  slopes. `singular_ridge_scale` defaults to `1e-9` and applies only when retrying
+  a singular equation.
+- `correction`: `enabled` (true), independent `sampling`, `min_observations`
+  (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
+  (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
+- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
+  additional knobs yet; unknown fields are rejected.
+
+Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
+logical store. Rectangular grids are supported. Regression uses dynamic
+`log1p` retention coordinates and fits standardized raw features. Correction
+uses fixed raw workload coordinates; its one-dimensional prefill grid uses
+the product of the two axis counts. Retention evicts the oldest sample from
+the most populated cell when the store exceeds its budget.
+
+Correction explicitly reports `feature_space: legacy_workload`. Its existing
+prefill/decode/mixed stores and median-ratio calculation remain unchanged at
+default settings. A shared role-based correction space requires separate
+accuracy validation and is not accepted as a configuration value in this release.
+
+Use `regression_store_diagnostics()` for per-store counts/readiness. Summary
+readiness means at least one store is ready; another cold store can still
+return `None`. `tune_with_fpms()` preserves the established FPM observation
+contract. Native construction still uses Python model compilation; estimator
+selection, regression, correction, and latency computation are owned by Rust.
+
+### Migrating saved configuration
+
+Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
+worker_type, old_options, allow_regression=False)` to convert a saved flat
+EngineConfig and tuning options. It pins the old explicit native mode instead
+of changing it to auto. Set `allow_regression=True` only for an old caller that
+allowed direct regression fallback; the migration preserves that two-mode
+order rather than adding interpolation. Legacy `forward_model: fpm` maps to
+`fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
+`regression` policy remains readable for these saved direct-fallback requests.
+
+Previously saved CLI timing with `forward_model` retains explicit selection
+and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
+is retained as a legacy migration value type; new construction has one complete
+config and no separate options argument. The raw PyO3 class also exposes
+`normalize_config` and migration helpers for JSON-oriented consumers.
+
+The [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md)
+explains the retained workload routing and feature mathematics.
 
 ## Stable Rust facade
 
@@ -216,9 +255,10 @@ Python once to compile an engine specification. Calls on the returned
 crate-root types remain re-exported during the migration window, but the
 `perfmodel` namespace is canonical for new code.
 
-Standalone binaries must enable the crate's `embed-python` feature; applications
-hosted by an initialized Python interpreter do not. In either case, the matching
-`aisimulate` wheel must be importable. See the
+Native engine construction in standalone binaries requires the crate's `embed-python`
+feature; applications hosted by an initialized Python interpreter do not need
+auto-initialization. The matching `aisimulate` wheel must be importable for native
+construction. Explicit `fpm_regression` construction works without the Python feature. See the
 [crate README](../crates/core/README.md) for setup and usage examples.
 
 The flat `build_aic_engine` adapter was removed from `main`; consumers must use
@@ -228,7 +268,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 
 - compiled engine: `AicEngineBuilder`, `AicEngine`, `AicError`;
 - forward-pass estimation: `ForwardPassPerfModel`,
-  `ForwardPassWorkerType`, `ForwardPassPerfOptions`,
+  `ForwardPassWorkerType`, `ForwardPassPerfModelConfig`, `EstimatorConfig`,
   diagnostics/readiness/source types, and the `ForwardPassMetrics` telemetry
   types;
 - KV-cache estimation: `estimate_kv_cache`, `KvCacheEstimateRequest`,
@@ -244,7 +284,35 @@ StaticResult, PerOpValue}` and `engine::spec::{EngineSpec, OpSpec}` to load and
 execute a previously compiled specification directly. `PerOpValue` is the
 per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
 `*_per_op` / `evaluate_*` methods (the thin op-list evaluation FFI); per-op
-energy is 0.0 wherever the perf tables carry no power columns.
+energy is 0.0 wherever the perf tables carry no power columns. That zero is a
+missing-data sentinel, not evidence of a zero-power operation. See the
+[modeled-power contract](power-model.md) for the latency-weighted coverage gate,
+aggregation rules, and public output boundary. Typed per-op energy alone does
+not make unified replay power available.
+
+## Replay timing evidence
+
+The runtime-neutral `TimingModel` contract exposes optional accumulated
+evidence through `evidence_summary()`. Op-level AIC providers return a
+`TimingEvidenceSummary` split into prefill and decode phases. Each
+`TimingPhaseEvidence` carries accumulated known energy in W-ms, total latency,
+latency covered by nonzero energy data, merged provenance, and name-folded
+`TimingOperationEvidence` records with the same fields. Missing operation
+energy is represented by `None`, never by a synthesized zero. When coverage is
+below one, the energy is partial: it includes only the portion with positive
+operation-energy evidence. It is not a total-workload energy estimate.
+Providers that assemble these public records directly should use
+`TimingPhaseEvidence::try_from_operations` and `try_accumulate`; those paths
+validate numeric fields and canonicalize covered latency to zero when energy is
+missing. Nonempty operation lists must agree with phase totals; a relative
+rounding tolerance applies only to this consistency check. The original infallible helpers remain available for already-valid
+evidence.
+
+Whole-model FPM timing and the built-in fixed and polynomial timing models are
+latency-only and return `None` from `evidence_summary()`. Consumers must keep
+that distinction when producing power metrics: absence of evidence is not a
+zero-watt prediction. FPM decode timing continues to query the exact total
+past-KV coordinate rather than the op-level mean-context coordinate.
 
 ## Compatibility rules
 
@@ -256,18 +324,35 @@ energy is 0.0 wherever the perf tables carry no power columns.
 - A supported facade name is not removed or given a new required parameter
   without a documented deprecation path. The package is pre-1.0, so an
   unavoidable incompatible API change also requires a minor-version bump.
-- Requiring `worker_type` in `from_regression` and `best_available` is a
-  documented incompatible change for the next minor release. Adding the three
-  public regression-weight fields to `ForwardPassPerfOptions` is also a Rust
-  source break for downstream exhaustive struct literals. Rust callers should
-  prefer update syntax such as
-  `ForwardPassPerfOptions { bucket_count: 16, ..Default::default() }` so future
-  option fields do not require source changes. This feature does not itself
-  change package versions; release coordination must keep the crate and wheel
-  versions aligned.
+- The canonical `best_available(config)` API replaces the old positional worker
+  role/options signatures and separate estimator constructors. This is a source
+  migration: use `ForwardPassPerfModelConfig::new(...)` in Rust or the SDK config
+  class in Python, and use the explicit migration helper for saved EngineConfig
+  values. Downstream Dynamo callers must migrate before this API is released;
+  keep the crate and wheel versions aligned at the coordinated minor release.
+- Publication is blocked by [the release gate](../.github/release-gates.json)
+  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
+  merged, and its Planner/wheel smoke validated against this API. Both scheduled
+  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
+  before staging and the downstream publish trigger. Manual dispatch may select
+  a main/release commit, but both the workflow revision's policy and the selected
+  commit's migration declarations must pass before publication. The checker runs
+  from the workflow revision; missing or malformed target gates fail closed.
+  Clear the pending entry in a reviewed change only after the migration evidence
+  is available.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.
+
+The standalone AIC 0.12 compatibility distributions form a separate package
+lineage: `aiconfigurator` pins `aiconfigurator-core==0.12.0`, and that core builds
+its own native binding. They do not depend on the AISimulate wheel or crate.
+Their retained binding declarations are not downstream callers of this API.
+The [replacement installation](../README.md#upgrade-from-standalone-aiconfigurator)
+removes both old distributions and installs AISimulate's complete migrated
+application and core. Namespace compatibility does not preserve the removed
+constructor signatures; direct SDK callers must perform the source migration
+above. Release gates track consumers of the new artifacts, such as Dynamo.
 
 ## CI contract
 

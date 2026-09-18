@@ -10,6 +10,7 @@ from functools import cache
 from typing import Any
 
 from .config import Workload
+from .forward_pass_estimator import resolve_systems_paths
 from .kv_estimate import estimate_kv_tokens
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
@@ -36,11 +37,11 @@ def _per_rank_capacity_tokens(
     hardware_sku: str,
     backend: str,
     backend_version: str,
+    systems_paths: tuple[str, ...],
     max_num_tokens: int,
     max_batch_size: int,
     memory_fraction: float,
     nextn: int,
-    systems_path: str | None = None,
 ) -> int:
     tokens = estimate_kv_tokens(
         shape,
@@ -48,11 +49,11 @@ def _per_rank_capacity_tokens(
         hardware_sku=hardware_sku,
         backend=backend,
         backend_version=backend_version,
+        systems_paths=list(systems_paths),
         max_num_tokens=max_num_tokens,
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
-        systems_path=systems_path,
     )
     if tokens is None:
         raise InfeasibleKVCapacity(
@@ -77,17 +78,31 @@ def _role_capacity_tokens(
     if fixed_blocks is not None:
         per_rank_tokens = int(fixed_blocks) * block_size
     else:
+        resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config")
+        if resolved is None:
+            timing = sample.get(f"{role}_timing_model")
+            if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+                resolved = timing.get("config")
+                if not isinstance(resolved, dict):
+                    raise ValueError(f"{role} external AIC timing config must be a mapping")
+            else:
+                resolved = {}
+        roots = resolved.get("systems_paths")
+        if not roots and resolved.get("systems_path"):
+            roots = [resolved["systems_path"]]
+        if not roots:
+            roots = sample.get("systems_paths")
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
-            model_name=str(sample["model_name"]),
-            hardware_sku=str(sample.get(f"{role}_hardware_sku") or sample["hardware_sku"]),
-            backend=str(sample["backend"]),
-            backend_version=backend_version,
+            model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
+            hardware_sku=str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
+            backend=str(resolved.get("backend", sample["backend"])),
+            backend_version=resolved.get("backend_version", backend_version),
+            systems_paths=resolve_systems_paths(roots),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
             nextn=int(sample.get("aic_nextn") or 0),
-            systems_path=sample.get("systems_path"),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
