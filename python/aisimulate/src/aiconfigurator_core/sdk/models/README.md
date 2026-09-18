@@ -76,6 +76,9 @@ Explicit modes and decode-only construction remain unchanged.
 Task YAML keeps inferred FMHA modes unset so loading it preserves runtime
 precision resolution; `to_dict()` still reports the resolved public fields.
 Wide-EP's implicit FlashInfer backend is outside the FA3 mapping.
+The raw three-argument `get_model()` API has no database version or system
+specification. External callers, including Dynamo's legacy estimator, must call
+the resolver with their database context before construction to adopt this mapping.
 
 ### `create()` Classmethod
 

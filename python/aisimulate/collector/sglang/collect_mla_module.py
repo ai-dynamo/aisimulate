@@ -2836,6 +2836,7 @@ def main():
     else:
         attn_types = sorted({spec.attention_type for spec in get_mla_module_model_specs(apply_model_filter=False)})
 
+    failed_dispatches = 0
     for attn_type in attn_types:
         # Determine models
         if args.model:
@@ -2879,10 +2880,14 @@ def main():
                             ordinary_mla=args.ordinary_mla,
                         )
                     except Exception as e:
+                        failed_dispatches += 1
                         print(f"  FAILED: {e}")
                         traceback.print_exc()
 
     print(f"\n{'=' * 50}")
+    if failed_dispatches:
+        print(f"COLLECTION FAILED: {failed_dispatches} dispatches failed")
+        raise SystemExit(1)
     print("ALL TESTS COMPLETED")
     print(f"{'=' * 50}")
 

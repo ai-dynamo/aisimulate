@@ -769,7 +769,8 @@ class TestOrdinaryMLACli:
         assert exc.value.code == 2
         assert "--ordinary-mla requires --mode context --attn-type mla" in capsys.readouterr().err
 
-    def test_context_mla_dispatches(self, monkeypatch):
+    @pytest.mark.parametrize("fail_first", [False, True])
+    def test_context_mla_dispatches(self, monkeypatch, capsys, fail_first):
         mod = _import_module()
         monkeypatch.setattr(
             sys,
@@ -777,9 +778,29 @@ class TestOrdinaryMLACli:
             ["collect_mla_module", "--ordinary-mla", "--mode", "context", "--attn-type", "mla", "--model", "test"],
         )
         monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 8)
-        monkeypatch.setattr(mod, "_get_precision_combos", lambda _mode: [("bfloat16", "bfloat16", "bfloat16")])
+        monkeypatch.setattr(
+            mod,
+            "_get_precision_combos",
+            lambda _mode: [("bfloat16", "bfloat16", "bfloat16"), ("bfloat16", "fp8", "bfloat16")],
+        )
         calls = []
-        monkeypatch.setattr(mod, "run_mla_module", lambda **kwargs: calls.append(kwargs))
-        mod.main()
-        assert calls
+
+        def collect(**kwargs):
+            calls.append(kwargs)
+            if fail_first and len(calls) == 1:
+                raise ValueError("projection precision mismatch")
+
+        monkeypatch.setattr(mod, "run_mla_module", collect)
+        if fail_first:
+            with pytest.raises(SystemExit) as exc:
+                mod.main()
+            assert exc.value.code == 1
+            output = capsys.readouterr()
+            assert "projection precision mismatch" in output.err
+            assert "COLLECTION FAILED: 1 dispatches failed" in output.out
+            assert "ALL TESTS COMPLETED" not in output.out
+        else:
+            mod.main()
+            assert "ALL TESTS COMPLETED" in capsys.readouterr().out
+        assert len(calls) > 1
         assert all(call["ordinary_mla"] and call["is_prefill"] and call["attn_type"] == "mla" for call in calls)
