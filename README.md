@@ -413,6 +413,8 @@ non-default samplers. The default `python_random`
 preserves existing workloads. Both sample the full input vector before output
 lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
 32-bit integer; the Python sampler retains unsigned 64-bit seed support.
+Each replay initializes its own seeded sampler, so independent runs reproduce
+the same request lengths.
 
 ### FPM accuracy overview
 
