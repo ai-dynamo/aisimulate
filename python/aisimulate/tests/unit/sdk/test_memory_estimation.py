@@ -315,7 +315,7 @@ def test_prefill_workspace_respects_backend_kv_pool(monkeypatch, backend, extra_
         budgets.append(result["total_kv_size_bytes"])
         assert result["total_kv_size_tokens"] == result["total_kv_size_bytes"] // 1024
     expected_gib = {
-        "sglang": [18 - extra_graph_gib, 18 - extra_graph_gib],
+        "sglang": [18.6 - extra_graph_gib, 18.6 - extra_graph_gib],
         "vllm": [17 - extra_graph_gib, 2 - extra_graph_gib],
         "trtllm": [(37 - extra_graph_gib) * 0.8, (22 - extra_graph_gib) * 0.8],
     }

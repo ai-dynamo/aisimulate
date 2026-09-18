@@ -353,6 +353,13 @@ class KVCacheEstimator:
         )
 
         weights_bytes = float(memory["weights"]) * _ONE_GIB
+        # Some timing graphs approximate layer counts or embedding lookup
+        # shapes. Prefer model-owned resident weights when that layout is known.
+        weight_memory = getattr(model, "get_weight_memory_bytes", None)
+        if weight_memory is not None:
+            resident_weights = weight_memory()
+            if resident_weights is not None:
+                weights_bytes = float(resident_weights)
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
@@ -371,6 +378,11 @@ class KVCacheEstimator:
                 "runtime_overhead_bytes": runtime_overhead_bytes,
                 "comm_overhead_bytes": comm_overhead_bytes,
                 "non_kv_bytes": non_kv_bytes,
+                # SGLang measures free memory after distributed/CUDA setup,
+                # before loading weights, and applies its static fraction there.
+                "pre_model_load_overhead_bytes": (
+                    runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
+                ),
                 "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 # Model's byte-budget -> token-count inverse (KV-curve aware).
@@ -435,9 +447,10 @@ class KVCacheEstimator:
             raise ValueError(f"GPU capacity must be finite and positive, got {capacity}")
 
         cuda_graph = float(cuda_graph_reserved_bytes)
-        non_kv = float(breakdown["non_kv_bytes"]) + cuda_graph
+        pre_load_overhead = float(breakdown.get("pre_model_load_overhead_bytes", 0.0))
+        non_kv = float(breakdown["non_kv_bytes"]) - pre_load_overhead + cuda_graph
         total_kv_size_bytes_f = kv_cache_budget_bytes(
-            capacity=capacity, non_kv=non_kv, fraction=fraction, of_free=is_of_free
+            capacity=capacity - pre_load_overhead, non_kv=non_kv, fraction=fraction, of_free=is_of_free
         )
 
         if total_kv_size_bytes_f <= 0.0:
