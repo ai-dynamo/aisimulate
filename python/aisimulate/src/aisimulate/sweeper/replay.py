@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
@@ -120,8 +121,23 @@ class ReplaySpec:
 class ReplayReport:
     """Runner output consumed by Sweeper scoring."""
 
-    metrics: dict[str, float]
+    metrics: dict[str, float | None]
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        power = normalize_power_summary(self.metrics)
+        for name, value in self.metrics.items():
+            if name in POWER_FIELDS:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"runner metric {name} must be finite") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"runner metric {name} must be finite")
+        object.__setattr__(self, "metrics", {**self.metrics, **power})
 
 
 @dataclass(frozen=True)
@@ -132,6 +148,7 @@ class ReplayOutputRequirements:
     capture_per_request: bool = False
     capture_telemetry: bool = False
     telemetry_sample_interval_ms: float = 1000.0
+    capture_memory_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         interval = self.telemetry_sample_interval_ms
@@ -178,6 +195,9 @@ class RunnerCapabilities:
     supported_agentic_topologies: tuple[str, ...] = ("agg", "disagg")
     agentic_qualification: str | None = None
     supports_analytical_epd: bool = False
+    supported_agentic_backends: tuple[str, ...] = ("*",)
+    supports_agentic_host_offload: bool = True
+    supports_agentic_speculative_decoding: bool = True
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -261,6 +281,26 @@ class RunnerCapabilities:
                 f"runner does not support agentic trace format {trace_format!r} "
                 f"with topology {deployment.deployment_mode!r}"
             )
+        if agentic_topology_required:
+            if "*" not in self.supported_agentic_backends and deployment.backend not in self.supported_agentic_backends:
+                raise ValueError(f"runner does not support agentic execution with backend {deployment.backend!r}")
+            role_args = (
+                [deployment.agg_engine_args]
+                if deployment.deployment_mode == "agg"
+                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+            )
+            for args in role_args:
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if not isinstance(rank, Mapping):
+                    continue  # The engine descriptor validator reports malformed ranks.
+                if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
+                    raise ValueError("agentic M1 execution requires HBM-only KV cache; host offload is unsupported")
+                if not self.supports_agentic_speculative_decoding and any(
+                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
+                ):
+                    raise ValueError("agentic M1 execution requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
             labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)

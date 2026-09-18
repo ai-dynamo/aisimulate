@@ -4,6 +4,7 @@
 """Engine-only implementation of the canonical Sweeper Runner contract."""
 
 import json
+import math
 import pickle
 
 import pytest
@@ -56,6 +57,20 @@ class RecordingRuntime:
                 "completed_requests": 1,
             }
         )
+
+
+class PowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload.update({"power_w": 487.5, "power_coverage": 0.95})
+        return json.dumps(payload)
+
+
+class WithheldPowerRecordingRuntime(RecordingRuntime):
+    def run_replay_json(self, execution_spec_json):
+        payload = json.loads(super().run_replay_json(execution_spec_json))
+        payload["power_coverage"] = 0.42
+        return json.dumps(payload)
 
 
 def _engine_args(*, role="aggregated", backend="vllm", timing=None):
@@ -127,7 +142,99 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
     assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.supported_agentic_backends == ("vllm", "sglang")
+    assert not capabilities.supports_agentic_host_offload
+    assert not capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize(
+    ("unsupported", "message"),
+    [
+        ({"native_host_offload": {"num_host_blocks": 8}}, "HBM-only"),
+        ({"aic_nextn": 1}, "speculative decoding disabled"),
+        ({"nextn": 1}, "speculative decoding disabled"),
+    ],
+)
+def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
+    trace_format, nested_rank, unsupported, message
+):
+    runtime = RecordingRuntime()
+    args = _engine_args() | unsupported
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args=args,
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+def test_agentic_capabilities_reject_trtllm(trace_format):
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="trtllm",
+            backend_version="test",
+            agg_engine_args=_engine_args(backend="trtllm"),
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
+    )
+    with pytest.raises(ValueError, match="agentic execution with backend 'trtllm'"):
+        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+def test_standard_dynamo_defers_agentic_restrictions_until_trace_kind_is_known():
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args=_engine_args() | {"aic_nextn": 1},
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": "dynamo"},
+    )
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+def test_agentic_qualification_survives_default_python_report():
+    qualification = {
+        "agentic_qualification": "functional_only",
+        "agentic_input_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_model_projection": {
+            "policy": "project_to_configured_target",
+            "source_models": ["source-model"],
+            "target_model": "test-model",
+        },
+        "weka_nested_timestamp_basis": "absolute",
+    }
+
+    class QualifiedRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | qualification)
+
+    report = EngineReplayRunnerFactory(runtime=QualifiedRuntime()).create(0).run(_spec())
+
+    assert {key: report.metadata[key] for key in qualification} == qualification
+    assert report.metadata["power"]["publication_status"] == "unavailable"
+    assert report.metrics["completed_requests"] == 1
+    assert "native_report" not in report.metadata
 
 
 def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
@@ -296,7 +403,9 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["requests"][0]["input_tokens"] == 8
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
-    assert report.metadata == {}
+    assert report.metadata["power"]["publication_status"] == "unavailable"
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
@@ -468,26 +577,29 @@ engine:
     assert calls[0]["cuda_graph_reserved_bytes"] == reserved_bytes
 
 
-def test_public_prefill_schedule_interval_reaches_native_execution_rank(tmp_path):
+@pytest.mark.parametrize(
+    "backend,field,value", [("vllm", "prefill_schedule_interval", 4), ("sglang", "prefill_decode_interval", 20)]
+)
+def test_public_prefill_interval_reaches_native_execution_rank(tmp_path, backend, field, value):
     path = tmp_path / "prediction.yaml"
     path.write_text(
-        """\
+        f"""\
 engine:
   mode: aggregated
   model: example/model
   hardware: h200_sxm
-  backend: vllm
+  backend: {backend}
   context_length: 4096
   workers:
     aggregated:
       parallelism:
         attention_data: 2
       scheduler:
-        prefill_schedule_interval: 4
+        {field}: {value}
       kv_cache:
         block_size: 16
-        capacity: {type: fixed, blocks: 128}
-      timing: {type: fixed, prefill_ms: 1.0, decode_ms: 1.0}
+        capacity: {{type: fixed, blocks: 128}}
+      timing: {{type: fixed, prefill_ms: 1.0, decode_ms: 1.0}}
 """,
         encoding="utf-8",
     )
@@ -497,8 +609,8 @@ engine:
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
 
     assert public.engine.workers.aggregated is not None
-    assert public.engine.workers.aggregated.scheduler.prefill_schedule_interval == 4
-    assert runtime.execution_spec["spec"]["engine"]["rank"]["prefill_schedule_interval"] == 4
+    assert getattr(public.engine.workers.aggregated.scheduler, field) == value
+    assert runtime.execution_spec["spec"]["engine"]["rank"][field] == value
 
 
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
@@ -617,6 +729,30 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
     assert runtime.execution_spec["record_per_request"] is True
     assert report.metadata["native_report"]["completed_requests"] == 1
+
+
+def test_runner_preserves_native_power_provenance_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=PowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_w"] == 487.5
+    assert report.metrics["power_coverage"] == 0.95
+    assert report.metadata["power"] == {
+        "source": "modeled",
+        "scope": "active_forward_pass_per_gpu",
+        "power_w_unit": "W",
+        "coverage_gate": 0.9,
+        "publication_status": "available",
+    }
+
+
+def test_runner_preserves_withheld_power_without_raw_report():
+    report = EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime()).create(worker_id=7).run(_spec())
+
+    assert "native_report" not in report.metadata
+    assert report.metrics["power_coverage"] == 0.42
+    assert report.metrics["power_w"] is None
+    assert report.metadata["power"]["publication_status"] == "withheld"
 
 
 def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
@@ -1055,3 +1191,118 @@ def test_runner_rejects_unknown_forward_model(value):
 
     with pytest.raises(ValueError, match="forward_model"):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
+def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
+    from aiconfigurator_core.sdk import memory
+
+    calls = []
+    estimate = {
+        "source": "native",
+        "total_gpu_capacity_bytes": 4096,
+        "total_kv_size_bytes": 1024,
+        "total_kv_size_tokens": 128,
+        "kv_size_per_token_bytes": 8,
+        "tolerance_adjusted": None,
+        "memory_breakdown": {"weights_bytes": 2048, "activations_bytes": 512},
+    }
+
+    def estimate_kv(*args, **kwargs):
+        calls.append((args, kwargs))
+        return dict(estimate)
+
+    monkeypatch.setattr(memory, "estimate_kv_cache", estimate_kv)
+    args = _engine_args()
+    args.pop("num_gpu_blocks")
+    args["aic_backend_version"] = "test"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    plain_runtime, detail_runtime = RecordingRuntime(), RecordingRuntime()
+    plain = EngineReplayRunnerFactory(runtime=plain_runtime).create(0).run(_spec(deployment=deployment))
+    detailed = (
+        EngineReplayRunnerFactory(runtime=detail_runtime)
+        .create(0)
+        .run(
+            _spec(deployment=deployment),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_memory_diagnostics=True),
+        )
+    )
+    assert len(calls) == 2  # One estimate per replay, with identical estimator arguments.
+    assert calls[0] == calls[1]
+    assert plain_runtime.execution_spec == detail_runtime.execution_spec
+    assert plain.metrics == detailed.metrics
+    data = detailed.metadata["native_report"]["memory_diagnostics"]["aggregated"]
+    assert data["status"] == "available"
+    assert data["scope"] == "capacity_estimate_per_rank"
+    assert data["memory_breakdown"] == estimate["memory_breakdown"]
+    assert data["estimated_num_gpu_blocks"] == detail_runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 32
+
+
+def test_memory_detail_with_explicit_blocks_does_not_guess_components():
+    runtime = RecordingRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_memory_diagnostics=True),
+        )
+    )
+    data = report.metadata["native_report"]["memory_diagnostics"]["aggregated"]
+    assert data["status"] == "unavailable"
+    assert "memory_breakdown" not in data
+
+
+def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    class HostResourceError(RuntimeError):
+        pass
+
+    resources = ModuleType("aisimulate.resources")
+    resources.ResourceLimitError = HostResourceError
+    monkeypatch.setitem(sys.modules, "aisimulate.resources", resources)
+
+    class LimitedRuntime:
+        def run_replay_json(self, payload):
+            raise MemoryError("report storage: No space left on device")
+
+    with pytest.raises(HostResourceError, match="report storage: No space left on device"):
+        EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())
+
+
+@pytest.mark.parametrize(
+    "watts,coverage",
+    [
+        (500.0, 0.89),
+        (500.0, None),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (None, 1.1),
+        (None, -0.1),
+        (True, 1.0),
+        (None, True),
+        (math.nan, 1.0),
+        (math.inf, 1.0),
+        (-math.inf, 1.0),
+        (None, math.nan),
+        (None, math.inf),
+        (None, -math.inf),
+        (10**400, 1.0),
+        (None, 10**400),
+    ],
+)
+def test_runner_rejects_invalid_power_publication(watts, coverage):
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError):
+        _normalize_engine_replay_report({"power_w": watts, "power_coverage": coverage}, include_native_report=False)
+
+
+def test_runner_rejects_overflowing_ordinary_metric():
+    from aisimulate.runner import _normalize_engine_replay_report
+
+    with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
+        _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)

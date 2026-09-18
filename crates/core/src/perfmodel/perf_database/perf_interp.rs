@@ -38,10 +38,11 @@
 //! must remain bit-identical to a RAW `Grid { k_tail: 1 }`; the differential
 //! tests in `axis_curve.rs` enforce that relationship.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::OnceLock;
 
 use crate::common::error::AicError;
+use crate::perfmodel::kd_tree::{KdTree, NeighborCollector, PointSet};
 
 /// One measured table leaf — mirrors the Python loader dict
 /// `{"latency", "power", "energy"}` (`power` straight from the parquet
@@ -91,9 +92,13 @@ struct FlatHoldIndex {
     log_coords: Box<[f64]>,
     offsets: Box<[usize]>,
     leaves: Box<[LeafValue]>,
+    kd_tree: Option<KdTree>,
 }
 
 impl FlatHoldIndex {
+    // Small tables do not amortize tree construction and recursive traversal.
+    const LINEAR_SCAN_MAX_LEAVES: usize = 16;
+
     fn build(node: &Node) -> Self {
         fn visit(
             node: &Node,
@@ -136,12 +141,17 @@ impl FlatHoldIndex {
             &mut offsets,
             &mut leaves,
         );
-        Self {
+        let mut index = Self {
             coords: coords.into_boxed_slice(),
             log_coords: log_coords.into_boxed_slice(),
             offsets: offsets.into_boxed_slice(),
             leaves: leaves.into_boxed_slice(),
+            kd_tree: None,
+        };
+        if index.len() > Self::LINEAR_SCAN_MAX_LEAVES {
+            index.kd_tree = KdTree::build(&index);
         }
+        index
     }
 
     fn len(&self) -> usize {
@@ -158,6 +168,16 @@ impl FlatHoldIndex {
 
     fn log_coords(&self, leaf_idx: usize) -> &[f64] {
         &self.log_coords[self.offsets[leaf_idx]..self.offsets[leaf_idx + 1]]
+    }
+}
+
+impl PointSet for FlatHoldIndex {
+    fn len(&self) -> usize {
+        FlatHoldIndex::len(self)
+    }
+
+    fn point(&self, sample: usize) -> &[f64] {
+        self.log_coords(sample)
     }
 }
 
@@ -696,20 +716,88 @@ struct HoldAnchor {
 }
 
 /// One entry in the bounded nearest-leaf set.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct HoldCandidate {
     distance_sq: f64,
     leaf_idx: usize,
+}
+
+impl Ord for HoldCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance_sq
+            .total_cmp(&other.distance_sq)
+            .then_with(|| self.leaf_idx.cmp(&other.leaf_idx))
+    }
+}
+
+impl PartialOrd for HoldCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for HoldCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for HoldCandidate {}
+
+struct HoldCandidates {
+    limit: usize,
+    values: BinaryHeap<HoldCandidate>,
+}
+
+impl HoldCandidates {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            values: BinaryHeap::with_capacity(limit),
+        }
+    }
+
+    /// Consume the max-heap and return the exact nearest-first order expected
+    /// by validity filtering and support-radius selection.
+    fn into_sorted_values(self) -> Vec<HoldCandidate> {
+        self.values.into_sorted_vec()
+    }
+}
+
+impl NeighborCollector for HoldCandidates {
+    fn consider(&mut self, leaf_idx: usize, distance_sq: f64) {
+        if self.limit == 0 {
+            return;
+        }
+        let candidate = HoldCandidate {
+            distance_sq,
+            leaf_idx,
+        };
+        if self.values.len() < self.limit {
+            self.values.push(candidate);
+            return;
+        }
+
+        if candidate < *self.values.peek().expect("full candidate heap") {
+            *self.values.peek_mut().expect("full candidate heap") = candidate;
+        }
+    }
+
+    fn cutoff_distance_squared(&self) -> Option<f64> {
+        (self.values.len() == self.limit)
+            .then(|| self.values.peek().map(|candidate| candidate.distance_sq))
+            .flatten()
+    }
 }
 
 /// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
 /// leaves in joint log2 space, with tapered modified-Shepard weights (support
 /// radius R = the next valid leaf's distance; leaves at d == R weigh zero, so
 /// no tie-ordering rule is needed).
-/// Selection is a single pass over a lazily prepared flat leaf index with a
-/// small best-M buffer. The index stores coordinates and their log2 values in
-/// contiguous arrays. The buffer carries `SLACK` extra candidates so validity
-/// filtering (lat/sol > 0) almost never needs the full-collect fallback below.
+/// Selection uses an exact k-d tree over a lazily prepared flat leaf index. The
+/// index stores coordinates and their log2 values in contiguous arrays. The
+/// bounded result carries `SLACK` extra candidates so validity filtering
+/// (lat/sol > 0) almost never needs the full-collect fallback below.
 fn hold_anchor_weights_prepared(
     cfg: &OpInterpConfig,
     index: &FlatHoldIndex,
@@ -727,27 +815,22 @@ fn hold_anchor_weights_prepared(
         ));
     }
 
-    let mut best: Vec<HoldCandidate> = Vec::with_capacity(m + 1);
-    for leaf_idx in 0..index.len() {
-        let mut distance_sq = 0.0;
-        for (axis, &value) in index.log_coords(leaf_idx).iter().enumerate() {
-            let delta = value - q_log[axis];
-            distance_sq += delta * delta;
-        }
-        if best.len() == m {
-            if distance_sq >= best[m - 1].distance_sq {
-                continue;
+    let mut best = HoldCandidates::new(m);
+    if let Some(tree) = index
+        .kd_tree
+        .as_ref()
+        .filter(|tree| m < index.len() && tree.can_query(&q_log))
+    {
+        tree.search(index, &q_log, &mut best);
+    } else {
+        for leaf_idx in 0..index.len() {
+            let mut distance_sq = 0.0;
+            for (axis, &value) in index.log_coords(leaf_idx).iter().enumerate() {
+                let delta = value - q_log[axis];
+                distance_sq += delta * delta;
             }
-            best.pop();
+            best.consider(leaf_idx, distance_sq);
         }
-        let pos = best.partition_point(|candidate| candidate.distance_sq <= distance_sq);
-        best.insert(
-            pos,
-            HoldCandidate {
-                distance_sq,
-                leaf_idx,
-            },
-        );
     }
 
     // Validity-check in distance order: the first nn_leaves valid candidates
@@ -756,7 +839,7 @@ fn hold_anchor_weights_prepared(
     let mut support_r = f64::INFINITY;
     let mut support_found = false;
     let mut anchor = Vec::with_capacity(coords.len());
-    for candidate in best {
+    for candidate in best.into_sorted_values() {
         let c = index.coords(candidate.leaf_idx);
         let leaf = index.leaves[candidate.leaf_idx];
         anchor.clear();
@@ -2127,6 +2210,73 @@ mod tests {
     }
 
     #[test]
+    fn hold_candidate_heap_matches_exact_sorted_top_k() {
+        let tiny_squared = f64::MIN_POSITIVE * f64::MIN_POSITIVE;
+        let distances = [
+            4.0,
+            1.0,
+            9.0,
+            1.0,
+            0.0,
+            16.0,
+            4.0,
+            2.0,
+            2.0,
+            8.0,
+            3.0,
+            tiny_squared,
+            -0.0,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+
+        for limit in [0, 1, 2, 5, 12, 20] {
+            let mut expected = distances
+                .iter()
+                .enumerate()
+                .map(|(leaf_idx, &distance_sq)| HoldCandidate {
+                    distance_sq,
+                    leaf_idx,
+                })
+                .collect::<Vec<_>>();
+            expected.sort_unstable();
+            expected.truncate(limit);
+
+            let mut actual = HoldCandidates::new(limit);
+            for (leaf_idx, &distance_sq) in distances.iter().enumerate() {
+                actual.consider(leaf_idx, distance_sq);
+            }
+            if limit > 0 && limit <= distances.len() {
+                assert_eq!(
+                    actual.cutoff_distance_squared().unwrap().to_bits(),
+                    expected.last().unwrap().distance_sq.to_bits()
+                );
+            } else {
+                assert!(actual.cutoff_distance_squared().is_none());
+            }
+            assert_eq!(actual.into_sorted_values(), expected);
+        }
+
+        let negative_zero = HoldCandidate {
+            distance_sq: -0.0,
+            leaf_idx: 0,
+        };
+        let positive_zero = HoldCandidate {
+            distance_sq: 0.0,
+            leaf_idx: 0,
+        };
+        assert_ne!(negative_zero, positive_zero);
+        assert!(negative_zero < positive_zero);
+        let nan = HoldCandidate {
+            distance_sq: f64::NAN,
+            leaf_idx: 0,
+        };
+        assert_eq!(nan, nan);
+        assert_eq!(nan.partial_cmp(&nan), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
     fn flat_hold_index_preserves_ties_and_invalid_fallback() {
         let sol = |_: &[f64]| 1.0;
 
@@ -2142,8 +2292,11 @@ mod tests {
                 }
             }
         }
+        // A farther leaf keeps this fixture above the small-table cutoff.
+        tied.insert(&[16, 16, 16, 16], 64.0);
         let tied_cfg = OpInterpConfig::grid(&["a", "b", "c", "d"], &sol);
         let tied_index = FlatHoldIndex::build(&tied);
+        assert!(tied_index.kd_tree.is_some());
         let anchors =
             hold_anchor_weights_prepared(&tied_cfg, &tied_index, &[2.0, 2.0, 2.0, 2.0], 4).unwrap();
         let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
@@ -2172,6 +2325,134 @@ mod tests {
             selected,
             vec![vec![12, 2], vec![13, 2], vec![14, 2], vec![15, 2]]
         );
+    }
+
+    #[test]
+    fn indexed_hold_matches_linear_hold_bit_for_bit_in_two_to_four_dimensions() {
+        const AXES_2: &[&str] = &["a", "b"];
+        const AXES_3: &[&str] = &["a", "b", "c"];
+        const AXES_4: &[&str] = &["a", "b", "c", "d"];
+
+        fn build_table(dims: usize) -> Node {
+            fn insert_points(table: &mut Node, dims: usize, path: &mut Vec<u32>) {
+                if path.len() == dims {
+                    let latency = path.iter().enumerate().fold(1.0, |value, (axis, coord)| {
+                        value + f64::from(*coord) * (axis + 1) as f64
+                    });
+                    table.insert_value(path, LeafValue::with_power(latency, latency + 17.0));
+                    return;
+                }
+                for coord in [1, 2, 4, 8, 16] {
+                    // Leave some regular-grid corners absent. All leaves still
+                    // have the same dimensions, so the exact index remains valid.
+                    if path.first() == Some(&8) && coord == 8 {
+                        continue;
+                    }
+                    path.push(coord);
+                    insert_points(table, dims, path);
+                    path.pop();
+                }
+            }
+
+            let mut table = Node::branch();
+            insert_points(&mut table, dims, &mut Vec::new());
+            table
+        }
+
+        fn assert_same_anchor(left: &HoldAnchor, right: &HoldAnchor) {
+            assert_eq!(left.coords, right.coords);
+            assert_eq!(left.latency.to_bits(), right.latency.to_bits());
+            assert_eq!(left.power.to_bits(), right.power.to_bits());
+            assert_eq!(left.sol.to_bits(), right.sol.to_bits());
+            assert_eq!(left.weight.to_bits(), right.weight.to_bits());
+        }
+
+        let sol = |coords: &[f64]| {
+            coords.iter().enumerate().fold(1.0, |value, (axis, coord)| {
+                value + coord * (axis + 2) as f64
+            })
+        };
+        for (axes, queries) in [
+            (AXES_2, vec![vec![16.0, 3.0], vec![3.0, 16.0]]),
+            (AXES_3, vec![vec![16.0, 3.0, 5.0], vec![3.0, 16.0, 12.0]]),
+            (
+                AXES_4,
+                vec![vec![16.0, 3.0, 5.0, 7.0], vec![3.0, 16.0, 12.0, 6.0]],
+            ),
+        ] {
+            let table = build_table(axes.len());
+            let indexed = FlatHoldIndex::build(&table);
+            assert!(indexed.kd_tree.is_some());
+            let mut linear = FlatHoldIndex::build(&table);
+            linear.kd_tree = None;
+            let cfg = OpInterpConfig::grid(axes, &sol);
+
+            for query in queries {
+                let indexed_anchors =
+                    hold_anchor_weights_prepared(&cfg, &indexed, &query, 4).unwrap();
+                let linear_anchors =
+                    hold_anchor_weights_prepared(&cfg, &linear, &query, 4).unwrap();
+                assert_eq!(indexed_anchors.len(), linear_anchors.len());
+                for (indexed_anchor, linear_anchor) in indexed_anchors.iter().zip(&linear_anchors) {
+                    assert_same_anchor(indexed_anchor, linear_anchor);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn small_holds_match_exhaustive_at_index_cutoff() {
+        let sol = |c: &[f64]| 1.0 + c.iter().sum::<f64>();
+        let query = [64.0, 2.0];
+        let q_log: Vec<f64> = query.iter().map(|v| f64::log2(*v)).collect();
+        for leaves in [12, 13, 16, 17] {
+            let mut node = Node::branch();
+            for x in 1..=leaves {
+                node.insert_value(
+                    &[x, 1],
+                    LeafValue::with_power(f64::from(x), 100.0 + f64::from(x)),
+                );
+            }
+            let prepared = PreparedGrid::new(node.clone());
+            let index = prepared
+                .hold_index
+                .get_or_init(|| FlatHoldIndex::build(prepared.node()));
+            assert_eq!(index.kd_tree.is_some(), leaves > 16);
+            let linear = PreparedGrid::new(node);
+            let mut linear_index = FlatHoldIndex::build(linear.node());
+            linear_index.kd_tree = None;
+            assert!(linear.hold_index.set(linear_index).is_ok());
+
+            // The latter widths fill or exceed the complete candidate set.
+            for width in [4, leaves as usize - 8, leaves as usize] {
+                let mut cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+                cfg.resolver = Resolver::Grid {
+                    k_tail: 1,
+                    nn_leaves: width,
+                };
+                let actual = hold_anchor_weights_prepared(&cfg, index, &query, width).unwrap();
+                let expected =
+                    hold_anchor_weights_exhaustive(&cfg, index, &query, width, &q_log).unwrap();
+                assert_eq!(actual.len(), expected.len());
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.coords, b.coords);
+                    for (x, y) in [
+                        (a.latency, b.latency),
+                        (a.power, b.power),
+                        (a.sol, b.sol),
+                        (a.weight, b.weight),
+                    ] {
+                        assert_eq!(x.to_bits(), y.to_bits());
+                    }
+                }
+                let a = prepared.query_value(&cfg, &query).unwrap();
+                let b = linear.query_value(&cfg, &query).unwrap();
+                assert_eq!(
+                    [a.latency.to_bits(), a.power.to_bits(), a.energy.to_bits()],
+                    [b.latency.to_bits(), b.power.to_bits(), b.energy.to_bits()]
+                );
+            }
+        }
     }
 
     #[test]
@@ -2265,5 +2546,161 @@ mod tests {
         let lat = query(&cfg, &t, &[64.0, 200.0, 4096.0]).unwrap();
         let lat_swapped = query(&cfg_swapped, &swapped, &[64.0, 4096.0, 200.0]).unwrap();
         assert!((lat - lat_swapped).abs() <= 1e-12 * lat.abs());
+    }
+
+    #[test]
+    fn indexed_hold_matches_exhaustive_with_query_specific_validity() {
+        fn table(dims: usize, ragged: bool) -> Node {
+            let mut node = Node::branch();
+            for ordinal in 0..6usize.pow(dims as u32) {
+                let mut digits = ordinal;
+                let path: Vec<u32> = (0..dims)
+                    .map(|_| {
+                        let coordinate = [0, 1, 2, 4, 8, 16][digits % 6];
+                        digits /= 6;
+                        coordinate
+                    })
+                    .collect();
+                if ragged && ordinal % 7 == 0 {
+                    continue;
+                }
+                let latency = match ordinal % 13 {
+                    0 => 0.0,
+                    1 => -1.0,
+                    2 => f64::NAN,
+                    3 => f64::INFINITY,
+                    _ => 1.0 + ordinal as f64 / 17.0,
+                };
+                node.insert_value(
+                    &path,
+                    LeafValue::with_power(latency, 100.0 + ordinal as f64),
+                );
+            }
+            node
+        }
+
+        let positive_sol = |c: &[f64]| 1.0 + c.iter().sum::<f64>();
+        let sparse_sol = |c: &[f64]| {
+            if c[0] < 8.0 { 0.0 } else { positive_sol(c) }
+        };
+        let invalid_sol = |_: &[f64]| f64::NAN;
+        for axes in [
+            &["a", "b"][..],
+            &["a", "b", "c"][..],
+            &["a", "b", "c", "d"][..],
+        ] {
+            for ragged in [false, true] {
+                let prepared = PreparedGrid::new(table(axes.len(), ragged));
+                let index = prepared
+                    .hold_index
+                    .get_or_init(|| FlatHoldIndex::build(prepared.node()));
+                for sol in [
+                    &positive_sol as &dyn Fn(&[f64]) -> f64,
+                    &sparse_sol,
+                    &invalid_sol,
+                ] {
+                    let mut cfg = OpInterpConfig::grid(axes, sol);
+                    for width in [1, 4, 8, index.len() + 1] {
+                        cfg.resolver = Resolver::Grid {
+                            k_tail: 1,
+                            nn_leaves: width,
+                        };
+                        for ordinal in 0..20 {
+                            let mut query: Vec<f64> = (0..axes.len())
+                                .map(|axis| ((ordinal * 17 + axis * 11) % 31) as f64 / 2.0)
+                                .collect();
+                            // Force a boundary hold, including beyond ragged rows.
+                            *query.last_mut().unwrap() = 32.0 + ordinal as f64 / 7.0;
+                            if ordinal == 18 {
+                                // Infinity survives log2 and requires a scan.
+                                query[0] = f64::INFINITY;
+                            }
+                            if ordinal == 19 {
+                                // NaN is clamped by max(), so this stays finite.
+                                query[0] = f64::NAN;
+                            }
+                            let q_log: Vec<f64> =
+                                query.iter().map(|v| v.max(1e-12).log2()).collect();
+                            assert_eq!(
+                                index.kd_tree.as_ref().unwrap().can_query(&q_log),
+                                ordinal != 18
+                            );
+                            let actual = hold_anchor_weights_prepared(&cfg, index, &query, width);
+                            // This is the unchanged exhaustive selector from the baseline,
+                            // independent of the new tree and candidate heap.
+                            let expected =
+                                hold_anchor_weights_exhaustive(&cfg, index, &query, width, &q_log);
+                            match (actual, expected) {
+                                (Ok(actual), Ok(expected)) => {
+                                    assert_eq!(actual.len(), expected.len());
+                                    for (a, b) in actual.iter().zip(&expected) {
+                                        assert_eq!(a.coords, b.coords);
+                                        for (x, y) in [
+                                            (a.latency, b.latency),
+                                            (a.power, b.power),
+                                            (a.sol, b.sol),
+                                            (a.weight, b.weight),
+                                        ] {
+                                            assert_eq!(x.to_bits(), y.to_bits());
+                                        }
+                                    }
+                                    if ordinal < 18 {
+                                        if !(sol(&query).is_finite() && sol(&query) > 0.0) {
+                                            assert!(prepared.query_value(&cfg, &query).is_err());
+                                            continue;
+                                        }
+                                        let wsum: f64 = expected.iter().map(|a| a.weight).sum();
+                                        let util: f64 = expected
+                                            .iter()
+                                            .map(|a| a.weight * (a.sol / a.latency))
+                                            .sum();
+                                        let power: f64 =
+                                            expected.iter().map(|a| a.weight * a.power).sum();
+                                        let latency = sol(&query) / (util / wsum);
+                                        let power = power / wsum;
+                                        let value = prepared.query_value(&cfg, &query).unwrap();
+                                        assert_eq!(value.latency.to_bits(), latency.to_bits());
+                                        assert_eq!(value.power.to_bits(), power.to_bits());
+                                        assert_eq!(
+                                            value.energy.to_bits(),
+                                            (power * latency).to_bits()
+                                        );
+                                    }
+                                }
+                                (Err(actual), Err(expected)) => {
+                                    assert_eq!(actual.to_string(), expected.to_string())
+                                }
+                                _ => panic!("indexed and exhaustive hold disagree"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_interior_and_one_axis_queries_do_not_prepare_hold_index() {
+        let sol = |_: &[f64]| 1.0;
+        let mut node = Node::branch();
+        for x in [1, 4] {
+            for y in [1, 4] {
+                node.insert(&[x, y], f64::from(x + y));
+            }
+        }
+        let prepared = PreparedGrid::new(node);
+        let cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+        prepared.query_value(&cfg, &[1.0, 1.0]).unwrap();
+        prepared.query_value(&cfg, &[2.0, 2.0]).unwrap();
+        assert!(prepared.hold_index.get().is_none());
+
+        let mut node = Node::branch();
+        node.insert(&[1], 1.0);
+        node.insert(&[4], 4.0);
+        let prepared = PreparedGrid::new(node);
+        prepared
+            .query_value(&OpInterpConfig::grid(&["x"], &sol), &[8.0])
+            .unwrap();
+        assert!(prepared.hold_index.get().is_none());
     }
 }

@@ -44,6 +44,13 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: crate::engine::belady::BeladyOracle) {
+        match &mut self.core {
+            EngineCore::Vllm(core) => core.set_belady_oracle(oracle),
+            EngineCore::Sglang(core) => core.set_belady_oracle(oracle),
+        }
+    }
+
     pub(crate) fn set_g3_offload(
         &mut self,
         registry: crate::engine::g3_offload::SharedG3Tier,
@@ -195,7 +202,10 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
-        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+        if suppressed_pending_output
+            && let Some((request_id, _)) = pending_suppression
+            && !effects.retired_requests.contains(&request_id)
+        {
             // A final output can be suppressed after the native scheduler has
             // already retired its request. Replay still owns its accounting
             // until the pass completion is observed, so publish the same
@@ -222,6 +232,19 @@ impl RankEngine for SchedulerRank {
 
     fn prepare_group_pass(&mut self, wave_step: u64, dp_size: std::num::NonZeroU32) {
         self.core.prepare_group_pass(wave_step, dp_size.get());
+    }
+
+    fn prefill_in_pass(&self) -> bool {
+        self.core.prefill_in_pass()
+    }
+
+    fn model_work_in_pass(&self) -> bool {
+        self.core.model_work_in_pass()
+    }
+
+    fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        self.core
+            .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
     }
 
     fn execute_pass(
@@ -390,6 +413,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
+        prefill_decode_interval: config.prefill_decode_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
@@ -977,6 +1001,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Applied);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 
@@ -1027,6 +1052,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Noop);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 

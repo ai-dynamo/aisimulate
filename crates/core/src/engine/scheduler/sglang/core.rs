@@ -5,12 +5,18 @@
 //! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
 //! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
 //! Rust from the observed semantics; no SGLang source is copied.
+//!
+//! The optional prefill/decode interval follows the scheduling contract at
+//! https://github.com/sgl-project/sglang/blob/20621aa14bda7726a8a968f326198eac61717fef/python/sglang/srt/managers/scheduler.py
+//! (`_should_defer_prefill`, `_arm_prefill_decode_interval`, `get_next_batch_to_run`).
+//! This countdown and group feedback integration are independently implemented.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use uuid::Uuid;
 
+use crate::engine::belady::BeladyOracle;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::{
@@ -51,6 +57,7 @@ pub(crate) struct SglangCore {
     pub(super) running: Vec<SglangRequest>,
     pub(super) new_token_ratio: f64,
     pub(super) kv_manager: SglangKvManager,
+    belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldSglangPrefill>,
@@ -61,6 +68,11 @@ pub(crate) struct SglangCore {
     #[cfg(test)]
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
+    prefill_rounds_remaining: usize,
+    group_pass_prepared: bool,
+    prefill_in_pass: bool,
+    model_work_in_pass: bool,
+    interval_idle_in_pass: bool,
 }
 
 struct HeldSglangPrefill {
@@ -151,6 +163,7 @@ impl SglangCore {
                 args.enable_prefix_caching,
                 args.emit_kv_token_ids,
             ),
+            belady: None,
             speculative_sampler,
             kv_event_buffer,
             source_holds: SourceHolds::default(),
@@ -158,10 +171,20 @@ impl SglangCore {
             destination_holds: DestinationHolds::default(),
             active_destination_handoffs: ActiveHandoffRequests::default(),
             capacity_generation: 0,
+            prefill_rounds_remaining: 0,
+            group_pass_prepared: false,
+            prefill_in_pass: false,
+            model_work_in_pass: false,
+            interval_idle_in_pass: false,
             #[cfg(test)]
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
         }
+    }
+
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.kv_manager.set_belady_oracle(oracle.clone());
+        self.belady = Some(oracle);
     }
 
     #[cfg(test)]
@@ -521,6 +544,9 @@ impl SglangCore {
         let Some(mut request) = request else {
             return false;
         };
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests([request_id]);
+        }
         let capacity_improved = self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
@@ -557,6 +583,7 @@ impl SglangCore {
     #[allow(dead_code)]
     pub(crate) fn is_drained(&self) -> bool {
         self.is_empty()
+            && self.prefill_rounds_remaining == 0
             && self.source_holds.is_empty()
             && self.pending_destinations.is_empty()
             && self.destination_holds.is_empty()
@@ -564,7 +591,39 @@ impl SglangCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained()
+        self.is_empty() && self.prefill_rounds_remaining == 0 && !self.is_drained()
+    }
+
+    pub(crate) fn prepare_group_pass(&mut self) {
+        self.group_pass_prepared = true;
+        self.prefill_in_pass = false;
+        self.model_work_in_pass = false;
+        self.interval_idle_in_pass = false;
+    }
+
+    pub(crate) fn prefill_in_pass(&self) -> bool {
+        self.prefill_in_pass
+    }
+
+    pub(crate) fn model_work_in_pass(&self) -> bool {
+        self.model_work_in_pass
+    }
+
+    /// Apply the synchronized EXTEND signal once per scheduler round, including
+    /// rounds without a GPU forward. Idle siblings must receive the same signal.
+    pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
+        if self.interval_idle_in_pass && !any_rank_ran_model {
+            // Upstream reaches on_idle() when no rank has a forward and resets
+            // the admission ratio. A local IDLE batch with a busy DP peer does
+            // not reach on_idle(), so it preserves the ratio instead.
+            self.new_token_ratio = self.config.init_new_token_ratio;
+        }
+        self.prefill_rounds_remaining = if any_rank_prefilled {
+            self.config.prefill_decode_interval
+        } else {
+            self.prefill_rounds_remaining.saturating_sub(1)
+        };
+        self.group_pass_prepared = false;
     }
 
     #[cfg(test)]
@@ -698,6 +757,9 @@ impl SglangCore {
         mut collector: Option<&mut TraceCollector>,
         now_ms: f64,
     ) -> anyhow::Result<EnginePassResult> {
+        let grouped = std::mem::take(&mut self.group_pass_prepared);
+        let defer_prefill = self.prefill_rounds_remaining > 0;
+        let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len {
@@ -728,13 +790,15 @@ impl SglangCore {
             AdmissionStage::Materialized | AdmissionStage::PendingDestinationHead => {
                 Default::default()
             }
-            AdmissionStage::FreshKv => get_new_batch_prefill(
+            AdmissionStage::FreshKv if !defer_prefill => get_new_batch_prefill(
                 &mut self.waiting,
                 &mut self.kv_manager,
                 &self.config,
                 self.new_token_ratio,
                 &self.running,
             ),
+            // Gate the entire prefill entry point, including chunk continuation.
+            AdmissionStage::FreshKv => Default::default(),
         };
 
         admissions.append(&mut admit.admissions);
@@ -753,6 +817,13 @@ impl SglangCore {
         let prefill_time =
             simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
+        // This committed prefill retires the whole request's input forecast exactly once.
+        // Later chunks and preemption recomputation intentionally do not restore demand:
+        // the oracle estimates global input demand, while native execution remains causal.
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests(admit.can_run.iter().map(|request| request.uuid));
+        }
+
         let previously_running = self.running.len();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
@@ -769,6 +840,8 @@ impl SglangCore {
         // do not decode in this pass; the freshly prefilled requests receive the first token
         // produced by the prefill forward itself, so that bookkeeping step is not charged any time.
         let prefill_pass = batch_size > 0;
+        // A fully cached, zero-output request can complete without a forward.
+        self.prefill_in_pass = prefill_fpm.iter().any(|item| item.tokens_computed > 0);
         let mut stalled: Vec<SglangRequest> = if prefill_pass && previously_running > 0 {
             self.running.drain(..previously_running).collect()
         } else {
@@ -786,6 +859,7 @@ impl SglangCore {
                 .map(|req| req.current_sequence_len() as u64)
                 .collect()
         };
+        self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
         let mut decode = if prefill_pass {
@@ -805,6 +879,8 @@ impl SglangCore {
                 true,
             )?
         };
+        self.model_work_in_pass = self.prefill_in_pass
+            || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
         if !stalled.is_empty() {
             // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
             stalled.append(&mut self.running);
@@ -835,7 +911,7 @@ impl SglangCore {
             // point, before the forward.
             self.new_token_ratio = estimate;
             self.bump_capacity_generation();
-        } else if !prefill_pass {
+        } else if !prefill_pass && !self.interval_idle_in_pass {
             // The ratio decays in `update_running_batch`, i.e. only on decode passes.
             self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
                 .max(self.config.min_new_token_ratio);
@@ -907,9 +983,17 @@ impl SglangCore {
         let (accept_length_output_tokens, accept_length_decode_forwards) =
             accept_length_sample(&decode.output_signals);
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
+        if !grouped {
+            // Standalone core callers have a one-rank synchronization domain.
+            self.finish_group_pass(self.prefill_in_pass, self.model_work_in_pass);
+        }
         Ok(EnginePassResult {
             end_ms: decode.end_ms,
-            same_timestamp_retry: if self.new_token_ratio != new_token_ratio_before {
+            same_timestamp_retry: if defer_prefill {
+                crate::engine::generalized::SameTimestampRetry::Countdown {
+                    remaining: remaining_after_round,
+                }
+            } else if self.new_token_ratio != new_token_ratio_before {
                 crate::engine::generalized::SameTimestampRetry::Retry
             } else {
                 crate::engine::generalized::SameTimestampRetry::Exhausted

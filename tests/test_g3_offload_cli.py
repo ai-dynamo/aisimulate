@@ -152,7 +152,10 @@ def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope, 
     )
     stdout = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "prediction.json").read_text())
-    assert stdout == saved
+    assert stdout == {key: value for key, value in saved.items() if key != "power_diagnostics"}
+    assert saved["power_diagnostics"]["publication_status"] == "unsupported"
+    assert saved["power_diagnostics"]["power_w"] is None
+    assert saved["power_diagnostics"]["power_coverage"] is None
     assert stdout["completed_requests"] == 1
     # The 33-token prompt stores two full 16-token blocks. Even a one-block
     # G3 must retain its leading block instead of discarding the whole cohort.
@@ -214,9 +217,9 @@ def test_documented_g3_extension_validates_and_lowers_with_host_example(monkeypa
     from pathlib import Path
 
     text = (Path(__file__).resolve().parents[1] / "docs/cli/user-guide.md").read_text()
-    host = text.split("### Native vLLM host-offload prediction\n", 1)[1]
-    host, optional = host.split("#### Optional G3 offload\n", 1)
-    optional = optional.split("## Router (Dynamo Adapter)", 1)[0]
+    host = text.split('<a id="native-vllm-host-offload-prediction"></a>', 1)[1]
+    host, optional = host.split('<a id="optional-g3-offload"></a>', 1)
+    optional, _router = optional.split('<a id="router-dynamo-adapter"></a>', 1)
     config = yaml.safe_load(host.split("```yaml\n", 1)[1].split("```", 1)[0])
     extension = yaml.safe_load(optional.split("```yaml\n", 1)[1].split("```", 1)[0])
     assert list(extension) == ["g3_offload"]

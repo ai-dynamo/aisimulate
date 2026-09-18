@@ -13,6 +13,8 @@ use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, SglangArgs,
 };
@@ -143,6 +145,68 @@ fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_l
 }
 
 #[test]
+fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(1);
+    let next = Uuid::from_u128(2);
+    let oracle = BeladyOracle::new(vec![(first, hashes.clone()), (next, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(32, 4, 4));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens.clone(), 0);
+    request.uuid = Some(first);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass1 = core.execute_pass(&mut collector, 0.0);
+    assert_eq!(pass1.fpm.as_ref().unwrap().sum_prefill_tokens, 4);
+    assert_eq!(
+        oracle.next_use(hashes[1]),
+        1,
+        "even the uncomputed chunk is retired"
+    );
+    let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+    assert_eq!(
+        oracle.next_use(hashes[0]),
+        1,
+        "continuation does not retire another request"
+    );
+    assert!(core.is_empty());
+
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(next);
+    core.receive(request);
+    let pass3 = core.execute_pass(&mut collector, pass2.end_ms);
+    assert_eq!(pass3.admissions[0].reused_input_tokens, 8);
+    assert_eq!(pass3.fpm.as_ref().unwrap().sum_prefill_tokens, 0);
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
+}
+
+#[test]
+fn belady_keeps_failed_admission_outstanding_until_terminal_cancellation() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let uuid = Uuid::from_u128(1);
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(1, 4, 8));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(uuid);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(pass.admissions.is_empty());
+    assert_eq!(oracle.next_use(hashes[0]), 0);
+    assert_eq!(core.waiting.len(), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
+        .unwrap();
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
+}
+
+#[test]
 fn request_storage_reservation_is_bounded_for_submit_and_destination() {
     const BLOCK_SIZE: usize = 4;
     const MAX_OUTPUT_TOKENS: usize = 1_000_000;
@@ -239,6 +303,33 @@ fn zero_output_request_completes_after_prefill() {
             ..
         }] if *signal_uuid == uuid
     ));
+}
+
+#[test]
+fn interval_idle_ratio_distinguishes_a_busy_peer_from_global_idle() {
+    let mut args = test_args(256, 1, 16);
+    args.prefill_decode_interval = 2;
+    let mut core = SglangCore::new(args);
+    let ratio_after_prior_decodes = 0.4;
+    core.new_token_ratio = ratio_after_prior_decodes;
+
+    // A peer's EXTEND arms this idle rank too.
+    core.prepare_group_pass();
+    core.finish_group_pass(true, true);
+    core.prepare_group_pass();
+    let pass = core.execute_hidden_pass(0.0);
+    assert_eq!(pass.end_ms, 0.0);
+    assert!(!core.model_work_in_pass());
+    core.finish_group_pass(false, true);
+    assert_eq!(core.new_token_ratio, ratio_after_prior_decodes);
+
+    // On the next round the whole group is idle: upstream on_idle resets the
+    // ratio. This round must neither keep decaying it nor retain the old value.
+    core.prepare_group_pass();
+    core.execute_hidden_pass(0.0);
+    core.finish_group_pass(false, false);
+    assert_eq!(core.new_token_ratio, core.config.init_new_token_ratio);
+    assert!(core.is_drained());
 }
 
 #[test]
@@ -1909,6 +2000,40 @@ mod forward_pass_metrics {
                 ..
             }] if *signal_uuid == uuid
         ));
+    }
+
+    #[test]
+    fn cache_only_completion_does_not_arm_prefill_decode_interval() {
+        let mut args = fpm_args();
+        args.prefill_decode_interval = 2;
+        let mut core = SglangCore::new(args);
+        let tokens = (0..8).collect::<Vec<_>>();
+        core.receive(direct_request(tokens.clone(), 0));
+        let seed = core.execute_hidden_pass(0.0);
+        assert_eq!(seed.fpm.unwrap().num_prefill_requests, 1);
+
+        // A completed request leaves two scheduler rounds, even without decode.
+        for remaining in (0..2).rev() {
+            assert!(!core.is_drained());
+            assert!(!core.waiting_for_external_command());
+            let idle = core.execute_hidden_pass(seed.end_ms);
+            assert_eq!(idle.end_ms, seed.end_ms);
+            assert_eq!(
+                idle.same_timestamp_retry,
+                crate::engine::generalized::SameTimestampRetry::Countdown { remaining }
+            );
+        }
+        assert!(core.is_drained());
+
+        core.receive(direct_request(tokens, 0));
+        let cached = core.execute_hidden_pass(seed.end_ms);
+        assert_eq!(cached.completed_requests, 1);
+        assert_eq!(cached.fpm.unwrap().num_prefill_requests, 0);
+        assert!(core.is_drained(), "cache bookkeeping must not arm EXTEND");
+
+        core.receive(direct_request((100..108).collect(), 1));
+        let fresh = core.execute_hidden_pass(cached.end_ms);
+        assert_eq!(fresh.fpm.unwrap().num_prefill_requests, 1);
     }
 
     #[test]

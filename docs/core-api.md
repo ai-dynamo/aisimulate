@@ -108,6 +108,22 @@ truncation. Successful replay alone does not establish silicon timing accuracy.
 
 ## KV-cache capacity reservation
 
+SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
+pool. Peak activation/workspace estimates remain visible in
+`memory_breakdown.activations_bytes`, but are not deducted from that pool;
+transient execution headroom is already outside the static fraction. Increasing
+the prefill token budget alone therefore does not reduce SGLang KV capacity.
+Resident runtime/communication estimates reduce the pre-load free-memory pool
+before applying the fraction; weights are deducted afterward. The budget is
+`(capacity - resident_overhead) * mem_fraction_static - weights`, less any
+explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
+(non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
+checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
+the unchanged timing graph. Other model layouts retain their prior weight
+accounting.
+vLLM and TRT-LLM continue to deduct activation memory under their own budget
+semantics. No measured server capacity is required by this calculation.
+
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
 non-negative integer no greater than `2**53` and defaults to zero. It is treated
@@ -183,8 +199,12 @@ accepts the corresponding keyword names; `shared_layer` is serialized as
 
 Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
 `ForwardPassPerfModel::from_regression(worker_type, options)` for a
-regression-only model. It owns one two-dimensional retained sample set and one
-fit for the engine's fixed role. Its axes are consistently ordered as
+regression-only model. The caller creates one instance per worker and passes
+its fixed regression role. Prefill and Decode each own one retained sample
+bucket and fit; Aggregated owns four buckets selected from the workload across
+all active ranks. The default limit of 64 observations and minimum of five
+apply independently to each bucket, for at most 256 retained observations in
+an Aggregated predictor. Its feature axes are consistently ordered as
 `[critical attention, global FFN/MoE]`; bucket retention uses `log1p` of those
 raw features, while fitting uses standardized raw features. The optional
 regression weights below default to `1.0` and must be finite and strictly
@@ -205,8 +225,14 @@ three fields, while `from_regression` and a fallback `best_available` reject a
 decoded nonfinite value with the corresponding field-specific error. Other
 strings and value types remain invalid.
 
-The formulas, role-compatibility rules, and fitting pipeline are specified in
-the [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md).
+Use `regression_store_diagnostics()` to inspect each bucket's label, readiness,
+and retained count. Summary `diagnostics()` reports the total count and whether
+any bucket has a fit; a query for a different, cold bucket can still return
+`None`. Native models return an empty list from the new method.
+
+The ownership model, routing examples, capacity semantics, formulas, and
+compatibility rules are explained in the
+[FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md).
 
 `AicEngineBuilder` serves a different purpose: it constructs the strict native
 Rust engine for direct public prefill and decode latency calls. It does not
@@ -270,7 +296,35 @@ StaticResult, PerOpValue}` and `engine::spec::{EngineSpec, OpSpec}` to load and
 execute a previously compiled specification directly. `PerOpValue` is the
 per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
 `*_per_op` / `evaluate_*` methods (the thin op-list evaluation FFI); per-op
-energy is 0.0 wherever the perf tables carry no power columns.
+energy is 0.0 wherever the perf tables carry no power columns. That zero is a
+missing-data sentinel, not evidence of a zero-power operation. See the
+[modeled-power contract](power-model.md) for the latency-weighted coverage gate,
+aggregation rules, and public output boundary. Typed per-op energy alone does
+not make unified replay power available.
+
+## Replay timing evidence
+
+The runtime-neutral `TimingModel` contract exposes optional accumulated
+evidence through `evidence_summary()`. Op-level AIC providers return a
+`TimingEvidenceSummary` split into prefill and decode phases. Each
+`TimingPhaseEvidence` carries accumulated known energy in W-ms, total latency,
+latency covered by nonzero energy data, merged provenance, and name-folded
+`TimingOperationEvidence` records with the same fields. Missing operation
+energy is represented by `None`, never by a synthesized zero. When coverage is
+below one, the energy is partial: it includes only the portion with positive
+operation-energy evidence. It is not a total-workload energy estimate.
+Providers that assemble these public records directly should use
+`TimingPhaseEvidence::try_from_operations` and `try_accumulate`; those paths
+validate numeric fields and canonicalize covered latency to zero when energy is
+missing. Nonempty operation lists must agree with phase totals; a relative
+rounding tolerance applies only to this consistency check. The original infallible helpers remain available for already-valid
+evidence.
+
+Whole-model FPM timing and the built-in fixed and polynomial timing models are
+latency-only and return `None` from `evidence_summary()`. Consumers must keep
+that distinction when producing power metrics: absence of evidence is not a
+zero-watt prediction. FPM decode timing continues to query the exact total
+past-KV coordinate rather than the op-level mean-context coordinate.
 
 ## Compatibility rules
 
