@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -10,48 +8,12 @@ import yaml
 pytestmark = pytest.mark.unit
 
 
-def _find_repo_root(start: Path) -> Path:
-    """Find repository root.
-
-    In the Docker test image we copy `src/` and `tests/` into `/workspace/` but do
-    not copy `pyproject.toml`, so we detect the repo root via `src/aisimulate/`.
-    """
-    start = start.resolve()
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "aisimulate").is_dir():
-            return parent
-    raise RuntimeError("Cannot find repository root (expected src/aisimulate/)")
-
-
 @pytest.fixture(scope="module")
 def perf_database():
-    """
-    Import the local aisimulate.sdk.perf_database module from src/,
-    ensuring it takes precedence over any installed package.
-    """
-    project_root = _find_repo_root(Path(__file__))
-    src_path = project_root / "src"
-    sys.path.insert(0, str(src_path))
-
-    saved_aiconfigurator_modules = {}
-
-    # Purge already-imported site-packages version if present
-    for key in list(sys.modules.keys()):
-        if key in {"aisimulate", "aisimulate_core"} or key.startswith(("aisimulate.", "aisimulate_core.")):
-            saved_aiconfigurator_modules[key] = sys.modules.pop(key)
-
+    """Use the test environment's package, including its native runtime."""
     import aisimulate.sdk.perf_database as perf_database
 
-    importlib.reload(perf_database)
-    yield perf_database
-
-    # Drop the isolated legacy/canonical module pair, then restore both module
-    # graphs together so imported class references in other test modules do not
-    # point at a reloaded canonical implementation.
-    for key in list(sys.modules.keys()):
-        if key in {"aisimulate", "aisimulate_core"} or key.startswith(("aisimulate.", "aisimulate_core.")):
-            sys.modules.pop(key)
-    sys.modules.update(saved_aiconfigurator_modules)
+    return perf_database
 
 
 @pytest.fixture
