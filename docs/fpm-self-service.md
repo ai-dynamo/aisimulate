@@ -5,17 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # FPM self-service
 
-`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one TP, DEP, or TEP worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector. PR #46 is not a dependency.
+`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one TP, DEP, or TEP worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector.
 
 Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity and estimates memory admission from your resource bounds. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
 Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` with model identity and rank-local resource bounds. Direct interpolation uses measured timings without constructing an op-level model. Registered models retain SOL interpolation. See [Choose the model execution route](#choose-the-model-execution-route) for selection and coverage rules.
 
-The Inkling pilot targets NVIDIA GB200 with TP, DEP, and TEP through the class-independent route. Its checkpoint, runtime, allocation, profile resource bounds, and strategy degrees must be pinned before collection. This guide does not establish Inkling readiness or GB200 accuracy.
-
 ## Onboard with an agent
 
-For a request such as "Onboard Inkling for FPM simulation on GB200," use this procedure. Claude Code reaches it through the root `CLAUDE.md` import of `AGENTS.md`; other agents can follow the same `AGENTS.md` entry point. The sections below remain the detailed CLI reference.
+For a request such as "Help me onboard my model for FPM simulation on my target GPUs," use this procedure. Claude Code reaches it through the root `CLAUDE.md` import of `AGENTS.md`; other agents can follow the same `AGENTS.md` entry point. The sections below remain the detailed CLI reference.
 
 1. **Verify the checkout and environment.** Record the branch and commit, follow [development setup](../DEVELOPMENT.md#initial-setup), and activate its environment. Run `aisimulate onboard --help` and `aisimulate onboard init --help`; check each later subcommand's help before using it. If the checkout lacks these commands or options, report that version mismatch before attempting onboarding.
 2. **Resolve the deployment and pilot inputs.** Read the supplied config/profile and use facts already provided by the user. Ask for unresolved inputs together: the actual model/checkpoint and pinned revision; local `config.json` or complete FPM profile; literal vLLM version; GPU system, allocation, node layout and interconnect; exact TP/DEP/TEP tuple; and input/output lengths, concurrency, context and latency targets. Show any proposed pilot defaults. Model labels, config hashes and example revisions do not establish a checkpoint pin. If target hardware has no packaged system specification, report that integration gap.
@@ -42,7 +40,7 @@ At handoff, include the checkout revision, final request/profile, plan directory
 | Prediction and recommendation | Completed outputs, metrics, candidate outcomes and any failures; a plan alone is not a result. |
 | Accuracy | Independent matched silicon comparison, or explicitly **not assessed**. |
 
-If a stage is blocked, retain completed artifacts and give the specific missing input or next command. Inkling/GB200 is the pilot target, not a prequalified model/hardware combination.
+If a stage is blocked, retain completed artifacts and give the specific missing input or next command.
 
 ## Create the request
 
@@ -67,7 +65,7 @@ aisimulate onboard init \
   --output support-request.yaml
 ```
 
-Replace the model and runtime placeholders with the actual inputs. The example does not identify an Inkling checkpoint or claim that four H200s can run your model. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
+Replace the model, runtime and hardware inputs with your deployment's values. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
 
 The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. With `--model-config`, the default pilot context is capped at the config's known context limit. Scripted setup defaults to TP1 unless `--tensor-parallel` is supplied. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
 
@@ -201,7 +199,7 @@ aisimulate onboard collect-fpm \
 
 The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records the CPU resource estimate. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each request. On an existing plan, `--overwrite` can repair missing generated files for the identical request; it rejects changed inputs and preserves existing collected data.
 
-If a newer draft revision changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate earlier draft plans. Guidance changes do not change the saved-request identity checks used by collection.
+If an AISimulate update changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate existing plans. Guidance changes do not change the saved-request identity checks used by collection.
 
 The guided plan uses one selected parallel tuple. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Collection uses the matching `tp`, `pure_tp`, `dep`, or `tep` preset and exact worker GPU count.
 
@@ -294,4 +292,4 @@ Hand off the saved request, pinned model configuration, and plan. Both routes ne
 
 Direct timing first uses an exact point or interpolation within a measured curve. Prefill interpolation stays at the same batch size, with two measured KV neighbors whose prompt curves both cover the requested token count. Wider KV bracketing removes the old distance limit only when the narrower direct bracket is unavailable. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
 
-Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Existing MiniMax-M2.7/H200 TP4 and GLM-5.2/B200 DEP8/TEP8 data provide functional validation targets. Coverage and interpolation error must be reported separately; these targets do not qualify Inkling or GB200.
+Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Report data coverage and interpolation error separately for your model and deployment.
