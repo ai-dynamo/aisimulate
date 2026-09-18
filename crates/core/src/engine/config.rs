@@ -335,7 +335,8 @@ pub struct EngineConfig {
     /// KV block size in tokens.
     #[serde(default = "default_block_size")]
     pub block_size: usize,
-    /// Optional model context limit.
+    /// Optional prompt-plus-output token limit for every backend.
+    /// Prompts at or above the limit are rejected; generation stops at the limit.
     pub max_model_len: Option<usize>,
     /// Maximum concurrently runnable sequences.
     #[serde(default = "default_max_num_seqs")]
@@ -582,10 +583,6 @@ impl EngineConfig {
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
             "max_model_len must be positive"
-        );
-        ensure!(
-            self.backend == Backend::Vllm || self.max_model_len.is_none(),
-            "max_model_len is supported only for backend=vllm"
         );
         ensure!(
             self.speedup_ratio.is_finite() && self.speedup_ratio >= 0.0,
@@ -1133,16 +1130,19 @@ mod tests {
     }
 
     #[test]
-    fn max_model_len_is_vllm_only() {
-        for backend in [Backend::Sglang, Backend::Trtllm] {
+    fn max_model_len_is_supported_for_every_backend() {
+        for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
             let mut config = EngineConfig::for_backend(backend);
             config.max_model_len = Some(128);
+            config.validate().unwrap();
+            crate::engine::EngineFactory::new(config.clone()).unwrap();
+            config.max_model_len = Some(0);
             assert!(
                 config
                     .validate()
                     .unwrap_err()
                     .to_string()
-                    .contains("backend=vllm")
+                    .contains("max_model_len")
             );
         }
     }
