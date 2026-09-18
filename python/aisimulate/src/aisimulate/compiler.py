@@ -488,6 +488,8 @@ def _worker_engine_args(
             backend_version=engine.backend_version,
             worker_type=role,
             decoder_replay=engine.decoder_replay,
+            enable_shared_layer=engine.enable_shared_layer,
+            strict_provenance=bool(engine.strict_provenance),
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,

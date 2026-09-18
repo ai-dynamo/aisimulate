@@ -132,6 +132,7 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
                 "moe_ep_size": None,
                 "nextn": None,
                 "forward_model": "op_level",
+                "database_mode": "SILICON",
             },
         }
     }

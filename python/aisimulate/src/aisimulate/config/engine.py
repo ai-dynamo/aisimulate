@@ -336,7 +336,6 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     backend: Backend = "vllm"
     backend_version: str | None = None
     decoder_replay: StrictBool = False
-    database_mode: Literal["SILICON", "SOL", "HYBRID", "EMPIRICAL"] | None = None
     enable_shared_layer: StrictBool | None = None
     strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"

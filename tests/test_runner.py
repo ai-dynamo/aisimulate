@@ -1285,7 +1285,22 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 @pytest.mark.parametrize("replay", [False, True])
-def test_public_replay_keeps_decoder_profile_and_database_policy(replay):
+def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeypatch):
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    class ReadyEstimator:
+        def __init__(self, config):
+            self.config = config
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    # This exercises configuration transport with a recording runtime, not
+    # readiness or prediction for the deliberately synthetic example model.
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", ReadyEstimator)
     public = CorePredictionConfig.model_validate(
         {
             "engine": {
