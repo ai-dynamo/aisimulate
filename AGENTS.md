@@ -7,11 +7,21 @@ This file adds explicit repository-wide development guards.
 When asked to onboard a model for FPM simulation on designated hardware, follow
 [Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
 self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
-Start with a local model config or supplied FPM identity/resource profile; this
-route requires neither an op-level model class nor per-operation silicon data.
-Review estimates and unresolved assumptions with the user, preserve their
-overrides and provenance, and report planning, collection, simulation and accuracy
-as separate stages. The guide covers terminal and headless agent workflows.
+Follow its six stages: inspect the model and target; choose the deployment and
+workload; derive, review and save the profile; plan collection; collect and verify
+data; run prediction/recommendation and report. Start by asking only for a missing
+model/config location and target hardware. Reuse supplied facts and inspect the
+config/profile before asking for derivable metadata; defer other questions to
+their stage and help the user choose deployment settings.
+
+Report the current stage, its result or blocker, and the next action. Resume from
+validated artifacts and accepted decisions instead of repeating the intake.
+Stage transitions are not additional approval gates. Preserve explicit review
+and acceptance of the exact profile, user overrides/provenance, and existing
+execution authorization as described in the guide's terminal and headless flows.
+The config/profile route requires neither an op-level model class nor
+per-operation silicon data. Report planning, collection, simulation and measured
+accuracy separately.
 
 ## Required First Step
 

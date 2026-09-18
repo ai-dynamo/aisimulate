@@ -13,11 +13,38 @@ Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` wit
 
 ## Onboard with an agent
 
-For a request such as "Help me onboard my model for FPM simulation on my target GPUs," use this procedure. Claude Code reaches it through the root `CLAUDE.md` import of `AGENTS.md`; other agents can follow the same `AGENTS.md` entry point. The sections below remain the detailed CLI reference.
+For a request such as "Help me onboard my model for FPM simulation on my target GPUs," follow these six stages. Claude Code reaches them through the root `CLAUDE.md` import of `AGENTS.md`; other agents use the same `AGENTS.md` entry point. These stages structure the conversation over the existing CLI; they are not new CLI commands or a persisted stage tracker. The sections below remain the detailed CLI reference.
 
-1. **Verify the checkout and environment.** Record the branch and commit, follow [development setup](../DEVELOPMENT.md#initial-setup), and activate its environment. Run `aisimulate onboard --help` and `aisimulate onboard init --help`; check each later subcommand's help before using it. If the checkout lacks these commands or options, report that version mismatch before attempting onboarding.
-2. **Resolve the deployment and pilot inputs.** Read the supplied config/profile and use facts already provided by the user. Ask for unresolved inputs together: the actual model/checkpoint and pinned revision; local `config.json` or complete FPM profile; literal vLLM version; GPU system, allocation, node layout and interconnect; exact TP/DEP/TEP tuple; and input/output lengths, concurrency, context and latency targets. Show any proposed pilot defaults. Model labels, config hashes and example revisions do not establish a checkpoint pin. If target hardware has no packaged system specification, report that integration gap.
-3. **Derive, review and save the request.** Prefer [a local model config](#start-from-a-local-model-config), or use [a supplied profile](#provide-identity-and-resource-metadata). Both produce a class-independent direct-FPM plan. Explain each inferred value, its source and limitations; ask for unsupported fields rather than inventing bounds. Memory values must bound every rank of the exact selected topology. Confirm effective weight, FMHA, communication and KV precision separately; a quantized checkpoint label does not determine all of them. Preserve user replacements and their rationale in overrides/provenance. Use the appropriate review flow below, honoring inputs and decisions the user has already supplied.
+| Stage | Required result |
+| --- | --- |
+| 1. Inspect the model and target | Accessible config/profile and packaged hardware specification identified; supported metadata read and gaps recorded. |
+| 2. Choose the deployment and workload | Checkpoint identity/revision, runtime, allocation, exact worker topology and initial workload selected. Runtime compatibility remains unchecked. |
+| 3. Derive, review and save the profile | Exact resource/precision values and assumptions reviewed and accepted; final request contains the complete profile and provenance. |
+| 4. Plan collection | Validated saved plan, generated configurations and collector preview; sampling scope and remaining execution prerequisites explained. |
+| 5. Collect and verify data | Matching formal Parquet/metadata pair verified, with provenance and available phase cells recorded. |
+| 6. Run predict/recommend and report | Prediction and every planned recommendation candidate exercised; results, coverage and failures reported, with accuracy stated separately. |
+
+At each transition or blocker, give a short update: **Stage N/6 — name; result or blocker; next action.** Ask only for missing information needed for the current stage, using facts and decisions already supplied. Continue independent authorized work while an answer is pending. Move on when the required evidence is available; stage transitions do not require another approval. Honor prior authorization, including authorization to execute collection, while preserving the profile acceptance step below.
+
+### 1. Inspect the model and target
+
+Start with only the missing **model/config location** and **target GPU platform**, not a complete configuration questionnaire. If neither is known, a first response can be:
+
+> Stage 1/6 — Inspect the model and target. Share your model's config.json location (or model identifier) and target GPU platform. I'll inspect the configuration first, then guide you through the remaining deployment and resource choices.
+
+Omit facts already supplied from this request. If the config/profile is accessible, inspect it before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. A model identifier can start discovery, but resolve a local config/profile before CLI setup: the CLI does not download it or the checkpoint. This route does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
+
+The agent handles checkout and environment checks: record the branch/commit, follow [development setup](../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help` and `aisimulate onboard init --help`. Check later subcommands before using them. Report missing commands/options as a version mismatch, rather than asking the user to supply unsupported inputs.
+
+### 2. Choose the deployment and workload
+
+Resolve only the remaining checkpoint identifier and immutable revision, literal vLLM version, GPU allocation, node layout and interconnect. Use available repository/deployment metadata before asking the user. A model label, config hash or example revision does not establish a checkpoint pin.
+
+Help choose an initial TP configuration, or the relevant TP/DEP/TEP configuration for MoE, from the available allocation and [supported topology flags](#create-the-request). Explain the selected worker and map it to the exact parallel tuple; do not require the user to know every parallelism field upfront. Proposals are starting configurations, not claims of optimality, runtime compatibility or memory fit. Establish input/output lengths, concurrency, context and latency targets here. If there is no workload preference, show the [planning defaults](#create-the-request) and cap the context at the model's known limit; adjust token lengths if needed to fit that limit. Do not silently assume topology or precision.
+
+### 3. Derive, review and save the profile
+
+Use [a local model config](#start-from-a-local-model-config), or [a supplied profile](#provide-identity-and-resource-metadata), for the selected deployment. Both produce a class-independent direct-FPM plan. Derive supported estimates before asking for unresolved resource fields. Explain each value's source and limitations; do not invent missing bounds. Memory values must bound every rank of the exact selected topology. Resolve effective weight, FMHA, communication and KV precision separately; a quantized checkpoint label does not determine all of them. Preserve replacements and their rationale in overrides/provenance. Review all effective values and assumptions using the appropriate flow below.
 
 | Agent environment | Review and save behavior |
 | --- | --- |
@@ -26,21 +53,31 @@ For a request such as "Help me onboard my model for FPM simulation on my target 
 
 Do not pipe answers into `--interactive`: it requires a terminal. Scripted setup has no built-in acceptance prompt. Keep draft files separate from the final request and preserve prior outputs when revising a deployment.
 
-4. **Plan and preview.** Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. Inspect `support-plan.json`, the embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; printing it does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available. Explain the selected worker, rank-local scheduler/resource envelope and candidate count. One onboarding plan selects one parallel tuple; use separate requests/output directories for additional TP/DEP/TEP configurations.
-5. **Collect in the prepared target environment.** Follow the [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md) for the pinned checkpoint, Dynamo/vLLM deployment, model access and GPU resources. Use the agreed scope and existing execution authorization; report concrete missing prerequisites when execution cannot proceed. Preview and execute with the same deployment options. `--execute` launches collection; optional `--smoke` is diagnostic and publishes no formal FPM pair. Preserve checkpoints, logs and raw evidence. Confirm formal publication and its actual phase cells, rather than treating a successful preview or smoke run as collected data. The pilot request count does not bound the number of timing samples or collection duration.
-6. **Validate data, simulate and hand off.** Inspect the published Parquet/metadata pair as described in [the collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md#5-inspect-the-published-pair): verify hashes, schema and identities, including prefill/decode, actual runtime, topology and precision. Then [run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for prediction and every planned recommendation candidate. Keep their local `engine.systems_path` and direct-FPM profile intact. Report missing cells and out-of-domain queries with their coordinates; do not change precision labels or silently switch timing methods to obtain a result. A matching pair does not prove all simulated queries are covered, and successful simulation does not establish accuracy.
+Model identity, runtime and topology are not profile-review edit fields. If they change, return to stage 2, regenerate dependent estimates and review the new request; use new output paths for the changed deployment.
 
-At handoff, include the checkout revision, final request/profile, plan directory, data pair and provenance when available, exact commands/exit statuses, and prediction/recommendation result paths. State each stage separately:
+### 4. Plan collection
 
-| Stage | Evidence to report |
-| --- | --- |
-| Request and CPU plan | Saved inputs, reviewed assumptions and generated configs; memory fit is an estimate from declared bounds. |
-| Target runtime | Actual deployment checks and any unresolved access, runtime or model prerequisite; planning leaves these unchecked. |
-| FPM data and coverage | Published matching pair, formal collection evidence, and coverage/failures of the queries actually exercised. |
-| Prediction and recommendation | Completed outputs, metrics, candidate outcomes and any failures; a plan alone is not a result. |
-| Accuracy | Independent matched silicon comparison, or explicitly **not assessed**. |
+Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. Inspect `support-plan.json`, the embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
-If a stage is blocked, retain completed artifacts and give the specific missing input or next command.
+Explain the rank-local scheduler/resource envelope, sampling scope and candidate count. One onboarding plan selects one parallel tuple; extra recommendation candidates are counts of identical workers, not additional TP/DEP/TEP choices. Use separate requests/output directories for additional tuples. The pilot request count does not bound timing samples or collection duration.
+
+### 5. Collect and verify data
+
+First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage. For new collection, follow the [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md) to prepare the pinned checkpoint, Dynamo/vLLM deployment, model access and GPU resources. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute` launches collection; optional `--smoke` is diagnostic and publishes no formal FPM pair. Preserve checkpoints, logs and raw evidence.
+
+For both reused and new data, [inspect the published pair](../python/aisimulate/docs/fpm/end-to-end-workflow.md#5-inspect-the-published-pair): verify hashes, schema and identities, including actual runtime, topology, precision and available prefill/decode cells. Keep it at the generated configs' local systems path. Record any historical checkpoint-revision uncertainty in provenance; a declared revision does not prove that old measurements used it. A successful preview or smoke run is not formal data, and a matching pair does not prove all simulated queries are covered.
+
+### 6. Run predict/recommend and report
+
+[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for prediction and every planned recommendation candidate. Keep `engine.systems_path` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the deployment/workload scope. Failed queries remain coverage gaps, even if other candidates succeed; report the simulation stage as incomplete while required queries fail.
+
+At handoff, include the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
+
+### Resume from existing work
+
+Inspect the saved request/profile, plan, data pair and results before deciding where to resume. Validate that they still match the checkout's CLI, selected deployment and workload; use the existing plan checks described below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. A draft or a saved file without evidence of acceptance still needs stage 3 review. Do not repeat accepted decisions or rerun completed work without a reason.
+
+Preserve completed artifacts when blocked and report the current stage, specific missing input and next action. Changed deployment or workload inputs invalidate dependent estimates, plans and results; return to the affected stage and use a new output directory. Collection's existing `--resume` is for a matching collector checkpoint as described below, not a general onboarding-stage resume command.
 
 ## Create the request
 
