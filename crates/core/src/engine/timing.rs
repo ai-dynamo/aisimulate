@@ -28,6 +28,17 @@ pub enum TimingEvidenceSource {
 }
 
 impl TimingEvidenceSource {
+    pub(crate) fn from_native(source: &str) -> Self {
+        match source {
+            "silicon" => Self::Silicon,
+            "empirical" => Self::Empirical,
+            "sol" => Self::Sol,
+            "estimated" => Self::Estimated,
+            "mixed" => Self::Mixed,
+            _ => Self::Other(source.to_owned()),
+        }
+    }
+
     pub fn from_provider(source: impl Into<String>) -> Self {
         let source = source.into();
         match source.as_str() {

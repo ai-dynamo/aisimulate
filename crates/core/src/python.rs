@@ -525,7 +525,7 @@ impl AicTimingModel {
             self.phase_cache.insert(key, Arc::clone(&phase));
             return Ok(phase);
         }
-        let (context, generation) = match &self.phase_provider {
+        let phase = match &self.phase_provider {
             AicPhaseProvider::Native(engine) => {
                 let runtime = RuntimeConfig {
                     batch_size,
@@ -536,37 +536,35 @@ impl AicTimingModel {
                     seq_imbalance_correction_scale: 1.0,
                     gen_seq_imbalance_correction_scale: 1.0,
                 };
-                crate::py::parse_mode(mode)
+                let (context, generation) = crate::py::parse_mode(mode)
                     .and_then(|mode| {
                         engine.reset_provenance();
                         engine
                             .run_static_per_op(&runtime, mode, 32)
                             .map_err(crate::py::aic_to_py)
                     })
-                    .map(|(context, generation)| {
-                        let owned_sources = |entries: Vec<crate::perfmodel::engine::PerOpValue>| {
-                            entries
-                                .into_iter()
-                                .map(|(name, latency, energy, source)| {
-                                    (name, latency, energy, source.to_owned())
-                                })
-                                .collect::<Vec<_>>()
-                        };
-                        (owned_sources(context), owned_sources(generation))
-                    })
+                    .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
+                let entries = if prefill { context } else { generation };
+                ensure!(
+                    !entries.is_empty(),
+                    "AIC {mode} returned empty operation evidence for nonzero work"
+                );
+                phase_evidence_from_native_entries(entries)?
             }
             #[cfg(test)]
             AicPhaseProvider::Python => {
-                self.phase_evidence_through_python(batch_size, isl, osl, prefix, mode)
+                let (context, generation) = self
+                    .phase_evidence_through_python(batch_size, isl, osl, prefix, mode)
+                    .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
+                let entries = if prefill { context } else { generation };
+                ensure!(
+                    !entries.is_empty(),
+                    "AIC {mode} returned empty operation evidence for nonzero work"
+                );
+                phase_evidence_from_entries(entries)?
             }
-        }
-        .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-        let entries = if prefill { context } else { generation };
-        ensure!(
-            !entries.is_empty(),
-            "AIC {mode} returned empty operation evidence for nonzero work"
-        );
-        let phase = Arc::new(phase_evidence_from_entries(entries)?);
+        };
+        let phase = Arc::new(phase);
         self.phase_cache.insert(key, Arc::clone(&phase));
         Ok(phase)
     }
@@ -613,6 +611,28 @@ impl AicTimingModel {
     }
 }
 
+fn phase_evidence_from_native_entries(
+    entries: Vec<crate::perfmodel::engine::PerOpValue>,
+) -> Result<ValidatedTimingPhase> {
+    let operations = entries
+        .into_iter()
+        .map(|(name, latency_ms, energy_wms, source)| {
+            ensure!(
+                energy_wms.is_finite() && energy_wms >= 0.0,
+                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
+            );
+            TimingOperationEvidence::new(
+                name,
+                latency_ms,
+                Some(energy_wms),
+                TimingEvidenceSource::from_native(source),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ValidatedTimingPhase::from_operations(operations)
+}
+
+#[cfg(test)]
 fn phase_evidence_from_entries(
     entries: Vec<(String, f64, f64, String)>,
 ) -> Result<ValidatedTimingPhase> {
