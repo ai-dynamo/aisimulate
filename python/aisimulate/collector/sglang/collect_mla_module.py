@@ -2831,6 +2831,7 @@ def main():
     )
     parser.add_argument("--model", type=str, default=None, help="HuggingFace model path")
     parser.add_argument("--num-heads", type=int, default=None, help="Filter by head count")
+    parser.add_argument("--target-tp-size", type=int, default=None, help="Serving TP size; derives per-rank heads")
     parser.add_argument("--kv-cache-dtype", choices=["bfloat16", "fp8"], default=None)
     parser.add_argument("--chunked-prefill-size", type=int, default=None, help="Serving prefill chunk limit in tokens")
     parser.add_argument("--output-path", default=None, help="Output directory for perf files")
@@ -2838,6 +2839,10 @@ def main():
     args = parser.parse_args()
     if args.ordinary_mla and (args.mode != "context" or args.attn_type != "mla"):
         parser.error("--ordinary-mla requires --mode context --attn-type mla")
+    if args.target_tp_size is not None and args.target_tp_size <= 0:
+        parser.error("--target-tp-size must be positive")
+    if args.num_heads is not None and args.num_heads <= 0:
+        parser.error("--num-heads must be positive")
 
     # Determine which attn_types to run
     if args.attn_type:
@@ -2867,12 +2872,22 @@ def main():
                 if args.num_heads
                 else [h for h in get_mla_module_sweep_spec("sglang").inner_sweep_head_counts if h <= native_heads]
             )
+            if args.target_tp_size is not None:
+                if native_heads % args.target_tp_size:
+                    parser.error("--target-tp-size must divide the model's native head count")
+                local_heads = native_heads // args.target_tp_size
+                if args.num_heads is not None and args.num_heads != local_heads:
+                    parser.error("--num-heads must equal native heads / --target-tp-size")
+                head_nums = [local_heads]
+            if args.ordinary_mla and any(native_heads % heads for heads in head_nums):
+                parser.error("ordinary MLA per-rank heads must divide the model's native head count")
 
             for compute_dtype, kv_dtype, gemm_type in _get_precision_combos(args.mode):
                 if args.kv_cache_dtype and kv_dtype != args.kv_cache_dtype:
                     continue
 
                 for head_num in head_nums:
+                    target_tp_size = args.target_tp_size or (native_heads // head_num if args.ordinary_mla else 1)
                     is_prefill = args.mode == "context"
                     gpu_id = int(args.device.split(":")[-1]) if ":" in args.device else 0
                     try:
@@ -2886,6 +2901,7 @@ def main():
                             is_prefill=is_prefill,
                             gpu_id=gpu_id,
                             output_path=args.output_path,
+                            target_tp_size=target_tp_size,
                             ordinary_mla=args.ordinary_mla,
                             chunked_prefill_size=args.chunked_prefill_size,
                         )

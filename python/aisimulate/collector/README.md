@@ -651,7 +651,12 @@ Other combinations fail during argument parsing, before collection starts.
 If any dispatch fails, the CLI reports its traceback, finishes the remaining
 dispatches, and exits with status 1 so partial collection is not reported as success.
 
-Pass the actual per-rank head count and `target_tp_size`. Set
+Pass `--target-tp-size 4` (or `8`) to derive the per-rank head count from the
+model. It must be positive and divide the model's native head count. If
+`--num-heads` is also supplied, it must equal native heads divided by TP.
+Without an explicit TP size, ordinary MLA derives TP separately for each
+per-rank head count. Python callers pass the actual per-rank head count and
+`target_tp_size`. Set
 `--chunked-prefill-size 16384` on the CLI, or `chunked_prefill_size=16384`
 on `run_mla_module()` or `run_mla_module_worker()`, to reproduce a serving
 chunk limit of 16,384 tokens. The worker forwards the limit into its subprocess.
