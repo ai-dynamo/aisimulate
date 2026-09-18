@@ -49,11 +49,11 @@ from typing import Any
 
 import aiconfigurator_core
 from aiconfigurator_core.sdk.config_builders import apply_nextn, build_model_config
+from aiconfigurator_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aiconfigurator_core.sdk.fpm_profile import (
     FpmDeploymentProfile,
     FpmModelProfile,
     load_fpm_profile,
-    resolve_fpm_interpolation,
 )
 from aiconfigurator_core.sdk.models import get_model
 from aiconfigurator_core.sdk.operations import FPMForwardOp
@@ -174,6 +174,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
             # draft scheme is materialized.
             "verify_width": int(getattr(op, "_verify_width", 1) or 1),
+            "interpolation": "sol",
             "sol_ops": [json.loads(_as_engine_op(c)._spec_json()) for c in op._sol_ops],
         }
     }
@@ -269,8 +270,8 @@ def _literal_backend_version(
     (an omitted version means the ``current`` slot). Slot-policy errors
     (unlisted versions, unpopulated aliases) PROPAGATE — the spec builder is
     a user-level surface and must not smuggle ungated coordinates onto the
-    wire. Trees without a slots file (synthetic/external) keep the ungated
-    passthrough.
+    wire. Trees without a slots file (synthetic/external) keep explicit
+    versions unchanged and resolve an omitted version to the latest database.
     """
     resolved = getattr(database, "version", None) if database is not None else None
     if resolved:
@@ -279,7 +280,11 @@ def _literal_backend_version(
 
     slots = perf_database.get_version_slots(system, backend, systems_paths=systems_path)
     if slots is None:
-        return backend_version
+        return (
+            backend_version
+            if backend_version is not None
+            else perf_database.get_latest_database_version(system, backend, systems_paths=systems_path)
+        )
     requested = "current" if backend_version is None else backend_version
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 
@@ -426,11 +431,12 @@ def compile_engine(
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
     fpm_profile: dict | str | FpmModelProfile | None = None,
-    fpm_interpolation: str = "auto",
+    fpm_interpolation: str | None = None,
     cp_size: int = 1,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
@@ -446,22 +452,24 @@ def compile_engine(
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
 
     ``fpm_profile`` supplies independent decoder metadata and rank-local
-    resource bounds. ``fpm_interpolation='direct'`` bypasses model construction;
-    ``'auto'`` retains SOL for registered architectures and selects direct for
-    unknown ones. Profile precision is authoritative on either route, with
+    resource bounds. This is internal compilation plumbing: the canonical
+    Rust constructor supplies an already resolved ``sol`` or ``direct`` method.
+    Profile precision is authoritative on either route, with
     conflicting caller overrides rejected. ``cp_size`` completes the profile
     identity; profiles currently support only CP1/PP1 and no speculation.
     """
     if type(cp_size) is not int or cp_size != 1:
         raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
     profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
-    if (profile is not None or fpm_interpolation != "auto") and forward_model != "fpm":
-        raise ValueError("fpm_profile and fpm_interpolation require forward_model='fpm'")
-    interpolation = resolve_fpm_interpolation(profile, fpm_interpolation)
+    if fpm_interpolation not in (None, "sol", "direct") or (profile is not None and fpm_interpolation is None):
+        raise InvalidEngineConfigurationError("FPM compilation requires a resolved method from best_available(config)")
+    if fpm_interpolation == "direct" and profile is None:
+        raise InvalidEngineConfigurationError("direct FPM interpolation requires an fpm_profile")
+    interpolation = fpm_interpolation
     deployment = None
     if profile is not None:
-        if nextn:
-            raise ValueError("FPM profiles support plain autoregressive decoder-only execution; nextn must be 0")
+        if nextn or speculation is not None:
+            raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
         literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
         deployment = profile.select(
             model=model_path,
@@ -483,7 +491,7 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             attention_backend=attention_backend,
         )
-        if interpolation == "direct":
+        if forward_model == "fpm" and interpolation == "direct":
             spec_json = _direct_fpm_spec_json(
                 profile,
                 deployment,
@@ -504,32 +512,41 @@ def compile_engine(
 
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
+    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
-    model_config = build_model_config(
-        tp_size=tp_size,
-        pp_size=pp_size,
-        attention_dp_size=attention_dp_size,
-        moe_tp_size=resolved_moe_tp,
-        moe_ep_size=resolved_moe_ep,
-        gemm_quant_mode=gemm_quant_mode,
-        kvcache_quant_mode=kvcache_quant_mode,
-        fmha_quant_mode=fmha_quant_mode,
-        moe_quant_mode=moe_quant_mode,
-        comm_quant_mode=comm_quant_mode,
-        forward_model=forward_model,
-        attention_backend=attention_backend,
-    )
-    # Apply MTP BEFORE get_model so the walked op lists carry the
-    # (L+nextn)/L compute scale; accepted-token progress is applied above core.
-    apply_nextn(model_config, nextn)
+    try:
+        resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
+        model_config = build_model_config(
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=resolved_moe_tp,
+            moe_ep_size=resolved_moe_ep,
+            gemm_quant_mode=gemm_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            forward_model=forward_model,
+            attention_backend=attention_backend,
+            speculation=resolved_speculation,
+        )
+        # Apply MTP BEFORE get_model so the walked op lists carry the
+        # (L+nextn)/L compute scale; accepted-token progress is applied above core.
+        apply_nextn(model_config, nextn)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
     if deployment is not None:
         model_config.moe_backend = None if deployment.moe_backend == "auto" else deployment.moe_backend
     model = get_model(model_path, model_config, backend)
-    if deployment is not None:
+    if deployment is not None and forward_model == "fpm":
         for op in (*model.context_ops, *model.generation_ops):
             if not isinstance(op, FPMForwardOp) or list(op._match_identity) != deployment.match_identity():
-                raise ValueError("registered SOL construction does not preserve the requested FPM profile identity")
+                raise InvalidEngineConfigurationError(
+                    "registered SOL construction does not preserve the requested FPM profile identity"
+                )
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
@@ -565,8 +582,10 @@ def compile_engine(
 
     if profile is not None:
         spec = json.loads(spec_json)
-        spec["engine"]["forward_model"] = "fpm"
-        spec["engine"]["extra"].update(fpm_profile=profile.model_dump_json(), fpm_interpolation=interpolation)
+        spec["engine"]["extra"].update(
+            fpm_profile=profile.model_dump_json(),
+            estimator_config=json.dumps({"fpm_interpolation": {"method": interpolation}}),
+        )
         spec_json = json.dumps(spec)
 
     return bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json))
@@ -609,7 +628,10 @@ def _direct_fpm_spec_json(
         "strict_provenance": bool(strict_provenance),
         "database_mode": "SILICON",
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
-        "extra": {"fpm_profile": profile.model_dump_json(), "fpm_interpolation": "direct"},
+        "extra": {
+            "fpm_profile": profile.model_dump_json(),
+            "estimator_config": json.dumps({"fpm_interpolation": {"method": "direct"}}),
+        },
     }
 
     def phase_op(phase: str) -> dict:

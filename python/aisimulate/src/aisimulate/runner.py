@@ -17,6 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
+from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
 from .sweeper.afd_perfmodel import AFDLayerTimes
@@ -89,7 +90,6 @@ _AIC_TIMING_FIELD_ALIASES = {
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
     "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
-    "fpm_interpolation": ("fpm_interpolation", "aic_fpm_interpolation"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -413,7 +413,16 @@ class EngineReplayRunner:
             allow_nan=False,
             separators=(",", ":"),
         )
-        report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        try:
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        except MemoryError as error:
+            # Resource-aware installations classify a report storage failure as host
+            # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
+            try:
+                from .resources import ResourceLimitError
+            except ImportError:
+                raise error from None
+            raise ResourceLimitError(str(error)) from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
@@ -794,6 +803,7 @@ def _run_afd_replay(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
+    metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {
         "executor": "afd_foreground",
         "deployment_mode": deployment.deployment_mode,
@@ -818,6 +828,8 @@ def _run_afd_replay(
         metadata["native_report"] = native_report
     if include_report:
         metadata["afd_report"] = {"metrics": metrics, **summary}
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)
 
 
@@ -974,7 +986,14 @@ def _execution_target_model(
     if isinstance(metadata, Mapping):
         config = metadata.get("config")
         if isinstance(config, Mapping):
-            model = config.get("model_path")
+            model = config.get("model", config.get("model_path"))
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    timing = raw_engine_args.get("timing_model")
+    if isinstance(timing, Mapping) and timing.get("provider") == "aic":
+        config = timing.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model")
             if isinstance(model, str) and model.strip():
                 return model.strip()
     model = raw_engine_args.get("aic_model_path")
@@ -1157,6 +1176,23 @@ def _materialize_engine_role(
     # the AIC timing config because the native runtime rematerializes inferred
     # capacity before execution.
     cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
+    timing_rank = role_config.get("rank", role_config)
+    timing = timing_rank.get("timing_model") if isinstance(timing_rank, dict) else None
+    if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+        canonical = timing.get("config")
+        if not isinstance(canonical, dict):
+            raise ValueError("external AIC timing config must be a mapping")
+        for aliases, fields in (
+            (("tensor_parallel_size", "aic_tp_size"), ("tp", "tp_size")),
+            (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
+        ):
+            expected = canonical.get(fields[0], canonical.get(fields[1]))
+            if expected is not None:
+                for alias in aliases:
+                    if alias in role_config and role_config[alias] != expected:
+                        raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
+                if not any(alias in role_config for alias in aliases):
+                    role_config[aliases[0]] = expected
     raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
     raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
     dp_size = _positive_int(
@@ -1273,8 +1309,6 @@ def _materialize_engine_role(
             raise ValueError(
                 f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
             )
-        if target == "fpm_interpolation" and value not in {"auto", "sol", "direct"}:
-            raise ValueError(f"engine provider {role} fpm_interpolation must be auto, sol, or direct")
         aic_timing_overrides[target] = value
 
     timing_model = rank.get("timing_model")
@@ -1292,7 +1326,30 @@ def _materialize_engine_role(
             "rank.num_gpu_blocks explicitly or use AIC timing"
         )
     if deployment_backend_version:
+
+        def resolved_version(value):
+            if value not in {"current", "previous", "next"}:
+                return value
+            from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+            from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+            identity = timing_model.get("config", {}) if isinstance(timing_model, dict) else {}
+            roots = identity.get("systems_paths")
+            if roots is None and identity.get("systems_path") is not None:
+                roots = [identity["systems_path"]]
+            return resolve_query_version(
+                identity.get("system", system),
+                backend,
+                value,
+                systems_paths=list(resolve_systems_paths(roots)),
+            )
+
+        if uses_aic_timing:
+            deployment_backend_version = resolved_version(deployment_backend_version)
         configured_version = aic_timing_overrides.get("backend_version")
+        if uses_aic_timing:
+            configured_version = resolved_version(configured_version)
         if configured_version is not None and configured_version != deployment_backend_version:
             raise ValueError(
                 f"engine provider {role} backend version {configured_version!r} "
@@ -1302,6 +1359,10 @@ def _materialize_engine_role(
         if uses_aic_timing:
             timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
             timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
+            timing_backend_version = resolved_version(timing_backend_version)
+            if timing_backend_version is not None:
+                timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
+                rank["timing_model"] = timing_model
             if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="
@@ -1318,6 +1379,30 @@ def _materialize_engine_role(
         aic_timing_overrides.clear()
         if capacity_materialized:
             memory_fraction_overrides.clear()
+
+    speculation_raw = rank.pop("speculation", None)
+    speculation = None
+    if speculation_raw is not None:
+        from .config.engine import NgramSpeculationConfig
+
+        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
+        if backend != "vllm" or rank.get("native_host_offload") is not None:
+            raise ValueError("ngram speculation requires vllm without host_offload")
+        if any(
+            rank.get(key) is not None
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
@@ -1361,7 +1446,7 @@ def _materialize_engine_role(
             timing_config["kv_block_size"] = block_size
         timing_config.update(memory_fraction_overrides)
         timing_config.update(aic_timing_overrides)
-        if nextn is not None:
+        if nextn is not None and speculation is None:
             timing_config["nextn"] = nextn
         rank["timing_model"] = {
             "type": "external",
@@ -1402,13 +1487,23 @@ def _materialize_engine_role(
         ):
             timing_model = dict(timing_model)
             timing_config = dict(timing_model["config"])
+            if speculation is not None:
+                cost_config = speculation.cost_config()
+                if timing_config.get("nextn") not in (None, 0):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                if timing_config.get("speculation") not in (None, cost_config):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
+                if timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("ngram speculation requires op_level timing")
+                timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if configured_nextn is not None and configured_nextn != nextn:
+            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            timing_config["nextn"] = nextn
+            if speculation is None:
+                timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
 
@@ -1533,12 +1628,20 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     """Normalize an execution report to Sweeper's stable scoring metric names."""
 
     payload = dict(report)
-    metrics: dict[str, float] = {}
+    metrics: dict[str, float | None] = {}
+    try:
+        power = normalize_power_summary(payload)
+    except ValueError as exc:
+        raise InvalidRunnerError(str(exc)) from exc
+    payload.update(power)
 
     def add(name: str, value: object) -> None:
         if isinstance(value, bool) or not isinstance(value, Real):
             return
-        number = float(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InvalidRunnerError(f"engine replay metric {name!r} is not finite") from exc
         if not math.isfinite(number):
             raise InvalidRunnerError(f"engine replay metric {name!r} is not finite")
         metrics[name] = number
@@ -1561,4 +1664,6 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     }
     if include_native_report:
         metadata["native_report"] = payload
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
     return ReplayReport(metrics=metrics, metadata=metadata)

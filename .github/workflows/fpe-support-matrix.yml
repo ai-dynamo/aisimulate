@@ -8,6 +8,10 @@ on:
       expected_sha:
         required: true
         type: string
+      source_branch:
+        description: Source branch whose inventory is being qualified
+        type: string
+        default: main
       wheel_artifact:
         description: Nightly artifact containing the wheel, checksums, and provenance
         required: false
@@ -22,6 +26,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  FPE_BRANCH: ${{ inputs.source_branch || 'main' }}
+  FPE_SOURCE_SHA: ${{ inputs.expected_sha }}
+  FPE_TOOLING_SHA: ${{ github.sha }}
 
 jobs:
   prepare-wheel:
@@ -39,19 +48,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - name: Verify exact target
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-        run: test -n "${EXPECTED_SHA}" && test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: test -n "${EXPECTED_SHA}" && test "$(git -C release-source rev-parse HEAD)" = "${EXPECTED_SHA}"
       - uses: ./.github/actions/setup-manylinux-python-rust
         if: inputs.wheel_artifact == ''
       - name: Build one wheel for standalone qualification
+        working-directory: release-source
         if: inputs.wheel_artifact == ''
         run: |
           python -m pip install 'maturin>=1.12,<2'
-          python scripts/build_manylinux_wheel.py --output-dir fpe-wheel
+          python scripts/build_manylinux_wheel.py --output-dir ../fpe-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.wheel_artifact != ''
         with:
@@ -70,6 +85,8 @@ jobs:
           if provenance["commit"] != os.environ["EXPECTED_SHA"]:
               raise SystemExit("nightly artifact belongs to a different source commit")
           PY
+      - name: Record source and current qualification tooling
+        run: /opt/python/cp312-cp312/bin/python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - id: digest
         name: Record the single wheel identity
         run: |
@@ -86,7 +103,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-qualified-wheel
-          path: fpe-wheel/*.whl
+          path: |
+            fpe-wheel/*.whl
+            fpe-wheel/provenance.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -96,11 +115,16 @@ jobs:
     needs: prepare-wheel
     runs-on: ubuntu-latest
     outputs:
-      shards: ${{ steps.shards.outputs.value }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -116,19 +140,8 @@ jobs:
           echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install --force-reinstall fpe-wheel/*.whl
       - id: shards
-        name: Read live system/backend identities from the qualified SDK
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-          sys.path.insert(0, "python/aisimulate")
-          from tools.support_matrix.support_matrix import SupportMatrix
-          shards = {(system, backend) for _, system, backend, _ in SupportMatrix().generate_combinations()}
-          if not shards:
-              raise SystemExit("no FPE shards discovered")
-          value = json.dumps([{"system": s, "backend": b} for s, b in sorted(shards)])
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"value={value}\n")
-          PY
+        name: Read selected-source inventory with current qualification tooling
+        run: python scripts/run_release_fpe.py discover --wheel-dir fpe-wheel
 
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
@@ -151,7 +164,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -182,7 +200,7 @@ jobs:
           FPE_SYSTEM: ${{ matrix.shard.system }}
           FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
-          python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+          python scripts/run_release_fpe.py probe --wheel-dir fpe-wheel \
             --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
             --output-dir "fpe-support-matrix/${FPE_SYSTEM}/${FPE_BACKEND}" \
             --forward-model op_level --sdk-log-level ERROR --max-workers 8
@@ -201,33 +219,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ inputs.expected_sha }}
+          path: release-source
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-support-matrix-*
           path: fpe-support-matrix
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fpe-qualified-wheel
+          path: fpe-wheel
       - name: Require complete same-wheel reports and native sentinels
         env:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          EXPECTED_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
         run: |
-          python3 python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py fpe-support-matrix \
-            --expected-shards "${EXPECTED_SHARDS}" --expected-sha "${EXPECTED_SHA}" \
-            --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
-            --required-probes .github/fpe-required-probes.json --output fpe-qualification.json
-      - name: Build the deterministic split web matrix
-        run: |
-          python3 python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py fpe-support-matrix \
-            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+          printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
+          python3 scripts/run_release_fpe.py package --wheel-dir fpe-wheel \
+            --reports fpe-support-matrix --destination fpe-nightly-web
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-support-matrix-web
-          path: |
-            fpe-qualification.json
-            python/aisimulate/docs/fpe-support-matrix/index.html
-            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+          path: fpe-nightly-web
           if-no-files-found: error
           # Pages reuses the latest qualified snapshot on documentation pushes.
           retention-days: 90

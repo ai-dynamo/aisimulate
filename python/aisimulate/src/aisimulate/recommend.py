@@ -19,6 +19,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
@@ -38,11 +39,44 @@ def run_recommendation(
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
+    from .supervision import in_supervised_process, supervised_recommendation
+
+    kwargs = dict(
+        adapter_configs=adapter_configs,
+        stack=stack,
+        runner_factory=runner_factory,
+        providers=providers,
+        afd_performance_model=afd_performance_model,
+        show_progress=show_progress,
+    )
+    if not in_supervised_process():
+        return supervised_recommendation(config, kwargs)
+    return _run_recommendation(config, **kwargs)
+
+
+def _run_recommendation(
+    config: CoreRecommendationConfig,
+    *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    stack: str,
+    runner_factory: RunnerFactory,
+    providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
+    show_progress: bool = True,
+) -> SweepResult:
+    from .supervision import checkpoint
+
+    checkpoint("requested_config", config.model_dump(mode="json"))
+    budget = resolve_budget(config.execution.resources, discover_host())
     from .sweeper.search import Sweeper
 
+    runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
+    if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
         workload=smart.workload.model_dump(mode="json"),
@@ -112,7 +146,6 @@ def recommendation_to_sweeper(
         "deployment_mode": modes,
         "backend": [str(value) for value in backend_values],
         "backend_version": engine.get("backend_version"),
-        "systems_path": engine.get("systems_path"),
         "model_name": model,
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
@@ -127,6 +160,36 @@ def recommendation_to_sweeper(
     }
     if engine.get("fpm_profile") is not None:
         search_space["fpm_profile"] = engine["fpm_profile"]
+    for name in (
+        "database_mode",
+        "transfer_policy",
+        "systems_paths",
+        "estimation_mode",
+        "fallback_policy",
+        "estimator_config",
+    ):
+        if name in engine:
+            search_space[name] = deepcopy(engine[name])
+    search_space["role_estimator_controls"] = {
+        ("agg" if role == "aggregated" else role): {
+            name: deepcopy(raw.get("timing", {})[name])
+            for name in (
+                "estimation_mode",
+                "fallback_policy",
+                "estimator_config",
+                "systems_paths",
+                "database_mode",
+                "transfer_policy",
+            )
+            if name in raw.get("timing", {})
+        }
+        for role, raw in workers.items()
+        if role in {"aggregated", "prefill", "decode"}
+        and not set(modes) & {"afd", "afd+pd"}
+        and workers.get("encoder") is None
+    }
+    if engine.get("speculation") is not None:
+        search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
@@ -375,9 +438,10 @@ def _role_search_space(
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
-        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
-        if timing.get("fpm_interpolation", "auto") != "auto":
-            result[f"{legacy_role}_fpm_interpolation"] = timing["fpm_interpolation"]
+        if timing.get("estimation_mode") is not None:
+            result[f"{legacy_role}_forward_model"] = (
+                "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
+            )
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -719,11 +783,24 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
-    if sample.get("systems_path") is not None:
-        engine["systems_path"] = sample["systems_path"]
+    if sample.get("systems_paths") is not None:
+        engine["systems_paths"] = sample["systems_paths"]
     if sample.get("fpm_profile") is not None:
         engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    if deployment.forward_pass_estimators:
+        for name in (
+            "database_mode",
+            "transfer_policy",
+            "systems_paths",
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+        ):
+            if name in raw_engine:
+                engine[name] = deepcopy(raw_engine[name])
+    if sample.get("speculation") is not None:
+        engine["speculation"] = deepcopy(sample["speculation"])
     if deployment.encoder is not None:
         from .config.epd import encoder_prediction_fields
 
@@ -774,8 +851,20 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
-            if sample.get("fpm_profile") is not None or sample.get(f"{role}_fpm_interpolation", "auto") != "auto":
-                timing["fpm_interpolation"] = sample.get(f"{role}_fpm_interpolation", "auto")
+        estimator = deployment.forward_pass_estimators.get(role)
+        if estimator is not None:
+            resolved = estimator.config
+            timing = {
+                "type": "default",
+                "estimation_mode": resolved["estimation_mode"],
+                "fallback_policy": "deny",
+                "estimator_config": deepcopy(resolved["estimator_config"]),
+            }
+            # Per-role roots can differ; preserve them next to the role's timing.
+            timing["systems_paths"] = list(resolved["systems_paths"])
+            timing["database_mode"] = resolved["database_mode"]
+            policy = resolved["transfer_policy"]
+            timing["transfer_policy"] = list(policy) if policy is not None else None
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -833,6 +922,7 @@ def _candidate_prediction(
                 "traffic": traffic,
                 "engine": engine,
                 "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
+                "execution": source.execution.model_dump(mode="python", exclude_none=True),
             }
         )
     except ValueError as exc:

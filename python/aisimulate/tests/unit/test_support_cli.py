@@ -70,6 +70,18 @@ def _terminal(monkeypatch, answers=()) -> list[str]:
     return prompts
 
 
+def test_supervised_entrypoint_runs_onboarding_before_prediction_config_handling(tmp_path, monkeypatch):
+    from aisimulate import supervision
+
+    def unexpected_supervision(*args, **kwargs):
+        pytest.fail("interactive onboarding must retain the calling terminal")
+
+    monkeypatch.setattr(supervision, "run_process", unexpected_supervision)
+    output = tmp_path / "request.yaml"
+    assert supervision.main(_init_args(output)) == 0
+    assert SupportRequest.from_yaml(output).identity.model == _REQUIRED["model"]
+
+
 @pytest.mark.parametrize("command", [[], ["onboard"]])
 def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> None:
     with pytest.raises(SystemExit) as result:
@@ -363,10 +375,10 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     assert summary["candidate_count"] == 1
     prediction = CorePredictionConfig.from_yaml(plan["outputs"]["prediction_configs"][0])
     recommendation = CoreRecommendationConfig.from_yaml(plan["outputs"]["recommendation_configs"][0])
-    assert prediction.engine.workers.aggregated.timing.forward_model == "fpm"
-    assert recommendation.engine.workers.aggregated.timing.forward_model == "fpm"
-    assert prediction.engine.systems_path == plan["outputs"]["systems_root"]
-    assert recommendation.engine.systems_path == prediction.engine.systems_path
+    assert prediction.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
+    assert recommendation.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
+    assert prediction.engine.systems_paths == [plan["outputs"]["systems_root"]]
+    assert recommendation.engine.systems_paths == prediction.engine.systems_paths
     assert prediction.traffic.source.input_tokens == 1024
 
     next_command = shlex.split(summary["next"])

@@ -322,6 +322,23 @@ have been invalidated by it, so backward fill preserves historical
 reproducibility; forward fill silently answers "how fast is 0.5.14" with
 0.5.15's kernels.
 
+### Corrected vLLM 0.24.0 FP8-block measurements
+
+For B200/B300/GB200/GB300 and H100/H200 SXM, the 0.24.0 GEMM tables
+exclude FP8-block rows measured eagerly with host launch gaps (PR #219).
+All other rows are retained unchanged. Their standard collection sidecars mark
+the reduced tables partial, and existing declared reuse points to 0.25.0.
+With shared-layer reuse enabled, explicit 0.24.0 requests load retained primary
+rows first and fill missing keys from 0.25.0 graph-timed measurements.
+Newer versions are never selected implicitly. With reuse disabled, the removed
+FP8-block measurements remain unavailable.
+The six-GPU regression test compares the entire native loaded table with the
+first-source-wins merge of all primary and donor rows, including exact latency
+preservation. Table-wide reuse also fills missing BF16, FP8, and (on Blackwell)
+NVFP4 keys. The [PR #244 evidence bundle](../../../../docs/data/pr244/README.md)
+records the per-precision counts, unchanged kernel source paths, cross-version
+limitations, and reproducible collection coverage for all 85 new tables.
+
 ### 6.3 Channel 2 — declared reuse (`reuse.yaml`, same backend, any direction)
 
 When we *know* data is valid for a version we never collected — typically a
@@ -482,6 +499,27 @@ every PR touching `data/`, `collector/`, or the manifest. Hard failures:
 - pin/collector/case-plan changes without the evidence the policy demands (§9).
 
 The CI audit is the primary gate; loader strict mode is the backstop.
+
+### Power fields and imported data
+
+Power-carrying tables follow the same Collector V3 provenance, placement, reuse,
+and evidence rules. Their numeric storage checks run through the existing
+`parquet_diff.py` review helper and packaged-data unit test, which share
+`tools/perf_database/power_data.py::power_metric_issues`:
+
+- Power columns may be absent. When either is present, both `power` and
+  `power_limit` must be float64, with finite positive pairs or paired `0.0/0.0`
+  unavailable sentinels. Partial pairs, nulls, negatives, and non-finite values fail.
+- The storage check imposes no ratio cap between power and power limit. A
+  measurement-quality threshold requires evidence and review through the existing
+  policy in §9.
+
+The B200 TRT-LLM import records its source revision, attribution, row counts,
+and attention-merge details in the adjacent data README and existing third-party
+notices. Focused import tests pin file hashes and compare the two merged attention
+tables against upstream copies. Collection provenance remains in
+`collection_meta.yaml`; import checks do not approve reuse or qualify hardware
+accuracy.
 
 ## 9. Evidence policy
 

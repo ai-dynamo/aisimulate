@@ -144,6 +144,9 @@ aisimulate predict \
 ```
 
 To rerun a command, choose a new `--output-dir` or add `--overwrite` to replace its known output files.
+Local RAM and CPU capacity are detected automatically; no manual limits are required.
+Optional `execution.resources` settings override the defaults described in
+[local execution resources](../local-resources.md).
 
 Example output (illustrative values):
 
@@ -335,6 +338,9 @@ For this example result, the command writes:
 ```text
 recommendation-output/
 ├── recommendation.json
+├── recommendation.csv
+├── resource-runtime.json
+├── execution-events.jsonl
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
@@ -491,6 +497,7 @@ engine: {}
 router: {}
 planner: {}
 evaluation: {}
+execution: {}
 ```
 
 `recommend` extends that model with:
@@ -509,6 +516,7 @@ The command determines the document type. There is no top-level `kind` or stack 
 | `router` | Optional adapter | Optional adapter | Dynamo routing policy; round robin when omitted. Requires the integration when configured. |
 | `planner` | Optional adapter | Optional adapter | Dynamo runtime scaling; disabled when omitted. Requires the integration when configured. |
 | `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
+| `execution` | Optional | Optional | Host RAM/CPU budgets and supervisor deadlines; automatic defaults apply when omitted. See [local resources](../local-resources.md). |
 | `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
 | `optimizer` | Rejected | Optional | Public search controls. |
 
@@ -971,6 +979,7 @@ engine:
 | `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
+| `engine.speculation` | Omitted (disabled) | `x` | `-` | Optional ngram draft count, conditional acceptance rates, and sampling seed; see [prompt lookup](#prompt-lookup-ngram-speculative-decoding). |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
 | `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
@@ -1117,6 +1126,60 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+<a id="prompt-lookup-ngram-speculative-decoding"></a>
+
+### Prompt-lookup (ngram) speculative decoding
+
+Both `predict` and `recommend` accept an optional `engine.speculation` block.
+For example, add this block under `engine` in a vLLM configuration:
+
+```yaml
+speculation:
+  kind: ngram
+  num_speculative_tokens: 3
+  acceptance_rates: [0.8, 0.6, 0.4]
+  seed: 42
+```
+
+Or override the same configuration from the command line:
+
+```bash
+aisimulate predict -c prediction.yaml \
+  --set engine.backend=vllm \
+  --set 'engine.speculation={kind: ngram, num_speculative_tokens: 3, acceptance_rates: [0.8, 0.6, 0.4], seed: 42}' \
+  --output-dir ./ngram-prediction
+```
+
+The draft-token count is an integer from 1 to 5, matching the native Replay
+sampler's current limit. Supply exactly one conditional acceptance probability
+per draft token, each finite and in `[0, 1]`. Entry `i` is the probability of
+accepting token `i` given that all preceding draft tokens were accepted.
+These are workload assumptions: the example's expected progress per decode
+round is `1 + 0.8 + 0.8*0.6 + 0.8*0.6*0.4 = 2.472` tokens. The seed is an
+unsigned 64-bit integer (default `42`). Sampling stops at the first rejection
+and clips the last burst to the remaining output length.
+
+The existing ngram performance model prices target verification at draft count
+plus one, with no draft network, draft weights, or draft KV cache. Replay uses
+that iteration cost together with sampled accepted-token progress. It assumes
+a lookup draft is available every decode round (`trigger_rate = 1`); actual
+prompt/output token matching, mixed drafted/draftless rounds, and host lookup
+latency are not modeled. Fixed/polynomial timing overrides still work, but their
+decode latency is per verification round and does not estimate ngram costs.
+Prompt lookup is separate from `kv_cache.prefix_caching` and AIC's `--prefix N`
+cached-prompt assumption.
+
+This release supports offline engine-stack vLLM aggregated and disaggregated
+language workers with operation-level timing. SGLang, TensorRT-LLM, FPM,
+AFD/EPD, host/G3 offload, AgentX agentic execution, and Dynamo adapters are not
+qualified for this option. MTP/EAGLE and other schemes remain on their existing
+SDK/compatibility interfaces. Omit `engine.speculation` to disable speculation.
+
+Recommendation pins this block for every candidate; it does not search draft
+length or acceptance. Saved prediction YAML retains the block for replay.
+Backend deployment artifact generation rejects these candidates until the
+ngram runtime flags are supported.
 
 <a id="native-vllm-host-offload-prediction"></a>
 
@@ -1681,6 +1744,37 @@ Recommendation output uses the schema-versioned `SweepResult` contract documente
 ledger, stable status and reason categories, counts, provenance, and candidate-ID selection views.
 Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j`.
 
+The fields `power_w` and `power_coverage` follow the
+[modeled-power contract](../power-model.md). That contract defines active-forward-pass per-GPU
+scope, energy-over-active-latency aggregation, null semantics, and provenance requirements.
+`power_coverage` is the share of modeled active time with operation-energy evidence; `power_w`
+may be numeric at or above 90% coverage, so `0.90` passes while `0.899` does not. This formalizes
+existing AIC semantics; it neither adds a new power calculation nor implies that every runner or
+timing provider implements these fields. Normal prediction and recommendation
+summaries always show both labels, with explicit unavailable values and reasons when needed.
+Summary power is independent of `--detail`; the `energy` selector only adds a breakdown.
+Both JSON keys are always present in conforming summaries: unavailable watts use `null`,
+coverage stays numeric when computable, and an unsupported energy path uses `null` for both.
+Consult the
+[AIC migration guide](migrate-from-aiconfigurator.md) for the current release boundary.
+
+### Power and energy detail
+
+Use `aisimulate predict --stack engine --config prediction.yaml --detail energy`
+to show phase and operation evidence alongside the normal power summary.
+`--detail all` includes energy. `--diagnostics power` remains a compatibility
+alias for its original stdout envelope. `--diagnostics-top-n N` bounds table
+rows per phase; `prediction.json` and JSON detail output retain all operations.
+Each phase shows publication status, source kind, and the concrete source tag.
+Missing or invalid display measurements render as `N/A`.
+
+The native engine export supports this evidence path with op-level timing on
+supported topologies. The external Dynamo Python adapter's diagnostics export
+is not qualified by this PR: native Rust compatibility aliases do not establish
+adapter parity. If a selected runner exports no typed evidence, energy details
+state that reason. FPM, fixed, polynomial, AFD, and analytical EPD energy remain
+unavailable; their summary fields are explicit nulls where unsupported.
+
 <a id="prediction-directory"></a>
 
 ### 22.1 Prediction Directory
@@ -1688,6 +1782,9 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 ```text
 <output-dir>/
 ├── prediction.json
+├── resource-plan.json             # on preflight refusal
+├── resource-runtime.json
+├── execution-events.jsonl         # when execution produced checkpoints
 ├── requests.jsonl                 # only with --capture-per-request
 ├── afd-replay-spec.json           # only for AFD
 └── afd-qualification.json         # only for AFD
@@ -1695,6 +1792,10 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
 - `requests.jsonl` contains one record per request when explicitly enabled.
+- `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
+  or workload estimates. `resource-runtime.json` records the effective budget and supervision
+  outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
+  [local execution resources](../local-resources.md) for their interpretation.
 - `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
   including topology, measurement provenance, workload, goal, and any P/D companion.
 - `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
@@ -1708,16 +1809,24 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 ```text
 <output-dir>/
 ├── recommendation.json
+├── recommendation.csv
+├── resource-plan.json             # on refusal before the sweep starts
+├── resource-runtime.json
+├── execution-events.jsonl
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
     └── ...
 ```
 
-- `recommendation.json` is the canonical lossless result. Its candidate ledger retains feasible,
-  infeasible, unsupported, timed-out, and failed rows according to the declared retention policy;
+- `recommendation.json` is the canonical lossless result (schema 1.1, with explicit upgrade of 1.0
+  input). Its candidate ledger retains feasible, infeasible, unsupported, timed-out, failed, and
+  `resource_limited` rows according to the declared retention policy;
   its counts describe the complete run. `views.top_n` or `views.pareto_front` lists the candidate IDs
   corresponding to numbered YAML files in order.
+- Resource-limited rows have no simulated score or metrics. `counts.resource_limited` is separate
+  from `counts.evaluated`; selected configurations cover completed evaluations. The CSV is a
+  tabular view of the result. Resource diagnostic files have the meanings described above.
 - Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
   `preset`, contains no domains or `auto` values, and can be passed directly to
   `aisimulate predict`.
@@ -1726,10 +1835,13 @@ For scalar optimization, file numbering follows best-to-worst rank. For Pareto o
 follows the deterministic display order of the complete nondominated front; that order does not
 imply a scalar ranking.
 
-If no feasible candidate exists, the CLI still writes `recommendation.json` with empty views, zero
-selected YAML files, complete counts and retained failure records, then exits with status `1`. If
-some trials fail but at least one selected config remains, those failures stay in the ledger and the
-recommendation succeeds with status `0`.
+If a completed search has no feasible candidate, the CLI still writes `recommendation.json` with empty views, zero
+selected YAML files, complete counts and retained failure records. It exits with status `1` when
+there are no resource-limited candidates. Any resource-limited candidate makes the exit status `3`,
+even when fitting candidates and selected YAML files remain available. Other failed trials remain
+in the ledger and permit status `0` when at least one selected configuration remains.
+If the supervisor stops the entire execution, the event log may contain completed candidates
+without a finalized `recommendation.json`; it is partial evidence, not a completed sweep.
 
 <a id="existing-output-directories"></a>
 
@@ -1738,9 +1850,11 @@ recommendation succeeds with status `0`.
 Without `--overwrite`, the CLI rejects an existing nonempty output directory. With `--overwrite`, it
 replaces only the known output files listed below and preserves unrelated files.
 
-Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`,
+Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `recommendation.csv`,
+`requests.jsonl`, `resource-plan.json`, `resource-runtime.json`, `execution-events.jsonl`,
 `afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
-Other files, including non-numbered files inside `recommendations/`, are preserved.
+Other files, including non-numbered files inside `recommendations/`, are preserved. Invalid
+configuration loading, overrides, or core-schema validation leave existing artifacts intact.
 
 <a id="standard-output"></a>
 
@@ -1783,13 +1897,18 @@ sections and skipped-section reasons to the normal prediction summary.
   and simulator wall time remain in the summary.
   This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
   approximation labels in the summary.
-- `all`: the three supported sections above, when evidence exists.
+- `energy`: active forward-pass phase and operation energy evidence per GPU, with coverage,
+  publication status, sources, and missing-evidence reasons. It preserves the normal summary
+  power values. See [Power and energy detail](#power-and-energy-detail).
+- `all`: `summary,memory,time,energy`, with availability reported for each section.
 
 Sections without evidence are omitted from `details.sections` and listed with reasons in
 `details.skipped`. A memory section with only some estimated roles is `partial` and records
-why other roles are unavailable. Missing values are never filled with zero. `energy` and
-`source` are unsupported selectors; `all` does not include them. Per-operation diagnostics,
-SOL, and power remain [migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+why other roles are unavailable. Energy retains an explicit unavailable status and reason when
+the runner exports no typed evidence. Missing measurements are never invented as zero;
+energy-aware runs with no covered operations report numeric zero coverage. `source` remains
+unsupported and is excluded from `all`. SOL and the remaining timing/source diagnostics are
+[migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -1802,7 +1921,10 @@ Use `prediction.yaml` from [Predict one deployment](#predict-one-deployment): Qw
 one H200, vLLM performance-data version `0.24.0`, 1,024 input tokens, 128 output tokens,
 concurrency four, and twelve requests. These outputs were captured from the built-in engine
 on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
-results; values may change with the implementation or performance data.
+results; values may change with the implementation or performance data. These excerpts retain
+the initial summary/memory/time capture. The energy extension adds another section to `all`;
+see the [captured energy result](migrate-from-aiconfigurator.md#4113-captured-result) for its
+command and output.
 
 ```bash
 aisimulate predict -c prediction.yaml --detail all \
@@ -1933,8 +2055,9 @@ Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC 
 ```
 
 For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
-above. `--detail all` would still include summary and time while skipping memory. Power and
-energy are absent from all these examples.
+above. `--detail all` includes summary, time, and energy while skipping memory. The excerpts
+above omit the subsequently added power labels and energy section; the linked energy capture
+shows them explicitly.
 
 <a id="errors-and-exit-codes"></a>
 
@@ -1943,8 +2066,10 @@ energy are absent from all these examples.
 | Exit Code | Meaning |
 |---:|---|
 | `0` | Successful prediction or recommendation. |
-| `1` | Execution failure or a completed recommendation with no feasible candidate. |
+| `1` | Execution failure, or a completed recommendation that selects no configuration and has zero resource-limited candidates. |
 | `2` | CLI syntax, YAML parsing, schema, domain, override, or unsupported-combination error. |
+| `3` | Resource refusal, including a partial recommendation containing resource-limited candidates. |
+| `124` | Supervisor initialization or shutdown timeout. |
 | `130` | Interrupted by the user. |
 
 Configuration errors identify the input file and validation details. These shortened examples
@@ -1977,12 +2102,13 @@ Unsupported stack, backend, or policy combinations are reported as errors.
 | Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install `aisimulate ai-dynamo` in that environment and use `--stack dynamo`. |
 | `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
 | `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
-| No feasible candidate, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
+| No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
+| Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](../local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../../python/aisimulate/docs/fpm/README.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful
-summary output; validation and execution errors are reported on standard error. A recommendation
+summary output; validation and execution errors are reported on standard error. A completed recommendation
 with no feasible result still saves its result ledger and does not provide a YAML to predict.
 
 <a id="related-documentation"></a>

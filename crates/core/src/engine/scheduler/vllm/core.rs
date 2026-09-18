@@ -8,6 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;
 
 use crate::engine::HostOffloadObserver;
+use crate::engine::belady::BeladyOracle;
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode,
     PrefillCost, SchedulingPolicy, WorkerType,
@@ -601,6 +602,7 @@ pub(crate) struct VllmCore {
     wave_step: u64,
     attention_dp_size: u32,
     prefill_capacity_bound: bool,
+    belady_oracle: Option<BeladyOracle>,
 }
 
 struct HeldVllmPrefill {
@@ -643,6 +645,11 @@ impl ReservedVllmDecode {
 }
 
 impl VllmCore {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.kv_manager.set_belady_oracle(oracle.clone());
+        self.belady_oracle = Some(oracle);
+    }
+
     pub(crate) fn set_g3_offload(
         &mut self,
         registry: crate::engine::g3_offload::SharedG3Tier,
@@ -726,6 +733,7 @@ impl VllmCore {
                 dp_rank,
                 args.enable_prefix_caching,
             ),
+            belady_oracle: None,
             args,
             dp_rank,
             state: SchedulerState::default(),
@@ -2009,6 +2017,23 @@ impl VllmCore {
             .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         let prefill_time =
             predict_prefill_duration(batch_count, batch_total_isl, batch_total_prefix, &self.args)?;
+        if let Some(oracle) = &self.belady_oracle
+            && !admissions.is_empty()
+        {
+            // Deliberately retire the whole input at its first committed pass,
+            // including full hits and zero-output requests. Later chunks and
+            // preemption do not create forecast uses: this global input-only
+            // heuristic is not an execution oracle. The final schedule excludes
+            // provisional admissions undone by same-pass preemption.
+            // Admissions identify first prefill and later re-admission without
+            // touching the shared forecast for every decode token.
+            oracle.retire_requests(
+                admissions
+                    .iter()
+                    .map(|admission| admission.uuid)
+                    .filter(|uuid| scheduled.contains_key(uuid)),
+            );
+        }
         let decode_start_ms = compute_start_ms + prefill_time.as_secs_f64() * 1000.0;
         let (decode_time, mut output_signals) =
             self.emit_ready_tokens(collector, decode_start_ms, now_ms)?;
@@ -2073,6 +2098,9 @@ impl VllmCore {
         mutation_now_ms: Option<f64>,
         observed_at_ms: Option<f64>,
     ) {
+        if let Some(oracle) = &self.belady_oracle {
+            oracle.retire_requests([uuid]);
+        }
         let mut cancelled_host_load = false;
         if let Some(adapter) = self.native_host_offload.as_mut() {
             let mutation_now_ms = mutation_now_ms.unwrap_or_else(|| adapter.current_time_ms());

@@ -61,17 +61,17 @@ def _configs(
         "hardware": request.identity.gpu,
         "backend": request.identity.framework,
         "backend_version": request.identity.framework_version,
-        "systems_path": str(root / "systems"),
+        "systems_paths": [str(root / "systems")],
         "context_length": request.search.context_length,
     }
     # Recommendation otherwise expands scheduler defaults into extra domains.
     worker = {
         "scheduler": request.scheduler_limits(),
-        "timing": {"type": "default", "forward_model": "fpm"},
+        "timing": {"type": "default", "estimation_mode": "fpm_interpolation", "fallback_policy": "deny"},
     }
     if request.fpm_profile is not None:
         engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
-        worker["timing"]["fpm_interpolation"] = "direct"
+        worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
     prediction = {
         **common,
         "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": presets[0]}}},

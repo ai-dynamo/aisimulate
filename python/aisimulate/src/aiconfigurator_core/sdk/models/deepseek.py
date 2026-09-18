@@ -11,6 +11,8 @@ from aiconfigurator_core.sdk.models.base import BaseModel, register_model
 from aiconfigurator_core.sdk.models.blocks.moe import MoEBlockShape
 from aiconfigurator_core.sdk.models.blocks.vit import build_encoder_ops
 from aiconfigurator_core.sdk.models.helpers import (
+    _derive_num_moe_layers,
+    _derive_num_shared_experts,
     attention_projection_exclusions,
     build_large_ep_moe_ops,
     large_ep_gpus_per_node,
@@ -88,7 +90,45 @@ class DeepSeekModel(BaseModel):
             attention_quant_exclusions=attn_exclusions,
             shared_expert_quant_mode=shared_expert_quant_mode,
             encoder_config=model_info.get("encoder_config"),
+            num_moe_layers=_derive_num_moe_layers(model_info),
+            num_shared_experts=_derive_num_shared_experts(model_info),
         )
+
+    def get_weight_memory_bytes(self) -> float | None:
+        """Resident weights for ordinary SGLang V3/R1, independent of timing counts.
+
+        The timing graph approximates every layer as MoE and keeps a full
+        embedding lookup. Serving shards the embedding by attention TP and
+        replaces the checkpoint's dense layers with ordinary gated MLPs.
+        Other execution layouts retain their existing weight estimate.
+        """
+        if (
+            self._backend_name != "sglang"
+            or self.architecture != "DeepseekV3ForCausalLM"
+            or self._is_large_ep
+            or self.config.cp_size != 1
+            or self.config.pp_size != 1
+            or self._nextn
+            or self._num_moe_layers is None
+        ):
+            return None
+        h = self._hidden_size
+        tp = self.config.tp_size
+        moe_width = self.config.moe_quant_mode.value.memory
+        gemm_width = self.config.gemm_quant_mode.value.memory
+        shared_width = self._shared_expert_quant_mode.value.memory
+        routed = 3 * h * self._moe_inter_size * self._num_experts * moe_width
+        routed /= self.config.moe_tp_size * self.config.moe_ep_size
+        shared = 3 * h * self._moe_inter_size * shared_width / tp
+        router = 2 * h * self._num_experts
+        dense = 3 * h * self._inter_size * gemm_width / tp
+        embedding = 2 * self._vocab_size * h
+        weights = sum(op.get_weights() for op in self.context_ops)
+        weights -= embedding * (1 - 1 / tp)
+        weights -= self._num_layers * (routed + shared + router)
+        weights += self._num_moe_layers * (routed + self._num_shared_experts * shared + router)
+        weights += (self._num_layers - self._num_moe_layers) * dense
+        return weights
 
     #: TRT-LLM large-EP decode PDL overlap discount, transcribed from the
     #: deleted ``TrtllmWideEPDeepSeekModel._pdl_factor`` (deepseek.py:604 at
@@ -124,6 +164,8 @@ class DeepSeekModel(BaseModel):
         attention_quant_exclusions: frozenset = frozenset(),
         shared_expert_quant_mode: common.GEMMQuantMode | None = None,
         encoder_config: common.VisionEncoderConfig | None = None,
+        num_moe_layers: int | None = None,
+        num_shared_experts: int = 1,
     ) -> None:
         super().__init__(*args)
         if encoder_config is not None:
@@ -141,6 +183,8 @@ class DeepSeekModel(BaseModel):
         )
 
         self._backend_name = backend_name
+        self._num_moe_layers = num_moe_layers
+        self._num_shared_experts = num_shared_experts
         # Large EP: the enumerator sets a per-phase MoE comm backend; the MoE
         # block builder then emits the MoEAllToAll/MoEExpertCompute graph and sglang swaps
         # in its deepep attention stack. No user flag selects it -- see

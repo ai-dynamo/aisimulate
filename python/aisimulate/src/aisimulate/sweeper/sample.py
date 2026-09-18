@@ -130,8 +130,8 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
-    if search_space.systems_path is not None:
-        sample["systems_path"] = search_space.systems_path
+    if search_space.systems_paths is not None:
+        sample["systems_paths"] = search_space.systems_paths
     if search_space.fpm_profile is not None:
         sample["fpm_profile"] = search_space.fpm_profile
 
@@ -158,18 +158,6 @@ def unroll_sample(
         sample[key] = selection[key]
     for key in pinned:
         sample[key] = selection.get(key, getattr(search_space, key))
-    for role in ("agg", "prefill", "decode"):
-        if f"{role}_forward_model" not in sample:
-            continue
-        method = getattr(search_space, f"{role}_fpm_interpolation")
-        if search_space.fpm_profile is not None:
-            from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile, resolve_fpm_interpolation
-
-            # Pin the method before execution so replay cannot change it when
-            # another process has a different model registry.
-            method = resolve_fpm_interpolation(load_fpm_profile(search_space.fpm_profile), method)
-        if method != "auto" or search_space.fpm_profile is not None:
-            sample[f"{role}_fpm_interpolation"] = method
     if mode == "disagg":
         for key in (
             "kv_transfer_bytes_per_token",
@@ -177,4 +165,6 @@ def unroll_sample(
             "kv_transfer_timing_mode",
         ):
             sample[key] = getattr(search_space, key)
+    if search_space.speculation is not None:
+        sample["speculation"] = search_space.speculation.model_dump(mode="json")
     return sample

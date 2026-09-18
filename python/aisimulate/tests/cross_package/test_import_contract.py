@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.resources
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -144,7 +145,7 @@ def test_fpm_profile_alias_preserves_module_and_type_identity(namespace: str) ->
 @pytest.mark.parametrize("namespace", ["aiconfigurator.sdk", "aisimulate_core.sdk"])
 def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: Path) -> None:
     """Profiles created through either facade must reach native compilation."""
-    from aiconfigurator_core.sdk.engine import compile_engine
+    from aiconfigurator_core.sdk import engine
     from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 
     alias = importlib.import_module(f"{namespace}.fpm_profile")
@@ -191,7 +192,24 @@ def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: 
     assert type(loaded) is FpmModelProfile
     assert loaded.model_dump() == profile.model_dump()
 
-    compiled = compile_engine(
+    canonical = json.loads(
+        engine.aiconfigurator_core.RustForwardPassPerfModel.normalize_config(
+            json.dumps(
+                {
+                    "model": profile.model,
+                    "system": "test_gpu",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "worker_type": "aggregated",
+                    "estimation_mode": "fpm_interpolation",
+                    "fpm_profile": profile.model_dump(mode="json"),
+                }
+            )
+        )
+    )
+    assert canonical["fpm_profile"] == loaded.model_dump(mode="json")
+    assert canonical["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    compiled = engine.compile_engine(
         profile.model,
         "test_gpu",
         "vllm",
@@ -199,6 +217,7 @@ def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: 
         systems_path=str(tmp_path),
         forward_model="fpm",
         fpm_profile=profile,
+        fpm_interpolation=canonical["estimator_config"]["fpm_interpolation"]["method"],
     )
     assert isinstance(compiled, bytes)
     assert compiled

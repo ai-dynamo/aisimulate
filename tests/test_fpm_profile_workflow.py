@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -18,7 +20,9 @@ from aisimulate.recommend import _candidate_prediction, recommendation_to_sweepe
 from aisimulate.support.fpm import fpm_cli_args
 from aisimulate.support.plan import check_plan, create_plan
 from aisimulate.support.schema import SupportRequest
+from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 from aisimulate.sweeper.model_hw import parallel_configs_for
 from aisimulate.sweeper.replay import ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
@@ -92,6 +96,60 @@ def forbid_registered_model(monkeypatch):
     monkeypatch.setattr(model_hw, "_estimate_model_weight_bytes", fail)
 
 
+@pytest.fixture
+def timing_systems(profile, tmp_path, monkeypatch):
+    """Small synthetic timing cells exercise the public constructor and replay transport."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import aiconfigurator_core
+    from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+
+    root = tmp_path / "systems"
+    root.mkdir()
+    packaged = Path(aiconfigurator_core.__file__).parent / "systems"
+    (root / "h200_sxm.yaml").write_bytes((packaged / "h200_sxm.yaml").read_bytes())
+    rows = []
+    for index, deployment in enumerate(load_fpm_profile(profile).deployments):
+        identity = deployment.model_dump(mode="json", exclude={"resources"})
+        for phase, kv_tokens in (("prefill", 0), ("decode", 0), ("decode", 1), ("decode", 64)):
+            rows.append(
+                {
+                    **identity,
+                    "cell_id": f"synthetic-{index}-{phase}-{kv_tokens}",
+                    "model_path": profile["model"],
+                    "weight_quantization": "synthetic",
+                    "workload_kind": phase,
+                    "partition_policy": "balanced_v1",
+                    "batch_size": 1,
+                    "total_prefill_tokens": 1 if phase == "prefill" else 0,
+                    "total_kv_read_tokens": kv_tokens,
+                    "latency_ms": 1.0,
+                    "kv_seed_regime": "real_kv",
+                }
+            )
+    path = root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    path.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    path.with_suffix(".metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_name": "aic_fpm_forward_perf",
+                "schema_version": 6,
+                "coordinate_system": "iteration_totals_balanced_v1",
+                "measurement_policy": "dynamo_native_single_sample_v1",
+                "system": "h200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.25.1",
+                "row_count": len(rows),
+                "parquet_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    return str(root)
+
+
 def _worker(*, dep=False):
     return {
         "parallelism": {
@@ -101,7 +159,11 @@ def _worker(*, dep=False):
             "moe_expert": 2 if dep else 1,
         },
         "scheduler": {"max_batched_tokens": 1024, "max_sequences": 4},
-        "timing": {"forward_model": "fpm", "fpm_interpolation": "direct"},
+        "timing": {
+            "estimation_mode": "fpm_interpolation",
+            "fallback_policy": "deny",
+            "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+        },
     }
 
 
@@ -116,18 +178,25 @@ def _engine(profile):
     }
 
 
-def test_prediction_materializes_rank_local_capacity_without_a_model(profile):
-    config = CorePredictionConfig.model_validate({"engine": _engine(profile)})
+def test_prediction_materializes_rank_local_capacity_without_a_model(profile, timing_systems):
+    config = CorePredictionConfig.model_validate({"engine": {**_engine(profile), "systems_paths": [timing_systems]}})
     spec = prediction_to_replay_spec(config)
     args = spec.backend_deployment.agg_engine_args
     assert args["max_model_len"] == 4096
-    assert args["aic_fpm_interpolation"] == "direct"
-    assert args["aic_fpm_profile"]["model"] == profile["model"]
+    canonical = args["timing_model"]["config"]
+    assert canonical["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert canonical["fpm_profile"] == config.engine.fpm_profile.model_dump(mode="json")
+    metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
+    assert metadata["fpm_profile"] == canonical["fpm_profile"]
+    assert metadata["estimator_config"] == canonical["estimator_config"]
     diagnostics = {}
     lowered = materialize_aic_num_gpu_blocks(args, memory_diagnostics=diagnostics)
     assert lowered["num_gpu_blocks"] > 0
     assert diagnostics["source"] == "profile"
-    reserved = materialize_aic_num_gpu_blocks({**args, "cuda_graph_reserved_bytes": 1024**3})
+    reserved_args = deepcopy(args)
+    reserved_args["cuda_graph_reserved_bytes"] = 1024**3
+    reserved_args["timing_model"]["config"]["cuda_graph_reserved_bytes"] = 1024**3
+    reserved = materialize_aic_num_gpu_blocks(reserved_args)
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
@@ -144,7 +213,13 @@ def test_disaggregated_transfer_uses_profile_cache_geometry(profile):
 
 
 @pytest.mark.parametrize("mode,budget,expected", [("agg", 2, 2), ("disagg", 4, 4)])
-def test_profile_candidates_use_only_declared_topologies(profile, mode, budget, expected):
+def test_profile_candidates_use_only_declared_topologies(profile, mode, budget, expected, monkeypatch):
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    def no_timing(*args, **kwargs):
+        pytest.fail("candidate enumeration constructed a timing estimator before collection")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", no_timing)
     candidates = parallel_configs_for(
         profile["model"],
         "h200_sxm",
@@ -162,16 +237,91 @@ def test_profile_candidates_use_only_declared_topologies(profile, mode, budget, 
         assert {candidate.shape.strategy for candidate in candidates} == {"tp", "dep"}
 
 
+def test_dense_profile_preserves_unsharded_moe_dimensions(profile):
+    profile["num_experts"] = 0
+    profile["deployments"] = [{**profile["deployments"][0], "moe_tp": 1, "moe_ep": 1}]
+    candidates = parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        deployment_mode="agg",
+        gpu_budget=2,
+        max_num_tokens=1024,
+        max_batch_size=4,
+        fpm_profile=profile,
+    )
+    assert [(candidate.shape.tp, candidate.shape.moe_tp, candidate.shape.moe_ep) for candidate in candidates] == [
+        (2, 1, 1)
+    ]
+
+
+@pytest.mark.parametrize("source", ["sample", "resolved"])
+def test_profile_kv_load_cache_keeps_resource_identity_without_model_construction(profile, monkeypatch, source):
+    from aisimulate.sweeper import kv_load
+    from aisimulate.sweeper.config import Workload
+    from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+
+    sample = {
+        "deployment_mode": "agg",
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "backend": "vllm",
+        "agg_block_size": 64,
+        "agg_max_num_batched_tokens": 1024,
+        "agg_max_num_seqs": 4,
+        "agg_gpu_memory_utilization": 0.9,
+    }
+    parallel = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=2, moe_ep=1), replicas=1)
+    larger = deepcopy(profile)
+    larger["deployments"][0]["resources"]["weights_bytes"] += 10 * 1024**3
+    original = kv_load.estimate_kv_tokens
+    seen = []
+
+    def estimate(*args, fpm_profile, **kwargs):
+        seen.append(deepcopy(fpm_profile))
+        return original(*args, fpm_profile=fpm_profile, **kwargs)
+
+    monkeypatch.setattr(kv_load, "estimate_kv_tokens", estimate)
+    kv_load._per_rank_capacity_tokens.cache_clear()
+    capacities = []
+    try:
+        for resources in (profile, larger, profile):
+            if source == "resolved":
+                sample["forward_pass_estimators"] = {"agg": {"config": {"fpm_profile": resources}}}
+                sample["fpm_profile"] = larger
+            else:
+                sample["fpm_profile"] = resources
+            result = kv_load.resolve_kv_load(
+                sample,
+                workload=Workload(isl=1024, osl=128, kv_load_ratio=1.0, request_count=1),
+                parallel_config=parallel,
+                ratio=1.0,
+                backend_version="0.25.1",
+            )
+            capacities.append(result.role_capacity_tokens["agg"])
+        assert capacities[0] == capacities[2] > capacities[1]
+        assert seen == [profile, larger]
+    finally:
+        kv_load._per_rank_capacity_tokens.cache_clear()
+
+
 @pytest.mark.parametrize("method", ["auto", "direct"])
-def test_recommendation_preserves_profile_in_exported_prediction(profile, monkeypatch, method):
+@pytest.mark.parametrize("backend_version", ["0.25.1", {"vllm": " 0.25.1 "}])
+def test_recommendation_preserves_profile_in_exported_prediction(
+    profile, monkeypatch, method, timing_systems, backend_version
+):
     engine = _engine(profile)
+    engine["backend_version"] = backend_version
     engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
-    engine["workers"]["aggregated"]["timing"]["fpm_interpolation"] = method
+    engine["workers"]["aggregated"]["timing"]["estimator_config"]["fpm_interpolation"]["method"] = method
+    engine["systems_paths"] = [timing_systems]
     engine["mode"] = "aggregated"
     source = CoreRecommendationConfig.model_validate(
         {"engine": engine, "optimization": {"constraints": {"max_candidate_gpus": 2}}}
     )
     smart = recommendation_to_sweeper(source)
+    assert smart.search_space.requested_backend_version("vllm") == "0.25.1"
     candidates = parallel_configs_for(
         profile["model"],
         "h200_sxm",
@@ -194,22 +344,127 @@ def test_recommendation_preserves_profile_in_exported_prediction(profile, monkey
         parallel_config=candidates[1],
     )
     sample["backend_version"] = "0.25.1"
-    assert sample["agg_fpm_interpolation"] == "direct"
+    estimators = ForwardPassEstimatorResolver(smart.search_space).resolve_candidate(sample)
+    resolved = estimators["agg"].config
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert resolved["fpm_profile"] == source.engine.fpm_profile.model_dump(mode="json")
+    assert resolved["gemm_quant_mode"] == "fp8_block"
+    assert resolved["systems_paths"] == [timing_systems]
     from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
 
     # A fresh environment may now have an analytical class for the same model.
     # Export must retain the method actually selected for the evaluated sample.
     monkeypatch.setitem(_MODEL_REGISTRY, profile["architecture"], object())
     replay = ReplaySpec(
-        backend_deployment=build_backend_deployment(sample, backend_version="0.25.1"), workload={}, goal={}
+        backend_deployment=build_backend_deployment(
+            sample, backend_version="0.25.1", forward_pass_estimators=estimators
+        ),
+        workload={},
+        goal={},
     )
     exported = _candidate_prediction(source, sample, replay, adapter_sections={})
     reloaded = CorePredictionConfig.model_validate(exported)
     assert reloaded.engine.fpm_profile == source.engine.fpm_profile
-    assert reloaded.engine.workers.aggregated.timing.fpm_interpolation == "direct"
+    assert reloaded.engine.workers.aggregated.timing.estimator_config["fpm_interpolation"]["method"] == "direct"
+    assert "forward_model" not in exported["engine"]["workers"]["aggregated"]["timing"]
+    assert "fpm_interpolation" not in exported["engine"]["workers"]["aggregated"]["timing"]
     assert reloaded.engine.workers.aggregated.parallelism.attention_data == 2
     args = prediction_to_replay_spec(reloaded).backend_deployment.agg_engine_args
     assert materialize_aic_num_gpu_blocks(args)["num_gpu_blocks"] > 0
+
+
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+@pytest.mark.parametrize("timing", [{"type": "fixed", "prefill_ms": 1, "decode_ms": 1}, {"type": "polynomial"}])
+def test_profile_search_space_rejects_custom_timing(profile, role, timing):
+    with pytest.raises(ValidationError, match="fpm_profile requires default timing"):
+        SearchSpace(
+            model_name=profile["model"],
+            hardware_sku="h200_sxm",
+            backend_version="0.25.1",
+            fpm_profile=profile,
+            **{f"{role}_timing_model": timing, f"{role}_num_gpu_blocks": 1024},
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"deployment_mode": ["afd"]},
+        {"deployment_mode": ["afd+pd"]},
+        {"encoder": {"hardware_sku": "h200_sxm"}},
+        {"backend": ["sglang"]},
+    ],
+)
+def test_profile_search_space_rejects_unsupported_providers(profile, updates):
+    with pytest.raises(ValidationError, match="FPM profiles support vLLM aggregated/disaggregated"):
+        SearchSpace(
+            model_name=profile["model"],
+            hardware_sku="h200_sxm",
+            backend_version="0.25.1",
+            fpm_profile=profile,
+            **updates,
+        )
+
+
+@pytest.mark.parametrize(
+    "backend_version,error",
+    [
+        (None, "literal"),
+        ({}, "literal"),
+        ({"sglang": "0.25.1"}, "literal"),
+        ({"vllm": " "}, "literal"),
+        ({"vllm": "current"}, "literal"),
+        ({"vllm": "previous"}, "literal"),
+        ({"vllm": "next"}, "literal"),
+        ({"vllm": "0.24.0"}, "does not match"),
+    ],
+)
+def test_profile_recommendation_cli_reports_invalid_version_mapping(profile, tmp_path, capsys, backend_version, error):
+    import aisimulate.main as cli
+
+    engine = _engine(profile)
+    engine.update(mode="aggregated", backend_version=backend_version)
+    engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    path = tmp_path / "recommend.json"
+    path.write_text(json.dumps({"engine": engine}))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["recommend", "--config", str(path), "--output-dir", str(tmp_path / "output")])
+    assert exc.value.code == 2
+    stderr = capsys.readouterr().err
+    assert error in stderr
+    assert "TypeError" not in stderr
+    assert not (tmp_path / "output").exists()
+
+
+def test_profile_recommendation_cli_accepts_version_mapping_and_exports_literal(
+    profile, timing_systems, tmp_path, monkeypatch
+):
+    import yaml
+
+    import aisimulate.main as cli
+    from aisimulate.recommend import _run_recommendation
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    engine = _engine(profile)
+    engine.update(mode="aggregated", backend_version={"vllm": "0.25.1"}, systems_paths=[timing_systems])
+    engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    raw = {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "optimization": {"constraints": {"max_candidate_gpus": 2}},
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1},
+    }
+    path = tmp_path / "recommend.json"
+    path.write_text(json.dumps(raw))
+    output = tmp_path / "output"
+    assert cli.main(["recommend", "--config", str(path), "--output-dir", str(output), "--format", "json"]) == 0
+    exported = yaml.safe_load((output / "recommendations/0001.yaml").read_text())
+    assert exported["engine"]["backend_version"] == "0.25.1"
+    assert CorePredictionConfig.model_validate(exported).engine.fpm_profile.model == profile["model"]
 
 
 @pytest.mark.parametrize(
@@ -218,7 +473,6 @@ def test_recommendation_preserves_profile_in_exported_prediction(profile, monkey
         ({"model": "another/model"}, "match"),
         ({"backend_version": None}, "literal"),
         ({"context_length": 8192}, "exceeds"),
-        ({"fpm_profile": None}, "requires engine.fpm_profile"),
         ({"workers": {"aggregated": {**_worker(), "scheduler": {"max_sequences": 32}}}}, "envelope exceeded"),
         ({"workers": {"aggregated": {**_worker(), "parallelism": {"tensor": 4, "moe_tensor": 4}}}}, "no matching"),
     ],
@@ -228,7 +482,13 @@ def test_invalid_profile_predictions_fail_before_runtime(profile, update, error)
         CorePredictionConfig.model_validate({"engine": {**_engine(profile), **update}})
 
 
-def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(profile, tmp_path):
+def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(profile, tmp_path, monkeypatch):
+    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+
+    def no_timing(*args, **kwargs):
+        pytest.fail("planning constructed a timing estimator before collection")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", no_timing)
     request = SupportRequest.model_validate(
         {
             "identity": {
@@ -258,7 +518,9 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
     assert plan["resources"]["total_kv_size_tokens"] > 4096
     loaded = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
     assert loaded.engine.workers.aggregated.parallelism.attention_data == 2
-    assert loaded.engine.workers.aggregated.timing.fpm_interpolation == "direct"
+    assert loaded.engine.workers.aggregated.timing.estimator_config["fpm_interpolation"]["method"] == "direct"
+    assert loaded.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
+    assert loaded.engine.workers.aggregated.timing.fallback_policy == "deny"
     command = fpm_cli_args(request, output_dir=tmp_path, plan_only=True)
     assert command[command.index("--fpm-parallel-presets") + 1] == "dep"
     assert command[command.index("--fpm-gpu-counts") + 1] == "2"

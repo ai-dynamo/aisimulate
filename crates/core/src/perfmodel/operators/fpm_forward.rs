@@ -30,9 +30,8 @@
 //! brackets; decode stays inside its inferred capture regime. It never
 //! evaluates `sol_ops`, clamps an unsupported batch, or uses fabricated KV.
 //!
-//! NOT the crate's `src/fpm/` (`ForwardPassPerfModel`) module: that is the
-//! online-tuning model over Dynamo ForwardPassMetrics telemetry, an unrelated
-//! concept that shares the "FPM" abbreviation.
+//! The canonical `ForwardPassPerfModel` constructor selects this native
+//! operator for `estimation_mode="fpm_interpolation"` and pins its method.
 
 use std::collections::BTreeMap;
 
