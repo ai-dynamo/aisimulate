@@ -202,6 +202,12 @@ their `aic_` aliases). These become the compiled engine's quantization settings
 for exact external-FPM cell matching. The public worker timing YAML does not
 expose these precision overrides or `attention_backend`.
 
+For AFD companions, `backend_version` / `aic_backend_version`, `aic_pp_size`,
+and MoE parallelism aliases must match the backend version and role-specific
+parallelism in `BackendDeploymentSpec`. Set MoE widths in `parallel_config`
+before repeating them in engine arguments. Conflicting identity fields are
+rejected before estimation or external-FPM compilation.
+
 `EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
 `SOL` for native forward-pass construction. The Python dictionary form uses
 those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the

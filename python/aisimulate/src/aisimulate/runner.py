@@ -214,6 +214,19 @@ class AICAFDCompanionPerformanceModel:
         ):
             if parallel.get(source) is not None:
                 kwargs[target] = _positive_int(parallel[source], f"parallel_config.{source}")
+        # Timing identity must agree with deployment topology and provenance.
+        for identity_field, parameter in (
+            ("backend_version", "backend_version"),
+            ("pp", "pp_size"),
+            ("moe_tp_size", "moe_tp_size"),
+            ("moe_ep_size", "moe_ep_size"),
+        ):
+            if identity_field in timing_overrides and timing_overrides[identity_field] != kwargs.get(parameter):
+                raise ValueError(
+                    f"{role} AFD companion {identity_field}={timing_overrides[identity_field]!r} "
+                    f"conflicts with deployment value {kwargs.get(parameter)!r}; "
+                    "set identity fields in BackendDeploymentSpec"
+                )
         if args.get("aic_nextn") is not None:
             kwargs["nextn"] = _positive_int(args["aic_nextn"], "aic_nextn")
         model_name = args.get("aic_model_path")

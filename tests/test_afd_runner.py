@@ -390,6 +390,72 @@ def test_aic_companion_rejects_duplicate_selection_aliases(phase, companion_role
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("external_fpm", [False, True])
+@pytest.mark.parametrize(
+    ("field", "value", "canonical_field"),
+    [
+        ("backend_version", "other-version", "backend_version"),
+        ("aic_backend_version", "other-version", "backend_version"),
+        ("aic_pp_size", 2, "pp"),
+        ("moe_tp_size", 2, "moe_tp_size"),
+        ("aic_moe_tp_size", 2, "moe_tp_size"),
+        ("moe_ep_size", 2, "moe_ep_size"),
+        ("aic_moe_ep_size", 2, "moe_ep_size"),
+    ],
+)
+def test_aic_companion_rejects_conflicting_identity_before_estimation(
+    phase, companion_role, external_fpm, field, value, canonical_field, monkeypatch
+):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    engine_args[field] = value
+    if external_fpm:
+        engine_args.update(aic_forward_model="fpm", aic_fpm_parquet_path="/data/reviewed-fpm.parquet")
+
+    def unexpected_estimation(*args, **kwargs):
+        pytest.fail("conflicting identity must not reach estimation or external engine compilation")
+
+    monkeypatch.setattr("aisimulate.runner.EngineHandle.compile", unexpected_estimation)
+    with pytest.raises(
+        ValueError, match=f"{companion_role} AFD companion {canonical_field}=.*conflicts with deployment"
+    ):
+        AICAFDCompanionPerformanceModel(unexpected_estimation).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("alias_prefix", ["", "aic_"])
+def test_aic_companion_accepts_matching_identity_fields(phase, companion_role, alias_prefix):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec.backend_deployment.parallel_config.update({f"{companion_role}_pp": 2, f"{companion_role}_moe_tp": 2})
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_pp_size=2)
+    engine_args.update(
+        {
+            f"{alias_prefix}backend_version": "test",
+            f"{alias_prefix}moe_tp_size": 2,
+            f"{alias_prefix}moe_ep_size": 1,
+        }
+    )
+    calls = []
+
+    def estimator(model, hardware, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
+
+    timing = AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+    assert timing.latency_ms == 2.0
+    assert len(calls) == 1
+    assert calls[0]["backend_version"] == "test"
+    assert calls[0]["pp_size"] == 2
+    assert calls[0]["moe_tp_size"] == 2
+    assert calls[0]["moe_ep_size"] == 1
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 def test_aic_companion_propagates_missing_fpm_data_without_fallback(phase, companion_role):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
