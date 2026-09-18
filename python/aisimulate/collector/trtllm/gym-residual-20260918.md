@@ -25,8 +25,10 @@
   pure-decode kernel error.
 - The immutable [InferenceX recipe](https://github.com/SemiAnalysisAI/InferenceX/blob/f9426a550344a64a9d9b11fc58f10cb5c61d015e/benchmarks/single_node/fixed_seq_len/qwen3.5_fp4_b200_trt.sh)
   explicitly disables chunked prefill and selects the controls below.
-  Gym's resolved source arguments retain them, but the frozen engine spec
-  does not express them.
+  The retained resolved source arguments verify the attention-DP point.
+  Non-DP values below come only from `residual-20260918/upstream/qwen-recipe.sh`;
+  this summary does not retain resolved non-DP arguments or readmission counts.
+  The frozen engine spec does not express these controls.
 
 | Recipe scope | Effective source control | Replay limitation |
 |---|---|---|
@@ -44,7 +46,9 @@
 - Next discriminating check: capture matched rc18 per-rank batch composition
   and CUTEDSL timings, then implement the supported scheduling contract and
   rerun all 19 points. The capacity-policy difference is a confirmed config
-  mismatch; its numerical effect is not established by zero readmissions.
+  mismatch; its numerical effect is not established by the attention-DP
+  point's zero readmissions. The JSON records their sum from all 5,120
+  `per_request[].readmission_count` values in the hashed replay artifact.
 
 ## GPT-OSS: matched TTFT reproduction and timing boundaries
 

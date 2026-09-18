@@ -16,7 +16,9 @@
     "mean_tpot_ms": 116.84926175958326,
     "median_itl_ms": 21.606636747685545,
     "p75_itl_ms": 315.76599538560885,
-    "p90_itl_ms": 349.67405611266713
+    "p90_itl_ms": 349.67405611266713,
+    "readmissions": 0,
+    "readmissions_source": "Sum of per_request[].readmission_count in w4a8-fix/client_lengths/0249.report.json.gz"
   },
   "source_args": {
     "attention_dp_config": {
@@ -1373,5 +1375,11 @@
     "w4a8-fix/client_lengths/0249.spec.json": "3e1bb3f11f9b2d9aff8886a6e947b0b22578c924c02f535e51f9143e8fadd0a7",
     "w4a8-fix/client_lengths/0249.report.json.gz": "9eb473a01ff764089caf4308184c7aff488979bbaeaa369e3abd06d4783d28fe"
   },
-  "interpretation": "Scheduling controls are confirmed absent from replay; attribution of the residual TPOT error remains supported, not quantified or fixed. Controlled shape probes are not observed silicon step timings."
+  "interpretation": "Scheduling controls are confirmed absent from replay; attribution of the residual TPOT error remains supported, not quantified or fixed. Controlled shape probes are not observed silicon step timings.",
+  "non_dp_controls_evidence": {
+    "source": "residual-20260918/upstream/qwen-recipe.sh",
+    "batch_wait_timeout_iters": 50,
+    "batch_wait_max_tokens_ratio": 0.45,
+    "scope": "Recipe only; no resolved non-DP source_args or non-DP readmission count retained in this summary."
+  }
 }
