@@ -309,7 +309,25 @@ def numerical_sanity(roots: dict[str, Path], paths: list[str]) -> dict:
                     for item in diagnostics
                     if item["kind"] in {"unsupported_schema", "schema_mismatch"}
                 )
-                findings.extend({"file": path, **item} for item in by_side[side])
+                selected_files = {
+                    name: max(versions, key=lambda entry: cross._version_key(entry[0]))[1].relative_to(root).as_posix()
+                    for name, versions in group.items()
+                }
+                for item in by_side[side]:
+                    names = (
+                        [item["backend"]]
+                        if "backend" in item
+                        else [label.split("/", 1)[0] for label in item["pair"].split(" vs ")]
+                    )
+                    sources = sorted({selected_files[name] for name in names})
+                    findings.append(
+                        {
+                            "scope_file": path,
+                            "file": sources[0] if len(sources) == 1 else None,
+                            "files": sources,
+                            **item,
+                        }
+                    )
             if filename == "gemm_perf.parquet" and cross._load_gpu_spec(root / SYSTEMS, system) is None:
                 gaps.append(f"{side}/{path}: no usable GPU spec for speed-of-light checking")
         # This exact-base comparison is diagnostic ONLY. Never suppress head

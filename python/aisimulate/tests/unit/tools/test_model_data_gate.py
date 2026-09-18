@@ -365,3 +365,21 @@ def test_cli_rejects_untracked_or_modified_executing_harness(repo, tmp_path, tra
     assert report["conclusion"] == "Failed"
     error = report["stages"]["Artifact integrity"]["error"]
     assert ("tracked checkout differs" if tracked else "absent from the declared head") in error
+
+
+def test_peer_anomaly_names_peer_file_instead_of_changed_target(repo, tmp_path):
+    source, _base = repo
+    write_table(source)
+    peer = TABLE.replace("/trtllm/", "/sglang/")
+    peer_rows = [dict(row, framework="SGLang") for row in rows()]
+    peer_rows[2]["latency"] = 100.0
+    write_table(source, peer_rows, path=peer, runtime={"framework": "sglang", "version": "1.0.0"})
+    base = commit(source)
+    write_table(source, [dict(row, latency=1.1) for row in rows()])
+    _, report = run(source, base, tmp_path)
+    findings = report["stages"]["Numerical sanity"]["findings"]
+    spike = next(item for item in findings if item["kind"] == "spike_violation")
+    assert spike["scope_file"] == TABLE
+    assert spike["file"] == peer and spike["files"] == [peer]
+    pair = next(item for item in findings if item["kind"] == "pair_outlier")
+    assert pair["file"] is None and pair["files"] == sorted([TABLE, peer])
