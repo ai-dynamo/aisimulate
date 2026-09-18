@@ -28,11 +28,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
+    environment: pr-wheel-staging
     container:
       # Same pinned manylinux toolchain as the main FPE producer.
       image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
     outputs:
       shards: ${{ steps.discover.outputs.shards }}
+      wheel-subpath: ${{ steps.location.outputs.subpath }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -44,6 +46,15 @@ jobs:
           path: release-source
           persist-credentials: false
       - uses: ./.github/actions/setup-manylinux-python-rust
+      - id: location
+        name: Resolve the release FPE Artifactory location
+        env:
+          RELEASE: ${{ inputs.release }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: echo "subpath=fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/amd64" >> "${GITHUB_OUTPUT}"
+      # The post-merge path contains an otherwise undiscoverable producer run
+      # and predates the immutable handoff manifest. Build once here rather
+      # than guessing at provenance; every consumer below reuses this wheel.
       - name: Build the unmodified release package once
         working-directory: release-source/python/aisimulate
         run: |
@@ -62,20 +73,21 @@ jobs:
       - id: discover
         name: Discover the release inventory through its verified wheel
         run: release-source/python/aisimulate/.venv/bin/python scripts/run_release_fpe.py discover
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: fpe-release-wheel-${{ inputs.release }}
-          path: |
-            fpe-release-wheel
-            fpe-release-shards.json
-          if-no-files-found: error
-          retention-days: 7
+      - name: Stage the release FPE wheel in Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ steps.location.outputs.subpath }}
+          WHEEL_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh upload fpe-release-wheel
 
   generate:
     name: Release FPE (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: prepare
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 480
+    environment: pr-wheel-staging
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
     strategy:
@@ -96,10 +108,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: fpe-release-wheel-${{ inputs.release }}
-          path: .
+      - name: Fetch the release FPE wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ needs.prepare.outputs.wheel-subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ github.run_id }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-release-wheel
+      - name: Bind the fetched wheel to the release and qualification tooling
+        run: python scripts/run_release_fpe.py record-wheel
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
@@ -128,6 +147,7 @@ jobs:
     needs: [prepare, generate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: pr-wheel-staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -141,14 +161,25 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: fpe-release-wheel-${{ inputs.release }}
-          path: .
+      - name: Fetch the release FPE wheel from Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: ${{ needs.prepare.outputs.wheel-subpath }}
+          EXPECTED_WHEEL_SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_WHEEL_RUN_ID: ${{ github.run_id }}
+        run: bash python/aisimulate/tools/artifactory_wheel_handoff.sh download fpe-release-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-release-results-${{ inputs.release }}@*
           path: fpe-release-results
+      - name: Restore release wheel provenance and shard inventory
+        env:
+          EXPECTED_SHARDS: ${{ needs.prepare.outputs.shards }}
+        run: |
+          python scripts/run_release_fpe.py record-wheel
+          printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
       - name: Require complete same-wheel coverage and all required probes
         run: python scripts/run_release_fpe.py package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

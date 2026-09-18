@@ -2242,6 +2242,7 @@ def test_release_qualification_pins_source_and_tooling_across_all_jobs():
     assert jobs["generate"]["needs"] == "prepare"
     assert set(jobs["qualify"]["needs"]) == {"prepare", "generate"}
     for job in jobs.values():
+        assert job["environment"] == "pr-wheel-staging"
         checkouts = [step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
         assert len(checkouts) == 2
         assert checkouts[0]["ref"] == "${{ github.sha }}"
@@ -2269,11 +2270,19 @@ def test_release_artifact_handoffs_cannot_mix_versions():
     import fnmatch
 
     jobs = _workflow("fpe-release-qualify.yml")["jobs"]
-    wheel = jobs["prepare"]["steps"][-1]["with"]["name"]
+    stage = next(s for s in jobs["prepare"]["steps"] if s.get("name") == "Stage the release FPE wheel in Artifactory")
+    assert stage["env"]["ARTIFACTORY_SUBPATH"] == "${{ steps.location.outputs.subpath }}"
+    assert stage["env"]["WHEEL_SOURCE_SHA"] == "${{ inputs.source_sha }}"
+    location = next(s for s in jobs["prepare"]["steps"] if s.get("id") == "location")
+    assert "fpe-release/${RELEASE}/${SOURCE_SHA}/${GITHUB_RUN_ID}/amd64" in location["run"]
     for name in ("generate", "qualify"):
-        download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
-        assert download["with"]["name"] == wheel
-    assert wheel == "fpe-release-wheel-${{ inputs.release }}"
+        download = next(
+            s for s in jobs[name]["steps"] if s.get("name") == "Fetch the release FPE wheel from Artifactory"
+        )
+        assert download["env"]["ARTIFACTORY_SUBPATH"] == "${{ needs.prepare.outputs.wheel-subpath }}"
+        assert download["env"]["EXPECTED_WHEEL_SOURCE_SHA"] == "${{ inputs.source_sha }}"
+        assert download["env"]["EXPECTED_WHEEL_RUN_ID"] == "${{ github.run_id }}"
+        assert "artifactory_wheel_handoff.sh download fpe-release-wheel" in download["run"]
     upload = jobs["generate"]["steps"][-1]["with"]["name"]
     pattern = next(s["with"]["pattern"] for s in jobs["qualify"]["steps"] if "pattern" in s.get("with", {}))
     versions = ["0.12.0", "0.13.0", "0.13.0-rc1", "0.13.0--preview"]
