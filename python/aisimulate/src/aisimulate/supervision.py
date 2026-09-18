@@ -121,8 +121,9 @@ def terminate_pool(pool, *, workers=None, manager_thread=None) -> None:
     # Concurrent Process.join() calls race over waitpid and can leave a stale
     # multiprocessing exitcode even after the OS has reaped the child. The
     # executor's manager thread owns that join; wait for the manager instead.
+    # Do not call shutdown here: the manager can hold its shutdown lock while
+    # joining a hung finalizer, blocking us before we can kill surviving workers.
     if manager is not None:
-        pool.shutdown(wait=False, cancel_futures=True)
         manager.join(_GRACE_SECONDS)
     else:
         deadline = time.monotonic() + _GRACE_SECONDS

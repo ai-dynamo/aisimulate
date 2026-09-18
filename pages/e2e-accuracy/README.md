@@ -245,7 +245,7 @@ python scripts/build_e2e_accuracy_overview.py \
   --coverage /path/to/coverage.json \
   --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24 \
   --branch release/0.12.0 \
-  --output python/aisimulate/docs/e2e-accuracy/summary.json
+  --output pages/e2e-accuracy/summary.json
 ```
 
 Commit the generated summary on the evaluated branch. Use `--branch main` for

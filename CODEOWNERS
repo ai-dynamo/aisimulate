@@ -26,6 +26,7 @@
 
 # === maintainers  (@ai-dynamo/access-aisimulate-maintain) ===
 /docs/                                                   @ai-dynamo/access-aisimulate-maintain
+/pages/                                                  @ai-dynamo/access-aisimulate-maintain
 /LICENSE                                                 @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                               @ai-dynamo/access-aisimulate-maintain
 /README.md                                               @ai-dynamo/access-aisimulate-maintain
@@ -85,6 +86,7 @@
 /Cargo.toml                                              @ai-dynamo/aisimulate-infra-codeowners
 /pytest.ini                                              @ai-dynamo/aisimulate-infra-codeowners
 /.dockerignore                                           @ai-dynamo/aisimulate-infra-codeowners
+/tests/fpm_accuracy/                                     @ai-dynamo/aisimulate-infra-codeowners
 /crates/core/deny.toml                                   @ai-dynamo/aisimulate-infra-codeowners
 /crates/core/Cargo.toml                                  @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                                  @ai-dynamo/aisimulate-infra-codeowners
@@ -97,6 +99,7 @@
 /tests/test_ci_workflow_contracts.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_fpm_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===
@@ -108,6 +111,7 @@
 /python/aisimulate/src/aisimulate/__init__.py            @ai-dynamo/access-aisimulate-maintain
 
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
+/pages/                                                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /scripts/                                                @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /REVIEW.md                                               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -133,6 +137,7 @@
 /tests/golden/afd-*                                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/codeowners/                                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/power-model.md                                     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/fpm_accuracy/                                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_afd_*.py                                     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_runner.py                                    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/README.md                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -183,6 +188,7 @@
 /tests/test_ci_workflow_contracts.py                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_overview.py                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_fpm_accuracy_workflow.mjs                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/codeowners/                   @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/fixtures/power-contract-v1.json                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_unified_traffic_runtime.py                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain

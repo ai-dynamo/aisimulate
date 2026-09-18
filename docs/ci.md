@@ -471,7 +471,7 @@ their publication. Retried jobs preserve successful branches' original run-attem
 provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
 incomplete campaigns cannot publish. A release selector may still show a historical
 snapshot until that release has a qualified campaign. See the
-[accuracy campaign contract](../python/aisimulate/docs/e2e-accuracy/README.md)
+[accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
 ## Reading results and troubleshooting
@@ -639,3 +639,13 @@ an executed shard or an explicit exception; verify actual collection.
 - [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
   Model Data Quality Gate. Existing collector and prediction jobs alone do not
   establish that combined gate.
+
+## FPM accuracy
+
+`FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
+an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
+on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
+and publishes successful branch results independently; failed refreshes retain
+the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
+and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).

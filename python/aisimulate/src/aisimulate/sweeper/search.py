@@ -1196,12 +1196,9 @@ class Sweeper:
         def _terminate_pool(pool: ProcessPoolExecutor | None) -> None:
             if pool is None:
                 return
-            for process in list((getattr(pool, "_processes", None) or {}).values()):
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-            pool.shutdown(wait=False, cancel_futures=True)
+            from ..supervision import terminate_pool
+
+            terminate_pool(pool)
 
         def _replace_pool() -> None:
             _terminate_pool(pool_box[0])
@@ -1220,11 +1217,12 @@ class Sweeper:
                     sequential_runner.close()
                 raise
             else:
-                # A completed sweep shuts workers down normally so their Runner
-                # finalizers execute.  Only the timeout-recovery path above sends a
-                # terminate signal, where cleanup is necessarily best-effort.
+                # Allow Runner finalizers to finish, then stop workers that exceed
+                # the grace period instead of hanging the calling process.
                 if pool_box[0] is not None:
-                    pool_box[0].shutdown(wait=True, cancel_futures=True)
+                    from ..supervision import close_pool
+
+                    close_pool(pool_box[0])
                 pool_box[0] = None
                 if sequential_runner is not None:
                     sequential_runner.close()

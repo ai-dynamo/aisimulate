@@ -412,7 +412,16 @@ class EngineReplayRunner:
             allow_nan=False,
             separators=(",", ":"),
         )
-        report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        try:
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        except MemoryError as error:
+            # Resource-aware installations classify a report storage failure as host
+            # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
+            try:
+                from .resources import ResourceLimitError
+            except ImportError:
+                raise error from None
+            raise ResourceLimitError(str(error)) from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
