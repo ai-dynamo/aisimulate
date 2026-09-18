@@ -297,6 +297,23 @@ pub struct PassStartEffects {
     pub kv_events: Vec<KvEvent>,
 }
 
+/// Decode/verification work contributing to acceptance-length telemetry.
+///
+/// IMPORTANT: Never reconstruct these counters from merged visible outputs.
+/// Prefill's first token is not a decode sample, and stop/output limits can
+/// truncate a verified burst. Count accepted draft tokens plus the base token
+/// BEFORE that truncation, once per request that actually executes decode.
+/// Ordinary non-speculative decode contributes (1, 1) as a simulator baseline.
+///
+/// Upstream accounting references (independently implemented):
+/// - SGLang: https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/managers/scheduler_metrics_mixin.py#L80-L82
+/// - vLLM: https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/spec_decode/metrics.py#L113-L114
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeAcceptance {
+    pub accepted_tokens: usize,
+    pub forwards: usize,
+}
+
 /// Effects released at the modeled pass completion boundary.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassCompletionEffects {
@@ -306,6 +323,7 @@ pub struct PassCompletionEffects {
     pub kv_events: Vec<KvEvent>,
     pub metrics: Metrics,
     pub forward_pass_metrics: ForwardPassMetrics,
+    pub decode_acceptance: DecodeAcceptance,
 }
 
 /// Retained completion effects of an eagerly executed engine pass.

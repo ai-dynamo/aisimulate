@@ -11,7 +11,6 @@ use crate::engine::{
     PassCompletionEffects, Request,
 };
 use anyhow::{Context, Result, bail};
-use rustc_hash::FxHashSet;
 use uuid::Uuid;
 
 use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
@@ -1132,15 +1131,11 @@ fn lower_completion<Observation: ReplayEngineObservation>(
         .iter()
         .filter(|output| output.completed)
         .count();
-    let mut emitting_requests = FxHashSet::default();
-    let mut accept_length_output_tokens = 0;
-    for output in &effects.outputs {
-        if output.token_id.is_some() && !output.rejected {
-            accept_length_output_tokens += 1;
-            emitting_requests.insert(output.request_id);
-        }
-    }
-    let accept_length_decode_forwards = emitting_requests.len();
+    // IMPORTANT: Preserve scheduler provenance. Outputs merge prefill with
+    // decode and have already been truncated by stopping limits; counting them
+    // here silently changes the acceptance metric (see DecodeAcceptance).
+    let accept_length_output_tokens = effects.decode_acceptance.accepted_tokens;
+    let accept_length_decode_forwards = effects.decode_acceptance.forwards;
     let made_progress = completed_requests > 0
         || !effects.outputs.is_empty()
         || !effects.lifecycle_events.is_empty()

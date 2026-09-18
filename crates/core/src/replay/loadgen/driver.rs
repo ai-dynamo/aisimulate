@@ -2930,6 +2930,12 @@ mod tests {
             driver
                 .on_terminal(ending.request_uuid, 1.0, terminal)
                 .unwrap();
+            let ended_session = driver
+                .sessions
+                .iter()
+                .find(|s| s.session_id == "10")
+                .unwrap();
+            assert_eq!(ended_session.cumulative_tokens.capacity(), 0);
             driver.on_complete(surviving.request_uuid, 2.0).unwrap();
             assert!(!driver.is_drained());
             assert_eq!(driver.next_ready_time_ms(), Some(7.0));
@@ -2940,6 +2946,12 @@ mod tests {
             assert_eq!(last[0].request.tokens, vec![30, 31, 33]);
             driver.on_complete(last[0].request_uuid, 8.0).unwrap();
             assert!(driver.is_drained());
+            assert!(
+                driver
+                    .sessions
+                    .iter()
+                    .all(|s| s.cumulative_tokens.capacity() == 0)
+            );
             assert!(driver.pop_ready(1_000.0, usize::MAX).is_empty());
         }
     }

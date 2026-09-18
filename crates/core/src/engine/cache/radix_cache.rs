@@ -1267,6 +1267,33 @@ mod tests {
     }
 
     #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
+        let mut cache = RadixCache::new(512, 1);
+        let tokens: Vec<u32> = (0..512).collect();
+        let indices: Vec<usize> = (0..512).collect();
+        cache.insert(&tokens, &indices);
+
+        for prefix_len in (1..512).step_by(4) {
+            assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
+        }
+        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
+
+        // Repeated splits must not leave each short prefix holding a copy of
+        // the original edge's capacity. Allow allocator slack, not exact sizes.
+        let (key_capacity, page_capacity) = cache.nodes.values().fold((0, 0), |sum, node| {
+            (sum.0 + node.key.capacity(), sum.1 + node.value.capacity())
+        });
+        assert!(
+            key_capacity <= 2 * tokens.len(),
+            "retained key capacity: {key_capacity}"
+        );
+        assert!(
+            page_capacity <= 2 * tokens.len(),
+            "retained page capacity: {page_capacity}"
+        );
+    }
+
+    #[test]
     fn test_retained_tail_extends_unique_leaf_in_place() {
         let mut cache = RadixCache::new(100, 4);
         cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);

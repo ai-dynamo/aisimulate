@@ -549,7 +549,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
         }
         for (index, &prompt) in prompts.iter().enumerate() {
             let mut tokens = vec![0; cached_prefix];
-            tokens.extend(vec![index as u32 + 1; prompt]);
+            tokens.extend(std::iter::repeat_n(index as u32 + 1, prompt));
             engine
                 .apply_command_effects(
                     SchedulerCommand::new(

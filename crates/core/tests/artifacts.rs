@@ -229,11 +229,11 @@ fn native_and_normalized_kv_visibility_preserve_raw_order() {
 #[test]
 fn cache_events_advertise_reusable_prefixes_only_when_caching_is_enabled() {
     for backend in [Backend::Vllm, Backend::Sglang] {
-        for enabled in [false, true] {
+        for is_enabled in [false, true] {
             let mut replay_spec = spec(backend, 1, 1);
             let mut config: ReplayEngineConfig =
                 serde_json::from_value(replay_spec.engine.clone()).unwrap();
-            config.rank.enable_prefix_caching = enabled;
+            config.rank.enable_prefix_caching = is_enabled;
             replay_spec.engine = serde_json::to_value(config).unwrap();
             replay_spec.requests = [0.0, 30.0]
                 .into_iter()
@@ -251,10 +251,10 @@ fn cache_events_advertise_reusable_prefixes_only_when_caching_is_enabled() {
                 .unwrap();
             assert_eq!(report.request_counts.completed_requests, 2);
             assert_eq!(report.request_counts.total_output_tokens, 4);
-            assert_eq!(artifacts.kv_events.is_empty(), !enabled, "{backend:?}");
+            assert_eq!(artifacts.kv_events.is_empty(), !is_enabled, "{backend:?}");
             assert_eq!(
                 report.prefix_cache_reused_ratio > 0.0,
-                enabled,
+                is_enabled,
                 "{backend:?}"
             );
         }

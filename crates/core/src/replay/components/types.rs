@@ -218,8 +218,9 @@ pub struct TrafficStats {
     pub ttft_count: usize,
     /// Completed requests behind `avg_itl_ms`.
     pub itl_count: usize,
-    /// Mean visible tokens produced per decode request-forward, including the
-    /// base token. ``None`` means the window had no decode forwards.
+    /// Mean accepted tokens per decode request-forward, including the base
+    /// token, before output-limit truncation. Prefill is excluded; ordinary
+    /// non-speculative decode contributes one. ``None`` means no decode forwards.
     pub avg_accept_length: Option<f64>,
     /// Mean prefix-cache hit rate (0.0-1.0) across router admissions in
     /// the window, computed as ``mean(overlap_blocks / isl_blocks)`` over
@@ -351,19 +352,19 @@ impl TrafficAccumulator {
         self.hit_rate_count += 1;
     }
 
-    /// Record visible token bursts from decode forwards for accept-length
-    /// scaling. ``visible_output_tokens`` is the numerator and
+    /// Record accepted token bursts before output-limit truncation for
+    /// accept-length scaling. ``accepted_tokens`` is the numerator and
     /// ``decode_forwards`` is the number of requests that participated in the
     /// decode forward.
     pub(crate) fn on_accept_length_sample(
         &mut self,
-        visible_output_tokens: usize,
+        accepted_tokens: usize,
         decode_forwards: usize,
     ) {
-        if visible_output_tokens == 0 || decode_forwards == 0 {
+        if accepted_tokens == 0 || decode_forwards == 0 {
             return;
         }
-        self.total_accept_length_tokens += visible_output_tokens;
+        self.total_accept_length_tokens += accepted_tokens;
         self.accept_length_forward_count += decode_forwards;
     }
 
