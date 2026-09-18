@@ -8,6 +8,10 @@ from __future__ import annotations
 import dataclasses
 
 
+class InvalidEngineConfigurationError(ValueError):
+    """Invalid caller controls; estimator fallback must not hide these errors."""
+
+
 class NoResultsError(RuntimeError):
     """Base class for *expected* "the sweep produced no results" outcomes.
 

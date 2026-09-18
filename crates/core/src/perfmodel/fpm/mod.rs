@@ -8,9 +8,9 @@
 //! [`crate::perfmodel::engine::Engine::forward_pass_time_ms`]. The online correction /
 //! regression / diagnostics / readiness logic is engine-agnostic.
 //!
-//! Constructing a native model crosses into Python exactly once to compile the
-//! model into an [`crate::perfmodel::engine::spec::EngineSpec`] (mirroring
-//! [`crate::perfmodel::AicEngineBuilder`]); after that the hot path
+//! Native candidates currently use Python to compile the model into an
+//! [`crate::perfmodel::engine::spec::EngineSpec`]. Selection may try several
+//! candidates or data roots; after construction the hot path
 //! (`estimate_forward_pass_time_ms` / `tune_with_fpms`) is pure Rust over the
 //! `Engine` with no Python re-entry.
 //!
@@ -22,7 +22,9 @@
 //! - [`samples`]: shared bucketed-sample infrastructure.
 //! - [`options`]: tuning controls.
 
+mod config;
 mod correction;
+mod estimator;
 mod metrics;
 mod model;
 mod options;
@@ -32,11 +34,16 @@ mod samples;
 #[cfg(test)]
 mod tests;
 
+pub use config::{
+    EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig,
+    ForwardPassSpeculationConfig,
+};
+pub use estimator::*;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{
-    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfReadiness,
-    ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;
