@@ -22,7 +22,7 @@ use crate::replay::{
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
@@ -1527,18 +1527,31 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
+fn replay_python_error(error: anyhow::Error) -> PyErr {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::replay::ReplayError>(),
+            Some(crate::replay::ReplayError::ResourceLimited(_))
+        )
+    }) {
+        PyMemoryError::new_err(format!("{error:#}"))
+    } else {
+        PyRuntimeError::new_err(format!("{error:#}"))
+    }
+}
+
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, false))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, true))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// AISimulate native runtime module.
@@ -1559,6 +1572,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn replay_python_error_preserves_contextual_resource_failure() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::Error::new(crate::replay::ReplayError::ResourceLimited(
+            "create exact report sample file: No space left on device".to_string(),
+        ))
+        .context("collecting replay report")
+        .context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
+    #[test]
+    fn replay_python_error_keeps_other_failures_as_runtime_errors() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
 
     struct PowerTiming(TimingEvidenceSummary);
 
