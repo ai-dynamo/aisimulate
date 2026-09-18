@@ -1383,6 +1383,8 @@ def test_no_orphan_fields():
     for f in [x.name for x in dataclasses.fields(Task) if x.init and not x.name.startswith("_")]:
         if f.endswith("_candidates"):
             continue  # read dynamically via getattr(f"{role}_{dim}_candidates")
+        if re.match(r"^afd_(prefill|f)_system_name$", f):
+            continue  # read dynamically via afd_pool_attr(pool, "system_name")
         bare = re.sub(r"^(prefill_|decode_)", "", f)
         read = (
             re.search(rf"self\.{f}\b", srcs)

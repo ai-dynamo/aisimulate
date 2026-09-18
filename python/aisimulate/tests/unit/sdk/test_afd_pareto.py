@@ -311,8 +311,6 @@ class TestEnumerateAfdPrefillOptions:
             prefill_parallel_config_list=[(2, 2, 1, 2, 1), (4, 1, 2, 4, 1, 2)],
             prefill_batch_size_list=[1, 8],
             prefill_system_name="prefill-system",
-            prefill_backend_name="prefill-backend",
-            prefill_backend_version="prefill-version",
             max_candidates=8,
         )
 

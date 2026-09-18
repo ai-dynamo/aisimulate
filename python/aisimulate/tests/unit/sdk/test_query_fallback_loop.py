@@ -49,6 +49,7 @@ def test_sum_latency_fallback_loop_evaluates_verify_kda(database):
     op = _verify_kda()
     fake_session = SimpleNamespace(
         _database=database,
+        _a_database=database,
         _sum_latency_with_rust=lambda *a, **k: None,  # the index-miss outcome, forced deterministically
     )
     fake_model = SimpleNamespace(context_ops=[], generation_ops=[], model_name="kimi-k3-fixture")
@@ -71,7 +72,7 @@ def test_sum_latency_index_miss_takes_python_loop(database):
     phase lists) and returns None, exercising the genuine in-repo fallback."""
     op = _verify_kda()
     fake_model = SimpleNamespace(context_ops=[], generation_ops=[], model_name="kimi-k3-fixture")
-    fake_session = SimpleNamespace(_database=database)
+    fake_session = SimpleNamespace(_database=database, _a_database=database)
     fake_session._sum_latency_with_rust = AFDInferenceSession._sum_latency_with_rust.__get__(fake_session)
     total, _ = AFDInferenceSession._sum_latency(
         fake_session,
