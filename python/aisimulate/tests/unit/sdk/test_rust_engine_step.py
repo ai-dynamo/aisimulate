@@ -24,6 +24,39 @@ _CONTEXT_FALLBACK = MoECommFallback(*_CONTEXT_FALLBACK_PAYLOAD)
 _GENERATION_FALLBACK = MoECommFallback(*_GENERATION_FALLBACK_PAYLOAD)
 
 
+def _regression_model(cls, worker_type, options=None):
+    import aiconfigurator_core
+
+    config = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": worker_type,
+        "estimation_mode": "fpm_regression",
+    }
+    if options is not None:
+        config["estimator_config"] = json.loads(
+            aiconfigurator_core.RustForwardPassPerfModel.legacy_estimator_config(
+                rust_engine_step._optional_json_dumps(options)
+            )
+        )
+    return cls.best_available(config)
+
+
+def _native_model(cls, config, options=None):
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+
+    return cls.best_available(ForwardPassPerfModelConfig.from_legacy_engine_config(config, "aggregated", options))
+
+
+def _best_model(cls, config, worker_type, options=None):
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+
+    return cls.best_available(
+        ForwardPassPerfModelConfig.from_legacy_engine_config(config, worker_type, options, allow_regression=True)
+    )
+
+
 def test_should_use_rust_engine_step_supports_runtime_config_and_env(monkeypatch) -> None:
     monkeypatch.setenv("AICONFIGURATOR_ENGINE_STEP_BACKEND", "rust")
 
@@ -819,7 +852,7 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
     """The public compiled API keeps each full-rank workload fit independent."""
     from aisimulate_core.sdk import RustForwardPassPerfModel
 
-    model = RustForwardPassPerfModel.from_regression("aggregated")
+    model = _regression_model(RustForwardPassPerfModel, "aggregated")
     kinds = ["pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill"]
     assert model.regression_store_diagnostics() == [
         {"workload_kind": kind, "ready": False, "retained_observations": 0} for kind in kinds
@@ -862,133 +895,46 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
             assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
-def test_forward_pass_perf_model_constructors_forward_exact_worker_type(monkeypatch) -> None:
-    """Regression-capable constructors preserve the engine-level role and
-    reject aliases before crossing the extension boundary."""
+def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> None:
     import aiconfigurator_core
 
-    calls: list[tuple[str, object, object, object | None]] = []
+    calls = []
 
-    class _FakeRawModel:
+    class RawModel:
         @staticmethod
-        def from_regression(worker_type, options_json=None):
-            calls.append(("from_regression", worker_type, options_json, None))
+        def best_available(config_json):
+            calls.append(json.loads(config_json))
             return object()
 
-        @staticmethod
-        def best_available(config_json, worker_type, options_json=None):
-            calls.append(("best_available", json.loads(config_json), worker_type, options_json))
-            return object()
-
-    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
-    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
-
-    for worker_type in ("prefill", "decode", "aggregated"):
-        rust_engine_step.RustForwardPassPerfModel.from_regression(
-            worker_type,
-            {"min_observations": 2},
-        )
-    rust_engine_step.RustForwardPassPerfModel.best_available(
-        {"schema_version": 1},
-        "aggregated",
-        {"min_observations": 3},
-    )
-
-    assert calls[:3] == [
-        ("from_regression", "prefill", '{"min_observations":2}', None),
-        ("from_regression", "decode", '{"min_observations":2}', None),
-        ("from_regression", "aggregated", '{"min_observations":2}', None),
-    ]
-    assert calls[3] == (
-        "best_available",
-        {"schema_version": 1},
-        "aggregated",
-        '{"min_observations":3}',
-    )
-
-    for invalid in ("agg", "Prefill", ""):
-        with pytest.raises(ValueError, match="invalid worker_type"):
-            rust_engine_step.RustForwardPassPerfModel.from_regression(invalid)
-        with pytest.raises(ValueError, match="invalid worker_type"):
-            rust_engine_step.RustForwardPassPerfModel.best_available({}, invalid)
-
-
-def test_forward_pass_perf_model_constructors_forward_all_regression_weights(monkeypatch) -> None:
-    """The facade preserves every public regression knob by its wire name."""
-    import aiconfigurator_core
-
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class _FakeRawModel:
-        @staticmethod
-        def from_regression(worker_type, options_json=None):
-            calls.append((worker_type, json.loads(options_json)))
-            return object()
-
-        @staticmethod
-        def best_available(config_json, worker_type, options_json=None):
-            calls.append((worker_type, json.loads(options_json)))
-            return object()
-
-    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
-    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
-    options = {
-        "regression_attention_kv_weight": 2.0,
-        "regression_prefill_attention_pair_weight": 3.0,
-        "regression_ffn_token_weight": 4.0,
+    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", RawModel)
+    payload = {
+        "model": "test",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "aggregated",
+        "estimation_mode": "fpm_regression",
+        "fallback_policy": "deny",
+        "estimator_config": {
+            "features": {"attention_kv_weight": 2.0, "prefill_attention_pair_weight": 3.0, "ffn_token_weight": 4.0},
+            "fpm_regression": {"sampling": {"bins_per_axis": [4, 16], "max_observations": 128}},
+            "correction": {"enabled": False},
+        },
     }
+    rust_engine_step.RustForwardPassPerfModel.best_available(payload)
+    assert calls == [payload]
+    assert not hasattr(rust_engine_step.RustForwardPassPerfModel, "from_native")
+    assert not hasattr(rust_engine_step.RustForwardPassPerfModel, "from_regression")
 
-    rust_engine_step.RustForwardPassPerfModel.from_regression("aggregated", options)
-    rust_engine_step.RustForwardPassPerfModel.best_available({}, "decode", options)
 
-    assert calls == [("aggregated", options), ("decode", options)]
+def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
 
-
-def test_forward_pass_perf_model_marshals_nonfinite_weights_as_valid_json_without_mutation(
-    monkeypatch,
-) -> None:
-    """The ergonomic facade owns the float-to-sentinel transport, not its caller."""
-    import aiconfigurator_core
-
-    calls: list[str] = []
-
-    class _FakeRawModel:
-        @staticmethod
-        def from_native(config_json, options_json=None):
-            calls.append(options_json)
-            return object()
-
-        @staticmethod
-        def from_regression(worker_type, options_json=None):
-            calls.append(options_json)
-            return object()
-
-        @staticmethod
-        def best_available(config_json, worker_type, options_json=None):
-            calls.append(options_json)
-            return object()
-
-    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _FakeRawModel)
-    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
-    options = {
-        "regression_attention_kv_weight": float("nan"),
-        "regression_prefill_attention_pair_weight": float("inf"),
-        "regression_ffn_token_weight": float("-inf"),
-    }
-
-    rust_engine_step.RustForwardPassPerfModel.from_native({}, options)
-    rust_engine_step.RustForwardPassPerfModel.from_regression("aggregated", options)
-    rust_engine_step.RustForwardPassPerfModel.best_available({}, "decode", options)
-
-    expected = (
-        '{"regression_attention_kv_weight":"NaN",'
-        '"regression_ffn_token_weight":"-Infinity",'
-        '"regression_prefill_attention_pair_weight":"Infinity"}'
-    )
-    assert calls == [expected, expected, expected]
-    assert math.isnan(options["regression_attention_kv_weight"])
-    assert options["regression_prefill_attention_pair_weight"] == math.inf
-    assert options["regression_ffn_token_weight"] == -math.inf
+    with pytest.raises(TypeError, match="worker_type"):
+        ForwardPassPerfModelConfig(model="m", system="s", backend="vllm")
+    config = ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode")
+    assert config.estimation_mode == "auto"
+    assert config.fallback_policy == "deny"
+    assert config.estimator_config == {}
 
 
 def _supported_fpm_config() -> dict[str, object]:
@@ -1038,7 +984,8 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     pytest.importorskip("aiconfigurator_core")
     from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    model = RustForwardPassPerfModel.from_native(
+    model = _native_model(
+        RustForwardPassPerfModel,
         {
             "schema_version": 1,
             "model_name": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -1113,7 +1060,8 @@ def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() 
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = _supported_fpm_config()
-    model = RustForwardPassPerfModel.from_native(
+    model = _native_model(
+        RustForwardPassPerfModel,
         config,
         {
             "min_observations": 2,
@@ -1196,7 +1144,8 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = _unsupported_fpm_config()
-    model = RustForwardPassPerfModel.best_available(
+    model = _best_model(
+        RustForwardPassPerfModel,
         config,
         "aggregated",
         {"min_observations": 2},
@@ -1214,7 +1163,8 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
     }
     assert model.estimate_forward_pass_time_ms(decode_fpm) is None
 
-    prefill_model = RustForwardPassPerfModel.best_available(
+    prefill_model = _best_model(
+        RustForwardPassPerfModel,
         config,
         "prefill",
         {"min_observations": 2},
@@ -1235,7 +1185,7 @@ def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> N
     config = _supported_fpm_config()
     config.update(system_name="broken", systems_path=str(systems_root))
 
-    model = RustForwardPassPerfModel.best_available(config, "aggregated")
+    model = _best_model(RustForwardPassPerfModel, config, "aggregated")
     diagnostics = model.diagnostics()
 
     assert diagnostics["source"] == "fallback_regression"
@@ -1266,9 +1216,9 @@ def test_malformed_performance_yaml_remains_a_perf_database_failure(tmp_path: Pa
     config.update(system_name="synthetic", systems_path=str(systems_root))
 
     with pytest.raises(PerfDataNotAvailableError, match="perf database error"):
-        RustForwardPassPerfModel.from_native(config)
+        _native_model(RustForwardPassPerfModel, config)
 
-    model = RustForwardPassPerfModel.best_available(config, "aggregated")
+    model = _best_model(RustForwardPassPerfModel, config, "aggregated")
     diagnostics = model.diagnostics()
     assert diagnostics["source"] == "fallback_regression"
     assert "perf database error" in diagnostics["last_warning"]
@@ -1289,7 +1239,8 @@ def test_best_available_validates_regression_weights_only_after_fallback() -> No
         },
     }
 
-    native = RustForwardPassPerfModel.best_available(
+    native = _best_model(
+        RustForwardPassPerfModel,
         _supported_fpm_validation_config(),
         "prefill",
         invalid_regression_options,
@@ -1299,7 +1250,8 @@ def test_best_available_validates_regression_weights_only_after_fallback() -> No
     assert native_prediction is not None and native_prediction > 0.0
 
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
-        RustForwardPassPerfModel.best_available(
+        _best_model(
+            RustForwardPassPerfModel,
             _unsupported_fpm_config(),
             "prefill",
             invalid_regression_options,
@@ -1319,8 +1271,8 @@ def test_native_constructors_ignore_all_nonfinite_regression_weights() -> None:
     }
     config = _supported_fpm_validation_config()
 
-    strict_native = RustForwardPassPerfModel.from_native(config, options)
-    best_native = RustForwardPassPerfModel.best_available(config, "aggregated", options)
+    strict_native = _native_model(RustForwardPassPerfModel, config, options)
+    best_native = _best_model(RustForwardPassPerfModel, config, "aggregated", options)
 
     assert strict_native.diagnostics()["source"] == "aic"
     assert best_native.diagnostics()["source"] == "aic"
@@ -1345,9 +1297,10 @@ def test_regression_constructors_decode_and_reject_nonfinite_weight_sentinels(
 
     options = {field: value}
     with pytest.raises(ValueError, match=field):
-        RustForwardPassPerfModel.from_regression("aggregated", options)
+        _regression_model(RustForwardPassPerfModel, "aggregated", options)
     with pytest.raises(ValueError, match=field):
-        RustForwardPassPerfModel.best_available(
+        _best_model(
+            RustForwardPassPerfModel,
             _unsupported_fpm_config(),
             "aggregated",
             options,
@@ -1653,7 +1606,6 @@ def test_large_ep_op_graph_compiles_natively(caplog):
     the scalar engine-step keys and match the Python step on the same
     config."""
     import logging
-    import math
 
     from aiconfigurator.sdk.backends.factory import get_backend
     from aiconfigurator.sdk.engine import build_engine_spec_json
@@ -2149,3 +2101,36 @@ def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, 
     with pytest.raises(expected, match=str(error)) as caught:
         getattr(rust_engine_step, entrypoint)(None, None, gen_tokens=1, isl=8, osl=4)
     assert (caught.value.__cause__ if perf_miss else caught.value) is error
+
+
+@pytest.mark.integration
+def test_canonical_native_selection_retries_roots_and_pins_effective_configuration(tmp_path):
+    from importlib import resources
+
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    packaged = str(resources.files("aiconfigurator_core") / "systems")
+    config = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        worker_type="aggregated",
+        tp=2,
+        estimation_mode="op_level",
+        fallback_policy="deny",
+        systems_paths=(str(tmp_path), packaged),
+        database_mode="HYBRID",
+        transfer_policy="conservative",
+        estimator_config={"correction": {"enabled": False}},
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["selected_systems_root"] == packaged
+    resolved = provenance["config"]
+    assert resolved["systems_paths"] == [packaged]
+    assert resolved["backend_version"]
+    assert resolved["estimation_mode"] == "op_level"
+    assert resolved["fallback_policy"] == "deny"
+    assert resolved["transfer_policy"] == ["xshape"]
+    assert resolved["estimator_config"]["correction"]["enabled"] is False
+    assert config.systems_paths == (str(tmp_path), packaged)

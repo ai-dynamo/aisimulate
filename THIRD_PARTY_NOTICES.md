@@ -879,4 +879,5 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
   publish this code under Apache-2.0.
 - Modified: development-only two-predictor evaluation, public overview export,
-  GitHub Pages presentation, and local import paths. No Plotly assets included.
+  GitHub Pages presentation, local import paths, and canonical estimator API
+  adaptation with older-wheel compatibility. No Plotly assets included.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any, ClassVar, Literal
 
 from fpm_accuracy.exceptions import ConfigurationError, DependencyError
@@ -46,7 +47,15 @@ class _AicPredictor(ForwardPassTimePredictor):
         if cls.mode == "regression":
             if not callable(getattr(perf_model, "regression_store_diagnostics", None)):
                 raise DependencyError("This AISim revision does not support worker-scoped regression.")
-            model = perf_model.from_regression(context.worker_role, options)
+            config_type = _canonical_config_type()
+            if config_type is not None:
+                request = config_type.from_legacy_engine_config(
+                    cls._native_engine_config(context), context.worker_role, options
+                )
+                model = perf_model.best_available(replace(request, estimation_mode="fpm_regression"))
+            else:
+                # The evaluator also runs against older released branch wheels.
+                model = perf_model.from_regression(context.worker_role, options)
             try:
                 store_diagnostics = getattr(model, "regression_store_diagnostics", None)
                 if not callable(store_diagnostics):
@@ -71,7 +80,12 @@ class _AicPredictor(ForwardPassTimePredictor):
             engine_config["systems_path"] = str(prepared_fpm.systems_root)
             engine_config["forward_model"] = "fpm"
         try:
-            model = perf_model.from_native(engine_config, options)
+            config_type = _canonical_config_type()
+            if config_type is not None:
+                request = config_type.from_legacy_engine_config(engine_config, context.worker_role, options)
+                model = perf_model.best_available(request)
+            else:
+                model = perf_model.from_native(engine_config, options)
         except Exception:
             if prepared_fpm is not None:
                 prepared_fpm.close()
@@ -154,6 +168,12 @@ def _import_aisim_forward_pass_perf_model() -> Any:
             "AISim predictors require aisimulate. Install the sibling AISim checkout in this environment."
         ) from exc
     return RustForwardPassPerfModel
+
+
+def _canonical_config_type() -> Any:
+    from aisimulate_core import sdk
+
+    return getattr(sdk, "ForwardPassPerfModelConfig", None)
 
 
 __all__ = ["AicFpmPredictor", "AicRegressionPredictor"]

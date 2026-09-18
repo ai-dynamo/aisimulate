@@ -27,12 +27,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 import yaml
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator.sdk.perf_database import PerfDatabase, get_database
+from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
 
 pytestmark = pytest.mark.unit
 
@@ -862,3 +864,28 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
 
     view = fetch_table_view(db, "_gemm_data")
     assert view is None or not view, f"the vetoed primary leaked into the engine view: {view!r}"
+
+
+@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm"])
+def test_corrected_024_gemm_uses_declared_025_measurements(system):
+    """Every unshadowed donor row loads; retained 0.24 primary latencies win."""
+    data = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems/data" / system
+    old = pq.read_table(data / "gemm/vllm/0.24.0/gemm_perf.parquet").to_pylist()
+    fresh = pq.read_table(data / "gemm/vllm/0.25.0/gemm_perf.parquet").to_pylist()
+    assert all(row["gemm_dtype"] != "fp8_block" for row in old)
+    db = get_database(system, "vllm", "0.24.0", shared_layer=True, strict_provenance=True)
+    loaded = fetch_table_view(db, "_gemm_data")
+    sources = db.data_provenance["gemm_perf.parquet"]
+    assert [(s["version"], s["channel"]) for s in sources[:2]] == [("0.24.0", "primary"), ("0.25.0", "declared_reuse")]
+    expected = {}
+    for row in old + fresh:
+        key = (common.GEMMQuantMode[row["gemm_dtype"]], row["m"], row["n"], row["k"])
+        expected.setdefault(key, row["latency"])
+    actual = {
+        (mode, m, n, k): value["latency"]
+        for mode, ms in loaded.items()
+        for m, ns in ms.items()
+        for n, ks in ns.items()
+        for k, value in ks.items()
+    }
+    assert actual == expected
