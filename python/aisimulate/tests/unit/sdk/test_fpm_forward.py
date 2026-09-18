@@ -837,6 +837,9 @@ def test_external_fpm_pair_drives_afd_companion_replay(
         args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
         prefix = "aic_" if identity_fields == "prefixed" else ""
         args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
+        if identity_fields == "plain":
+            args["forward_model"] = args.pop("aic_forward_model")
+            args["fpm_parquet_path"] = args.pop("aic_fpm_parquet_path")
     report = EngineReplayRunnerFactory().create(0).run(spec)
     assert not (systems_root / "data").exists()
     assert report.metrics["completed_requests"] == 1

@@ -193,7 +193,10 @@ the path for each role through search, execution, and emitted candidate YAML;
 prefill and decode may use different pairs.
 
 For the regular prefill/decode companion in AFD+PD, the Python `ReplaySpec`
-engine arguments also preserve `systems_path` and the accepted `gemm_dtype`,
+engine arguments normalize `forward_model` / `aic_forward_model` and
+`fpm_parquet_path` / `aic_fpm_parquet_path` before selecting the timing engine.
+Supplying both names for one field is rejected. They also preserve
+`systems_path` and the accepted `gemm_dtype`,
 `moe_dtype`, `fmha_dtype`, `kv_cache_dtype`, and `comm_dtype` overrides (including
 their `aic_` aliases). These become the compiled engine's quantization settings
 for exact external-FPM cell matching. The public worker timing YAML does not

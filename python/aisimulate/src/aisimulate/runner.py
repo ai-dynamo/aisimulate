@@ -184,6 +184,7 @@ class AICAFDCompanionPerformanceModel:
                 provenance={"provider": "fixed", "field": key},
             )
 
+        timing_overrides = _pop_aic_timing_overrides(dict(args), role)
         estimator = self._estimator
         if estimator is None:
             from aiconfigurator.cli.api import cli_estimate
@@ -191,12 +192,7 @@ class AICAFDCompanionPerformanceModel:
             estimator = cli_estimate
         prefix = f"{role}_"
         parallel = deployment.parallel_config
-        forward_model = args.get("aic_forward_model", "op_level")
-        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
-                f"got {forward_model!r}"
-            )
+        forward_model = timing_overrides.get("forward_model", "op_level")
         kwargs: dict[str, Any] = {
             "mode": "static_ctx" if role == "prefill" else "static_gen",
             "backend_name": deployment.backend,
@@ -224,7 +220,7 @@ class AICAFDCompanionPerformanceModel:
         hardware = args.get("aic_system")
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
-        fpm_parquet_path = args.get("aic_fpm_parquet_path")
+        fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
         metric = "ttft" if role == "prefill" else "tpot"
         source = "aiconfigurator.cli.api.cli_estimate"
         try:
@@ -236,7 +232,6 @@ class AICAFDCompanionPerformanceModel:
                     for key, value in kwargs.items()
                     if key not in {"mode", "backend_name", "isl", "osl", "batch_size"}
                 }
-                timing_overrides = _pop_aic_timing_overrides(dict(args), role)
                 for field, parameter in (
                     ("gemm_dtype", "gemm_quant_mode"),
                     ("moe_dtype", "moe_quant_mode"),
