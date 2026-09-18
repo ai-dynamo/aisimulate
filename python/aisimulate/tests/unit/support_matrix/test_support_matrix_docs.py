@@ -9,6 +9,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_support_matrix_ui_preserves_encoder_unsupported_replay_command():
-    html = Path("docs/support-matrix/index.html").read_text()
+    pages = next(root / "pages" for root in Path(__file__).resolve().parents if (root / "pages").is_dir())
+    html = (pages / "support-matrix/index.html").read_text()
 
     assert "if (command.includes('tools/support_matrix/generate_support_matrix.py')) return command;" in html

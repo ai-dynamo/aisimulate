@@ -43,6 +43,8 @@ class StepEstimate:
     num_decode_requests: int = 0
     num_decode_query_tokens: int = 0
     moe_comm_fallbacks: tuple[MoECommFallback, ...] = ()
+    per_op_energy_wms: dict[str, float] = field(default_factory=dict)
+    covered_latency_ms: float = 0.0
 
     def legacy_tuple(self) -> tuple[float, float, dict[str, float], dict[str, str]]:
         """Return the pre-contract private-helper shape."""

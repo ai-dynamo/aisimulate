@@ -9,7 +9,11 @@ import pytest
 
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+)
 from aisimulate.sweeper.provider import (
     AdapterReplaySpec,
     AdapterSearchPlan,
@@ -245,7 +249,7 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend, systems_path=None: "0.11.0",
+        lambda hardware, backend, systems_paths=None: "0.11.0",
     )
 
 
@@ -373,7 +377,7 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend, systems_path=None: "0.11.0",
+        lambda hardware, backend, systems_paths=None: "0.11.0",
     )
     prepared, result = search_module._materialize_one(
         {
@@ -753,3 +757,12 @@ def test_adapter_parameter_separator_collisions_are_rejected() -> None:
             injected={"ambiguous::adapter": _Adapter()},
             show_progress=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_orchestration(monkeypatch):
+    # These tests use synthetic models/runners. Native construction is exercised
+    # by the estimator contract tests and CLI round trips.
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})

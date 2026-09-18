@@ -308,23 +308,36 @@ def _quantization_from_engine_config(config_json: str) -> dict[str, str]:
     return modes
 
 
-def resolve_fpm_interpolation(profile: FpmModelProfile | None, method: str = "auto") -> Literal["sol", "direct"]:
-    """Choose from explicit registry presence, never from a caught build error."""
-    if method not in {"auto", "sol", "direct"}:
-        raise ValueError(f"unknown FPM interpolation {method!r}; choose auto, sol, or direct")
-    if method == "direct":
-        if profile is None:
-            raise ValueError("direct FPM interpolation requires an fpm_profile with identity and resource metadata")
-        return "direct"
-    if profile is None:
-        return "sol"
+def _validate_forward_pass_profile(config_json: str) -> str:
+    """Validate schema/identity and return registration facts to the Rust owner.
+
+    This path reads no timing data and does not construct an analytical model.
+    Estimator defaults and interpolation selection belong to Rust.
+    """
     from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
 
+    config = json.loads(config_json)
+    profile = load_fpm_profile(config["fpm_profile"])
+    version = config.get("backend_version")
+    if not isinstance(version, str) or version.lower() in _MUTABLE_REFERENCES | {"previous", "next"}:
+        raise ValueError("fpm_profile requires a literal backend_version")
+    deployment = profile.select(
+        model=config["model"],
+        system=config["system"],
+        backend=config["backend"],
+        backend_version=version,
+        tp_size=config["tp"],
+        pp_size=config["pp"],
+        attention_dp_size=config["attention_dp"],
+        moe_tp_size=config.get("moe_tp_size"),
+        moe_ep_size=config.get("moe_ep_size"),
+    )
+    deployment.validate_overrides(**{key: config.get(key) for key in deployment.quantization_kwargs()})
     family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(profile.architecture, profile.architecture)
-    registered = family in _MODEL_REGISTRY
-    if method == "sol" and not registered:
-        raise ValueError(
-            f"SOL interpolation requires a registered analytical model class for {profile.architecture!r}; "
-            "choose fpm_interpolation='direct' to use the supplied profile"
-        )
-    return "sol" if registered else "direct"
+    return json.dumps(
+        {
+            "profile": profile.model_dump(mode="json"),
+            "registered": family in _MODEL_REGISTRY,
+            **deployment.quantization_kwargs(),
+        }
+    )

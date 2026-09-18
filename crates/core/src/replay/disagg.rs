@@ -625,7 +625,7 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
-        collector.on_arrival(uuid, arrival_time_ms, input_length, output_length);
+        collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
         if let Some(context) = request.metadata().replay_context.as_ref() {
             collector.on_request_context(uuid, context);
         }
@@ -1088,6 +1088,11 @@ where
         })
     }
 
+    pub(crate) fn with_sla_thresholds(mut self, sla: crate::replay::SlaThresholds) -> Self {
+        self.collector.set_sla_thresholds(sla);
+        self
+    }
+
     /// Toggle per-request record capture on the underlying collector. When
     /// `true`, the final `ReplayReport` returned from `run()` will
     /// have `per_request` populated. Default `false` (cheap).
@@ -1249,7 +1254,23 @@ where
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        self.admission.defer_quiescent(uuid, self.now_ms)
+        self.admission.defer_quiescent(uuid, self.now_ms)?;
+        if !self.collector.is_batch_reporting() {
+            return Ok(());
+        }
+        // Both pipelines and the handoff coordinator are now quiescent. Only
+        // test snapshots retain terminal state; production maps track live work.
+        let state = self
+            .flow
+            .requests
+            .remove(&uuid)
+            .ok_or_else(|| anyhow!("missing quiescent request {uuid}"))?;
+        debug_assert_eq!(state.phase, DisaggPhase::Done);
+        #[cfg(test)]
+        self.stats
+            .request_snapshots
+            .insert(uuid, state.debug_snapshot());
+        Ok(())
     }
 
     /// Submit a coordinator-owned prefill onto a selected worker.
@@ -2123,6 +2144,10 @@ where
         &mut self,
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> Result<()> {
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         match payload.stage {
             SimulationWorkerStage::Prefill => {
                 self.wake_deferred_actions(SimulationWorkerStage::Prefill, payload.worker_idx);
@@ -2841,12 +2866,12 @@ where
                     !matches!(state.phase, DisaggPhase::CleanupPending | DisaggPhase::Done)
                 );
             }
-            self.stats.request_snapshots = self
-                .flow
-                .requests
-                .iter()
-                .map(|(uuid, state)| (*uuid, state.debug_snapshot()))
-                .collect();
+            self.stats.request_snapshots.extend(
+                self.flow
+                    .requests
+                    .iter()
+                    .map(|(uuid, state)| (*uuid, state.debug_snapshot())),
+            );
         }
     }
 
@@ -3334,6 +3359,7 @@ where
     /// timestamp would exceed that cap; in-flight requests at that point are
     /// reported as incomplete.
     pub(crate) fn run(mut self) -> Result<(TraceCollector, DisaggRuntimeStats)> {
+        self.collector.begin_batch_reporting();
         self.run_to_completion()?;
 
         self.progress.finish();
@@ -3351,6 +3377,7 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }
 

@@ -6,10 +6,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../pages/e2e-accuracy/app.js", import.meta.url), "utf8");
 const bootstrap = "initialize().catch(showError);";
 assert.ok(source.includes(bootstrap), "Application bootstrap changed; update the UI test harness before executing it.");
-const published = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
+const published = JSON.parse(readFileSync(new URL("../pages/e2e-accuracy/summary.json", import.meta.url), "utf8"));
 const historical = structuredClone(published);
 // Exercise the legacy contract even after the published snapshot is refreshed.
 delete historical.snapshot.evaluated_revision;
@@ -112,6 +112,44 @@ test("committed, historical, and topology snapshots pass validation and initiali
     assert.equal(app.element("download-json").href, "./summary.json");
     assert.match(app.element("summary-grid").innerHTML, /Points \(AIC CLI\)/);
   }
+});
+
+test("qualified campaign shows its run and exclusions and rejects unsafe provenance", async () => {
+  const data = withEvaluation();
+  const revision = data.snapshot.evaluated_revision;
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows + 3, published: data.totals.rows,
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 3 },
+    selection_policy: "latest-complete-config-run-v1",
+  };
+  const app = setup(async () => response(data));
+  app.set("revisionFixture", revision);
+  app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture, published_from_commit: null})');
+  await app.run('loadBranch("main")');
+  assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
+  assert.match(app.element("provenance-content").innerHTML, /Qualified e2e-accuracy-web artifact/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisimulate\/blob\//);
+  assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
+  assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
+  for (const change of [
+    { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
+    { advisory: false }, { published: data.totals.rows + 1 },
+    { selection_policy: undefined }, { selection_policy: "unknown-policy" },
+    ...[[], { adapter_unsupported: -1 }, { adapter_unsupported: "1" }, { adapter_unsupported: true }, { unexpected: 1 }]
+      .map(exclusion_reasons => ({ exclusion_reasons })),
+  ]) {
+    const invalid = structuredClone(data);
+    Object.assign(invalid.snapshot.campaign, change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"), /campaign provenance/);
+  }
+  const orphan = structuredClone(data);
+  delete orphan.snapshot.evaluated_revision;
+  app.set("orphan", orphan);
+  assert.throws(() => app.run("validateSummary(orphan)"), /campaign provenance/);
 });
 
 test("legacy summary loads with historical provenance and branch-specific download", async () => {

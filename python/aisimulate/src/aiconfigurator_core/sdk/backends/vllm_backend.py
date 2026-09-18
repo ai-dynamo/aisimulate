@@ -55,7 +55,7 @@ class VLLMBackend(BaseBackend):
     ACTIVATION_COEFFICIENTS = TRTLLMBackend.ACTIVATION_COEFFICIENTS
 
     # Mirror TRT-LLM's MoE workspace accounting (raw h for DEEPSEEK family,
-    # ``_hidden_size`` for GEMMA4MIX/STEP3P7). Plain class-attribute alias to
+    # ``_hidden_size`` for GEMMA4MIX/STEP3P7/DEEPSEEKV4). Plain class-attribute alias to
     # the function object — Python binds it to the VLLMBackend instance at
     # call time; the function does not touch TRTLLMBackend-specific state.
     _moe_workspace_width = TRTLLMBackend._moe_workspace_width

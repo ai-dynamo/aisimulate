@@ -26,6 +26,13 @@ The config/profile route requires neither an op-level model class nor
 per-operation silicon data. Report planning, collection, simulation and measured
 accuracy separately.
 
+## Performance Model Changes
+
+Before changing a performance model, its configuration, or a caller in Rust,
+Python, CLI, Sweeper, Replay, or Planner, MUST read and follow
+[`perfmodel-api.md`](python/aisimulate/.claude/rules/perfmodel-api.md).
+This includes new features and configuration migrations.
+
 ## Required First Step
 
 Before making any change under:

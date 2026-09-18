@@ -16,15 +16,15 @@
   "post_freeze_pins": {
     "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -44,19 +44,19 @@
     },
     "imbalance_scale::decode_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "imbalance_scale::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "imbalance_scale::static_ctx": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "imbalance_scale::static_gen": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "kimi-k25-b200-sglang-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -108,51 +108,51 @@
     },
     "minimax-m25-b200-vllm-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-sampled-prefix::decode_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-sampled-prefix::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-sampled-prefix::static_ctx": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m25-b200-vllm-sampled-prefix::static_gen": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -228,17 +228,17 @@
     }
   },
   "references": {
-    "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": 43.58332153821506,
-    "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": 46.03136681155293,
-    "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": 46.029415749083185,
+    "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": 16.081171352808852,
+    "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": 17.664446149246828,
+    "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": 17.662495086777085,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": 2.213361158220323,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::mixed_step": 11.539696083103436,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_ctx": 11.215364152344467,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_gen": 2.213362545722157,
-    "imbalance_scale::decode_step": 39.01752053715316,
-    "imbalance_scale::mixed_step": 53.71932103484562,
-    "imbalance_scale::static_ctx": 43.88750156247328,
-    "imbalance_scale::static_gen": 39.01750961288222,
+    "imbalance_scale::decode_step": 6.609541889454197,
+    "imbalance_scale::mixed_step": 26.06666001428854,
+    "imbalance_scale::static_ctx": 23.110060488022473,
+    "imbalance_scale::static_gen": 6.60953096518326,
     "kimi-k25-b200-sglang-isl1024-osl2::decode_step": 6.491702647659921,
     "kimi-k25-b200-sglang-isl1024-osl2::mixed_step": 40.250282696160745,
     "kimi-k25-b200-sglang-isl1024-osl2::static_ctx": 39.65105076373316,
@@ -251,18 +251,18 @@
     "minimax-m25-b200-sglang-isl1024-osl2::mixed_step": 28.09828061363558,
     "minimax-m25-b200-sglang-isl1024-osl2::static_ctx": 25.330444037457216,
     "minimax-m25-b200-sglang-isl1024-osl2::static_gen": 7.412970250723051,
-    "minimax-m25-b200-vllm-isl1024-osl2::decode_step": 39.36457150698851,
-    "minimax-m25-b200-vllm-isl1024-osl2::mixed_step": 52.85520178157888,
-    "minimax-m25-b200-vllm-isl1024-osl2::static_ctx": 42.67633133937119,
-    "minimax-m25-b200-vllm-isl1024-osl2::static_gen": 39.36455865490505,
-    "minimax-m25-b200-vllm-sampled-prefix::decode_step": 35.194031677138476,
-    "minimax-m25-b200-vllm-sampled-prefix::mixed_step": 60.67073561230981,
-    "minimax-m25-b200-vllm-sampled-prefix::static_ctx": 68.94160745246145,
-    "minimax-m25-b200-vllm-sampled-prefix::static_gen": 140.77605550543933,
-    "minimax-m27-b200-vllm-isl1024-osl2::decode_step": 39.36457150698851,
-    "minimax-m27-b200-vllm-isl1024-osl2::mixed_step": 52.85520178157888,
-    "minimax-m27-b200-vllm-isl1024-osl2::static_ctx": 42.67633133937119,
-    "minimax-m27-b200-vllm-isl1024-osl2::static_gen": 39.36455865490505,
+    "minimax-m25-b200-vllm-isl1024-osl2::decode_step": 6.956592859289543,
+    "minimax-m25-b200-vllm-isl1024-osl2::mixed_step": 25.202540761021798,
+    "minimax-m25-b200-vllm-isl1024-osl2::static_ctx": 21.898890264920386,
+    "minimax-m25-b200-vllm-isl1024-osl2::static_gen": 6.956580007206089,
+    "minimax-m25-b200-vllm-sampled-prefix::decode_step": 7.81648403057622,
+    "minimax-m25-b200-vllm-sampled-prefix::mixed_step": 33.61569835698758,
+    "minimax-m25-b200-vllm-sampled-prefix::static_ctx": 48.247495936383125,
+    "minimax-m25-b200-vllm-sampled-prefix::static_gen": 31.26586491919031,
+    "minimax-m27-b200-vllm-isl1024-osl2::decode_step": 6.956592859289543,
+    "minimax-m27-b200-vllm-isl1024-osl2::mixed_step": 25.202540761021798,
+    "minimax-m27-b200-vllm-isl1024-osl2::static_ctx": 21.898890264920386,
+    "minimax-m27-b200-vllm-isl1024-osl2::static_gen": 6.956580007206089,
     "nemotron-nas-b200-trtllm-isl1024-osl2::decode_step": 4.86243033208606,
     "nemotron-nas-b200-trtllm-isl1024-osl2::mixed_step": 24.98626430220314,
     "nemotron-nas-b200-trtllm-isl1024-osl2::static_ctx": 24.91795031094951,

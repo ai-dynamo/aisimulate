@@ -6,14 +6,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from aiconfigurator_core.sdk import engine, memory
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile, resolve_fpm_interpolation
+from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, memory
+from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +64,32 @@ def _fail_graph(*_args, **_kwargs):
     raise AssertionError("analytical model construction or timing database was accessed")
 
 
+def _request(profile, method="auto", **overrides):
+    profile = json.loads(profile) if isinstance(profile, str) else profile
+    deployment = profile["deployments"][0] if profile else {}
+    config = {
+        "model": profile["model"] if profile else "test/unknown-decoder",
+        "system": deployment.get("system", "test_gpu"),
+        "backend": "vllm",
+        "backend_version": deployment.get("backend_version", "0.25.1"),
+        "worker_type": "aggregated",
+        "tp": deployment.get("tp", 2),
+        "attention_dp": deployment.get("dp", 1),
+        "moe_tp_size": deployment.get("moe_tp", 2),
+        "moe_ep_size": deployment.get("moe_ep", 1),
+        "estimation_mode": "fpm_interpolation",
+        "fallback_policy": "deny",
+        "fpm_profile": profile,
+        "estimator_config": {"fpm_interpolation": {"method": method}},
+    }
+    config.update(overrides)
+    return config
+
+
+def _normalize(config):
+    return json.loads(engine.aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+
+
 @pytest.fixture
 def direct_compile(monkeypatch):
     monkeypatch.setattr(engine, "get_model", _fail_graph)
@@ -71,16 +99,19 @@ def direct_compile(monkeypatch):
     monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda value: value.encode())
 
     def compile_profile(profile, **kwargs):
+        config = _normalize(_request(profile, kwargs.pop("fpm_interpolation", "auto"), **kwargs))
         return json.loads(
             engine.compile_engine(
-                "test/unknown-decoder",
-                "test_gpu",
-                "vllm",
-                "0.25.1",
-                tp_size=2,
-                moe_tp_size=2,
+                config["model"],
+                config["system"],
+                config["backend"],
+                config["backend_version"],
+                tp_size=config["tp"],
+                moe_tp_size=config["moe_tp_size"],
+                moe_ep_size=config["moe_ep_size"],
                 forward_model="fpm",
-                fpm_profile=profile,
+                fpm_profile=config["fpm_profile"],
+                fpm_interpolation=config["estimator_config"]["fpm_interpolation"]["method"],
                 **kwargs,
             )
         )
@@ -93,7 +124,7 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
     profile = FpmModelProfile.model_validate(profile_dict)
     deployment = profile.deployments[0]
     assert json.loads(spec["engine"]["extra"]["fpm_profile"]) == profile.model_dump(mode="json")
-    assert spec["engine"]["extra"]["fpm_interpolation"] == "direct"
+    assert json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]["method"] == "direct"
     assert spec["engine"]["activation_dtype"] == "fp8"
     for key, phase in (("context_ops", "prefill"), ("generation_ops", "decode")):
         assert len(spec[key]) == 1
@@ -179,9 +210,9 @@ def test_registered_auto_uses_registry_presence_without_constructing(profile_dic
 
     profile = load_fpm_profile(profile_dict)
     monkeypatch.setitem(_MODEL_REGISTRY, profile.architecture, object())
-    assert resolve_fpm_interpolation(profile) == "sol"
-    assert resolve_fpm_interpolation(profile, "direct") == "direct"
-    assert resolve_fpm_interpolation(None) == "sol"
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "sol"
+    assert _normalize(_request(profile_dict, "direct"))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert _normalize(_request(None))["estimator_config"]["fpm_interpolation"]["method"] == "sol"
 
 
 def test_registered_build_failure_is_not_direct_fallback(profile_dict, monkeypatch):
@@ -196,17 +227,9 @@ def test_registered_build_failure_is_not_direct_fallback(profile_dict, monkeypat
         raise RuntimeError("registered model has an unrelated implementation error")
 
     monkeypatch.setattr(engine, "get_model", broken_model)
-    with pytest.raises(RuntimeError, match="unrelated implementation error"):
-        engine.compile_engine(
-            profile_dict["model"],
-            "test_gpu",
-            "vllm",
-            "0.25.1",
-            tp_size=2,
-            moe_tp_size=2,
-            forward_model="fpm",
-            fpm_profile=profile_dict,
-        )
+    monkeypatch.setattr(engine, "_direct_fpm_spec_json", _fail_graph)
+    with pytest.raises(ValueError, match="unrelated implementation error"):
+        RustForwardPassPerfModel.best_available(_request(profile_dict))
     assert observed == ["fp8"]
 
 
@@ -432,15 +455,16 @@ def native_profile_config(profile_dict, monkeypatch):
         ("nvfp4", "int4_wo"),
     ],
 )
-def test_native_recompilation_preserves_profile_precision(profile_dict, native_profile_config, gemm_mode, moe_mode):
+def test_legacy_migration_preserves_profile_precision(profile_dict, native_profile_config, gemm_mode, moe_mode):
     profile_dict["deployments"][0].update(gemm_quant_mode=gemm_mode, moe_quant_mode=moe_mode)
-    compile_config, specs = native_profile_config
-    config = compile_config()
-    native = engine.aiconfigurator_core.RustForwardPassPerfModel.from_native(json.dumps(config))
-    assert json.loads(native.diagnostics())["source"] == "aic"
-    assert len(specs) == 2
-    for phase in ("context_ops", "generation_ops"):
-        assert specs[0][phase] == specs[1][phase]
+    compile_config, _ = native_profile_config
+    canonical = ForwardPassPerfModelConfig.from_legacy_engine_config(compile_config(), "aggregated")
+    resolved = _normalize(canonical.to_dict())
+    assert resolved["gemm_quant_mode"] == gemm_mode
+    assert resolved["moe_quant_mode"] == moe_mode
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert resolved["fpm_profile"] == load_fpm_profile(profile_dict).model_dump(mode="json")
+    assert "extra" not in resolved
 
 
 @pytest.mark.parametrize("field", ["weight_dtype", "moe_dtype", "activation_dtype", "kv_cache_dtype"])
@@ -449,49 +473,41 @@ def test_native_profile_rejects_different_wire_dtype(native_profile_config, fiel
     config = compile_config()
     config[field] = "bfloat16"
     with pytest.raises(ValueError, match="FPM profile identity conflict"):
-        engine.aiconfigurator_core.RustForwardPassPerfModel.best_available(json.dumps(config), "prefill")
+        ForwardPassPerfModelConfig.from_legacy_engine_config(config, "prefill")
 
 
+@pytest.mark.parametrize("mode", ["auto", "fpm_interpolation", "fpm_regression"])
 @pytest.mark.parametrize(
-    "case",
-    ["malformed_profile", "invalid_method", "missing_profile", "unrelated_construction_error", "cp_without_profile"],
+    "case", ["malformed_profile", "invalid_method", "missing_profile", "precision", "missing_version", "version_alias"]
 )
-def test_explicit_fpm_requests_never_become_regression_fallback(profile_dict, native_profile_config, monkeypatch, case):
-    compile_config, _ = native_profile_config
-    config = compile_config()
+def test_invalid_profile_controls_fail_before_any_fallback(profile_dict, monkeypatch, mode, case):
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    config = _request(profile_dict, "direct", estimation_mode=mode, fallback_policy="allow")
     if case == "malformed_profile":
-        config["extra"]["fpm_profile"] = "{}"
+        config["fpm_profile"] = {}
     elif case == "invalid_method":
-        config["extra"]["fpm_interpolation"] = "dierct"
+        config["estimator_config"]["fpm_interpolation"]["method"] = "dierct"
     elif case == "missing_profile":
-        config["extra"].pop("fpm_profile")
-    elif case == "cp_without_profile":
-        config["extra"] = {}
-        config["cp_size"] = 2
+        config["fpm_profile"] = None
+    elif case == "precision":
+        config["gemm_quant_mode"] = "bfloat16"
+    elif case == "missing_version":
+        config["backend_version"] = None
     else:
-        profile_dict["architecture"] = "MiniMaxM2ForCausalLM"
-        config["extra"]["fpm_profile"] = json.dumps(profile_dict)
-        config["extra"]["fpm_interpolation"] = "sol"
-
-        def unrelated_error(*_args, **_kwargs):
-            raise RuntimeError("unrelated construction error")
-
-        monkeypatch.setattr(engine, "get_model", unrelated_error)
-    with pytest.raises(ValueError, match="invalid engine config"):
-        engine.aiconfigurator_core.RustForwardPassPerfModel.best_available(json.dumps(config), "prefill")
+        config["backend_version"] = "current"
+    with pytest.raises(ValueError):
+        RustForwardPassPerfModel.best_available(config)
 
 
-def test_legacy_unsupported_model_can_still_use_regression(native_profile_config, monkeypatch):
+def test_legacy_selector_migrates_to_nested_control(native_profile_config):
     compile_config, _ = native_profile_config
     config = compile_config()
-    config["extra"] = {}
-
-    def unsupported(*_args, **_kwargs):
-        raise ValueError("legacy model is unavailable")
-
-    monkeypatch.setattr(engine, "get_model", unsupported)
-    model = engine.aiconfigurator_core.RustForwardPassPerfModel.best_available(json.dumps(config), "prefill")
-    assert json.loads(model.diagnostics())["source"] == "fallback_regression"
+    config["extra"].pop("estimator_config")
+    config["extra"]["fpm_interpolation"] = "direct"
+    canonical = ForwardPassPerfModelConfig.from_legacy_engine_config(config, "prefill").to_dict()
+    assert canonical["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert "fpm_interpolation" not in canonical
+    assert isinstance(canonical["fpm_profile"], dict)
 
 
 @pytest.mark.parametrize(
@@ -528,20 +544,13 @@ def test_real_fpm_cells_compile_and_query_with_model_construction_disabled(
     monkeypatch.setattr(engine, "get_model", _fail_graph)
     monkeypatch.setattr(engine, "build_model_config", _fail_graph)
     monkeypatch.setattr(engine, "_maybe_load_database", _fail_graph)
-    blob = engine.compile_engine(
-        model,
-        system,
-        "vllm",
-        "0.25.1",
-        tp_size=tp,
-        attention_dp_size=dp,
-        moe_tp_size=moe_tp,
-        moe_ep_size=moe_ep,
-        forward_model="fpm",
-        fpm_profile=profile_dict,
-        fpm_interpolation="direct",
-    )
-    native = aiconfigurator_core.AicEngine.from_spec(blob)
+    forward = RustForwardPassPerfModel.best_available(_request(profile_dict, "direct"))
+    resolved = forward.diagnostics()["provenance"]["config"]
+    assert resolved["estimation_mode"] == "fpm_interpolation"
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert resolved["fpm_profile"] == load_fpm_profile(profile_dict).model_dump(mode="json")
+    assert resolved["gemm_quant_mode"] == gemm
+    assert resolved["fmha_quant_mode"] == fmha
     data_path = Path(aiconfigurator_core.__file__).parent / "systems/data" / system / "vllm/0.25.1"
     rows = pq.read_table(
         data_path / "fpm_forward_perf.parquet",
@@ -556,28 +565,29 @@ def test_real_fpm_cells_compile_and_query_with_model_construction_disabled(
         (row for row in rows if row["workload_kind"] == "decode" and row["kv_seed_regime"] != "fake_fallback"),
         key=lambda row: row["total_kv_read_tokens"],
     )
-    assert native.predict_prefill_latency(1, 1, 0) == pytest.approx(prefill["latency_ms"])
-    assert native.predict_decode_latency_total(1, decode["total_kv_read_tokens"]) == pytest.approx(decode["latency_ms"])
-    # The modular native builder crosses back through Python with the profile
-    # encoded in EngineConfig.extra's existing string map. Exercise this second
-    # transport independently of Python's direct compile_engine entry point.
-    config = {
-        "schema_version": 1,
-        "model_name": model,
-        "system_name": system,
-        "backend": "vllm",
-        "backend_version": "0.25.1",
-        "forward_model": "fpm",
-        "tp_size": tp,
-        "pp_size": 1,
-        "attention_dp_size": dp,
-        "moe_tp_size": moe_tp,
-        "moe_ep_size": moe_ep,
-        "cp_size": 1,
-        "extra": {"fpm_profile": json.dumps(profile_dict), "fpm_interpolation": "direct"},
+    prefill_metrics = {"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}
+    decode_metrics = {
+        "scheduled_requests": {
+            "num_decode_requests": 1,
+            "sum_decode_kv_tokens": decode["total_kv_read_tokens"],
+        }
     }
-    forward = aiconfigurator_core.RustForwardPassPerfModel.from_native(json.dumps(config))
-    assert json.loads(forward.diagnostics())["source"] == "aic"
+    # The expected values are the genuine collected rows at these exact coordinates.
+    assert forward.estimate_forward_pass_time_ms(prefill_metrics) == pytest.approx(prefill["latency_ms"])
+    assert forward.estimate_forward_pass_time_ms(decode_metrics) == pytest.approx(decode["latency_ms"])
+    reloaded = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    assert reloaded.estimate_forward_pass_time_ms(prefill_metrics) == pytest.approx(prefill["latency_ms"])
+    assert reloaded.diagnostics()["provenance"]["config"] == resolved
+    with pytest.raises(PerfDataNotAvailableError, match="direct"):
+        forward.estimate_forward_pass_time_ms(
+            {
+                "scheduled_requests": {
+                    "num_prefill_requests": 1,
+                    "sum_prefill_tokens": 1_000_000,
+                }
+            }
+        )
+    assert forward.diagnostics()["provenance"]["config"] == resolved
 
 
 def test_registered_glm_auto_retains_sol_with_explicit_fp8_fmha(profile_dict, monkeypatch):
@@ -594,19 +604,227 @@ def test_registered_glm_auto_retains_sol_with_explicit_fp8_fmha(profile_dict, mo
 
     monkeypatch.setattr(engine, "get_model", record_model)
     monkeypatch.setattr(engine, "_direct_fpm_spec_json", _fail_graph)
-    blob = engine.compile_engine(
-        "nvidia/GLM-5.2-NVFP4",
-        "b200_sxm",
-        "vllm",
-        "0.25.1",
-        tp_size=1,
-        attention_dp_size=8,
-        moe_tp_size=1,
-        moe_ep_size=8,
-        forward_model="fpm",
-        fpm_profile=profile_dict,
-    )
+    forward = RustForwardPassPerfModel.best_available(_request(profile_dict))
+    resolved = forward.diagnostics()["provenance"]["config"]
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "sol"
     assert len(built_models) == 1
     assert built_models[0].config.fmha_quant_mode.name == "fp8"
     assert built_models[0].context_ops[0]._sol_ops
-    assert engine.EngineHandle(blob).predict_prefill_latency(1, 1) > 0
+    assert (
+        forward.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}
+        )
+        > 0
+    )
+
+
+def test_profile_topology_accepts_dense_tp_without_moe_partition(profile_dict, monkeypatch):
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    profile_dict["num_experts"] = 0
+    profile_dict["deployments"][0]["moe_tp"] = 1
+    resolved = _normalize(_request(profile_dict))
+    assert resolved["tp"] == 2
+    assert resolved["moe_tp_size"] == 1
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_profile_auto_preserves_global_priority_with_deny(profile_dict, monkeypatch, registered):
+    from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+
+    if registered:
+        monkeypatch.setitem(_MODEL_REGISTRY, profile_dict["architecture"], object())
+    attempts = []
+
+    def unavailable(*_args, **kwargs):
+        attempts.append(kwargs["forward_model"])
+        raise RuntimeError("fixture native timing unavailable")
+
+    monkeypatch.setattr(engine, "compile_engine", unavailable)
+    forward = RustForwardPassPerfModel.best_available(_request(profile_dict, "direct", estimation_mode="auto"))
+    provenance = forward.diagnostics()["provenance"]
+    assert attempts == (["op_level", "fpm"] if registered else ["fpm"])
+    assert len(provenance["selection_failures"]) == 2
+    assert provenance["selected_estimation_mode"] == "fpm_regression"
+    assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert (
+        forward.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}
+        )
+        is None
+    )
+
+
+def test_canonical_profile_round_trip_can_size_memory_without_timing(profile_dict, profile_memory, monkeypatch):
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    resolved = json.loads(json.dumps(_normalize(_request(profile_dict))))
+    result = memory.estimate_kv_cache(
+        resolved["model"],
+        resolved["system"],
+        resolved["backend"],
+        resolved["backend_version"],
+        tp_size=resolved["tp"],
+        pp_size=resolved["pp"],
+        attention_dp_size=resolved["attention_dp"],
+        moe_tp_size=resolved["moe_tp_size"],
+        moe_ep_size=resolved["moe_ep_size"],
+        fpm_profile=resolved["fpm_profile"],
+        gemm_quant_mode=resolved["gemm_quant_mode"],
+        moe_quant_mode=resolved["moe_quant_mode"],
+        fmha_quant_mode=resolved["fmha_quant_mode"],
+        kvcache_quant_mode=resolved["kvcache_quant_mode"],
+        comm_quant_mode=resolved["comm_quant_mode"],
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.8,
+    )
+    assert result["source"] == "profile"
+    assert result["total_kv_size_bytes"] == 600  # 1000 * 0.8 - 200 declared non-KV bytes.
+    assert result["total_kv_size_tokens"] == 60  # 600 bytes / 10 declared bytes per token.
+
+
+@pytest.fixture
+def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
+    """Small synthetic cells isolate availability from phase/domain coverage."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import aiconfigurator_core
+
+    profile_dict["deployments"][0].update(system="h200_sxm", attention_backend="future_attention")
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setattr(engine, "get_model", _fail_graph)
+    monkeypatch.setattr(engine, "build_model_config", _fail_graph)
+
+    def make_root(name, kind):
+        root = tmp_path / name
+        root.mkdir()
+        packaged = Path(aiconfigurator_core.__file__).parent / "systems/h200_sxm.yaml"
+        (root / packaged.name).write_bytes(packaged.read_bytes())
+        identity = load_fpm_profile(profile_dict).deployments[0].model_dump(mode="json", exclude={"resources"})
+        coordinates = []
+        if kind in {"genuine", "mixed"}:
+            coordinates.extend([("prefill", 0, "real_kv", 2.0), ("decode", 1, "real_kv", 3.0)])
+        if kind in {"fake", "mixed"}:
+            coordinates.append(("decode", 64, "fake_fallback", 99.0))
+        rows = [
+            {
+                **identity,
+                "model_path": profile_dict["model"],
+                "cell_id": f"synthetic-{phase}-{kv}",
+                "weight_quantization": "synthetic",
+                "workload_kind": phase,
+                "partition_policy": "balanced_v1",
+                "batch_size": 1,
+                "total_prefill_tokens": 1 if phase == "prefill" else 0,
+                "total_kv_read_tokens": kv,
+                "latency_ms": latency,
+                "kv_seed_regime": regime,
+            }
+            for phase, kv, regime, latency in coordinates
+        ]
+        path = root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+        path.parent.mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        path.with_suffix(".metadata.json").write_text(
+            json.dumps(
+                {
+                    "schema_name": "aic_fpm_forward_perf",
+                    "schema_version": 6,
+                    "coordinate_system": "iteration_totals_balanced_v1",
+                    "measurement_policy": "dynamo_native_single_sample_v1",
+                    "system": "h200_sxm",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "row_count": len(rows),
+                    "parquet_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        )
+        return str(root)
+
+    return make_root
+
+
+@pytest.mark.parametrize("fallback", ["deny", "allow"])
+def test_direct_fake_only_cell_is_unavailable(profile_dict, measured_profile_roots, fallback):
+    root = measured_profile_roots("fake", "fake")
+    config = _request(profile_dict, "direct", systems_paths=[root], fallback_policy=fallback)
+    if fallback == "deny":
+        with pytest.raises(PerfDataNotAvailableError, match="no genuine measurements"):
+            RustForwardPassPerfModel.best_available(config)
+        return
+    model = RustForwardPassPerfModel.best_available(config)
+    diagnostics = model.diagnostics()
+    assert diagnostics["readiness"] == "unsupported_config"
+    assert diagnostics["provenance"]["selected_estimation_mode"] == "fpm_regression"
+    assert diagnostics["provenance"]["selected_systems_root"] is None
+    assert "no genuine measurements" in diagnostics["provenance"]["selection_failures"][0]
+    assert (
+        model.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 64}}
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("fallback", ["deny", "allow"])
+@pytest.mark.parametrize(
+    "kinds,selected",
+    [(["genuine"], 0), (["mixed"], 0), (["fake", "genuine"], 1), (["fake", "mixed"], 1), (["genuine", "fake"], 0)],
+)
+def test_direct_availability_uses_first_genuine_root_and_pins_queries(
+    profile_dict, measured_profile_roots, fallback, kinds, selected
+):
+    roots = [measured_profile_roots(str(index), kind) for index, kind in enumerate(kinds)]
+    model = RustForwardPassPerfModel.best_available(
+        _request(profile_dict, "direct", systems_paths=roots, fallback_policy=fallback)
+    )
+    before = model.diagnostics()
+    assert before["readiness"] == "ready"
+    assert before["provenance"]["selected_systems_root"] == roots[selected]
+    assert before["provenance"]["config"]["systems_paths"] == [roots[selected]]
+    # This is the exact, hand-declared genuine decode timing above.
+    assert (
+        model.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}
+        )
+        == 3.0
+    )
+    with pytest.raises(PerfDataNotAvailableError, match="direct"):
+        model.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 64}}
+        )
+    assert model.diagnostics() == before
+
+
+def test_unknown_profile_outer_auto_skips_analytical_backend_parsing(profile_dict, measured_profile_roots):
+    root = measured_profile_roots("genuine", "genuine")
+    model = RustForwardPassPerfModel.best_available(
+        _request(profile_dict, systems_paths=[root], estimation_mode="auto")
+    )
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+    assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert provenance["config"]["attention_backend"] == "future_attention"
+    assert len(provenance["selection_failures"]) == 1
+    assert "registered architecture" in provenance["selection_failures"][0]
+    assert (
+        model.estimate_forward_pass_time_ms(
+            {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}
+        )
+        == 3.0
+    )
+
+
+def test_registered_profile_outer_auto_keeps_op_level_priority_with_inner_direct(profile_dict, monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    profile_dict.update(model="nvidia/GLM-5.2-NVFP4", architecture="GlmMoeDsaForCausalLM")
+    profile_dict["deployments"][0].update(system="b200_sxm", tp=1, dp=8, moe_tp=1, moe_ep=8)
+    monkeypatch.setattr(engine, "_direct_fpm_spec_json", _fail_graph)
+    model = RustForwardPassPerfModel.best_available(_request(profile_dict, "direct", estimation_mode="auto"))
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["selected_estimation_mode"] == "op_level"
+    assert provenance["selection_failures"] == []
+    assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"

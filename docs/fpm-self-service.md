@@ -71,7 +71,7 @@ For both reused and new data, [inspect the published pair](../python/aisimulate/
 
 ### 6. Run predict/recommend and report
 
-[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for prediction and every planned recommendation candidate. Keep `engine.systems_path` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the deployment/workload scope. Failed queries remain coverage gaps, even if other candidates succeed; report the simulation stage as incomplete while required queries fail.
+[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for prediction and every planned recommendation candidate. Keep `engine.systems_paths` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the deployment/workload scope. Failed queries remain coverage gaps, even if other candidates succeed; report the simulation stage as incomplete while required queries fail.
 
 At handoff, include the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
 
@@ -316,7 +316,7 @@ The loop reports each command's exit status and attempts all commands, including
 
 Run either the individual recommendation command or the loop against fresh result directories. The loop also handles a one-candidate plan and does not execute entries from `commands.json`. Results remain separate under `recommend-results/pilot` and, when present, `recommend-results/replicas-N`; compare their objective and latency results for the same workload. This plan does not produce a combined ranking or search additional TP sizes or scheduler settings.
 
-The generated configurations select `engine.workers.aggregated.timing.forward_model: fpm` and set `engine.systems_path` to the plan's absolute local systems directory. The same root supplies hardware and collected FPM data. Recommendation preserves it in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there.
+The generated configurations select `engine.workers.aggregated.timing.estimation_mode: fpm_interpolation` with `fallback_policy: deny`. With a profile, they also set `estimator_config.fpm_interpolation.method: direct`. `engine.systems_paths` contains the plan's absolute local systems directory, which supplies hardware and collected FPM data. Recommendation preserves the resolved root, interpolation method, and complete profile in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there. Existing configurations using the single-root `engine.systems_path` input are normalized to `engine.systems_paths` when saved.
 
 Ordinary `predict` and `recommend` retain their existing defaults when no profile is supplied. Generated configs can be edited through the public schema. A recommendation with a profile enumerates only its declared deployment tuples that fit the GPU budget; it preserves the complete inline profile and interpolation choice in exported prediction configs. Default scheduler search ranges may exceed a profile's envelope, so pin or bound those domains explicitly. A successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
 
@@ -325,10 +325,20 @@ Ordinary `predict` and `recommend` retain their existing defaults when no profil
 Hand off the saved request, pinned model configuration, and plan. Both routes need a canonical checkpoint identity, effective precision and topology, correct weight and KV-cache accounting, and matching whole-forward FPM measurements. Collected timings alone do not establish memory fit.
 
 - **Registered-model/SOL route:** reuse a compatible analytical class or follow [How to Add a New Model](../python/aisimulate/docs/add_a_new_model.md) when choosing to add one. Verify its operation graph, memory/cache accounting, and native FPM SOL execution.
-- **Class-independent direct route:** supply the identity/resource profile and set worker `timing: {type: default, forward_model: fpm, fpm_interpolation: direct}`. The guided planner selects this route whenever a profile is supplied. No operation graph is constructed for resources, timing, or recommendation candidates.
+- **Class-independent direct route:** supply the identity/resource profile and configure the worker as shown below. The guided planner selects this route whenever a profile is supplied. No operation graph is constructed for resources, timing, or recommendation candidates.
 
-`fpm_interpolation: auto` retains SOL for a registered architecture and chooses direct for an unregistered architecture with a profile. Explicit `sol` requires a registered class; explicit `direct` requires a profile. A model-construction error does not trigger a silent change of method. The interpolation setting applies to default FPM timing only.
+```yaml
+timing:
+  type: default
+  estimation_mode: fpm_interpolation
+  fallback_policy: deny
+  estimator_config:
+    fpm_interpolation:
+      method: direct
+```
+
+Within `estimator_config.fpm_interpolation`, `method: auto` retains SOL for a registered architecture and chooses direct for an unregistered architecture with a profile. Explicit `sol` requires a registered class; explicit `direct` requires a profile. Rust validates and selects the method through `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig)`, then pins it for queries and exported configurations. A model-construction error does not trigger a silent change of method. The engine's top-level `estimation_mode: auto` retains the normal priority of operation-level estimation, FPM interpolation, then FPM regression; providing a profile does not change that priority.
 
 Direct timing first uses an exact point or interpolation within a measured curve. Prefill interpolation stays at the same batch size, with two measured KV neighbors whose prompt curves both cover the requested token count. Wider KV bracketing removes the old distance limit only when the narrower direct bracket is unavailable. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
 
-Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Report data coverage and interpolation error separately for your model and deployment.
+Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Report timing coverage and interpolation error separately; successful simulation alone does not establish measured accuracy.

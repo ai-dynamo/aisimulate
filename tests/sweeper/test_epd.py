@@ -176,7 +176,7 @@ def test_positive_power_is_encoder_only():
     report = apply_encoder_overlay(_report(), _spec(power_w=200.0, power_coverage=0.75))
     assert report.metrics["encoder_power_w"] == 200
     assert report.metrics["encoder_power_coverage"] == 0.75
-    assert "power_w" not in report.metrics
+    assert report.metrics["power_w"] is None
 
 
 @pytest.mark.parametrize(
@@ -282,7 +282,7 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
     catalog = {"one": _encoder(), "two": _encoder(workers=2)}
     monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
     monkeypatch.setattr(search_mod, "resolve_encoder_catalog", lambda c: catalog)
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_path=None: "0.5.14")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
     if failure in {"build", "version", "kv"}:
 
         def fail_build(*args, **kwargs):
@@ -707,3 +707,16 @@ def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present)
     )
     with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
         build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("invalid", [None, True, "1"])
+def test_replay_report_rejects_nonnumeric_general_metrics(invalid):
+    with pytest.raises(ValueError, match="completed_requests must be numeric"):
+        ReplayReport({"completed_requests": invalid, "power_w": None, "power_coverage": None})
+
+
+def test_replay_report_allows_nullable_power_with_numeric_general_metrics():
+    report = ReplayReport({"completed_requests": 1.0, "power_w": None, "power_coverage": None})
+    assert report.metrics["completed_requests"] == 1.0
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None

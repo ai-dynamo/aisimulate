@@ -872,7 +872,26 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
     recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
     assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
-    assert prediction.engine.workers.aggregated.timing.fpm_interpolation == "direct"
+    for generated, path in (
+        (prediction, plan / "predict/pilot.yaml"),
+        (recommendation, plan / "recommend/pilot.yaml"),
+    ):
+        assert generated.engine.systems_paths == [str(plan / "systems")]
+        timing = generated.engine.workers.aggregated.timing
+        assert timing.estimation_mode == "fpm_interpolation"
+        assert timing.fallback_policy == "deny"
+        assert timing.estimator_config["fpm_interpolation"]["method"] == "direct"
+        saved_engine = yaml.safe_load(path.read_text())["engine"]
+        assert saved_engine["systems_paths"] == generated.engine.systems_paths
+        assert "systems_path" not in saved_engine
+        assert saved_engine["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
+        saved_timing = saved_engine["workers"]["aggregated"]["timing"]
+        assert saved_timing == {
+            "type": "default",
+            "estimation_mode": "fpm_interpolation",
+            "fallback_policy": "deny",
+            "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+        }
     assert prediction.engine.workers.aggregated.parallelism.tensor == tp
     assert prediction.engine.workers.aggregated.parallelism.attention_data == dp
     assert prediction.engine.workers.aggregated.parallelism.moe_tensor == moe_tp

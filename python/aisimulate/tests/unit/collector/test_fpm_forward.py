@@ -717,7 +717,8 @@ _DSV4_ATTENTION_OPS = {
 @pytest.mark.parametrize(
     ("model_path", "expected_strategies", "expected_memory_rejections"),
     [
-        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep"}, 1),
+        # PR #219 uses residual width for MoE workspace, admitting DEP at 16 GPUs.
+        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep", "dep"}, 0),
         ("sgl-project/DeepSeek-V4-Flash-FP8", {"pure_tp", "tep", "dep"}, 0),
     ],
 )

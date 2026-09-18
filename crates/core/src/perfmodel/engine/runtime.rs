@@ -508,6 +508,17 @@ impl Engine {
         Ok(())
     }
 
+    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+        let Some((prefill, decode)) = self.fpm_ops() else {
+            return super::readiness::validate(
+                &self.db,
+                self.context_ops.iter().chain(&self.generation_ops),
+            );
+        };
+        super::readiness::validate_fpm(&self.db, prefill)?;
+        super::readiness::validate_fpm(&self.db, decode)
+    }
+
     /// Shared perf database handle.
     pub fn database(&self) -> &Arc<PerfDatabase> {
         &self.db
