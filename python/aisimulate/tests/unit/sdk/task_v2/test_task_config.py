@@ -405,6 +405,82 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
     assert mc.wideep_num_slots == 288
 
 
+def test_moe_kernel_source_reaches_qwen38_compute_ops_and_compiled_spec():
+    """A V2 Task pins only Qwen3.8's compute MoE lane, including the native spec."""
+    from aisimulate.sdk import models
+    from aisimulate.sdk.engine import build_engine_spec_json
+    from aisimulate.sdk.operations.moe import MoE, MoEDispatch
+    from aisimulate.sdk.perf_database import get_database
+
+    lane = "sglang_flashinfer_trtllm_moe"
+    task = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+        moe_kernel_source=lane,
+    )
+    model_config = task.build_model_config(role="agg", parallel=(8, 1, 1, 1, 8, 1))
+    assert model_config.moe_kernel_source == lane
+
+    model = models.get_model(task.model_path, model_config, task.backend_name)
+
+    def all_ops(ops):
+        pending = list(ops)
+        while pending:
+            op = pending.pop()
+            yield op
+            for group in ("_group_a", "_group_b", "_fallback"):
+                pending.extend(getattr(op, group, ()) or ())
+
+    ops = list(all_ops([*model.context_ops, *model.generation_ops]))
+    compute_ops = [op for op in ops if isinstance(op, MoE)]
+    dispatch_ops = [op for op in ops if isinstance(op, MoEDispatch)]
+    assert compute_ops
+    assert all(op._moe_kernel_source == lane for op in compute_ops)
+    assert all(not hasattr(op, "_moe_kernel_source") for op in dispatch_ops)
+
+    database = get_database("b200_sxm", "sglang", "0.5.17")
+    spec = json.loads(
+        build_engine_spec_json(
+            model,
+            model_path=task.model_path,
+            system=task.system_name,
+            backend=task.backend_name,
+            backend_version=task.backend_version,
+            kv_block_size=None,
+            systems_path=None,
+            nextn=task.nextn,
+            database=database,
+        )
+    )
+
+    def all_moe_specs(value):
+        if isinstance(value, list):
+            for item in value:
+                yield from all_moe_specs(item)
+        elif isinstance(value, dict):
+            if "Moe" in value:
+                yield value["Moe"]
+            for item in value.values():
+                yield from all_moe_specs(item)
+
+    moe_specs = list(all_moe_specs([spec["context_ops"], spec["generation_ops"]]))
+    assert spec["engine"]["moe_kernel_source"] == lane
+    assert moe_specs
+    assert all(moe["moe_kernel_source"] == lane for moe in moe_specs)
+
+    default_config = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+    ).build_model_config(role="agg")
+    assert default_config.moe_kernel_source is None
+
+
 def test_invalid_attention_backend_rejected():
     with pytest.raises(ValueError, match="attention_backend"):
         Task(

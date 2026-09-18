@@ -105,7 +105,8 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+// - 20 (AIC-1781): MoeOp gained exact `moe_kernel_source` lane identity.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -149,6 +150,10 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Exact collected MoE compute kernel-source lane.  Unlike
+    /// `moe_backend`, this selects one measured MoE table lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,

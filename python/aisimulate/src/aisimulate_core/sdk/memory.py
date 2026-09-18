@@ -279,6 +279,7 @@ class KVCacheEstimator:
         fmha_quant_mode: str | None = None,
         comm_quant_mode: str | None = None,
         moe_backend: str | None = None,
+        moe_kernel_source: str | None = None,
         attention_backend: str | None = None,
         enable_eplb: bool = False,
         wideep_num_slots: int | None = None,
@@ -323,6 +324,7 @@ class KVCacheEstimator:
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1017,6 +1019,7 @@ def estimate_kv_cache(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1111,6 +1114,7 @@ def estimate_kv_cache(
             fmha_quant_mode=fmha_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1123,6 +1127,7 @@ def estimate_kv_cache(
             or enable_eplb
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
+            or moe_kernel_source is not None
             or attention_backend is not None
         ):
             raise ValueError(
@@ -1182,6 +1187,7 @@ def estimate_num_gpu_blocks(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1244,6 +1250,7 @@ def estimate_num_gpu_blocks(
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
         moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
         attention_backend=attention_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,

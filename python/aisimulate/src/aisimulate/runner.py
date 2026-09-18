@@ -98,6 +98,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "forward_model": ("forward_model", "aic_forward_model"),
     "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
     "moe_backend": ("aic_moe_backend",),
+    "moe_kernel_source": ("moe_kernel_source", "aic_moe_kernel_source"),
     "attention_backend": ("aic_attention_backend",),
     "enable_eplb": ("aic_enable_eplb",),
     "wideep_num_slots": ("aic_wideep_num_slots",),
