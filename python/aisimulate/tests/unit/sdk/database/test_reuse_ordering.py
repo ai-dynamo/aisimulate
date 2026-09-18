@@ -868,7 +868,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
 
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm"])
 def test_corrected_024_gemm_uses_declared_025_measurements(system):
-    """Published 0.24 data retains safe primary rows and borrows corrected FP8 block."""
+    """Every unshadowed donor row loads; retained 0.24 primary latencies win."""
     data = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems/data" / system
     old = pq.read_table(data / "gemm/vllm/0.24.0/gemm_perf.parquet").to_pylist()
     fresh = pq.read_table(data / "gemm/vllm/0.25.0/gemm_perf.parquet").to_pylist()
@@ -877,9 +877,15 @@ def test_corrected_024_gemm_uses_declared_025_measurements(system):
     loaded = fetch_table_view(db, "_gemm_data")
     sources = db.data_provenance["gemm_perf.parquet"]
     assert [(s["version"], s["channel"]) for s in sources[:2]] == [("0.24.0", "primary"), ("0.25.0", "declared_reuse")]
-    expected = {
-        (common.GEMMQuantMode[row["gemm_dtype"]], row["m"], row["n"], row["k"]): row["latency"]
-        for row in old + [row for row in fresh if row["gemm_dtype"] == "fp8_block"]
+    expected = {}
+    for row in old + fresh:
+        key = (common.GEMMQuantMode[row["gemm_dtype"]], row["m"], row["n"], row["k"])
+        expected.setdefault(key, row["latency"])
+    actual = {
+        (mode, m, n, k): value["latency"]
+        for mode, ms in loaded.items()
+        for m, ns in ms.items()
+        for n, ks in ns.items()
+        for k, value in ks.items()
     }
-    actual = {(mode, m, n, k): loaded[mode][m][n][k]["latency"] for mode, m, n, k in expected}
     assert actual == expected

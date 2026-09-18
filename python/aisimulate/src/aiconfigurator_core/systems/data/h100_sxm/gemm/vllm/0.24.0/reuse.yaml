@@ -5,5 +5,5 @@ schema_version: 1
 reuse:
   - table: gemm_perf
     from_version: "0.25.0"
-    reason: "Replace removed eager FP8-block timings with graph-timed measurements; see PR #219."
+    reason: "Fill missing GEMM keys, including removed eager FP8-block rows, from graph-timed measurements; all-precision kernel evidence and limits: docs/data/pr244/README.md (PR #244)."
     approved_by: "simone-chen"
