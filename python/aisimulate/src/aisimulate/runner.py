@@ -1033,6 +1033,8 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
             raise TypeError("trace_path must be a non-empty string")
         if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
             raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
+        if workload.get("length_sampler", "python_random") != "python_random":
+            raise ValueError("length_sampler only applies to synthetic replay")
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {

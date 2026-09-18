@@ -8,11 +8,14 @@ import math
 import pickle
 
 import pytest
+from pydantic import ValidationError
 
 import aisimulate
 from aisimulate import aic
+from aisimulate.cli_args import build_parser
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.config.traffic import SyntheticSource
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
 from aisimulate.runner import (
     EngineReplayRunner,
@@ -27,6 +30,7 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
+from aisimulate.sweeper.config import Workload
 
 pytestmark = [
     pytest.mark.unit,
@@ -1475,3 +1479,25 @@ def test_runner_rejects_numpy_seed_above_uint32():
                 }
             )
         )
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "typo"])
+def test_runner_rejects_nondefault_sampler_for_trace(sampler):
+    with pytest.raises(ValueError, match="length_sampler only applies to synthetic replay"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(workload={"trace_path": "unused.jsonl", "length_sampler": sampler})
+        )
+
+
+@pytest.mark.parametrize("schema", [Workload, SyntheticSource])
+def test_length_sampler_is_not_exposed_by_public_workload_schemas(schema):
+    with pytest.raises(ValidationError) as error:
+        schema.model_validate({"length_sampler": "numpy_random_state"})
+    assert any(e["loc"] == ("length_sampler",) and e["type"] == "extra_forbidden" for e in error.value.errors())
+
+
+def test_length_sampler_is_not_exposed_by_public_cli(capsys):
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["predict", "-c", "unused.yaml", "--length-sampler", "numpy_random_state"])
+    assert error.value.code == 2
+    assert "unrecognized arguments: --length-sampler numpy_random_state" in capsys.readouterr().err
