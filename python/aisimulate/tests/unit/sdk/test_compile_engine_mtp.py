@@ -5,13 +5,52 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import engine
+from aiconfigurator.sdk import common, engine
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("system", "explicit", "expected"),
+    [
+        ("h200_sxm", None, common.FMHAQuantMode.bfloat16),
+        ("h200_sxm", "fp8", common.FMHAQuantMode.fp8),
+        ("b200_sxm", None, common.FMHAQuantMode.fp8),
+        ("b300_sxm", None, common.FMHAQuantMode.fp8),
+    ],
+)
+def test_compile_sglang_mla_resolves_compute_before_building_ops(monkeypatch, system, explicit, expected):
+    captured = {}
+
+    def capture(model, **kwargs):
+        captured["model"] = model
+        return "{}"
+
+    monkeypatch.setattr(engine, "build_engine_spec_json", capture)
+    monkeypatch.setattr(engine, "_maybe_load_database", lambda *a, **k: None)
+    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda s: b"")
+    engine.compile_engine(
+        "deepseek-ai/DeepSeek-V3",
+        system,
+        "sglang",
+        "current",
+        tp_size=8,
+        moe_tp_size=8,
+        fmha_quant_mode=explicit,
+        kvcache_quant_mode="bfloat16" if system == "h200_sxm" else "fp8",
+    )
+    model = captured["model"]
+    assert model.config.fmha_quant_mode == expected
+    block = next(op for op in model.context_ops if op._name == "context_mla_block")
+    serialized = json.loads(block._spec_json())["Fallback"]
+    assert serialized["primary"]["MlaModuleContext"]["fmha_quant_mode"] == expected.name
+    attention = next(op["ContextMla"] for op in serialized["fallback"] if "ContextMla" in op)
+    assert attention["fmha_quant_mode"] == expected.name
 
 
 def test_compile_engine_applies_nextn_compute_cost_only(monkeypatch):

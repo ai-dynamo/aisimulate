@@ -123,7 +123,7 @@ SGLANG_DSA_PAGE_SIZE = 64
 _MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "src",
-    "aiconfigurator",
+    "aiconfigurator_core",
     "model_configs",
 )
 _GLM5_DSA_ARCHITECTURE = "GlmMoeDsaForCausalLM"
@@ -1033,6 +1033,7 @@ def load_model_runner(
     target_tp_size: int = 1,
     enable_piecewise_cuda_graph: bool = False,
     max_total_tokens: int | None = None,
+    chunked_prefill_size: int | None = None,
 ):
     """Load SGLang ModelRunner with dummy weights.
 
@@ -1102,6 +1103,7 @@ def load_model_runner(
         disable_prefill_cuda_graph=True,
         kv_cache_dtype=sglang_kv_dtype,
         max_total_tokens=max_total_tokens,
+        chunked_prefill_size=chunked_prefill_size,
         quantization=load_quantization,
     )
 
@@ -1190,6 +1192,22 @@ def load_model_runner(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _validate_mla_projection_precision(attention_module, gemm_type: str) -> None:
+    """Reject rows whose single GEMM label cannot describe the loaded projections."""
+    for name in ("fused_qkv_a_proj_with_mqa", "q_b_proj", "kv_b_proj", "o_proj"):
+        projection = getattr(attention_module, name)
+        method = projection.quant_method
+        config = getattr(method, "quant_config", None)
+        if projection.weight.dtype == torch.bfloat16:
+            actual = "bfloat16"
+        elif projection.weight.dtype == torch.float8_e4m3fn and getattr(config, "weight_block_size", None) is not None:
+            actual = "fp8_block"
+        else:
+            raise ValueError(f"Cannot represent {name} precision with the ordinary MLA module key")
+        if actual != gemm_type:
+            raise ValueError(f"{name} executes {actual}, but the requested module GEMM label is {gemm_type}")
+
+
 def run_attention_torch(
     model_runner,
     test_cases,
@@ -1208,6 +1226,7 @@ def run_attention_torch(
     target_tp_size: int = 1,
     use_module_cuda_graph: bool = False,
     dsa_prefill_backend: str | None = None,
+    ordinary_mla: bool = False,
 ):
     """Run attention benchmark for both prefill and decode phases.
 
@@ -1229,7 +1248,7 @@ def run_attention_torch(
     # mla_dtype="fp8_block", kv_cache_dtype="fp8" for all runs, used the raw
     # backend name as kernel_source, and different op_name / filename patterns.
     # perf_database loaders (load_wideep_*_mla_data) expect these conventions.
-    is_wideep_mla = attn_type == "mla"
+    is_wideep_mla = attn_type == "mla" and not ordinary_mla
 
     if is_wideep_mla:
         log_mla_dtype = "fp8_block"
@@ -1250,6 +1269,16 @@ def run_attention_torch(
 
     def dummy_qkv_latent_func(h, fb):
         return torch.randn(h.shape[0], qkv_latent_dim, dtype=h.dtype, device=h.device)
+
+    if ordinary_mla:
+        if attn_type != "mla" or any(not case[2] for case in test_cases):
+            raise ValueError("ordinary_mla collects MLA context modules only")
+        _validate_mla_projection_precision(attention_module, gemm_type)
+        # SGLang 0.5.14 (4289f36), deepseek_v2.py:1902-1921,
+        # 2068: serving supplies this method to AttentionInputs. Invoke the
+        # framework method so its fused/quantized projection dispatch is kept.
+        dummy_qkv_latent_func = attention_module.prepare_qkv_latent
+        log_mla_dtype = "fp8" if backend_name == "trtllm_mla" and kv_cache_dtype == "fp8" else "bfloat16"
 
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
@@ -1288,6 +1317,7 @@ def run_attention_torch(
                     prefix_len=prefix_len,
                     use_module_cuda_graph=use_module_cuda_graph,
                     dsa_prefill_backend=resolved_dsa_prefill_backend,
+                    ordinary_mla=ordinary_mla,
                 )
             )
         else:
@@ -1344,11 +1374,12 @@ def _run_prefill(
     prefix_len: int = 0,
     use_module_cuda_graph: bool = False,
     dsa_prefill_backend: str | None = None,
+    ordinary_mla: bool = False,
 ):
     """Run prefill (context) benchmark for a single (batch_size, seq_length) point."""
     from array import array
 
-    is_wideep_mla = attn_type == "mla"
+    is_wideep_mla = attn_type == "mla" and not ordinary_mla
     from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
@@ -1449,6 +1480,8 @@ def _run_prefill(
         # (flashmla_backend.py), NOT a bs*seq shared-memory cap -- no smem limit.
         _chunk_cap = _runtime_chunk_size(model_runner)
         if token_count > _chunk_cap:
+            if ordinary_mla:
+                raise ValueError(f"Single module has {token_count} tokens, exceeding runtime chunk size {_chunk_cap}")
             print(
                 f"  SKIP oversized prefill: token_count(bs*seq)={token_count} > "
                 f"chunked_prefill_size={_chunk_cap}; serve chunks this, not a one-shot shape.",
@@ -1801,6 +1834,14 @@ def _run_prefill(
             return {}
 
         def call_attention_module():
+            if ordinary_mla:
+                # communicator.py:235-246 caches QKV within AttentionInputs.
+                # Serving constructs fresh inputs per layer/forward (:685-689).
+                # Reset inside EVERY timed iteration, including warmup, so the
+                # down-projection is measured rather than reused from warmup.
+                get_attn_tp_context().set_attn_inputs(
+                    AttentionInputs(hidden_states, forward_batch, dummy_qkv_latent_func)
+                )
             with forward_context(forward_context_type(attn_backend=model_runner.attn_backend)):
                 if use_module_piecewise_context:
                     with (
@@ -2326,6 +2367,8 @@ def run_mla_module(
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
+    ordinary_mla: bool = False,
+    chunked_prefill_size: int | None = None,
 ):
     """Run MLA/DSA module benchmark — called inside a subprocess.
 
@@ -2339,6 +2382,8 @@ def run_mla_module(
     existing ``_dsa_skip_indexer_enabled`` call sites need no signature change.
     """
     global _SKIP_INDEXER_PASS
+    if chunked_prefill_size is not None and chunked_prefill_size <= 0:
+        raise ValueError("chunked_prefill_size must be positive for one-shot module collection")
     _SKIP_INDEXER_PASS = skip_indexer
     device = f"cuda:{gpu_id}"
     torch.cuda.set_device(device)
@@ -2472,7 +2517,7 @@ def run_mla_module(
             from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
         except ModuleNotFoundError:
             from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        _chunk_cap = _sglang_chunked_prefill_size()
+        _chunk_cap = _sglang_chunked_prefill_size() if chunked_prefill_size is None else chunked_prefill_size
         _before_chunk = len(cases)
         cases = [c for c in cases if c[0] * c[1] <= _chunk_cap]
         _dropped_chunk = _before_chunk - len(cases)
@@ -2523,6 +2568,7 @@ def run_mla_module(
             target_tp_size=target_tp_size,
             enable_piecewise_cuda_graph=enable_runner_piecewise_cuda_graph,
             max_total_tokens=max_total_tokens,
+            chunked_prefill_size=chunked_prefill_size,
         )
 
         if is_prefill and attn_type == "dsa":
@@ -2578,6 +2624,7 @@ def run_mla_module(
             target_tp_size=target_tp_size,
             use_module_cuda_graph=use_module_cuda_graph,
             dsa_prefill_backend=dsa_prefill_backend,
+            ordinary_mla=ordinary_mla,
         )
         if logged_count == 0:
             raise RuntimeError(
@@ -2613,6 +2660,8 @@ def _run_mla_subprocess(
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
+    ordinary_mla: bool = False,
+    chunked_prefill_size: int | None = None,
 ):
     """Run MLA/DSA benchmark in a subprocess with CUDA_VISIBLE_DEVICES isolation."""
     env = os.environ.copy()
@@ -2629,7 +2678,8 @@ def _run_mla_subprocess(
         f'run_mla_module("{attn_type}", {head_num}, "{model_path}", '
         f'"{kv_cache_dtype}", "{compute_dtype}", "{gemm_type}", {is_prefill}, '
         f"0, {output_repr}, {backend_repr}, {batch_filter_repr}, {target_tp_size}, "
-        f"{dsa_backend_repr}, skip_indexer={skip_indexer})\n"
+        f"{dsa_backend_repr}, skip_indexer={skip_indexer}, ordinary_mla={ordinary_mla}, "
+        f"chunked_prefill_size={chunked_prefill_size!r})\n"
     )
 
     proc = subprocess.Popen(
@@ -2691,6 +2741,7 @@ def run_mla_module_worker(
     *,
     perf_filename: str,
     device: str = "cuda:0",
+    chunked_prefill_size: int | None = None,
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
@@ -2754,6 +2805,8 @@ def run_mla_module_worker(
         target_tp_size=target_tp_size,
         dsa_prefill_backend=dsa_prefill_backend,
         skip_indexer=skip_indexer,
+        ordinary_mla=os.path.basename(perf_filename) == "mla_context_module_perf.txt",
+        chunked_prefill_size=chunked_prefill_size,
     )
 
 
@@ -2771,12 +2824,25 @@ def main():
     parser = argparse.ArgumentParser(description="SGLang MLA/DSA Module Benchmark")
     parser.add_argument("--mode", choices=["context", "generation"], required=True)
     parser.add_argument("--attn-type", choices=["mla", "dsa"], default=None, help="If not set, runs both")
+    parser.add_argument(
+        "--ordinary-mla",
+        action="store_true",
+        help="Collect the complete MLA context module, including down-projection, using its ordinary table",
+    )
     parser.add_argument("--model", type=str, default=None, help="HuggingFace model path")
     parser.add_argument("--num-heads", type=int, default=None, help="Filter by head count")
+    parser.add_argument("--target-tp-size", type=int, default=None, help="Serving TP size; derives per-rank heads")
     parser.add_argument("--kv-cache-dtype", choices=["bfloat16", "fp8"], default=None)
+    parser.add_argument("--chunked-prefill-size", type=int, default=None, help="Serving prefill chunk limit in tokens")
     parser.add_argument("--output-path", default=None, help="Output directory for perf files")
     parser.add_argument("--device", default="cuda:0", help="CUDA device")
     args = parser.parse_args()
+    if args.ordinary_mla and (args.mode != "context" or args.attn_type != "mla"):
+        parser.error("--ordinary-mla requires --mode context --attn-type mla")
+    if args.target_tp_size is not None and args.target_tp_size <= 0:
+        parser.error("--target-tp-size must be positive")
+    if args.num_heads is not None and args.num_heads <= 0:
+        parser.error("--num-heads must be positive")
 
     # Determine which attn_types to run
     if args.attn_type:
@@ -2784,6 +2850,7 @@ def main():
     else:
         attn_types = sorted({spec.attention_type for spec in get_mla_module_model_specs(apply_model_filter=False)})
 
+    failed_dispatches = 0
     for attn_type in attn_types:
         # Determine models
         if args.model:
@@ -2805,12 +2872,22 @@ def main():
                 if args.num_heads
                 else [h for h in get_mla_module_sweep_spec("sglang").inner_sweep_head_counts if h <= native_heads]
             )
+            if args.target_tp_size is not None:
+                if native_heads % args.target_tp_size:
+                    parser.error("--target-tp-size must divide the model's native head count")
+                local_heads = native_heads // args.target_tp_size
+                if args.num_heads is not None and args.num_heads != local_heads:
+                    parser.error("--num-heads must equal native heads / --target-tp-size")
+                head_nums = [local_heads]
+            if args.ordinary_mla and any(native_heads % heads for heads in head_nums):
+                parser.error("ordinary MLA per-rank heads must divide the model's native head count")
 
             for compute_dtype, kv_dtype, gemm_type in _get_precision_combos(args.mode):
                 if args.kv_cache_dtype and kv_dtype != args.kv_cache_dtype:
                     continue
 
                 for head_num in head_nums:
+                    target_tp_size = args.target_tp_size or (native_heads // head_num if args.ordinary_mla else 1)
                     is_prefill = args.mode == "context"
                     gpu_id = int(args.device.split(":")[-1]) if ":" in args.device else 0
                     try:
@@ -2824,12 +2901,19 @@ def main():
                             is_prefill=is_prefill,
                             gpu_id=gpu_id,
                             output_path=args.output_path,
+                            target_tp_size=target_tp_size,
+                            ordinary_mla=args.ordinary_mla,
+                            chunked_prefill_size=args.chunked_prefill_size,
                         )
                     except Exception as e:
+                        failed_dispatches += 1
                         print(f"  FAILED: {e}")
                         traceback.print_exc()
 
     print(f"\n{'=' * 50}")
+    if failed_dispatches:
+        print(f"COLLECTION FAILED: {failed_dispatches} dispatches failed")
+        raise SystemExit(1)
     print("ALL TESTS COMPLETED")
     print(f"{'=' * 50}")
 
