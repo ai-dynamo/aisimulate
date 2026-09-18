@@ -3,7 +3,7 @@
 
 //! Shared resolver engine for perf-table interpolation (v2).
 //!
-//! Rust port of `src/aiconfigurator/sdk/perf_interp/engine.py` — the SAME
+//! Rust port of `src/aisimulate/sdk/perf_interp/engine.py` — the SAME
 //! resolution chain, so the compiled engine-step backend and the Python SDK
 //! answer queries identically:
 //!

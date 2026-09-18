@@ -31,7 +31,7 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisimulate/
-      - python/aisimulate/src/aisimulate/aic.py
+      - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
@@ -54,6 +54,7 @@ areas:
       - tests/test_stack_discovery.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
+      - tests/test_ngram_cli.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
       - tests/fixtures/power-contract-v1.json
@@ -144,7 +145,7 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
     owners: [forward-pass-engine, sweeper, replay, maintainers]
-  - glob: python/aisimulate/src/aisimulate/aic.py
+  - glob: python/aisimulate/src/aisimulate/capacity.py
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_aic.py
     owners: [forward-pass-engine, maintainers]
@@ -195,6 +196,8 @@ shared:
   - glob: tests/test_power_diagnostics.py
     owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]

@@ -30,7 +30,7 @@ def main():
     default_output = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "src",
-        "aiconfigurator",
+        "aisimulate_core",
         "systems",
         "support_matrix",
     )

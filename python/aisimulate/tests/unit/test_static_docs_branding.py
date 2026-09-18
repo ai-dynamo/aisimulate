@@ -31,7 +31,7 @@ def test_support_matrix_uses_aisimulate_navigation_and_data():
     assert "DATA_REPO" not in page
     assert "PUBLIC_DATA" not in page
     assert "raw.githubusercontent.com" not in page
-    assert "python/aisimulate/src/aiconfigurator_core/systems/support_matrix" in page
+    assert "python/aisimulate/src/aisimulate_core/systems/support_matrix" in page
     assert "Release branches..." not in page
     assert "matching-refs/heads/release" not in page
     assert "HARDCODED_RELEASE_BRANCHES" not in page
@@ -71,4 +71,4 @@ def test_package_readme_only_exposes_current_static_page_entrypoints():
     assert "[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)" in readme
     assert "[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)" in readme
     assert "release branches" not in readme
-    assert "[per-system CSV files](src/aiconfigurator_core/systems/support_matrix)" in readme
+    assert "[per-system CSV files](src/aisimulate_core/systems/support_matrix)" in readme

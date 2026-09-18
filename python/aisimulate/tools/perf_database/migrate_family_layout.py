@@ -53,7 +53,7 @@ import yaml
 logger = logging.getLogger("migrate_family_layout")
 
 # Textually identical to the CANONICAL _KNOWN_BACKEND_DIRS in
-# aic-core/src/aiconfigurator_core/sdk/operations/base.py, which lists every
+# src/aisimulate_core/sdk/operations/base.py, which lists every
 # copy that must stay in sync (this standalone tool cannot import aic-core).
 KNOWN_BACKEND_DIRS = frozenset({"trtllm", "sglang", "vllm", "nccl", "oneccl"})
 

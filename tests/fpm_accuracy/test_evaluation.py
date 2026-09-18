@@ -3,6 +3,7 @@
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
@@ -242,6 +243,91 @@ def test_legacy_regression_is_unavailable_without_changing_measurement_membershi
     assert metric["measured_count"] == metric["unavailable_count"] == 12
     assert metric["error_count"] == metric["predicted_count"] == 0
     assert result["warmup"]["metrics"]["all"]["predicted_count"] == 12
+
+
+def test_real_regression_uses_canonical_identity_and_options(case):
+    pytest.importorskip("aisimulate_core.sdk")
+    from fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options={"max_observations": 32, "min_observations": 6},
+    )
+    predictor = aic_predictors.AicRegressionPredictor.create(context)
+    try:
+        config = predictor.diagnostics()["provenance"]["config"]
+        assert config["worker_type"] == "decode"
+        assert config["estimation_mode"] == "fpm_regression"
+        assert config["fallback_policy"] == "deny"
+        assert config["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
+        assert config["estimator_config"]["fpm_regression"]["min_observations"] == 6
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize("mode", ["fpm", "regression"])
+@pytest.mark.parametrize("canonical", [True, False])
+def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, monkeypatch, mode, canonical):
+    from fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    if canonical:
+        pytest.importorskip("aisimulate_core.sdk")
+    else:
+        monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: None)
+    calls = []
+
+    class Model:
+        @classmethod
+        def best_available(cls, config):
+            assert canonical
+            calls.append(config.to_dict())
+            return cls()
+
+        @classmethod
+        def from_native(cls, config, options):
+            assert not canonical
+            calls.append((config, options))
+            return cls()
+
+        @classmethod
+        def from_regression(cls, worker_type, options):
+            assert not canonical
+            calls.append((worker_type, options))
+            return cls()
+
+        def regression_store_diagnostics(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: Model)
+    monkeypatch.setattr(
+        aic_predictors,
+        "prepare_aic_fpm_database",
+        lambda *args: SimpleNamespace(
+            systems_root=tmp_path,
+            close=lambda: None,
+        ),
+    )
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options={"max_observations": 32},
+        fpm_artifact=object(),
+    )
+    cls = aic_predictors.AicFpmPredictor if mode == "fpm" else aic_predictors.AicRegressionPredictor
+    predictor = cls.create(context)
+    predictor.close()
+    assert len(calls) == 1
+    if canonical:
+        assert calls[0]["worker_type"] == "decode"
+        assert calls[0]["estimation_mode"] == ("fpm_interpolation" if mode == "fpm" else "fpm_regression")
+        assert calls[0]["fallback_policy"] == "deny"
+        assert calls[0]["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
+        if mode == "fpm":
+            assert calls[0]["systems_paths"] == [str(tmp_path)]
 
 
 def test_micro_mape_and_variant_order():

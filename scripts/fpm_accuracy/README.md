@@ -22,6 +22,10 @@ that all of these observations were deliberately filtered out.
 Native AISim imports remain deferred in the adapted adapters so parser and fake
 predictor tests work without an installed native extension. The real campaign
 checks that the native SDK is installed before evaluating any case.
+When the evaluated wheel provides `ForwardPassPerfModelConfig`, both FPM and
+regression use `best_available(config)`, with explicit mode, worker identity,
+and migrated tuning options. Legacy constructors are used only to evaluate
+older branch wheels that do not provide the canonical configuration type.
 
 Hub cache loading supports repository-local blobs and the marked cache-wide
 shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the

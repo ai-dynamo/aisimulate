@@ -16,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,

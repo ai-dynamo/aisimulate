@@ -31,7 +31,7 @@ pub(crate) struct BucketedSamples<T> {
     axis_min: Vec<f64>,
     axis_max: Vec<f64>,
     fixed_bounds: bool,
-    buckets_per_axis: usize,
+    buckets_per_axis: Vec<usize>,
     max_observations: usize,
 }
 
@@ -52,10 +52,16 @@ impl AxisRange {
 
 impl<T: Clone> BucketedSamples<T> {
     pub(crate) fn new_dynamic(options: &ForwardPassPerfOptions, ndim: usize) -> Self {
-        let buckets_per_axis = if ndim == 1 {
-            options.bucket_count
+        let buckets_per_axis = if let Some(shape) = options.bucket_shape {
+            if ndim == 1 {
+                vec![shape[0] * shape[1]]
+            } else {
+                shape.to_vec()
+            }
+        } else if ndim == 1 {
+            vec![options.bucket_count]
         } else {
-            integer_sqrt(options.bucket_count)
+            vec![integer_sqrt(options.bucket_count); ndim]
         };
         Self {
             buckets: HashMap::new(),
@@ -63,7 +69,7 @@ impl<T: Clone> BucketedSamples<T> {
             axis_min: vec![f64::INFINITY; ndim],
             axis_max: vec![f64::NEG_INFINITY; ndim],
             fixed_bounds: false,
-            buckets_per_axis: buckets_per_axis.max(1),
+            buckets_per_axis,
             max_observations: options.max_observations,
         }
     }
@@ -118,8 +124,9 @@ impl<T: Clone> BucketedSamples<T> {
                 if hi <= lo {
                     0
                 } else {
-                    let idx = ((*value - lo) / (hi - lo) * self.buckets_per_axis as f64) as isize;
-                    idx.clamp(0, self.buckets_per_axis as isize - 1) as usize
+                    let idx =
+                        ((*value - lo) / (hi - lo) * self.buckets_per_axis[i] as f64) as isize;
+                    idx.clamp(0, self.buckets_per_axis[i] as isize - 1) as usize
                 }
             })
             .collect()
@@ -150,8 +157,8 @@ impl<T: Clone> BucketedSamples<T> {
                 return None;
             }
 
-            let idx = ((*value - lo) / (hi - lo) * self.buckets_per_axis as f64) as isize;
-            key.push(idx.clamp(0, self.buckets_per_axis as isize - 1) as usize);
+            let idx = ((*value - lo) / (hi - lo) * self.buckets_per_axis[i] as f64) as isize;
+            key.push(idx.clamp(0, self.buckets_per_axis[i] as isize - 1) as usize);
         }
         Some(key)
     }

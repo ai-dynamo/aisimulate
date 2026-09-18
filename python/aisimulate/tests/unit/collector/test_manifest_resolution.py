@@ -4,7 +4,6 @@
 """Per-op runtime resolution tests (Collector V3 spec §4)."""
 
 import pytest
-
 from collector.framework_manifest import resolve_op_runtime, validate_resolution
 
 pytestmark = pytest.mark.unit

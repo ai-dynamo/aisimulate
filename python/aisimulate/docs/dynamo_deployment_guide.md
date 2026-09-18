@@ -32,7 +32,7 @@ the workflow; it does not establish the best possible deployment.
 | Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
 The Dynamo/backend pair is recorded in the generator's
-[version matrix](../src/aiconfigurator/generator/facts/runtimes/dynamo.yaml).
+[version matrix](../src/aisimulate/generator/facts/runtimes/dynamo.yaml).
 These pins make the intended environment explicit; local artifact generation
 is not a GPU deployment qualification. Before serving, verify the image's
 actual versions and the target machine's driver/GPU requirements using the
@@ -84,8 +84,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from aiconfigurator.generator.api import generate_from_request
-from aiconfigurator.generator.request import from_sweeper_candidate
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import from_sweeper_candidate
 
 parser = argparse.ArgumentParser(description="Render a selected recommendation")
 parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")

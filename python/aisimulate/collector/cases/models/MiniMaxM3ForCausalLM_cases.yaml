@@ -15,7 +15,7 @@ description: >
   (shared_intermediate_size 3072). The MSA module is collected via the
   msa_*_module ops (attention_type: msa under mla_module); the dense
   layers' cost is approximated as MSA+MoE by the SDK model
-  (aiconfigurator_core/sdk/models/minimax_m3.py docstring), so no dense
+  (aisimulate_core/sdk/models/minimax_m3.py docstring), so no dense
   attention profile is declared.
 
 model_case_values:

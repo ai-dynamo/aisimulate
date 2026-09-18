@@ -21,7 +21,7 @@ autotuned pipeline, optionally folding the next RMSNorm), while this
 collector measures ``pre_mapping`` (no norm fold) and ``post_mapping``
 standalone, because the SDK's DeepSeekV4 model bills mhc_pre + attn_norm
 (ElementWise) + mhc_post as separate per-layer ops
-(aic-core/src/aiconfigurator_core/sdk/models/deepseek_v4.py) — fusing the
+(src/aisimulate_core/sdk/models/deepseek_v4.py) — fusing the
 norm here would double-count it downstream. Measured on H20-3e (SM90,
 hc_mult=4, hidden 4096/7168, 2026-08-05): fused_hc = 0.80x of pre+post at
 M=16 (decode), but 3.8-6.5x SLOWER at M=1024/8192 — on pre-SM100 the
@@ -78,7 +78,7 @@ ARCHITECTURE = "DeepseekV4ForCausalLM"
 DEFAULT_HIDDEN_SIZE = 4096
 DEFAULT_HC_MULT = 4
 # hc_sinkhorn_iters/hc_eps from the DeepSeek-V4 checkpoint configs
-# (src/aiconfigurator/model_configs/deepseek-ai--DeepSeek-V4-*_config.json:
+# (src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-*_config.json:
 # hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6). The remaining mHC ctor
 # defaults (norm_eps/sinkhorn_eps=1e-6, post_mult_value=1.0) are the module's
 # own serving defaults (hyper_connection.py mHC.__init__ @1.3.0rc20).

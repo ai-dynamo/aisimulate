@@ -9,7 +9,6 @@ from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 from collector.helper import create_test_case_id
 
 pytestmark = pytest.mark.unit

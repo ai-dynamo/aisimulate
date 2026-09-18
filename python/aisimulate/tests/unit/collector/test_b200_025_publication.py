@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.perf_database import _database_version_dir_is_declared, _load_collection_meta_yaml
+from aisimulate.sdk.perf_database import _database_version_dir_is_declared, _load_collection_meta_yaml
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[3]
-DATA = ROOT / "src/aiconfigurator_core/systems/data/b200_sxm"
+DATA = ROOT / "src/aisimulate_core/systems/data/b200_sxm"
 
 
 def test_published_025_metadata_loads_and_is_discoverable():

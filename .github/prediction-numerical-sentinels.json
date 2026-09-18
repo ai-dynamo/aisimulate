@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_source_sha": "a4c77310d7609745863ac8867c207f850beac5c3",
+  "baseline_source_sha": "af91885dfdeddedebd256c0c4df11a6f3e75e97e",
   "interpretation": "Native prediction stability sentinels; not measured-hardware accuracy. Two percent relative and 0.0001 ms absolute tolerance permit small numerical changes; baseline changes require explained review.",
   "cases": [
     {
@@ -102,7 +102,7 @@
         "moe_tp_size": 1,
         "moe_ep_size": 8,
         "database_mode": "SILICON",
-        "shared_layer": false,
+        "shared_layer": true,
         "forward_model": "op_level"
       },
       "method": "predict_prefill_latency",
@@ -111,7 +111,7 @@
         "isl": 1024,
         "prefix": 0
       },
-      "expected_ms": 42.67633133937119,
+      "expected_ms": 21.898890264920386,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -126,7 +126,7 @@
         "moe_tp_size": 1,
         "moe_ep_size": 8,
         "database_mode": "SILICON",
-        "shared_layer": false,
+        "shared_layer": true,
         "forward_model": "op_level"
       },
       "method": "predict_prefill_latency",
@@ -135,7 +135,7 @@
         "isl": 8192,
         "prefix": 128
       },
-      "expected_ms": 116.4093545460498,
+      "expected_ms": 98.96825693463862,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -150,7 +150,7 @@
         "moe_tp_size": 1,
         "moe_ep_size": 8,
         "database_mode": "SILICON",
-        "shared_layer": false,
+        "shared_layer": true,
         "forward_model": "op_level"
       },
       "method": "predict_decode_latency",
@@ -159,7 +159,7 @@
         "isl": 1024,
         "osl": 2
       },
-      "expected_ms": 39.36455865490505,
+      "expected_ms": 6.956580007206089,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -174,7 +174,7 @@
         "moe_tp_size": 1,
         "moe_ep_size": 8,
         "database_mode": "SILICON",
-        "shared_layer": false,
+        "shared_layer": true,
         "forward_model": "op_level"
       },
       "method": "predict_decode_latency",
@@ -183,7 +183,7 @@
         "isl": 8192,
         "osl": 256
       },
-      "expected_ms": 7396.437641058326,
+      "expected_ms": 2192.9660386705996,
       "rtol": 0.02,
       "atol_ms": 0.0001
     }

@@ -150,7 +150,7 @@ Quant-sensitive checkpoint artifacts use separate model rows even when all
 geometry fields are identical.
 
 Artifact-keyed vLLM MoE rows also require a checked-in
-`src/aiconfigurator/model_configs/<org>--<model>_config.json`. The collector
+`src/aisimulate_core/model_configs/<org>--<model>_config.json`. The collector
 uses that local structural config to reproduce serving routing without a Hub
 download.
 

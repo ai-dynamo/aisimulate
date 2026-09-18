@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from aiconfigurator.generator.builders.dgd_model import DGD
+from aisimulate.generator.builders.dgd_model import DGD
 
 # Tokens a YAML 1.1 parser resolves to a boolean (Kubernetes' behavior).
 BOOLISH_TOKENS = ["y", "Y", "n", "N", "yes", "no", "on", "off", "true", "false", "YES", "Off"]

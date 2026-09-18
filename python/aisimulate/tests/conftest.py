@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from aiconfigurator.cli.main import configure_parser as configure_cli_parser
+from aisimulate.legacy_cli.main import configure_parser as configure_cli_parser
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

@@ -12,7 +12,7 @@ enumeration. Version-agnostic by construction: no literal is pinned.
 
 import pytest
 
-from aiconfigurator_core.sdk import perf_database
+from aisimulate_core.sdk import perf_database
 
 pytestmark = pytest.mark.unit
 

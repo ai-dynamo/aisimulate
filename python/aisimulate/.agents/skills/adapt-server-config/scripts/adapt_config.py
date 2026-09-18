@@ -15,8 +15,8 @@ from typing import Any
 
 import jsonschema
 
-from aiconfigurator.cli.api import cli_estimate
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.legacy_cli.api import cli_estimate
+from aisimulate.sdk.config_adapter import (
     AdaptationOutcome,
     AdaptationReport,
     AdapterOverrides,
@@ -41,7 +41,7 @@ def _json_object(value: str) -> dict[str, Any]:
 
 
 def _schema() -> dict[str, Any]:
-    resource = files("aiconfigurator.sdk.config_adapter") / "schemas" / "estimate-request-v1.schema.json"
+    resource = files("aisimulate.sdk.config_adapter") / "schemas" / "estimate-request-v1.schema.json"
     parsed = json.loads(resource.read_text())
     if not isinstance(parsed, dict):
         raise TypeError("packaged estimate-request schema must be an object")

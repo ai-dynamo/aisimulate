@@ -5,7 +5,7 @@
 
 //! Attention operators: context, generation, encoder.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.attention.{ContextAttention,
+//! Mirrors `aisimulate.sdk.operations.attention.{ContextAttention,
 //! GenerationAttention, EncoderAttention}`. Each holds its config-time
 //! attention shape (n, n_kv, head_size, window_size, quant modes) and
 //! wraps the raw `AttentionTable` query with:
@@ -1350,7 +1350,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -2179,7 +2179,7 @@ mod tests {
     fn b200_sglang_0514_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.14").expect("db must load")
     }
 
