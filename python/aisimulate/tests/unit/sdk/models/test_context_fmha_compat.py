@@ -16,8 +16,9 @@ from types import SimpleNamespace
 import pytest
 
 import aiconfigurator.sdk.models.helpers as helpers
-from aiconfigurator.sdk import common, config, inference_session, models, sweep
+from aiconfigurator.sdk import common, config, inference_session, models, pareto_analysis, sweep
 from aiconfigurator.sdk.models import resolve_context_fmha_by_data
+from aiconfigurator_core.sdk import models as canonical_models
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +26,18 @@ pytestmark = pytest.mark.unit
 @pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
 @pytest.mark.parametrize(
     "entry",
-    ["agg", "prefill", "decode", "static_ctx", "static_gen", "run_disagg", "afd_prefill", "afd_decode", "afd_both"],
+    [
+        "agg",
+        "agg_pareto",
+        "prefill",
+        "decode",
+        "static_ctx",
+        "static_gen",
+        "run_disagg",
+        "afd_prefill",
+        "afd_decode",
+        "afd_both",
+    ],
 )
 def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, explicit):
     # Stop after real model construction: this checks the final native op
@@ -43,6 +55,7 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
         return captured[-1]
 
     monkeypatch.setattr(sweep, "get_model", capture)
+    monkeypatch.setattr(pareto_analysis, "get_model", capture)
     monkeypatch.setattr(models, "get_model", capture)
     db = SimpleNamespace(version="0.5.14", system_spec={"gpu": {"sm_version": 90}})
     backend = SimpleNamespace(name=SimpleNamespace(value="sglang"))
@@ -51,7 +64,9 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
     path = "deepseek-ai/DeepSeek-V3"
     parallel = [(8, 1, 1, 8, 1, 1)]
     with pytest.raises(ModelBuilt):
-        if entry == "agg":
+        if entry == "agg_pareto":
+            pareto_analysis.agg_pareto(path, rt, db, "sglang", mc, parallel)
+        elif entry == "agg":
             sweep.sweep_agg(
                 model_path=path,
                 model_config=mc,
@@ -101,6 +116,12 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
         assert mc.fmha_quant_mode == explicit
     if entry.startswith("afd_"):
         assert captured[1].config.fmha_quant_mode == expected
+
+
+def test_mla_precision_resolver_export_identity():
+    assert "resolve_sglang_mla_compute" in canonical_models.__all__
+    assert canonical_models.resolve_sglang_mla_compute is helpers.resolve_sglang_mla_compute
+    assert models.resolve_sglang_mla_compute is canonical_models.resolve_sglang_mla_compute
 
 
 # DeepSeek-V3 ships fp8_block weights → inference resolves FMHA to fp8.

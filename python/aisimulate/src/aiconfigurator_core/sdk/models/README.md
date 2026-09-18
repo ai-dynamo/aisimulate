@@ -70,8 +70,9 @@ FPM identities, Blackwell, and unaudited runtime/geometry combinations remain
 unchanged. Native compilation, KV memory construction, and the estimate-path
 FMHA resolver share this rule. Task preserves explicit-versus-inferred provenance
 when building each role's model config, including AFD's static prefill pool
-and its inherited aggregate overrides. Direct aggregate/prefill sweeps and prefill-session
-construction also resolve against their database's runtime version and system.
+and its inherited aggregate overrides. Direct aggregate/prefill sweeps, the
+legacy `agg_pareto()` API, and prefill-session construction also resolve against
+their database's runtime version and system.
 Explicit modes and decode-only construction remain unchanged.
 Task YAML keeps inferred FMHA modes unset so loading it preserves runtime
 precision resolution; `to_dict()` still reports the resolved public fields.
@@ -79,6 +80,8 @@ Wide-EP's implicit FlashInfer backend is outside the FA3 mapping.
 The raw three-argument `get_model()` API has no database version or system
 specification. External callers, including Dynamo's legacy estimator, must call
 the resolver with their database context before construction to adopt this mapping.
+It is exported by both `aiconfigurator_core.sdk.models` and the legacy
+`aiconfigurator.sdk.models` package.
 
 ### `create()` Classmethod
 
