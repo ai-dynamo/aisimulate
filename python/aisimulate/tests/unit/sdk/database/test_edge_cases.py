@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import PerfDatabase, databases_cache, get_database
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import PerfDatabase, databases_cache, get_database
 
 pytestmark = pytest.mark.unit
 
@@ -74,13 +74,13 @@ class TestInitializationEdgeCases:
         # fetch choke point by attribute name. Everything but the context
         # attention table fetches as None ("no source files").
         monkeypatch.setattr(
-            "aiconfigurator_core.sdk.engine_table_view.fetch_table_view",
+            "aisimulate_core.sdk.engine_table_view.fetch_table_view",
             lambda database, attribute: dummy_context_data if attribute == "_context_attention_data" else None,
         )
 
         # Initialize database, then trigger the lazy load explicitly so
         # extrapolation runs while loader patches are still active.
-        from aiconfigurator.sdk.operations.attention import ContextAttention
+        from aisimulate.sdk.operations.attention import ContextAttention
 
         db = PerfDatabase("test", "backend", "v1", str(tmp_path))
         ContextAttention.load_data(db)

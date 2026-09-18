@@ -9,17 +9,17 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.report_and_save import (
+from aisimulate.legacy_cli.report_and_save import (
     _auto_result_tasks,
     _plot_worker_setup_table,
     _task_for_result_row,
     save_results,
 )
-from aiconfigurator.cli.utils import merge_experiment_results_by_mode
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk import task_v2 as task_v2_module
-from aiconfigurator.sdk.errors import NoFeasibleConfigError
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.legacy_cli.utils import merge_experiment_results_by_mode
+from aisimulate.sdk import common
+from aisimulate.sdk import task_v2 as task_v2_module
+from aisimulate.sdk.errors import NoFeasibleConfigError
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
@@ -236,8 +236,8 @@ class TestV2AfdTask:
         assert task.kvcache_quant_mode == common.KVCacheQuantMode.fp8
 
     def test_pinned_topology_constructs_afd_config_without_derived_field_argument(self, monkeypatch):
-        import aiconfigurator.sdk.backends.factory as backend_factory
-        import aiconfigurator.sdk.inference_session as inference_session
+        import aisimulate.sdk.backends.factory as backend_factory
+        import aisimulate.sdk.inference_session as inference_session
 
         captured = {}
 
@@ -526,7 +526,7 @@ class TestExpLoaderAcceptsAfd:
     """exp-mode YAML loader must build AFD task configs via v2 Task."""
 
     def test_build_experiment_task_configs_afd(self, monkeypatch):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_exp": {
@@ -546,7 +546,7 @@ class TestExpLoaderAcceptsAfd:
         assert task_configs["afd_exp"]._afd_parallel_config_list
 
     def test_build_experiment_task_configs_afd_default_batch(self, monkeypatch):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_default": {
@@ -568,7 +568,7 @@ class TestExpLoaderAcceptsAfd:
         assert task_config.afd_max_a_batch_size == 1024
 
     def test_build_experiment_task_configs_afd_custom_max_a_batch_size(self):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_custom_max_batch": {
@@ -587,7 +587,7 @@ class TestExpLoaderAcceptsAfd:
         assert task_configs["afd_custom_max_batch"].afd_max_a_batch_size == 1536
 
     def test_build_experiment_preserves_afd_fields(self):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_fields": {
@@ -622,7 +622,7 @@ class TestExpLoaderAcceptsAfd:
         assert task.afd_candidate_overflow == "truncate"
 
     def test_build_experiment_preserves_pinned_topology(self):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_pinned": {
@@ -648,7 +648,7 @@ class TestExpLoaderAcceptsAfd:
         assert task.afd_a_batch_size == 64
 
     def test_build_experiment_rejects_unknown_afd_fields(self, caplog):
-        from aiconfigurator.cli.main import build_experiment_tasks
+        from aisimulate.legacy_cli.main import build_experiment_tasks
 
         config = {
             "afd_typo": {
@@ -669,7 +669,7 @@ class TestExpLoaderAcceptsAfd:
 
 
 def test_hybrid_auto_mode_skips_missing_decode_backend(monkeypatch):
-    import aiconfigurator.cli.main as cli_main
+    import aisimulate.legacy_cli.main as cli_main
 
     # The real enumeration carries resolved LITERALS (never aliases); the
     # request below uses the alias and must match through per-(system,
@@ -709,7 +709,7 @@ def test_hybrid_auto_mode_skips_missing_decode_backend(monkeypatch):
 
 
 def test_save_results_skips_afd_deployment_artifacts(tmp_path, monkeypatch, caplog):
-    import aiconfigurator.cli.report_and_save as report_and_save
+    import aisimulate.legacy_cli.report_and_save as report_and_save
 
     task = Task(
         serving_mode="afd",

@@ -26,8 +26,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from aiconfigurator_core.sdk.memory import estimate_kv_cache
-from aiconfigurator_core.sdk.perf_database import get_latest_database_version
+from aisimulate_core.sdk.memory import estimate_kv_cache
+from aisimulate_core.sdk.perf_database import get_latest_database_version
 
 from .parallel_enum import ParallelShape
 

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk.predictor import (
+from aisimulate.sdk.predictor import (
     DEFAULT_PREDICTOR,
     AnalyticPredictor,
     Predictor,
@@ -117,7 +117,7 @@ def test_predict_functions_default_to_analytic_predictor():
     """When no predictor is passed, predict_* uses DEFAULT_PREDICTOR -- which
     means backend.run_agg / run_static is called directly (same as before
     the Predictor abstraction was introduced)."""
-    from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
+    from aisimulate.sdk.predict import predict_agg_worker, predict_disagg_worker
 
     model, backend, database, rt = _make_mocks()
 
@@ -130,7 +130,7 @@ def test_predict_functions_default_to_analytic_predictor():
 
 def test_predict_functions_route_through_explicit_predictor():
     """When a custom predictor is passed, predict_* delegates to it (not the default)."""
-    from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
+    from aisimulate.sdk.predict import predict_agg_worker, predict_disagg_worker
 
     model, backend, database, rt = _make_mocks()
     custom = MagicMock(spec=Predictor, name="custom_predictor")

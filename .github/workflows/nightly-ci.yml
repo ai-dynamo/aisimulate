@@ -683,8 +683,6 @@ jobs:
           import importlib.metadata as metadata
           import os
 
-          import aiconfigurator
-          import aiconfigurator_core
           import aisimulate
           import aisimulate_core
 

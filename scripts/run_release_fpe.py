@@ -21,9 +21,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("aisimulate/", "aisimulate_core/", "aiconfigurator/", "aiconfigurator_core/")
+PACKAGES = ("aisimulate/", "aisimulate_core/", "aiconfigurator/", "aisimulate_core/")
 PROBES = Path("python/aisimulate/tools/support_matrix")
-DATA = Path("python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix")
+DATA = Path("python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix")
 
 
 def list_releases(root: Path) -> list[dict]:
@@ -77,7 +77,7 @@ def verify_installed_wheel(wheel: Path, *, distribution=None) -> None:
                 and Path(dist.locate_file(name)).read_bytes() != archive.read(name)
             ):
                 raise ValueError(f"installed file differs from qualified release wheel: {name}")
-    for name in ("aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core", "aisimulate._runtime"):
+    for name in ("aisimulate", "aisimulate_core", "aisimulate._runtime"):
         spec = importlib.util.find_spec(name)
         owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()}
         if spec is None or spec.origin is None or Path(spec.origin).resolve() not in owned:

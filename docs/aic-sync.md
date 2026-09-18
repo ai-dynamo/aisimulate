@@ -5,8 +5,8 @@ therefore combines publication without flattening the imported source:
 
 | Upstream AIConfigurator path | Stable AISimulate mirror |
 | --- | --- |
-| `src/aiconfigurator/` | `python/aisimulate/src/aiconfigurator/` |
-| `aic-core/src/aiconfigurator_core/` | `python/aisimulate/src/aiconfigurator_core/` |
+| `src/aisimulate/` | `python/aisimulate/src/aisimulate/` |
+| `src/aisimulate_core/` | `python/aisimulate/src/aisimulate_core/` |
 | `tests/` | `python/aisimulate/tests/` |
 | `collector/`, `tools/`, `docs/` | matching folders under `python/aisimulate/` |
 | `aic-core/rust/aiconfigurator-core/src/` | `crates/core/src/perfmodel/` |

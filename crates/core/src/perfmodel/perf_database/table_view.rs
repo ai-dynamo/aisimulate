@@ -5,7 +5,7 @@
 //! `load_*_data` parsers (PR-6, #1357 phase 3).
 //!
 //! Each `view_*` function here reproduces, row for row, what one Python
-//! loader in `aiconfigurator_core/sdk/operations/*.py` produced before the
+//! loader in `aisimulate_core/sdk/operations/*.py` produced before the
 //! Python data plane was deleted: the same source order (shared-layer
 //! first-wins), the same column reads and casts, the same key layering, the
 //! same derived fields (`energy = power * latency`), and the same INSERTION
@@ -2304,7 +2304,7 @@ fn merge_dsv4_split(parts: Vec<Option<ViewNode>>) -> Option<ViewNode> {
 
 /// Attribute registry: every table-view attribute [`table_view_json`]'s
 /// dispatch accepts, with the parquet basenames its fold consumes — exported
-/// over the FFI (`aiconfigurator_core.table_view_attributes()`) so the Python
+/// over the FFI (`aisimulate_core.table_view_attributes()`) so the Python
 /// side derives its mirrors from THIS table instead of hand-syncing four
 /// stringly-typed sites (Rust match arms / `VIEW_KEY_LAYERS` / per-class
 /// `load_data` literals / the baseline codec) — the same

@@ -628,7 +628,7 @@ impl ForwardPassPerfModel {
 }
 
 /// Build a compiled [`Engine`] from an [`EngineConfig`] by crossing into Python
-/// once to run `aiconfigurator.sdk.engine.compile_engine`, then loading the
+/// once to run `aisimulate.sdk.engine.compile_engine`, then loading the
 /// matching perf database via [`Engine::from_spec_bytes`]. This is the internal
 /// `EngineConfig` counterpart to [`crate::AicEngineBuilder`] and maps its
 /// modular fields onto the flat `compile_engine` kwargs.

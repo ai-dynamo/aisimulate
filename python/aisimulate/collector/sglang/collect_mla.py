@@ -19,6 +19,9 @@ import pkg_resources
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
+from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.registry_types import PerfFile
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
@@ -28,10 +31,6 @@ from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_parallel
-
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.registry_types import PerfFile
 
 # The standalone collector has no scheduler to initialize DP state.
 sglang.srt.layers.dp_attention._ATTN_DP_SIZE = 1

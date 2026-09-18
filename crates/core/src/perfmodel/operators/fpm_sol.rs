@@ -644,13 +644,13 @@ mod tests {
     /// intra_node_bw 8.1e11, inter_node_bw 4e10 (systems/b200_sxm.yaml).
     fn spec() -> SystemSpec {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("../../python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         SystemSpec::load(&root).expect("b200 spec")
     }
 
     fn db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems");
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db")
     }
 
@@ -663,8 +663,8 @@ mod tests {
 
     /// Python oracle:
     /// PYTHONPATH=aic-core/src python3 -c "
-    /// from aiconfigurator_core.sdk import perf_database, common
-    /// from aiconfigurator_core.sdk.operations.gemm import GEMM
+    /// from aisimulate_core.sdk import perf_database, common
+    /// from aisimulate_core.sdk.operations.gemm import GEMM
     /// view = perf_database.get_database_view('b200_sxm','vllm','0.19.0',database_mode='SOL',allow_missing_data=True)
     /// op = GEMM('qkv_gemm', 1.0, 4096, 4096, common.GEMMQuantMode.nvfp4)
     /// print(repr(float(op.query(view, x=8192.0, batch_size=4, beam_width=1, s=2048.0, prefix=0.0))))"
@@ -727,8 +727,8 @@ mod tests {
 
     /// Python oracle:
     /// PYTHONPATH=aic-core/src python3 -c "
-    /// from aiconfigurator_core.sdk import perf_database, common
-    /// from aiconfigurator_core.sdk.operations.attention import ContextAttention, GenerationAttention
+    /// from aisimulate_core.sdk import perf_database, common
+    /// from aisimulate_core.sdk.operations.attention import ContextAttention, GenerationAttention
     /// view = perf_database.get_database_view('b200_sxm','vllm','0.19.0',database_mode='SOL',allow_missing_data=True)
     /// op = ContextAttention('context_attention', 1.0, 48, 8, 128, kvcache_quant_mode=common.KVCacheQuantMode.fp8, fmha_quant_mode=common.FMHAQuantMode.bfloat16)
     /// print(repr(float(op.query(view, x=1, batch_size=4.0, beam_width=1, s=682.6666666666666, prefix=128.5))))"

@@ -10,7 +10,7 @@ import pickle
 import pytest
 
 import aisimulate
-from aisimulate import aic
+from aisimulate import capacity as aic
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
@@ -1194,7 +1194,7 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory
 
     calls = []
     estimate = {

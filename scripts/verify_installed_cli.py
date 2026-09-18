@@ -25,7 +25,7 @@ def verify(wheel: Path) -> dict:
     distribution = importlib.metadata.distribution("aisimulate")
     installed_root = Path(distribution.locate_file("")).resolve()
     with zipfile.ZipFile(wheel) as archive:
-        for name in ("aisimulate", "aisimulate._runtime", "aisimulate_core", "aiconfigurator", "aiconfigurator_core"):
+        for name in ("aisimulate", "aisimulate._runtime", "aisimulate_core", "aiconfigurator", "aisimulate_core"):
             module = importlib.import_module(name)
             path = Path(module.__file__).resolve()
             relative = path.relative_to(installed_root).as_posix()

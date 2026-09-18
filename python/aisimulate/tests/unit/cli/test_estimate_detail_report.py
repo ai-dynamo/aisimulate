@@ -3,11 +3,11 @@
 
 import pytest
 
-from aiconfigurator.cli.api import EstimateResult
-from aiconfigurator.cli.estimate_detail_report import format_estimate_detail_report
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.performance_result import MoECommFallback
+from aisimulate.legacy_cli.api import EstimateResult
+from aisimulate.legacy_cli.estimate_detail_report import format_estimate_detail_report
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.performance_result import MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -176,7 +176,7 @@ def test_source_detail_renders_executed_moe_comm_fallback_topology() -> None:
 
 @pytest.mark.parametrize("covered,power_text", [(9.0, "100.0 W"), (8.9, "unavailable"), (0.0, "unavailable")])
 def test_default_agg_energy_detail_uses_scheduled_groups(covered, power_text):
-    from aiconfigurator.sdk.step_estimate import StepEstimate
+    from aisimulate.sdk.step_estimate import StepEstimate
 
     summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
     summary.set_aggregate_energy_breakdown(
@@ -204,7 +204,7 @@ def test_default_agg_energy_detail_uses_scheduled_groups(covered, power_text):
 
 
 def test_default_agg_energy_detail_explains_zero_latency_groups():
-    from aiconfigurator.sdk.step_estimate import StepEstimate
+    from aisimulate.sdk.step_estimate import StepEstimate
 
     summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
     summary.set_aggregate_energy_breakdown(

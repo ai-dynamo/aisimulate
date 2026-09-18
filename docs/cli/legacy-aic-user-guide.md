@@ -8,7 +8,7 @@ with AISimulate. For the unified `aisimulate` CLI, see the
 ## Basic Command
 As mentioned in root Readme, CLI supports six modes: `default`, `recommend`, `exp`, `generate`, `estimate`, and `support`. We'll go through these modes one by one.
 
-Quantization defaults are inferred from the Hugging Face model config (`config.json` plus optional `hf_quant_config.json`).  
+Quantization defaults are inferred from the Hugging Face model config (`config.json` plus optional `hf_quant_config.json`).
 For low-precision models, use a quantized HF ID (for example, `Qwen/Qwen3-32B-FP8`) or a local model directory containing those files.
 
 ## Common Arguments (all modes)
@@ -104,7 +104,7 @@ The `generate` mode calculates the smallest tensor parallel (TP) size that fits 
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_generate
+from aisimulate.legacy_cli import cli_generate
 
 result = cli_generate(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -211,7 +211,7 @@ aiconfigurator cli estimate \
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli.api import cli_estimate
+from aisimulate.legacy_cli.api import cli_estimate
 
 # Aggregated estimation
 result = cli_estimate(
@@ -371,7 +371,7 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_support
+from aisimulate.legacy_cli import cli_support
 
 agg_supported, disagg_supported = cli_support(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -420,7 +420,7 @@ The output includes `total_gpus_needed` and `replicas_needed` columns, showing b
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_recommend
+from aisimulate.legacy_cli import cli_recommend
 
 result = cli_recommend(
     model_path="Qwen/Qwen3-32B",
@@ -541,7 +541,7 @@ aiconfigurator cli default \
 - Use `default` to include the built-in systems path.
 - If the same system/backend/version exists in multiple paths, the first match is used.
 
-The command will print out the result to your terminal with the basic info of the comparison, the pareto curve (the best point is tagged as `x`), 
+The command will print out the result to your terminal with the basic info of the comparison, the pareto curve (the best point is tagged as `x`),
 the worker setup for your reference. Let's split them into sections.
 
 Let's run `aiconfigurator cli default --model-path Qwen/Qwen3-32B-FP8 --total-gpus 32 --system h200_sxm --ttft 1000 --tpot 10 --isl 3000 --osl 512 --prefix 0`
@@ -564,7 +564,7 @@ This shows that for model `Qwen/Qwen3-32B-FP8` to deploy on 32 H200, if you requ
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_default
+from aisimulate.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -582,7 +582,7 @@ print(result.best_configs["disagg"])
 2. Pareto frontier
 ```
   Pareto Frontier:
-              Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu vs tokens/s/user          
+              Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu vs tokens/s/user
     ┌──────────────────────────────────────────────────────────────────────────┐
 2250┤ •• disagg                                                                │
     │ ff agg                                                                   │
@@ -610,8 +610,8 @@ print(result.best_configs["disagg"])
     │                                                                          │
    0┤                                                                          │
     └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
-     0                60                 120               180              240 
-tokens/s/gpu                        tokens/s/user                               
+     0                60                 120               180              240
+tokens/s/gpu                        tokens/s/user
 ```
 Pareto frontier shows the trade-off betwen generation speed `tokens/s/user` and throughput `tokens/s/gpu`. The best points is tagged as `x`. As you want the TPOT to be less than 10ms, which means the generation speed is faster than 1000/10ms = 100 tokens/s/user, then by reading the pareto froniter, you will get the point tagged as x. You can see that, if you want different TPOT, you will have different result. Sometimes, agg will be better than disagg (higher throughput at same tokens/s/user)
 
@@ -646,11 +646,11 @@ agg Top Configurations: (Sorted by tokens/s/gpu)
 +------+--------------+---------------+--------+-------------+------------------+----------+--------------+-------------+----------+----+
 ```
 
-If you want to reproduce the result we esimated, you need to follow the suggestions here. Take the disagg top1 result as an example.  
-We're expecting to achieve 913.82 tokens/s/gpu and 123.92 tokens/s/user with this config.  
-We have 1 definition `replica`, it means the number of copies of your xPyD disagg system. Say, here, we have 4 replicas, each replica contains 8 GPUs.  
-Each replica has a system of 4 prefill workers and 1 decode workers. Each prefill worker is using tp1pp1 which is 1 GPU per worker; while each decoder worker is using tp4pp1 which is 4 GPU per workers. These workers compose a 4P1D replica with 8 GPUs. As you want to deploy on 32 GPUs, then you will have 4 replicas.  
-`bs` is required to be set in framework as it limits the largest batch_size of the worker which is crucial to control the TPOT of the deployment.  
+If you want to reproduce the result we esimated, you need to follow the suggestions here. Take the disagg top1 result as an example.
+We're expecting to achieve 913.82 tokens/s/gpu and 123.92 tokens/s/user with this config.
+We have 1 definition `replica`, it means the number of copies of your xPyD disagg system. Say, here, we have 4 replicas, each replica contains 8 GPUs.
+Each replica has a system of 4 prefill workers and 1 decode workers. Each prefill worker is using tp1pp1 which is 1 GPU per worker; while each decoder worker is using tp4pp1 which is 4 GPU per workers. These workers compose a 4P1D replica with 8 GPUs. As you want to deploy on 32 GPUs, then you will have 4 replicas.
+`bs` is required to be set in framework as it limits the largest batch_size of the worker which is crucial to control the TPOT of the deployment.
 `concurrency` = `concurrency * replicas` Use it to benchmark your deployment on total GPUs. If you only want to benchmark 1 replica, divide it by `replicas`
 
 As this is still a little bit challenging to get the right configs for your deployment, we can further specify `--save-dir DIR` to output all the results here as well as **generate the configs for frameworks automatically**. Here is the output folder structure:
@@ -666,7 +666,7 @@ results/Qwen_Qwen3-32B-FP8_h200_sxm_trtllm_isl4000_osl1000_ttft1000_tpot20_90449
 │   │   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
 │   │   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
 │   │   │   ├── k8s_deploy.yaml
-│   │   │   └── node_0_run.sh 
+│   │   │   └── node_0_run.sh
 │   │   └── generator_config.yaml
 │   ...
 ├── disagg
@@ -789,16 +789,16 @@ Use `--generator-config path/to/file.yaml` to provide ServiceConfig/K8sConfig/Dy
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
 
 #### Rule Plugin Selection
-You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aiconfigurator/generator/rule_plugin/`.
+You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aisimulate/generator/rule_plugin/`.
 
 - **Default (production)**: if `rule` is not provided, the generator uses the default production rules. These are tuned for deployment (e.g., adjusted max batch size and CUDA graph batch sizes).
 - **Benchmark**: `--generator-set rule=benchmark` enables rules designed to align generated configs with AIC sdk results, including:
   - wider CUDA graph batch size coverage to match simulated results
   - stricter max batch size that follows the simulated batch size
 
-You can also define your own rule sets by adding a new folder under `src/aiconfigurator/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
+You can also define your own rule sets by adding a new folder under `src/aisimulate/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
 
-Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aiconfigurator/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`. 
+Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aisimulate/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
 
 The `--generator-help` command supports three section options:
 - `--generator-help` or `--generator-help all` (default): Shows both the full deployment schema and the backend parameter mappings
@@ -849,7 +849,7 @@ The summary will highlight the fastest configuration whose estimated request lat
     - Request Latency: 9222.18ms
   ----------------------------------------------------------------------------
   Pareto Frontier:
-          Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu_cluster vs request_latency    
+          Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu_cluster vs request_latency
       ┌────────────────────────────────────────────────────────────────────────┐
 1150.0┤ •• agg                                                                 │
       │ ff disagg                                                              │
@@ -877,8 +877,8 @@ The summary will highlight the fastest configuration whose estimated request lat
       │                                                                        │
    0.0┤                                                                        │
       └┬─────────────────┬─────────────────┬────────────────┬─────────────────┬┘
-       0               3220              6440             9660            12880 
-tokens/s/gpu_cluster                request_latency                             
+       0               3220              6440             9660            12880
+tokens/s/gpu_cluster                request_latency
 
   ----------------------------------------------------------------------------
   Deployment Details:
@@ -907,7 +907,7 @@ disagg Top Configurations: (Sorted by tokens/s/gpu)
 |  4   |    746.33    |     43.72     | 542.58 |     11955.71    | 496 (=496x1) |    16 (16=1x16)   |    1     | 16 (=8x1+1x8)  |     8      |    1 (=1x1)    |    tp1pp1   |   1   |     1      |    8 (=8x1)    |    tp8pp1   |  496  |
 +------+--------------+---------------+--------+-----------------+--------------+-------------------+----------+----------------+------------+----------------+-------------+-------+------------+----------------+-------------+-------+
 ********************************************************************************
-2025-12-01 23:36:41,892 - aiconfigurator.cli.main - INFO - All experiments completed in 1.92 seconds
+2025-12-01 23:36:41,892 - aisimulate.legacy_cli.main - INFO - All experiments completed in 1.92 seconds
 ```
 
 #### Inclusive TPOT reporting (`--inclusive-tpot`)
@@ -940,7 +940,7 @@ aiconfigurator cli default \
 The Python API equivalent accepts a `strict_sla` keyword argument:
 
 ```python
-from aiconfigurator.cli import cli_default
+from aisimulate.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -1022,7 +1022,7 @@ aiconfigurator cli default \
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_exp
+from aisimulate.legacy_cli import cli_exp
 
 # Run experiments from a YAML file
 result = cli_exp(yaml_path="example.yaml")
@@ -1039,7 +1039,7 @@ config = {
 result = cli_exp(config=config)
 ```
 
-See `src/aiconfigurator/cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
+See `src/aisimulate/legacy_cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
 
 ### Benchmark Artifacts
 
@@ -1067,7 +1067,7 @@ aiconfigurator cli exp --yaml-path example.yaml
 ```
 > **YAML format:** Experiment YAML uses the flat `Task` schema — every key maps
 > 1:1 to a `Task` field, with no `mode:` selector and no `config:` /
-> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example.yaml)
+> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml)
 > for the annotated template.
 >
 > The legacy V1 nested format (`mode` / `config` / `worker_config` /
@@ -1075,11 +1075,11 @@ aiconfigurator cli exp --yaml-path example.yaml
 > compatibility shim remains: V1 YAML still loads, but it is auto-converted to V2
 > with a `DeprecationWarning`, and any field with no V2 equivalent is rejected
 > (not silently dropped). See
-> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example_v1_deprecated.yaml)
+> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example_v1_deprecated.yaml)
 > for the old shape. Write all new configs in the flat V2 format below.
 
-An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aiconfigurator/cli/example.yaml).
-Let's split the yaml file into several sections.  
+An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml).
+Let's split the yaml file into several sections.
 1. exps
 ```yaml
 exps:
@@ -1156,13 +1156,13 @@ disagg_full:
   prefill_max_batch_size: 1
   decode_max_batch_size: 512
 ```
-This is long; the basics:  
-    - `serving_mode`: `agg` or `disagg` for this experiment.  
-    - `total_gpus`: total GPU budget for the deployment.  
-    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).  
-    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.  
-    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.  
-    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).  
+This is long; the basics:
+    - `serving_mode`: `agg` or `disagg` for this experiment.
+    - `total_gpus`: total GPU budget for the deployment.
+    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
+    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
+    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
+    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
     - Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
     - `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
     - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](../../python/aisimulate/docs/advanced_tuning.md). Typically the only thing you need to touch is the quantization.
@@ -1184,8 +1184,8 @@ disagg_simplified:
 Everything omitted falls back to defaults / HF inference. With large-EP candidates in play the replica budget widens automatically (`max_gpu_per_replica` defaults to 512). To pin a role to large EP sizes only, add e.g. `decode_moe_ep_candidates: [16, 32, 64]`.
 
 Let's go through some pre-defined experiments for reference.
-1. homegeneous vs. heterogenous  
-The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/hetero_disagg.yaml)
+1. homegeneous vs. heterogenous
+The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/hetero_disagg.yaml)
 ```yaml
 exps:
   - exp_h200_h200
@@ -1223,8 +1223,8 @@ We defined two experiments. `exp_h200_h200` uses H200 for both prefill and decod
 
 **Note**: You can also compare different backends by setting different `backend_name` values (trtllm, vllm, sglang) in your experiments.
 
-2. use a specific quantization  
-The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/qwen3_32b_pertensor.yaml)
+2. use a specific quantization
+The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/qwen3_32b_pertensor.yaml)
 ```yaml
 exps:
   - exp_agg
@@ -1273,7 +1273,7 @@ exp_disagg:
 ```
 Here we override the quantization of Qwen/Qwen3-32B-FP8: the default is blockwise FP8 for GEMM, and we set per-tensor FP8 explicitly via the `*_quant_mode` fields. (The deprecated V1 way was `profiles: ["fp8"]`, which expanded to exactly these fields.)
 
-You can refer to [src/aiconfigurator/cli/exps](../../python/aisimulate/src/aiconfigurator/cli/exps) to find more reference yaml files.
+You can refer to [src/aisimulate/legacy_cli/exps](../../python/aisimulate/src/aisimulate/legacy_cli/exps) to find more reference yaml files.
 
 Use `exp` mode for flexible experiments, `default` mode for convenient agg vs disagg comparison with SLA optimization, and `generate` mode for quick config generation without sweeping. All modes support generating configs for frameworks automatically by `--save-dir DIR`.
 

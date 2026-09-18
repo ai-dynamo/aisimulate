@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Shared helpers for generator modules."""
+
+from __future__ import annotations
+
+import os
+from functools import cache
+from typing import Any, Optional
+
+import yaml
+
+DEFAULT_BACKEND = "trtllm"
+GENERATOR_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
+GENERATOR_FACTS_DIR = os.path.join(os.path.dirname(__file__), "facts")
+DEFAULT_BACKEND_VERSION_MATRIX_PATH = os.path.join(GENERATOR_FACTS_DIR, "runtimes", "dynamo.yaml")
+
+
+def normalize_backend(backend: Optional[str], default: str = DEFAULT_BACKEND) -> str:
+    """Normalize backend names to lowercase strings with a fallback."""
+    if backend:
+        return str(backend).strip().lower()
+    return default
+
+
+def coerce_bool(value: Optional[Any]) -> Optional[bool]:
+    """Best-effort conversion of user input into booleans."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return bool(value)
+
+
+def coerce_int(value: Optional[Any]) -> Optional[int]:
+    """Convert values to ints while swallowing Type/Value errors."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_yaml_payload(path: str) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+@cache
+def load_backend_version_matrix(matrix_path: str) -> dict[str, dict[str, Any]]:
+    payload = _load_yaml_payload(matrix_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"Backend version matrix must be a YAML mapping: {matrix_path}")
+    matrix = payload.get("matrix", payload)
+    if not isinstance(matrix, dict):
+        raise TypeError(f"Backend version matrix missing 'matrix' mapping: {matrix_path}")
+    return matrix
+
+
+def get_default_dynamo_version_mapping(
+    matrix_path: str = DEFAULT_BACKEND_VERSION_MATRIX_PATH,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Return the default Dynamo version and its backend-version mapping.
+
+    The default entry is the first item in backend_version_matrix.yaml.
+    """
+    matrix = load_backend_version_matrix(matrix_path)
+    if not matrix:
+        raise ValueError(f"Backend version matrix is empty: {matrix_path}")
+    dynamo_version, entry = next(iter(matrix.items()))
+    if not isinstance(entry, dict):
+        raise TypeError(f"Invalid backend version entry for {dynamo_version}: {entry!r}")
+    return str(dynamo_version), entry
+
+
+def resolve_backend_version_for_dynamo(
+    dynamo_version: str,
+    backend: str | None = None,
+    matrix_path: str = DEFAULT_BACKEND_VERSION_MATRIX_PATH,
+) -> str:
+    """
+    Given a Dynamo (generator) version, look up the corresponding backend version for a specified backend.
+
+    Parameters:
+        dynamo_version (str): The target Dynamo generator release (e.g., "0.8.1").
+        backend (str | None): Name of the backend to look up ("trtllm", "vllm", "sglang", or "auto").
+        matrix_path (str): Path to the backend version matrix YAML file.
+
+    Returns:
+        str | dict: The backend version(str) for the given backend, or a dict of versions if backend is "auto" or None.
+
+    Raises:
+        ValueError: If the dynamo_version is missing or not present in the matrix.
+        TypeError: If the loaded matrix or entry is invalid, or if no mapping exists for the given backend.
+    """
+    version_key = str(dynamo_version).strip()
+    if version_key.lower().startswith("v") and len(version_key) > 1 and version_key[1].isdigit():
+        version_key = version_key[1:]
+    if not version_key:
+        raise ValueError("dynamo_version must be a non-empty string.")
+    matrix = load_backend_version_matrix(matrix_path)
+    entry = matrix.get(version_key)
+    if not isinstance(entry, dict):
+        supported = ", ".join(sorted(matrix.keys()))
+        raise TypeError(f"Unsupported dynamo_version '{version_key}'. Supported versions: {supported or 'none'}.")
+
+    backend_key = normalize_backend(backend, DEFAULT_BACKEND)
+    # return all backend versions for "auto" backend
+    if not backend or backend_key == "auto":
+        return entry
+
+    backend_version = entry.get(backend_key)
+    if backend_version is None:
+        supported_backends = ", ".join(sorted(entry.keys()))
+        raise ValueError(
+            f"No backend version mapping for backend '{backend_key}' in dynamo '{version_key}'. "
+            f"Supported backends: {supported_backends or 'none'}."
+        )
+    return str(backend_version)
+
+
+def msa_sparse_implementation(backend_name: str, model_path: str, system_name: str) -> str | None:
+    """MiniMax-M3 x TRT-LLM on the SM100 family: prescribe the msa
+    (fmha_sm100) sparse-attention implementation.
+
+    TRT-LLM 1.3.0rc23 serving DEFAULTS to the Triton reference path; the
+    shipped SM100/103 MSA perf tables are collected with
+    ``implementation="msa"`` (the performance path the config field exists
+    for, hard-gated to those SMs by ``ensure_msa_available``). Emitting the
+    knob makes generated deployments — BOTH the optimized (module_bridge)
+    and the naive entry points — run exactly the configuration the perf
+    data represents (PR #1507 review 4969690316). Keyed on the checkpoint
+    ARCHITECTURE (never model-name patterns) and the system's sm_version
+    fact; returns None everywhere else so the field is dropped.
+    """
+    if backend_name != "trtllm":
+        return None
+    from aisimulate.sdk.perf_database import load_system_spec
+    from aisimulate.sdk.utils import get_model_config_from_model_path
+
+    try:
+        parsed = get_model_config_from_model_path(model_path)
+        architecture = parsed.get("architecture")
+    except (FileNotFoundError, KeyError, ValueError):
+        # Unresolvable model config (e.g. a user-local checkpoint the SDK
+        # does not bundle): leave the knob unset — serving falls back to its
+        # own default rather than receiving a wrong prescription.
+        return None
+    # Both artifact forms of the same model: the BF16 bundle carries the
+    # text-backbone architecture, the NVFP4 bundle the raw hub VL wrapper.
+    if architecture not in ("MiniMaxM3ForCausalLM", "MiniMaxM3SparseForConditionalGeneration"):
+        return None
+    spec = load_system_spec(system_name)
+    if int(spec.get("gpu", {}).get("sm_version", -1)) in (100, 103):
+        return "msa"
+    return None

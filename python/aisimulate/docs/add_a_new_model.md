@@ -8,15 +8,15 @@ SPDX-License-Identifier: Apache-2.0
 AISimulate owns the application, model definitions, performance data, and native
 estimator. Start from the [development environment](../../../DEVELOPMENT.md).
 All paths below are relative to the repository root unless linked otherwise.
-The `aiconfigurator_core` source namespace is retained inside the `aisimulate`
+The `aisimulate_core` source namespace is retained inside the `aisimulate`
 wheel; installing or rebuilding a separate AIConfigurator package is unnecessary.
 
 ## Choose the smallest extension
 
 | What changed? | Start here |
 |---|---|
-| A new architecture name with an existing operation pipeline | Map the architecture to an existing family in `python/aisimulate/src/aiconfigurator_core/sdk/common.py`. |
-| A new layer composition or model family | Add a registered class under `python/aisimulate/src/aiconfigurator_core/sdk/models/` and map its architecture. |
+| A new architecture name with an existing operation pipeline | Map the architecture to an existing family in `python/aisimulate/src/aisimulate_core/sdk/common.py`. |
+| A new layer composition or model family | Add a registered class under `python/aisimulate/src/aisimulate_core/sdk/models/` and map its architecture. |
 | Existing operations need additional measured shapes or a backend version | Add collector cases and collect the missing performance-data cells. |
 | A genuinely new operation or execution contract | Extend the native operator and wire contract, then the Python model description and collection path. |
 
@@ -26,14 +26,14 @@ specific model/backend/hardware cell and the public workflow it will serve.
 
 ## 1. Resolve and register the model
 
-The [models package](../src/aiconfigurator_core/sdk/models/README.md) owns
+The [models package](../src/aisimulate_core/sdk/models/README.md) owns
 registry-based model construction. Resolution reads model configuration,
 resolves the architecture to a family, then selects the `@register_model`
 class. `models/blocks/` contains reusable composition helpers and must not
 register model classes.
 
 For an existing family, inspect
-[`common.py`](../src/aiconfigurator_core/sdk/common.py) and the selected model
+[`common.py`](../src/aisimulate_core/sdk/common.py) and the selected model
 class before adding `ARCHITECTURE_TO_MODEL_FAMILY` entries. Verify layer counts,
 attention/KV heads, head dimensions, quantization defaults, and any custom
 Hugging Face configuration fields. A model name resembling another model is
@@ -41,13 +41,13 @@ not sufficient evidence that their operation pipelines match.
 
 For a new family, implement `BaseModel.create(...)`, register the family, and
 build its context/generation operations using the existing family-specific
-examples. See the [registry extension examples](../src/aiconfigurator_core/sdk/models/README.md#adding-a-new-model).
+examples. See the [registry extension examples](../src/aisimulate_core/sdk/models/README.md#adding-a-new-model).
 Reuse the shared MoE block builder where its contract applies, including the
 separate large-EP registration described there.
 
 Mamba2 kernels and NemotronH hybrid model descriptions already exist in
-[`operations/mamba.py`](../src/aiconfigurator_core/sdk/operations/mamba.py) and
-[`models/nemotron_h.py`](../src/aiconfigurator_core/sdk/models/nemotron_h.py).
+[`operations/mamba.py`](../src/aisimulate_core/sdk/operations/mamba.py) and
+[`models/nemotron_h.py`](../src/aisimulate_core/sdk/models/nemotron_h.py).
 They are useful references, not evidence that every Mamba variant or topology
 is supported. In particular, AFD partitioning has separate restrictions below.
 
@@ -63,11 +63,11 @@ and SOL values. Keep that single-oracle boundary when adding an operation:
    Add an independently justified numerical test, including unsupported and
    missing-data behavior.
 2. Add the typed Python operation in
-   [`sdk/operations/`](../src/aiconfigurator_core/sdk/operations/). Follow its
+   [`sdk/operations/`](../src/aisimulate_core/sdk/operations/). Follow its
    existing construction, weight-sizing, and engine-backed table-view
    conventions. Do not add a Python interpolation or performance-query oracle.
 3. Extend `_to_opspec` in
-   [`sdk/engine.py`](../src/aiconfigurator_core/sdk/engine.py), the native
+   [`sdk/engine.py`](../src/aisimulate_core/sdk/engine.py), the native
    [`Op` representation](../../../crates/core/src/perfmodel/operators/op.rs),
    and the [`engine specification`](../../../crates/core/src/perfmodel/engine/spec.rs).
    Preserve positional enum compatibility; a schema-breaking change requires
@@ -97,7 +97,7 @@ model and runtime identity, and finalize accepted staging output as Parquet
 with the required collection/reuse metadata. The canonical data root is:
 
 ```text
-python/aisimulate/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/
+python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/
 ```
 
 Do not relabel another backend version's data as newly measured. Update query
@@ -131,7 +131,7 @@ alone does not prove end-to-end predictive accuracy.
 
 ### AFD Operation Partitioning Compatibility
 
-Attention-FFN Disaggregated (AFD) estimate mode has one additional maintenance contract beyond the normal aggregated and P/D-disaggregated paths. [`sdk/afd_partition.py`](../src/aiconfigurator/sdk/afd_partition.py) splits a model's `context_ops` / `generation_ops` into A-worker and F-worker pools by operation name. When adding a new model family or new operation, make sure the generated operation names can be classified by the AFD partitioner.
+Attention-FFN Disaggregated (AFD) estimate mode has one additional maintenance contract beyond the normal aggregated and P/D-disaggregated paths. [`sdk/afd_partition.py`](../src/aisimulate/sdk/afd_partition.py) splits a model's `context_ops` / `generation_ops` into A-worker and F-worker pools by operation name. When adding a new model family or new operation, make sure the generated operation names can be classified by the AFD partitioner.
 
 The current AFD partitioning contract is:
 

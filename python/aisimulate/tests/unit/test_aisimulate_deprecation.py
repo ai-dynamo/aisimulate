@@ -7,9 +7,9 @@ import warnings
 
 import pytest
 
-from aiconfigurator import deprecation
-from aiconfigurator import main as root_main
-from aiconfigurator.sdk import sweep
+from aisimulate.legacy_cli import deprecation
+from aisimulate.legacy_cli import entrypoint as root_main
+from aisimulate.sdk import sweep
 
 pytestmark = pytest.mark.unit
 

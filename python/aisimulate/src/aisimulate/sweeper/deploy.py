@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec
 

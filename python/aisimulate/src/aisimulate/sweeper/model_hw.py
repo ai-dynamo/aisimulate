@@ -21,10 +21,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aiconfigurator.generator.naive import _estimate_model_weight_bytes
-from aiconfigurator_core.sdk import perf_database
-from aiconfigurator_core.sdk.models import check_is_moe
-from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
+from aisimulate.generator.naive import _estimate_model_weight_bytes
+from aisimulate_core.sdk import perf_database
+from aisimulate_core.sdk.models import check_is_moe
+from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
 from .kv_estimate import (
     DEFAULT_MAX_BATCH_SIZE,

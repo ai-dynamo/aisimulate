@@ -23,8 +23,8 @@ synthetic in-memory tables; this file is the real-data-grounded companion.
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator_core.sdk.operations.mamba import GDNKernel
+from aisimulate.sdk.perf_database import get_database
+from aisimulate_core.sdk.operations.mamba import GDNKernel
 
 pytestmark = pytest.mark.unit
 

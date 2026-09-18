@@ -10,7 +10,7 @@ AISimulate 0.12.0 has one product version and exactly two release artifacts:
 The external public-API test fixture is `publish = false` and excluded from the
 product workspace. Imported AIConfigurator source does not retain another buildable `aiconfigurator`,
 `aiconfigurator-core`, or Python `aisimulate-core` manifest. The preserved
-`aiconfigurator`, `aiconfigurator_core`, and `aisimulate_core` namespaces all
+`aiconfigurator`, `aisimulate_core`, and `aisimulate_core` namespaces all
 live inside the `aisimulate` wheel and therefore do not add artifacts.
 
 `scripts/build_release_artifacts.py` validates the manifest set before it
@@ -55,8 +55,8 @@ split the payload into another distribution.
 
 The combined artifacts deliberately retain stable source subtrees:
 
-- `python/aisimulate/src/aiconfigurator/` and
-  `python/aisimulate/src/aiconfigurator_core/` mirror AIC Python code and data;
+- `python/aisimulate/src/aisimulate/` and
+  `python/aisimulate/src/aisimulate_core/` mirror AIC Python code and data;
 - `crates/core/src/perfmodel/` mirrors the AIC Rust estimator;
 - AISimulate-owned facades and native integration stay outside those mirrors.
 

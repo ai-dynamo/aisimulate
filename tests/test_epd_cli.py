@@ -379,8 +379,8 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
 @pytest.mark.parametrize("absence", ["database", "version"])
 def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_database = perf_database.get_database_view
     original_version = kv_estimate.get_latest_database_version

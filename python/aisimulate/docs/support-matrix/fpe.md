@@ -76,7 +76,7 @@ interactive page:
 ```bash
 python python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py \
   fpe-support-matrix \
-  --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+  --output-dir python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix
 ```
 
 Use filters and a deterministic topology cap for a focused smoke run:

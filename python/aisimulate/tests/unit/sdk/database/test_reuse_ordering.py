@@ -30,9 +30,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk import common
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -422,7 +422,7 @@ def test_loaded_rows_keep_primary_and_fill_only_missing_shapes(systems_root: Pat
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     def _write_gemm_parquet(rel: str, rows: list[tuple[str, str, int, int, int, float]]) -> None:
         path = systems_root / rel
@@ -809,7 +809,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     (systems_root / "h100_sxm.yaml").write_text(
         yaml.safe_dump(

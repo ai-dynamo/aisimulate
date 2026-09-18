@@ -60,7 +60,7 @@ It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using n
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and
 `custom_allreduce_perf.txt`. Collector finalization converts accepted output
 to parquet under
-`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`python/aisimulate/src/aisimulate_core/systems/data/<system>/comm/<backend>/<version>/`.
 
 # Model-centric cases and healing runs
 
@@ -190,7 +190,7 @@ deserves a denylist entry, a registry `unverified` marker, or a capability
 floor — live in `.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
-`src/aiconfigurator/systems/<gpu>.yaml`; use `--sm <version>` on an
+`src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
 unregistered GPU. Without either, the local device capability is detected
 automatically.
 
@@ -481,7 +481,7 @@ python3 collect.py --backend trtllm
 ```
 For trtllm, the whole collecting process takes about 30 gpu-hours. On 8-gpu, it takes 3-4 hours.
 Please note that the whole process will report a lot of missing datapoints with errors. But it's okay. Our system is kindof robust to fair amount of missing data.
-Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aiconfigurator/systems/ folder to prepare the database including
+Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aisimulate_core/systems/ folder to prepare the database including
 how many files are needed accordingly.
 
 ## Resume Collection (Checkpoint)
@@ -601,7 +601,7 @@ design for hardware, not a column to fake. The loaders treat absent (or
 null) power as 0.0.
 
 # Test
-Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aiconfigurator/systems/xxx.yaml
+Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aisimulate_core/systems/xxx.yaml
 
 # Validate the correctness
 Today, we have limited method to validate the database. You can try tools/sanity_check to validate the database a little bit. But it highly depends on your understanding
@@ -621,6 +621,6 @@ of the GPU system and kernel optimization.
 
 Browse the [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 for CLI compatibility coverage, or inspect the
-[per-system CSV files](../src/aiconfigurator_core/systems/support_matrix/).
+[per-system CSV files](../src/aisimulate_core/systems/support_matrix/).
 For strict-native estimator coverage, use the
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/).

@@ -333,7 +333,7 @@ impl AicTimingModel {
 
         let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
-            let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
+            let sdk = PyModule::import(py, "aisimulate_core.sdk.engine")?;
             let kwargs = PyDict::new(py);
             kwargs.set_item("backend_version", config.resolved_backend_version())?;
             kwargs.set_item("tp_size", config.tp)?;
@@ -365,7 +365,7 @@ impl AicTimingModel {
                 ),
                 Some(&kwargs),
             )?;
-            let aic = PyModule::import(py, "aiconfigurator_core")?
+            let aic = PyModule::import(py, "aisimulate_core")?
                 .getattr("AicEngine")?
                 .call_method1("from_spec", (spec, config.systems_path.as_deref()))?;
             let fpm_decode_kv_ceiling = if use_fpm_decode_totals {
@@ -548,7 +548,7 @@ fn checked_u32(value: usize, name: &str) -> Result<u32> {
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     let (memory_fraction_kind, memory_fraction_value) = config.resolved_memory_fraction()?;
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aiconfigurator_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;

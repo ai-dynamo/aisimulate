@@ -127,7 +127,7 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
 
 
 def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
-    from aiconfigurator_core.sdk import engine
+    from aisimulate_core.sdk import engine
 
     calls = []
     original = engine.compile_engine
@@ -254,7 +254,7 @@ def test_ngram_sweeper_ignores_inactive_roles_until_selected(mode, inactive_role
 
 
 def test_generator_does_not_silently_drop_prompt_lookup():
-    from aiconfigurator.generator.request import SweeperCandidateError, from_sweeper_candidate
+    from aisimulate.generator.request import SweeperCandidateError, from_sweeper_candidate
 
     with pytest.raises(SweeperCandidateError, match="ngram deployment generation is unsupported"):
         from_sweeper_candidate({"config": {"speculation": _SPEC}})

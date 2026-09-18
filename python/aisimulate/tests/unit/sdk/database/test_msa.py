@@ -11,13 +11,13 @@ the frozen parity goldens."""
 
 import pytest
 
-from aiconfigurator.sdk import common
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.unit
 
 
 def _ctx_msa():
-    from aiconfigurator.sdk.operations.msa import ContextMSAModule
+    from aisimulate.sdk.operations.msa import ContextMSAModule
 
     # M3-like per-GPU shape: 8 q / 1 kv heads, head_dim 128, v 128, top-16 blocks * 128.
     return ContextMSAModule(
@@ -45,7 +45,7 @@ def test_msa_sol_scales_with_workload():
     shipped database: ``op._engine_query`` is the permanent internal single-op plumbing routed
     through the compiled engine's probe, which loads its tables from disk (the synthetic
     fixture is invisible to it)."""
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     db = get_database_view("b200_sxm", "sglang", "0.5.14", database_mode="SOL")
     assert db is not None, "b200_sxm/sglang/0.5.14 data missing"
@@ -63,8 +63,8 @@ def test_rtx_trtllm_rc23_loads_and_m3_is_explicitly_rejected():
     family serves, while M3 MSA — no rtx table, no DSA xop donor on trtllm —
     fails with a typed empirical error (an explicitly rejected cell), never
     a silent fallback or a version-gate exit."""
-    from aiconfigurator.sdk.perf_database import get_database_view
-    from aiconfigurator_core.sdk.errors import EmpiricalNotImplementedError
+    from aisimulate.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.errors import EmpiricalNotImplementedError
 
     db = get_database_view("rtx_pro_6000_server", "trtllm", "1.3.0rc23", database_mode="HYBRID")
     assert db is not None, "rc23 reuse markers must make the version root loadable"
@@ -92,9 +92,9 @@ def test_rejected_msa_cells_raise_typed_errors(system, backend, version):
     table and no DSA donor must fail TYPED in both modes — SILICON with
     PerfDataNotAvailableError, HYBRID with EmpiricalNotImplementedError —
     for context and generation alike; never a silent fallback or a value."""
-    from aiconfigurator.sdk.operations.msa import ContextMSAModule, GenerationMSAModule
-    from aiconfigurator.sdk.perf_database import get_database_view
-    from aiconfigurator_core.sdk.errors import (
+    from aisimulate.sdk.operations.msa import ContextMSAModule, GenerationMSAModule
+    from aisimulate.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.errors import (
         EmpiricalNotImplementedError,
         PerfDataNotAvailableError,
     )
@@ -149,8 +149,8 @@ def test_nvfp4_checkpoint_lane_resolution_per_backend():
     must resolve; the sglang tables are bf16-gemm-only by declaration (the
     checkpoint's quantized flow is unsupported in SGLang serving), so
     SILICON must miss and HYBRID takes the documented empirical transfer."""
-    from aiconfigurator.sdk.operations.msa import ContextMSAModule
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.operations.msa import ContextMSAModule
+    from aisimulate.sdk.perf_database import get_database_view
 
     def op():
         return ContextMSAModule(

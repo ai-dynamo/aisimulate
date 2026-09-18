@@ -72,10 +72,10 @@ git rev-parse HEAD
 uv run pip install -e ".[dev]"
 
 # 3.5 Verify both halves import.
-uv run python -c "import aiconfigurator_core; import aiconfigurator; print('core+sdk OK')"
+uv run python -c "import aisimulate_core; import aisimulate; print('core+sdk OK')"
 ```
 
-If `import aiconfigurator_core` fails, the Rust build did not run — confirm
+If `import aisimulate_core` fails, the Rust build did not run — confirm
 `cargo --version` works and re-run step 3.4.
 
 ## 4. The scan — two phases
@@ -288,7 +288,7 @@ worker/recycle settings used.
 ## 9. Gotchas checklist
 
 - [ ] Current checked-in Parquet perf DBs are present; legacy-only scans also ran `git lfs pull`.
-- [ ] `import aiconfigurator_core` succeeds (Rust core built).
+- [ ] `import aisimulate_core` succeeds (Rust core built).
 - [ ] `--max-tasks-per-child 0` on both phases (a finite value DEADLOCKS — §4.0).
 - [ ] Library thread caps exported (`OMP_NUM_THREADS=1` etc.) before each phase.
 - [ ] Pareto run as a `--limit` shard loop (process-boundary recycle, §4.2).

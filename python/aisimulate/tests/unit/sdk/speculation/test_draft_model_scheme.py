@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk import common, models
-from aiconfigurator_core.sdk import config as sdk_config
-from aiconfigurator_core.sdk.speculation import SpeculationConfig
-from aiconfigurator_core.sdk.speculation.draft_model import DraftModelScheme
+from aisimulate_core.sdk import common, models
+from aisimulate_core.sdk import config as sdk_config
+from aisimulate_core.sdk.speculation import SpeculationConfig
+from aisimulate_core.sdk.speculation.draft_model import DraftModelScheme
 
 pytestmark = pytest.mark.unit
 

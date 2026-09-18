@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import aiconfigurator.sdk.models.helpers as helpers
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.models import resolve_context_fmha_by_data
+import aisimulate.sdk.models.helpers as helpers
+from aisimulate.sdk import common, config
+from aisimulate.sdk.models import resolve_context_fmha_by_data
 
 pytestmark = pytest.mark.unit
 

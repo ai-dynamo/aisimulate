@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from collector import provenance
 from collector.network.slurm import collect_trtllm_alltoall as ata
 
@@ -211,10 +210,10 @@ def test_comparability_new_writer_leaf_equals_adapted_legacy_leaf(tmp_path):
     # each adapter must independently land equal measurements on equal keys.
     import pandas as pd
     import yaml
-
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
     from collector.helper import finalize_perf_files, log_perf
+
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import PerfDatabase
 
     root = tmp_path / "systems"
     root.mkdir()

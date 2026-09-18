@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import engine
+from aisimulate.sdk import engine
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +24,7 @@ def test_compile_engine_applies_nextn_compute_cost_only(monkeypatch):
 
     monkeypatch.setattr(engine, "build_engine_spec_json", _capture_spec)
     monkeypatch.setattr(engine, "_maybe_load_database", lambda *a, **k: None)
-    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda s: b"")
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda s: b"")
 
     engine.compile_engine(
         "Qwen/Qwen3-32B",
@@ -61,7 +61,7 @@ def test_compile_engine_propagates_attention_backend_to_model_config(monkeypatch
 
     monkeypatch.setattr(engine, "build_engine_spec_json", _capture_spec)
     monkeypatch.setattr(engine, "_maybe_load_database", lambda *a, **k: None)
-    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda s: b"")
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda s: b"")
 
     engine.compile_engine(
         "Qwen/Qwen3-32B",
@@ -86,7 +86,7 @@ def test_compile_engine_propagates_database_mode_to_database_view(monkeypatch):
 
     monkeypatch.setattr(engine, "build_engine_spec_json", _capture_spec)
     monkeypatch.setattr(engine, "_maybe_load_database", _capture_database)
-    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda s: b"")
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda s: b"")
 
     engine.compile_engine(
         "Qwen/Qwen3-32B",
@@ -109,7 +109,7 @@ def test_compile_engine_propagates_database_mode_to_database_view(monkeypatch):
 
 
 def test_maybe_load_database_builds_formula_only_empirical_view(monkeypatch):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     captured = {}
     sentinel = object()
@@ -157,7 +157,7 @@ def test_maybe_load_database_does_not_silently_downgrade_explicit_policy(
     transfer_policy,
     strict_provenance,
 ):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     def _fail_view(*_args, **_kwargs):
         raise ValueError("unsupported database mode")
@@ -178,7 +178,7 @@ def test_maybe_load_database_does_not_silently_downgrade_explicit_policy(
 
 
 def test_maybe_load_database_keeps_default_load_tolerant(monkeypatch):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     def _fail_view(*_args, **_kwargs):
         raise RuntimeError("database unavailable")
@@ -189,7 +189,7 @@ def test_maybe_load_database_keeps_default_load_tolerant(monkeypatch):
 
 
 def test_maybe_load_database_leaves_empty_view_for_native_reload(monkeypatch):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     monkeypatch.setattr(perf_database, "get_database_view", lambda *_args, **_kwargs: None)
 

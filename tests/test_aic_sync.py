@@ -25,16 +25,16 @@ def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> N
     _git(tmp_path, "init")
     _git(tmp_path, "config", "user.name", "AISimulate test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
-    source = tmp_path / "aic-core" / "src" / "aiconfigurator_core"
+    source = tmp_path / "src" / "aisimulate_core"
     source.mkdir(parents=True)
     (source / "__init__.py").write_text("")
-    _git(tmp_path, "add", "aic-core/src/aiconfigurator_core/__init__.py")
+    _git(tmp_path, "add", "src/aisimulate_core/__init__.py")
     _git(tmp_path, "-c", "commit.gpgsign=false", "commit", "-m", "fixture")
     commit = _git(tmp_path, "rev-parse", "HEAD")
 
-    SYNC._require_source_path(tmp_path, commit, "aic-core/src/aiconfigurator_core")
+    SYNC._require_source_path(tmp_path, commit, "src/aisimulate_core")
     with pytest.raises(ValueError, match="does not exist"):
-        SYNC._require_source_path(tmp_path, commit, "src/aiconfigurator_core")
+        SYNC._require_source_path(tmp_path, commit, "src/aisimulate_core")
 
 
 def test_manual_changes_require_and_populate_a_report(tmp_path: Path, monkeypatch) -> None:

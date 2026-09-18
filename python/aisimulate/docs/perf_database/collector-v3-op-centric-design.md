@@ -71,7 +71,7 @@ backends.
 ## 3. Physical data layout
 
 ```text
-aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/
+src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/
     <table>_perf.parquet     # filenames unchanged (PerfFile enum untouched)
     collection_meta.yaml     # provenance sidecar (committed, required)
     reuse.yaml               # authored reuse declarations (only in declared-reuse dirs)
@@ -107,7 +107,7 @@ Example: `data/h200_sxm/attention/trtllm/1.3.0rc10/context_attention_perf.parque
   tooling, collector finalize output paths.
   The GitLab auto-collect pipeline is updated in lockstep; in-flight data PRs
   rebase after the move.
-- Note: `src/aiconfigurator/systems` is a symlink into aic-core since #1322.
+- Note: `src/aisimulate_core/systems` is a symlink into aic-core since #1322.
   Anything fetching raw file contents by URL (raw.githubusercontent does not
   traverse symlinks) must use the real `aic-core/...` path.
 
@@ -408,7 +408,7 @@ Guardrails:
   donor (for example TRT-LLM rc20 falling back to rc10). Per-op pruning must
   account for this same-backend chain before deleting old comm data.
 
-## 7. Loader changes (`aic-core/src/aiconfigurator_core/sdk/perf_database.py`)
+## 7. Loader changes (`src/aisimulate_core/sdk/perf_database.py`)
 
 In increasing order of semantic weight:
 

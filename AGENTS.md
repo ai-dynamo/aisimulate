@@ -6,7 +6,7 @@ This file adds explicit repository-wide development guards.
 
 Before making any change under:
 
-- `python/aisimulate/src/aiconfigurator/generator/**`
+- `python/aisimulate/src/aisimulate/generator/**`
 
 MUST read:
 
@@ -75,7 +75,7 @@ Python dependencies are managed via `uv` with the
 - **Install/refresh deps:**
   `uv sync --project python/aisimulate --extra dev`
 - **Performance data:** Current op profiles are parquet files under
-  `python/aisimulate/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/`
+  `python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`
   and are checked in directly. Legacy `*.txt` perf files, when present, use Git
   LFS; run `git lfs pull` only when working with those legacy assets.
 

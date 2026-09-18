@@ -4,7 +4,7 @@
 //! MLA operators: op-level context/generation, module-level
 //! context/generation, and MLA BMM (pre/post).
 //!
-//! Mirrors `aiconfigurator.sdk.operations.mla.{ContextMLA, GenerationMLA,
+//! Mirrors `aisimulate.sdk.operations.mla.{ContextMLA, GenerationMLA,
 //! MLAModule, MLABmm}`. Op-level paths apply Python's prefix-correction
 //! multiplier inside the mode dispatch (silicon branch only — the empirical
 //! branch's SOL carries prefix natively, exactly like Python's
@@ -848,7 +848,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -872,7 +872,7 @@ mod tests {
     fn gb200_trtllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "gb200", "trtllm", "1.3.0rc20").expect("db must load")
     }
 

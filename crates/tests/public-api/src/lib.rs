@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use aiconfigurator_core::{
+use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
     ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassRegressionStoreDiagnostics,
     ForwardPassWorkerType, KvCacheEstimateRequest,
@@ -96,7 +96,7 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aiconfigurator_core::{
+    use aisimulate_core::{
         ForwardPassMetrics, ForwardPassRegressionWorkloadKind, TimingEvidenceSource,
         TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
         ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
@@ -139,7 +139,7 @@ mod tests {
 
     struct LatencyOnlyProvider;
 
-    impl aiconfigurator_core::TimingModel for LatencyOnlyProvider {
+    impl aisimulate_core::TimingModel for LatencyOnlyProvider {
         fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
             Ok(1.0)
         }
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn external_latency_only_provider_needs_no_energy_implementation() {
-        use aiconfigurator_core::TimingModel;
+        use aisimulate_core::TimingModel;
         assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
         assert_eq!(
             LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn power_statistics_require_validated_public_construction() {
-        use aiconfigurator_core::replay::TracePowerStats;
+        use aisimulate_core::replay::TracePowerStats;
 
         let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
         assert_eq!(available.power_w(), Some(500.0));

@@ -34,6 +34,13 @@ Both commands now come from AISimulate. Existing AIC flags and experiment YAML c
 `aiconfigurator`; there is no automatic converter to the new CLI input format. See the
 [Legacy AIC CLI User Guide](legacy-aic-user-guide.md) for the six-command reference.
 
+### 1.1 Migrate Python imports
+
+The next minor release removes the legacy `aiconfigurator` and
+`aiconfigurator_core` Python packages. The `aiconfigurator` executable remains
+available. See [Python source migration](../python-source-migration.md) for
+replacement imports, the package layout, and downstream qualification requirements.
+
 ## 2. AIC to AISimulate command mapping
 
 The rows follow the legacy guide's command order. “Keep AIC” means use the compatibility command
@@ -1300,7 +1307,7 @@ workload sharing. Keep AIC when you require its exact cached-token assumption.
 **Other speculative-decoding schemes.** Ngram prediction and recommendation are covered in
 [section 4.12](#412-ngram-prompt-lookup-speculative-decoding). MTP, EAGLE-3, DFlash, DSpark, and
 standalone draft models still use the compatibility CLI or SDK, subject to
-[scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
+[scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 

@@ -1,0 +1,2266 @@
+{
+  "schema_version": 1,
+  "status": "partial_release",
+  "system": "b200_sxm",
+  "framework": "vllm",
+  "runtime_version": "0.25.0",
+  "collector_code_smoke_ref": "5515203abb42a546589b9af6914de1ee859ee362",
+  "unit_tests": {
+    "passed": 87
+  },
+  "clock_policy": {
+    "requested_graphics_mhz": 1965,
+    "hard_lock_verified": false,
+    "observed_clocks_preserved_in_source_snapshots": true
+  },
+  "production_snapshot_archive_sha256": "468297961fe75d01fa0b569deacc221e87aa85113e82dce72c935cff43e72231",
+  "tables": {
+    "context_attention_perf.parquet": {
+      "path": "attention/vllm/0.25.0/context_attention_perf.parquet",
+      "rows": 52836,
+      "sha256": "5c6d9c3de017814c8e64e43d9cb7bd778865a0fec61169f26e97e31333c5a967",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-00",
+          "job": "job-1968502",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6674,
+          "classified_failures": 206
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-01",
+          "job": "job-1968503",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6674,
+          "classified_failures": 206
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-02",
+          "job": "job-1968504",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6674,
+          "classified_failures": 206
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-03",
+          "job": "job-1968505",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6674,
+          "classified_failures": 206
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-04",
+          "job": "job-1968506",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6674,
+          "classified_failures": 206
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-05",
+          "job": "job-1968507",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6314,
+          "classified_failures": 194
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-06",
+          "job": "job-1968508",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6576,
+          "classified_failures": 204
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_context-07",
+          "job": "job-1968509",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 6576,
+          "classified_failures": 204
+        }
+      ]
+    },
+    "dsv4_csa_context_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_csa_context_module_perf.parquet",
+      "rows": 5840,
+      "sha256": "9b5071243f15ecc84d53e44d3129ec27ab845e92616ee1c630cc827aa9347ef7",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_csa_context_module-00",
+          "job": "job-1968520",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 2920,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_csa_context_module-01",
+          "job": "job-1968521",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 2920,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "dsv4_csa_generation_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_csa_generation_module_perf.parquet",
+      "rows": 1544,
+      "sha256": "578fd077df97b91ae9f3faee63eab4d9a1cdb58b5cca08969c1dbac628682fae",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_csa_generation_module-00",
+          "job": "job-1968524",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 776,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_csa_generation_module-01",
+          "job": "job-1968525",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 768,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "dsv4_hca_attn_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
+      "rows": 3918,
+      "sha256": "dc93933dbfb7608991654d68500560a565b27976e4f10ff815d766f913566832",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_attn_module-00",
+          "job": "job-1968531",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 1960,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_attn_module-01",
+          "job": "job-1968532",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 1958,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "dsv4_hca_context_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_hca_context_module_perf.parquet",
+      "rows": 5840,
+      "sha256": "20afb7fc63f0cf98769a6d3e82c5316df30cf82be29673a8cf708994364dc96e",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_context_module-00",
+          "job": "job-1968522",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 2920,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_context_module-01",
+          "job": "job-1968523",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 2920,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "dsv4_hca_generation_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_hca_generation_module_perf.parquet",
+      "rows": 1544,
+      "sha256": "bc7102ed9b24c6fc6d7c1e9612ad2d25ce4ab07302cb559a3fa238bbcea77bae",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_generation_module-00",
+          "job": "job-1968526",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 776,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_hca_generation_module-01",
+          "job": "job-1968527",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 768,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "dsv4_paged_mqa_logits_module_perf.parquet": {
+      "path": "sparse_attention/vllm/0.25.0/dsv4_paged_mqa_logits_module_perf.parquet",
+      "rows": 3918,
+      "sha256": "0d909aa4d1e46643459e80e02090bd124359472b11de66b38c9991c5494268ee",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_paged_mqa_logits_module-00",
+          "job": "job-1968529",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 1960,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "dsv4_paged_mqa_logits_module-01",
+          "job": "job-1968530",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 1958,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "encoder_attention_perf.parquet": {
+      "path": "encoder_attention/vllm/0.25.0/encoder_attention_perf.parquet",
+      "rows": 7679,
+      "sha256": "c21f5bbe8f2bdc45ba4f0f14fdba9038eb28a22c754c583462351e7092ef2ea7",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "encoder_attention-00",
+          "job": "job-1968518",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 3840,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "encoder_attention-01",
+          "job": "job-1968519",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 3839,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "gdn_perf.parquet": {
+      "path": "linear_attention/vllm/0.25.0/gdn_perf.parquet",
+      "rows": 10326,
+      "sha256": "32cbb26e64f8013fca358a652062a2b0eab263ce0b11f77deb41d068c012fb10",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "gdn-00",
+          "job": "job-1968542",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 10326,
+          "classified_failures": 4
+        }
+      ]
+    },
+    "gemm_perf.parquet": {
+      "path": "gemm/vllm/0.25.0/gemm_perf.parquet",
+      "rows": 148962,
+      "sha256": "ed7c42ae8477ff754b1450ac9a1177eaba8950d27371a2101796b04e0d7e9f1f",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-bfloat16-00",
+          "job": "job-1968145",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-bfloat16-01",
+          "job": "job-1968146",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-bfloat16-02",
+          "job": "job-1968147",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-bfloat16-03",
+          "job": "job-1968162",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8-00",
+          "job": "job-1968148",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8-01",
+          "job": "job-1968149",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8-02",
+          "job": "job-1968362",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8-03",
+          "job": "job-1968150",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8_block-00",
+          "job": "job-1968151",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9329,
+          "classified_failures": 285
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8_block-01",
+          "job": "job-1968152",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9329,
+          "classified_failures": 285
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8_block-02",
+          "job": "job-1968153",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 8838,
+          "classified_failures": 270
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-fp8_block-03",
+          "job": "job-1968154",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 8838,
+          "classified_failures": 270
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-nvfp4-00",
+          "job": "job-1968155",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-nvfp4-01",
+          "job": "job-1968156",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9614,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-nvfp4-02",
+          "job": "job-1968157",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-v2",
+          "shard": "gemm-nvfp4-03",
+          "job": "job-1968158",
+          "collector_ref": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+          "source_rows": 9108,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-final-v1",
+          "shard": "gemm-shared-down-supplement",
+          "job": "job-1968943",
+          "collector_ref": "0df459fa62de6529d4e1585536da64fd8e917818",
+          "source_rows": 296,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "generation_attention_perf.parquet": {
+      "path": "attention/vllm/0.25.0/generation_attention_perf.parquet",
+      "rows": 65408,
+      "sha256": "9c5f363fc78c87d6babecfa5528610b16c5d93af21fa809ab3694ef2715f0727",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-00",
+          "job": "job-1968510",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8180,
+          "classified_failures": 280
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-01",
+          "job": "job-1968511",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8180,
+          "classified_failures": 280
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-02",
+          "job": "job-1968512",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8172,
+          "classified_failures": 280
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-03",
+          "job": "job-1968513",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8180,
+          "classified_failures": 276
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-04",
+          "job": "job-1968514",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8174,
+          "classified_failures": 278
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-05",
+          "job": "job-1968515",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8174,
+          "classified_failures": 278
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-06",
+          "job": "job-1968516",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8174,
+          "classified_failures": 278
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "attention_generation-07",
+          "job": "job-1968517",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 8174,
+          "classified_failures": 278
+        }
+      ]
+    },
+    "mhc_module_perf.parquet": {
+      "path": "mhc/vllm/0.25.0/mhc_module_perf.parquet",
+      "rows": 140,
+      "sha256": "e3ef831f198d5a13cf642496157c18672b8d8dcd19a9ec453c9dddeab78cdaba",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "mhc_module-00",
+          "job": "job-1968533",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 140,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "mla_bmm_perf.parquet": {
+      "path": "mla_bmm/vllm/0.25.0/mla_bmm_perf.parquet",
+      "rows": 636,
+      "sha256": "69e93a27953670b6ac979359c67ebef52b9ddfb1aba1d9a3b430601703273383",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "mla_bmm_gen_pre-00",
+          "job": "job-1968496",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 300,
+          "classified_failures": 0
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "mla_bmm_gen_post-00",
+          "job": "job-1968543",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 336,
+          "classified_failures": 0
+        }
+      ]
+    },
+    "mla_context_module_perf.parquet": {
+      "path": "mla/vllm/0.25.0/mla_context_module_perf.parquet",
+      "rows": 13059,
+      "sha256": "3d2402d1e99bd1c7dfd45ae245fa33336eb29e240d3be1d4c2f0fd1e8bb0ab28",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_context_module-00",
+          "job": "job-1968650",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 3330,
+          "classified_failures": 18
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_context_module-01",
+          "job": "job-1968651",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 3312,
+          "classified_failures": 36
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_context_module-02",
+          "job": "job-1968652",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 3222,
+          "classified_failures": 18
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_context_module-03",
+          "job": "job-1968653",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 3195,
+          "classified_failures": 45
+        }
+      ]
+    },
+    "mla_generation_module_perf.parquet": {
+      "path": "mla/vllm/0.25.0/mla_generation_module_perf.parquet",
+      "rows": 11400,
+      "sha256": "4980a820d89a22d786a19bd399979f03ecb729bd0cb2a76a98234467d3e0363b",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_generation_module-00",
+          "job": "job-1968656",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 2856,
+          "classified_failures": 456
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_generation_module-01",
+          "job": "job-1968657",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 2862,
+          "classified_failures": 450
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_generation_module-02",
+          "job": "job-1968658",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 2838,
+          "classified_failures": 474
+        },
+        {
+          "campaign": "campaign-mla-v1",
+          "shard": "mla_generation_module-03",
+          "job": "job-1968659",
+          "collector_ref": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+          "source_rows": 2844,
+          "classified_failures": 468
+        }
+      ]
+    },
+    "moe_perf.parquet": {
+      "path": "moe/vllm/0.25.0/moe_perf.parquet",
+      "rows": 72378,
+      "sha256": "70e3a2712f9be52dfab8f06b7996c3f21ad5072a55f5972ed6b81dcdb00032cd",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "moe-00",
+          "job": "job-1968544",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 19278,
+          "classified_failures": 51
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "moe-01",
+          "job": "job-1968545",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 16848,
+          "classified_failures": 153
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "moe-02",
+          "job": "job-1968546",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 18148,
+          "classified_failures": 103
+        },
+        {
+          "campaign": "campaign-ops-v1",
+          "shard": "moe-03",
+          "job": "job-1968547",
+          "collector_ref": "c79cc132552deb677becc37f8139b0cca2b08d75",
+          "source_rows": 18104,
+          "classified_failures": 83
+        }
+      ]
+    },
+    "msa_context_module_perf.parquet": {
+      "path": "msa/vllm/0.25.0/msa_context_module_perf.parquet",
+      "rows": 14110,
+      "sha256": "58a6543e98b6a07db5d195afde00ceb57ae2eb29c8841c777f75ec1e306de6da",
+      "status": "complete",
+      "source_jobs": [
+        {
+          "campaign": "campaign-final-v1",
+          "shard": "msa_context_module-00",
+          "job": "job-1968935",
+          "collector_ref": "0df459fa62de6529d4e1585536da64fd8e917818",
+          "source_rows": 3593,
+          "classified_failures": 871
+        },
+        {
+          "campaign": "campaign-final-v1",
+          "shard": "msa_context_module-01",
+          "job": "job-1968936",
+          "collector_ref": "0df459fa62de6529d4e1585536da64fd8e917818",
+          "source_rows": 3543,
+          "classified_failures": 921
+        },
+        {
+          "campaign": "campaign-final-v1",
+          "shard": "msa_context_module-02",
+          "job": "job-1968937",
+          "collector_ref": "0df459fa62de6529d4e1585536da64fd8e917818",
+          "source_rows": 3467,
+          "classified_failures": 853
+        },
+        {
+          "campaign": "campaign-final-v1",
+          "shard": "msa_context_module-03",
+          "job": "job-1968938",
+          "collector_ref": "0df459fa62de6529d4e1585536da64fd8e917818",
+          "source_rows": 3507,
+          "classified_failures": 813
+        }
+      ]
+    }
+  },
+  "ops": {
+    "gemm": {
+      "planned": 150072,
+      "successful": 148962,
+      "failed": 1110,
+      "unattempted": 0
+    },
+    "attention_context": {
+      "planned": 54468,
+      "successful": 52836,
+      "failed": 1632,
+      "unattempted": 0
+    },
+    "attention_generation": {
+      "planned": 67636,
+      "successful": 65408,
+      "failed": 2228,
+      "unattempted": 0
+    },
+    "encoder_attention": {
+      "planned": 7679,
+      "successful": 7679,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "compute_scale": {
+      "planned": 1628,
+      "successful": 1628,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_csa_context_module": {
+      "planned": 5840,
+      "successful": 5840,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_hca_context_module": {
+      "planned": 5840,
+      "successful": 5840,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_csa_generation_module": {
+      "planned": 1544,
+      "successful": 1544,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_hca_generation_module": {
+      "planned": 1544,
+      "successful": 1544,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_paged_mqa_logits_module": {
+      "planned": 3918,
+      "successful": 3918,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "dsv4_hca_attn_module": {
+      "planned": 3918,
+      "successful": 3918,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "mhc_module": {
+      "planned": 140,
+      "successful": 140,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "gdn": {
+      "planned": 84,
+      "successful": 80,
+      "failed": 4,
+      "unattempted": 0
+    },
+    "mla_bmm_gen_pre": {
+      "planned": 300,
+      "successful": 300,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "mla_bmm_gen_post": {
+      "planned": 336,
+      "successful": 336,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "moe": {
+      "planned": 3069,
+      "successful": 2679,
+      "failed": 390,
+      "unattempted": 0
+    },
+    "mla_context_module": {
+      "planned": 13176,
+      "successful": 13059,
+      "failed": 117,
+      "unattempted": 0
+    },
+    "mla_generation_module": {
+      "planned": 13248,
+      "successful": 11400,
+      "failed": 1848,
+      "unattempted": 0
+    },
+    "dsa_context_module": {
+      "planned": 35136,
+      "successful": 437,
+      "failed": 246,
+      "unattempted": 34453
+    },
+    "dsa_generation_module": {
+      "planned": 26496,
+      "successful": 411,
+      "failed": 322,
+      "unattempted": 25763
+    },
+    "msa_context_module": {
+      "planned": 17568,
+      "successful": 14110,
+      "failed": 3458,
+      "unattempted": 0
+    },
+    "msa_generation_module": {
+      "planned": 13248,
+      "successful": 553,
+      "failed": 368,
+      "unattempted": 12327
+    }
+  },
+  "withheld": {
+    "computescale_perf.parquet": "Fresh smoke measured 5/5 cases but collector finalization rejected the existing undeclared scale_matrix_perf.txt side output. Original data and raw side output retained; do not claim end-to-end smoke passed.",
+    "dsa_context_module_perf.parquet": "Full sweep incomplete; interrupted source snapshots have not finalized.",
+    "dsa_generation_module_perf.parquet": "Full sweep incomplete; interrupted source snapshots have not finalized.",
+    "msa_generation_module_perf.parquet": "Full sweep incomplete; interrupted source snapshots have not finalized."
+  },
+  "communication": "Raw CAR/NCCL results exist; not included in this operator-only publication batch.",
+  "reused_kda": {
+    "version": "0.1.dev19262",
+    "measured_build": "0.1.dev19262+gb6bbf29dd.d20260727",
+    "rows": 1203,
+    "new_measurement": false,
+    "sha256": "b21968ecb170a3095725a34b45cb16fe19c7dcd30250a04f5802d16a5d3c202a"
+  },
+  "total_published_rows": 419538,
+  "total_published_tables": 17,
+  "totals": {
+    "planned": 426888,
+    "successful": 342622,
+    "failed": 11723,
+    "unattempted": 72543
+  },
+  "clock_observations": [
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-bfloat16-00",
+      "job": "job-1968145",
+      "samples": 3888,
+      "active_samples": 1761,
+      "active_graphics_mhz_min": 1027.0,
+      "active_graphics_mhz_median": 1845.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-bfloat16-01",
+      "job": "job-1968146",
+      "samples": 3304,
+      "active_samples": 1434,
+      "active_graphics_mhz_min": 915.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-bfloat16-02",
+      "job": "job-1968147",
+      "samples": 3288,
+      "active_samples": 1222,
+      "active_graphics_mhz_min": 1095.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-bfloat16-03",
+      "job": "job-1968162",
+      "samples": 3288,
+      "active_samples": 1099,
+      "active_graphics_mhz_min": 1267.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8-00",
+      "job": "job-1968148",
+      "samples": 4456,
+      "active_samples": 2402,
+      "active_graphics_mhz_min": 1462.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8-01",
+      "job": "job-1968149",
+      "samples": 3880,
+      "active_samples": 2135,
+      "active_graphics_mhz_min": 1560.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8-02",
+      "job": "job-1968362",
+      "samples": 3880,
+      "active_samples": 1934,
+      "active_graphics_mhz_min": 1575.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8-03",
+      "job": "job-1968150",
+      "samples": 3896,
+      "active_samples": 1868,
+      "active_graphics_mhz_min": 1515.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8_block-00",
+      "job": "job-1968151",
+      "samples": 49224,
+      "active_samples": 2752,
+      "active_graphics_mhz_min": 592.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8_block-01",
+      "job": "job-1968152",
+      "samples": 213952,
+      "active_samples": 2613,
+      "active_graphics_mhz_min": 675.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8_block-02",
+      "job": "job-1968153",
+      "samples": 46888,
+      "active_samples": 2385,
+      "active_graphics_mhz_min": 825.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-fp8_block-03",
+      "job": "job-1968154",
+      "samples": 49192,
+      "active_samples": 2657,
+      "active_graphics_mhz_min": 930.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-nvfp4-00",
+      "job": "job-1968155",
+      "samples": 3328,
+      "active_samples": 903,
+      "active_graphics_mhz_min": 1080.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-nvfp4-01",
+      "job": "job-1968156",
+      "samples": 3912,
+      "active_samples": 856,
+      "active_graphics_mhz_min": 1080.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-nvfp4-02",
+      "job": "job-1968157",
+      "samples": 3896,
+      "active_samples": 838,
+      "active_graphics_mhz_min": 1447.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-v2",
+      "shard": "gemm-nvfp4-03",
+      "job": "job-1968158",
+      "samples": 3312,
+      "active_samples": 756,
+      "active_graphics_mhz_min": 1492.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-00",
+      "job": "job-1968502",
+      "samples": 6216,
+      "active_samples": 2554,
+      "active_graphics_mhz_min": 1335.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-01",
+      "job": "job-1968503",
+      "samples": 5648,
+      "active_samples": 2412,
+      "active_graphics_mhz_min": 1170.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-02",
+      "job": "job-1968504",
+      "samples": 6192,
+      "active_samples": 2363,
+      "active_graphics_mhz_min": 1402.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-03",
+      "job": "job-1968505",
+      "samples": 6216,
+      "active_samples": 2504,
+      "active_graphics_mhz_min": 1237.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-04",
+      "job": "job-1968506",
+      "samples": 6200,
+      "active_samples": 2272,
+      "active_graphics_mhz_min": 1357.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-05",
+      "job": "job-1968507",
+      "samples": 5624,
+      "active_samples": 2201,
+      "active_graphics_mhz_min": 1605.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-06",
+      "job": "job-1968508",
+      "samples": 6776,
+      "active_samples": 3052,
+      "active_graphics_mhz_min": 1147.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_context-07",
+      "job": "job-1968509",
+      "samples": 5632,
+      "active_samples": 2590,
+      "active_graphics_mhz_min": 1252.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-00",
+      "job": "job-1968510",
+      "samples": 6232,
+      "active_samples": 3086,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-01",
+      "job": "job-1968511",
+      "samples": 6808,
+      "active_samples": 3811,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-02",
+      "job": "job-1968512",
+      "samples": 7928,
+      "active_samples": 4347,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-03",
+      "job": "job-1968513",
+      "samples": 6784,
+      "active_samples": 3283,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-04",
+      "job": "job-1968514",
+      "samples": 6792,
+      "active_samples": 3408,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-05",
+      "job": "job-1968515",
+      "samples": 7376,
+      "active_samples": 4245,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-06",
+      "job": "job-1968516",
+      "samples": 8536,
+      "active_samples": 5042,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "attention_generation-07",
+      "job": "job-1968517",
+      "samples": 7384,
+      "active_samples": 4018,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "encoder_attention-00",
+      "job": "job-1968518",
+      "samples": 3928,
+      "active_samples": 482,
+      "active_graphics_mhz_min": 1702.0,
+      "active_graphics_mhz_median": 1950.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "encoder_attention-01",
+      "job": "job-1968519",
+      "samples": 3352,
+      "active_samples": 485,
+      "active_graphics_mhz_min": 1740.0,
+      "active_graphics_mhz_median": 1957.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "compute_scale-filterfix-00",
+      "job": "job-1968568",
+      "samples": 1112,
+      "active_samples": 0,
+      "active_graphics_mhz_min": null,
+      "active_graphics_mhz_median": null,
+      "active_graphics_mhz_max": null
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "compute_scale-filterfix-01",
+      "job": "job-1968572",
+      "samples": 1112,
+      "active_samples": 0,
+      "active_graphics_mhz_min": null,
+      "active_graphics_mhz_median": null,
+      "active_graphics_mhz_max": null
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_csa_context_module-00",
+      "job": "job-1968520",
+      "samples": 24192,
+      "active_samples": 13600,
+      "active_graphics_mhz_min": 1935.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_csa_context_module-01",
+      "job": "job-1968521",
+      "samples": 25336,
+      "active_samples": 15266,
+      "active_graphics_mhz_min": 1957.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_context_module-00",
+      "job": "job-1968522",
+      "samples": 21880,
+      "active_samples": 11496,
+      "active_graphics_mhz_min": 1912.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_context_module-01",
+      "job": "job-1968523",
+      "samples": 23024,
+      "active_samples": 12732,
+      "active_graphics_mhz_min": 1897.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_csa_generation_module-00",
+      "job": "job-1968524",
+      "samples": 10312,
+      "active_samples": 645,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_csa_generation_module-01",
+      "job": "job-1968525",
+      "samples": 8568,
+      "active_samples": 628,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_generation_module-00",
+      "job": "job-1968526",
+      "samples": 10296,
+      "active_samples": 580,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_generation_module-01",
+      "job": "job-1968527",
+      "samples": 8568,
+      "active_samples": 572,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_paged_mqa_logits_module-00",
+      "job": "job-1968529",
+      "samples": 4472,
+      "active_samples": 512,
+      "active_graphics_mhz_min": 1695.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_paged_mqa_logits_module-01",
+      "job": "job-1968530",
+      "samples": 4488,
+      "active_samples": 424,
+      "active_graphics_mhz_min": 1710.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_attn_module-00",
+      "job": "job-1968531",
+      "samples": 5072,
+      "active_samples": 1408,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "dsv4_hca_attn_module-01",
+      "job": "job-1968532",
+      "samples": 5040,
+      "active_samples": 1309,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "mhc_module-00",
+      "job": "job-1968533",
+      "samples": 2792,
+      "active_samples": 64,
+      "active_graphics_mhz_min": 1830.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "gdn-00",
+      "job": "job-1968542",
+      "samples": 18392,
+      "active_samples": 7729,
+      "active_graphics_mhz_min": 1635.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "mla_bmm_gen_pre-00",
+      "job": "job-1968496",
+      "samples": 1048,
+      "active_samples": 25,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "mla_bmm_gen_post-00",
+      "job": "job-1968543",
+      "samples": 1032,
+      "active_samples": 29,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "moe-00",
+      "job": "job-1968544",
+      "samples": 13176,
+      "active_samples": 4177,
+      "active_graphics_mhz_min": 1380.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "moe-01",
+      "job": "job-1968545",
+      "samples": 9112,
+      "active_samples": 3475,
+      "active_graphics_mhz_min": 1297.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "moe-02",
+      "job": "job-1968546",
+      "samples": 14104,
+      "active_samples": 4069,
+      "active_graphics_mhz_min": 1770.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-ops-v1",
+      "shard": "moe-03",
+      "job": "job-1968547",
+      "samples": 11312,
+      "active_samples": 3567,
+      "active_graphics_mhz_min": 1470.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_context_module-00",
+      "job": "job-1968650",
+      "samples": 14952,
+      "active_samples": 3522,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_context_module-01",
+      "job": "job-1968651",
+      "samples": 14944,
+      "active_samples": 3830,
+      "active_graphics_mhz_min": 1957.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_context_module-02",
+      "job": "job-1968652",
+      "samples": 14352,
+      "active_samples": 3428,
+      "active_graphics_mhz_min": 1942.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_context_module-03",
+      "job": "job-1968653",
+      "samples": 16712,
+      "active_samples": 3366,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_generation_module-00",
+      "job": "job-1968656",
+      "samples": 14376,
+      "active_samples": 2950,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_generation_module-01",
+      "job": "job-1968657",
+      "samples": 14384,
+      "active_samples": 2802,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_generation_module-02",
+      "job": "job-1968658",
+      "samples": 14960,
+      "active_samples": 2879,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "mla_generation_module-03",
+      "job": "job-1968659",
+      "samples": 14400,
+      "active_samples": 2954,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_context_module-00",
+      "job": "job-1968685",
+      "samples": 2272,
+      "active_samples": 461,
+      "active_graphics_mhz_min": 1815.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_context_module-01",
+      "job": "job-1968686",
+      "samples": 2272,
+      "active_samples": 424,
+      "active_graphics_mhz_min": 1875.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_context_module-02",
+      "job": "job-1968687",
+      "samples": 2280,
+      "active_samples": 428,
+      "active_graphics_mhz_min": 1777.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_context_module-03",
+      "job": "job-1968688",
+      "samples": 2248,
+      "active_samples": 412,
+      "active_graphics_mhz_min": 1920.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_generation_module-00",
+      "job": "job-1968695",
+      "samples": 2240,
+      "active_samples": 273,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_generation_module-01",
+      "job": "job-1968696",
+      "samples": 2272,
+      "active_samples": 258,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_generation_module-02",
+      "job": "job-1968697",
+      "samples": 2232,
+      "active_samples": 283,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-mla-v1",
+      "shard": "dsa_generation_module-03",
+      "job": "job-1968698",
+      "samples": 2248,
+      "active_samples": 197,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_context_module-00",
+      "job": "job-1968935",
+      "samples": 33096,
+      "active_samples": 5087,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_context_module-01",
+      "job": "job-1968936",
+      "samples": 31568,
+      "active_samples": 5126,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_context_module-02",
+      "job": "job-1968937",
+      "samples": 31296,
+      "active_samples": 4806,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_context_module-03",
+      "job": "job-1968938",
+      "samples": 29232,
+      "active_samples": 4473,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_generation_module-00",
+      "job": "job-1968939",
+      "samples": 2264,
+      "active_samples": 240,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_generation_module-01",
+      "job": "job-1968940",
+      "samples": 2256,
+      "active_samples": 236,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_generation_module-02",
+      "job": "job-1968941",
+      "samples": 2280,
+      "active_samples": 290,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "msa_generation_module-03",
+      "job": "job-1968942",
+      "samples": 2272,
+      "active_samples": 233,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    },
+    {
+      "campaign": "campaign-final-v1",
+      "shard": "gemm-shared-down-supplement",
+      "job": "job-1968943",
+      "samples": 2744,
+      "active_samples": 75,
+      "active_graphics_mhz_min": 1965.0,
+      "active_graphics_mhz_median": 1965.0,
+      "active_graphics_mhz_max": 1965.0
+    }
+  ],
+  "smoke": {
+    "collector_ref": "5515203abb42a546589b9af6914de1ee859ee362",
+    "checked_unix": 1789506216.7868679,
+    "smokes": [
+      {
+        "shard": "smoke-gemm-bfloat16",
+        "op": "gemm",
+        "job": "job-1969448",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "gemm_perf.parquet": {
+              "rows": 8,
+              "sha256": "e939cf23e25f32da9bbb9f4447373d17923ecf15eca5bd5acaa24f455d77a731"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-gemm-fp8",
+        "op": "gemm",
+        "job": "job-1969450",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "gemm_perf.parquet": {
+              "rows": 8,
+              "sha256": "91a829d256b76707de2da5052d7318d4f8da051c93177fc23b9dba1f98ff28fd"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-gemm-fp8_block",
+        "op": "gemm",
+        "job": "job-1969451",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "gemm_perf.parquet": {
+              "rows": 8,
+              "sha256": "b4ca418f7744c9550394ddbb44afb9ea23fdb348a062a74d320f01de0bd4f5b1"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-gemm-nvfp4",
+        "op": "gemm",
+        "job": "job-1969452",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "gemm_perf.parquet": {
+              "rows": 8,
+              "sha256": "1b116dcda814bf547a287789fc297a610077f364d67f809ba205fbd72a1eb6d8"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-attention_context",
+        "op": "attention_context",
+        "job": "job-1969453",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "context_attention_perf.parquet": {
+              "rows": 5,
+              "sha256": "6ed6b5e5382483df4c5fbf3b26cd48613a6a29af1f4d5d3771b07fa373d113dd"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-attention_generation",
+        "op": "attention_generation",
+        "job": "job-1969454",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "generation_attention_perf.parquet": {
+              "rows": 5,
+              "sha256": "e9c6ac26d27ca29f36852f57fdb179ae37c02963fe43664c48f0f70b4bafb558"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-encoder_attention",
+        "op": "encoder_attention",
+        "job": "job-1969455",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "encoder_attention_perf.parquet": {
+              "rows": 5,
+              "sha256": "1272b14a7fe61672e1276f1a86694d84cce192c6ce3cc695ae33f0f4693c69b1"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-compute_scale",
+        "op": "compute_scale",
+        "job": "job-1969457",
+        "status": "incomplete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5
+      },
+      {
+        "shard": "smoke-dsv4_csa_context_module",
+        "op": "dsv4_csa_context_module",
+        "job": "job-1969458",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_csa_context_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "95ad095e27160b5d725e2e30045a2bd765f83d8516ee81b643f4418409c5343e"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsv4_hca_context_module",
+        "op": "dsv4_hca_context_module",
+        "job": "job-1969459",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_hca_context_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "5bf3df170ee3229b1121269e4d7d519cdf7fc16950a7664e6853e06bb60fdf63"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsv4_csa_generation_module",
+        "op": "dsv4_csa_generation_module",
+        "job": "job-1969460",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_csa_generation_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "620bb41f8cec1c18faa0b4ee8e13057b94d2c1f9e31afd265c9c387dc24d5df7"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsv4_hca_generation_module",
+        "op": "dsv4_hca_generation_module",
+        "job": "job-1969461",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_hca_generation_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "20efe6ae1680d791832817243f0444bde464f88e9b5c3427ce9a3ff4e9de0dc5"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsv4_paged_mqa_logits_module",
+        "op": "dsv4_paged_mqa_logits_module",
+        "job": "job-1969462",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_paged_mqa_logits_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "ca9828067c89cb2de4ae8100dedc14c3b63f193318da02bc4a677fc40a84796b"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsv4_hca_attn_module",
+        "op": "dsv4_hca_attn_module",
+        "job": "job-1969463",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "dsv4_hca_attn_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "54c3f8e0950f3013ed520f602bddb978093b4bfde427e92bbb6a6d06e89cde91"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-mhc_module",
+        "op": "mhc_module",
+        "job": "job-1969464",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "mhc_module_perf.parquet": {
+              "rows": 5,
+              "sha256": "1fb421f4bf91f36d95cb5c986efe71ef67f688ac9d2664bf8aca85be932dd321"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-gdn",
+        "op": "gdn",
+        "job": "job-1969465",
+        "status": "complete",
+        "done": 4,
+        "failed": 0,
+        "expected_tasks": 4,
+        "validation": {
+          "done": 4,
+          "rows": 492,
+          "files": {
+            "gdn_perf.parquet": {
+              "rows": 492,
+              "sha256": "96b493dda0aaa5b1fc7e8f7c2a96316dc8a39e088e6db2622afefe58a0b44d61"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-mla_bmm_gen_pre",
+        "op": "mla_bmm_gen_pre",
+        "job": "job-1969466",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "mla_bmm_perf.parquet": {
+              "rows": 5,
+              "sha256": "89b24d592ccb92c40d5240a72588b0d0eb7b3fddab999bbf8e15c9094c4dc636"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-mla_bmm_gen_post",
+        "op": "mla_bmm_gen_post",
+        "job": "job-1969467",
+        "status": "complete",
+        "done": 5,
+        "failed": 0,
+        "expected_tasks": 5,
+        "validation": {
+          "done": 5,
+          "rows": 5,
+          "files": {
+            "mla_bmm_perf.parquet": {
+              "rows": 5,
+              "sha256": "30666c4b32481e9a4f28e6b38672da37f1b30176e02ed2351024f69b1934b4b6"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-moe",
+        "op": "moe",
+        "job": "job-1969468",
+        "status": "complete",
+        "done": 4,
+        "failed": 0,
+        "expected_tasks": 4,
+        "validation": {
+          "done": 4,
+          "rows": 108,
+          "files": {
+            "moe_perf.parquet": {
+              "rows": 108,
+              "sha256": "cb49d6ee78c194b63753e5341a2ddc344e16c7ad00c4a3b9cc57280d0069bd43"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-mla_context_module",
+        "op": "mla_context_module",
+        "job": "job-1969561",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "mla_context_module_perf.parquet": {
+              "rows": 8,
+              "sha256": "cae2fddc37bad12d285682e55f7eb61c4a0355cceb9faac4d1c5c6b8d64cca1a"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-mla_generation_module",
+        "op": "mla_generation_module",
+        "job": "job-1969562",
+        "status": "complete",
+        "done": 6,
+        "failed": 0,
+        "expected_tasks": 6,
+        "validation": {
+          "done": 6,
+          "rows": 6,
+          "files": {
+            "mla_generation_module_perf.parquet": {
+              "rows": 6,
+              "sha256": "89f5b1164bbc2e9f9b410c77819c2e1890713880f800e80e04ed5bf0f6daa3f3"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsa_context_module",
+        "op": "dsa_context_module",
+        "job": "job-1969471",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "dsa_context_module_perf.parquet": {
+              "rows": 8,
+              "sha256": "3ae8e335e13614dfcef4ef5c785747113b153ef22fde669534540749c3b38b0e"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-dsa_generation_module",
+        "op": "dsa_generation_module",
+        "job": "job-1969472",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "dsa_generation_module_perf.parquet": {
+              "rows": 8,
+              "sha256": "a2067b23ac06a7f595adc043cebc83c2301bcfdce7650fbdc3e4a79460bdbe95"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-msa_context_module",
+        "op": "msa_context_module",
+        "job": "job-1969473",
+        "status": "complete",
+        "done": 8,
+        "failed": 0,
+        "expected_tasks": 8,
+        "validation": {
+          "done": 8,
+          "rows": 8,
+          "files": {
+            "msa_context_module_perf.parquet": {
+              "rows": 8,
+              "sha256": "7ffccb7f3ecff03ba8f58ab7c73ff8ac14490578171ee3c099a200720d0c284e"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-msa_generation_module",
+        "op": "msa_generation_module",
+        "job": "job-1969474",
+        "status": "complete",
+        "done": 6,
+        "failed": 0,
+        "expected_tasks": 6,
+        "validation": {
+          "done": 6,
+          "rows": 6,
+          "files": {
+            "msa_generation_module_perf.parquet": {
+              "rows": 6,
+              "sha256": "ec58a2edb4ed739073f70cbf7127054f44601112c8e88943a3ac1b3d2e4b25ea"
+            }
+          }
+        },
+        "validated": true
+      },
+      {
+        "shard": "smoke-gemm-shared-down",
+        "op": "gemm",
+        "job": "job-1969475",
+        "status": "complete",
+        "done": 4,
+        "failed": 0,
+        "expected_tasks": 4,
+        "validation": {
+          "done": 4,
+          "rows": 4,
+          "files": {
+            "gemm_perf.parquet": {
+              "rows": 4,
+              "sha256": "6e35abd868a60d5cd0c5860fe8fd60b4de4d2577d546bb7e277a53efecc57d80"
+            }
+          }
+        },
+        "validated": true
+      }
+    ],
+    "validated_batches": 25,
+    "validated_cases": 148,
+    "all_smokes_passed": false
+  },
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.25.0",
+    "image": "aisim-b200-vllm-0250-sqsh-9ae776fd614406ea136d29aeb5ac05d9980865cd4a10eb8ec6956437da7d4ab7",
+    "source_commit": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40"
+  },
+  "reproduction": {
+    "runtime_manifest": "collector/campaigns/runtime_manifests/vllm-0.25.0-b200.yaml",
+    "runtime_manifest_sha256": "cf739fe12dc1c82f75a6a0e8e3530f532190643ba4035a89865f70ee6aceb469",
+    "historical_runs_used_campaign_manifest_overrides": true,
+    "historical_collector_refs_preserved": true,
+    "future_runs_require_clean_matching_source_checkout": true,
+    "note": "Historical data were not recollected or relabeled. Original collector refs, runtime declarations and patch hashes remain unchanged. Optional campaign orchestration has been removed; its runtime declaration and legacy patches are identified by artifact_location. The generic hash-checked runtime-manifest interface remains available to external collection tools. This report does not claim that the current checkout contains a campaign runner.",
+    "historical_source_overrides": [
+      {
+        "campaign": "campaign-v2",
+        "source_commit": "48639435b6e73d9fe8c8bbb60c2072c5b5fb0b93",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aisimulate_core/model_configs",
+          "python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "runtime_manifest_sha256": "eb8beaaf0649afd1b05208c91e50b4f12ee444c4708f34c10449482b9b07c347",
+        "patch_sha256": "797f810bd4452f3bd0306a48cd841040ce344b03e8f9486d3215fe43209ff40d",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-v2.patch"
+      },
+      {
+        "campaign": "campaign-ops-v1",
+        "source_commit": "c79cc132552deb677becc37f8139b0cca2b08d75",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aisimulate_core/model_configs",
+          "python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
+        "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-ops-v1.patch"
+      },
+      {
+        "campaign": "campaign-mla-v1",
+        "source_commit": "900e46f93f0bf88af65f2c2dfb9f08353f79394f",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aisimulate_core/model_configs",
+          "python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "runtime_manifest_sha256": "04c7646128ee7dd5e1fd7dd6d007ce47acb90385a1b2d025581956a2b0ca1c60",
+        "patch_sha256": "2798ff1f02bba9aa86637312766f30b47c2685797d0a732988d6a8828321153c",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-mla-v1.patch"
+      },
+      {
+        "campaign": "campaign-final-v1",
+        "source_commit": "0df459fa62de6529d4e1585536da64fd8e917818",
+        "changed_paths": [
+          "python/aisimulate/collector/framework_manifest.yaml",
+          "python/aisimulate/src/aisimulate_core/model_configs",
+          "python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "runtime_manifest_sha256": "05486dc1d70c78d0c601b902e32bd9a2d70ce5284d679447f56b0a679c6029b2",
+        "patch_sha256": "1f01ac1e0fc366a85037debc790a668f3f790e1c3caa4622a4ca94006a745c03",
+        "patch_path": "collector/campaigns/historical_runtime_overrides/campaign-final-v1.patch"
+      }
+    ],
+    "artifact_location": {
+      "kind": "historical_git_tree",
+      "repository": "ai-dynamo/aisimulate",
+      "commit": "54b073e140219b6e923a57a09acd05e96797a901",
+      "path_base": "python/aisimulate",
+      "note": "runtime_manifest and historical_source_overrides[].patch_path refer to this immutable historical tree, not the current checkout. Campaign orchestration was removed from the current PR scope; a source backup is retained locally, not republished as a GitHub archive."
+    }
+  },
+  "metadata_compatibility": {
+    "schema_version": 2,
+    "runtime_source_commit_location": "runtime.source_commit in this report",
+    "classified_failures_location": "tables.<filename>.source_jobs[].classified_failures in this report",
+    "original_sidecar_sha256": {
+      "attention/vllm/0.25.0/collection_meta.yaml": "d09bb327e578bc36205a484a8ff55c1f22abe40cfeefdd6c5e0f4fb7a112f0fb",
+      "encoder_attention/vllm/0.25.0/collection_meta.yaml": "e0597f784ad4c7244f426b0785985d4bf9a451ef1b7d1c1a358f4b15eda9637b",
+      "gemm/vllm/0.25.0/collection_meta.yaml": "a69d0f0504e20fe99333a02d8a3c0340ab3703c153a78352968a92ce01c6500d",
+      "linear_attention/vllm/0.25.0/collection_meta.yaml": "5c4408ecbdd739afb65b33aae541c04e27ab186e2c28582215c3e52b42c90416",
+      "mhc/vllm/0.25.0/collection_meta.yaml": "33eb96d1459be1b9c6dae3d43fb40b5258b6a8d9c13218bc6c12e3c49f15205e",
+      "mla/vllm/0.25.0/collection_meta.yaml": "24965174f547b1012d3481316573bc444fae42d9f8806fdb5940edfc489b1ae3",
+      "mla_bmm/vllm/0.25.0/collection_meta.yaml": "6faf4ecbdb70dc683907ce926781f5b23ad91b1abe364acf6fd55ffa9bc645af",
+      "moe/vllm/0.25.0/collection_meta.yaml": "d3e6d87bb3292858a8c08a27eebe38f6c91c89fd20b13c96d212672786ecc127",
+      "msa/vllm/0.25.0/collection_meta.yaml": "81be3306899328530d513d86537d132693d984ac2e1b9bc5122f2fc0579d3468",
+      "sparse_attention/vllm/0.25.0/collection_meta.yaml": "c13d6336de1efb057d8a6e27fd694a1f3b480b251a8ef662e05a4b5508303a79"
+    },
+    "note": "Relocated fields rejected by the existing public v2 loader; no parser/schema expansion and no loss of revision or failure-count evidence."
+  }
+}

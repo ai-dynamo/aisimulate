@@ -42,7 +42,7 @@ checks against the frozen references, and the per-op FFI anchor
 latency/energy/source dicts). Both suites run in the
 `rust-engine-step-parity` CI job (`build-test.yml`).
 
-Build the `aiconfigurator_core` extension first (the CI job does this with
+Build the `aisimulate_core` extension first (the CI job does this with
 `maturin develop --release`; from a clean checkout run
 `cd aic-core && ../.venv/bin/maturin develop --release`), then return to the
 repository root and run:

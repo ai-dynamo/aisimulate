@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     InferenceXSource,
     adapt_config,

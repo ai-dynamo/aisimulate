@@ -2,7 +2,7 @@
 description: >
   Modifying deployment_config.yaml and backend_config_mapping.yaml.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Config Schema Modification Reference
@@ -22,9 +22,9 @@ covers safe practices for modifying them.
 
 | File | Purpose |
 |---|---|
-| `src/aiconfigurator/generator/config/deployment_config.yaml` | Input schema: ~54 params, defaults, constraints |
-| `src/aiconfigurator/generator/config/backend_config_mapping.yaml` | Unified param -> backend CLI flag mapping |
-| `src/aiconfigurator/generator/rendering/schemas.py` | Schema validation, default application |
+| `src/aisimulate/generator/config/deployment_config.yaml` | Input schema: ~54 params, defaults, constraints |
+| `src/aisimulate/generator/config/backend_config_mapping.yaml` | Unified param -> backend CLI flag mapping |
+| `src/aisimulate/generator/rendering/schemas.py` | Schema validation, default application |
 
 ## Schema File Structures
 

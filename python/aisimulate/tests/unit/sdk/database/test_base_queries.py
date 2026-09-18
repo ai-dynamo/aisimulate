@@ -41,7 +41,7 @@ def test_module_shape_phase_marker_inference(phase, expected):
     """The "module" shim shape must map BOTH phase vocabularies: the mamba/gdn
     kernels store context/generation (KDA adds verify — speculative decode,
     generation-like), FPMForwardOp stores prefill/decode (``fpm_forward._PHASES``)."""
-    from aiconfigurator_core.sdk.operations.base import PythonOperation
+    from aisimulate_core.sdk.operations.base import PythonOperation
 
     op = PythonOperation("probe", 1.0)
     op._phase = phase
@@ -49,7 +49,7 @@ def test_module_shape_phase_marker_inference(phase, expected):
 
 
 def test_module_shape_phase_inference_hint_and_error():
-    from aiconfigurator_core.sdk.operations.base import PythonOperation
+    from aisimulate_core.sdk.operations.base import PythonOperation
 
     op = PythonOperation("probe", 1.0)
     # explicit hint wins even with no marker
@@ -62,8 +62,8 @@ def test_module_shape_phase_inference_hint_and_error():
 def test_fpm_forward_phase_tokens_stay_mapped():
     """Deliberate-edit tripwire: if ``fpm_forward._PHASES`` ever grows a token
     the base inference does not recognize, fail here instead of at query time."""
-    from aiconfigurator_core.sdk.operations import fpm_forward
-    from aiconfigurator_core.sdk.operations.base import PythonOperation
+    from aisimulate_core.sdk.operations import fpm_forward
+    from aisimulate_core.sdk.operations.base import PythonOperation
 
     for phase in fpm_forward._PHASES:
         op = PythonOperation("probe", 1.0)
@@ -77,7 +77,7 @@ def test_get_weights_survives_ops_without_an_opspec_variant():
     query refuse it. ``get_weights`` must stay 0.0 (the Rust
     ``Op::MoeDispatch`` weight arm is flavor-independent) instead of
     crashing memory estimation."""
-    from aiconfigurator_core.sdk.operations.moe import MoEDispatch
+    from aisimulate_core.sdk.operations.moe import MoEDispatch
 
     op = MoEDispatch("d", 1.0, 7168, 8, 256, 1, 16, 1, False, backend="sglang", moe_backend="deepep_moe")
     assert op.get_weights() == 0.0
@@ -88,8 +88,8 @@ def test_dsa_partial_projection_map_normalizes_and_survives_the_weight_route():
     group only) must normalize to all four groups at construction — the opspec
     emission and the Rust DsaProjectionQuants deserialization require every
     field."""
-    from aiconfigurator_core.sdk import common
-    from aiconfigurator_core.sdk.operations.dsa import ContextDSAModule
+    from aisimulate_core.sdk import common
+    from aisimulate_core.sdk.operations.dsa import ContextDSAModule
 
     op = ContextDSAModule(
         "ctx_dsa",

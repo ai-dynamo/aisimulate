@@ -14,14 +14,14 @@ import sys
 
 import pytest
 
-import aiconfigurator_core
-import aiconfigurator_core.sdk as sdk
-from aiconfigurator_core.sdk.common import AttentionBackend, MoEBackend
-from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
-from aiconfigurator_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
-from aiconfigurator_core.sdk.operations import ElementWise, Embedding, MoEDispatch
-from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+import aisimulate_core
+import aisimulate_core.sdk as sdk
+from aisimulate_core.sdk.common import AttentionBackend, MoEBackend
+from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate_core.sdk.engine import EngineHandle, compile_engine
+from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
+from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
 EXPECTED_FACADE = {
     "AttentionBackend",
@@ -40,12 +40,12 @@ def test_sdk_facade_import_is_lazy_in_a_fresh_interpreter() -> None:
     script = """
 import sys
 
-import aiconfigurator_core.sdk
+import aisimulate_core.sdk
 
 protected_modules = {
-    "aiconfigurator_core.sdk.engine",
-    "aiconfigurator_core.sdk.memory",
-    "aiconfigurator_core.sdk.rust_engine_step",
+    "aisimulate_core.sdk.engine",
+    "aisimulate_core.sdk.memory",
+    "aisimulate_core.sdk.rust_engine_step",
 }
 loaded_modules = protected_modules.intersection(sys.modules)
 assert not loaded_modules, f"SDK facade eagerly loaded: {sorted(loaded_modules)}"
@@ -67,8 +67,8 @@ def test_sdk_facade_exports_the_canonical_objects() -> None:
 
 
 def test_native_and_ergonomic_fpm_classes_are_deliberately_distinct() -> None:
-    assert aiconfigurator_core.RustForwardPassPerfModel is not RustForwardPassPerfModel
-    assert RustForwardPassPerfModel.__module__ == "aiconfigurator_core.sdk.rust_engine_step"
+    assert aisimulate_core.RustForwardPassPerfModel is not RustForwardPassPerfModel
+    assert RustForwardPassPerfModel.__module__ == "aisimulate_core.sdk.rust_engine_step"
 
 
 def test_stable_function_signatures() -> None:
@@ -102,7 +102,7 @@ def test_stable_function_signatures() -> None:
 @pytest.mark.parametrize("worker_type", ["agg", "Prefill", "AGGREGATED", ""])
 def test_raw_fpm_binding_rejects_worker_type_aliases(worker_type: str) -> None:
     with pytest.raises(ValueError, match="invalid worker_type"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(worker_type)
+        aisimulate_core.RustForwardPassPerfModel.from_regression(worker_type)
     config = json.dumps(
         {
             "schema_version": 1,
@@ -125,14 +125,14 @@ def test_raw_fpm_binding_rejects_worker_type_aliases(worker_type: str) -> None:
         }
     )
     with pytest.raises(ValueError, match="invalid worker_type"):
-        aiconfigurator_core.RustForwardPassPerfModel.best_available(config, worker_type)
+        aisimulate_core.RustForwardPassPerfModel.best_available(config, worker_type)
 
 
 def test_raw_fpm_binding_requires_worker_type() -> None:
     with pytest.raises(TypeError):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression()
+        aisimulate_core.RustForwardPassPerfModel.from_regression()
     with pytest.raises(TypeError):
-        aiconfigurator_core.RustForwardPassPerfModel.best_available("{}")
+        aisimulate_core.RustForwardPassPerfModel.best_available("{}")
 
 
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
@@ -144,7 +144,7 @@ def test_raw_fpm_binding_constructs_every_worker_type_with_weights(worker_type: 
             "regression_ffn_token_weight": 4.0,
         }
     )
-    model = aiconfigurator_core.RustForwardPassPerfModel.from_regression(worker_type, options)
+    model = aisimulate_core.RustForwardPassPerfModel.from_regression(worker_type, options)
     diagnostics = json.loads(model.diagnostics())
     assert diagnostics == {
         "source": "fallback_regression",
@@ -213,7 +213,7 @@ def _raw_regression_iteration(worker_type: str, index: int) -> dict[str, object]
 
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
 def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
-    model = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+    model = aisimulate_core.RustForwardPassPerfModel.from_regression(
         worker_type,
         '{"min_observations":5}',
     )
@@ -236,7 +236,7 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
 
 def test_raw_fpm_binding_validates_regression_weights() -> None:
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+        aisimulate_core.RustForwardPassPerfModel.from_regression(
             "prefill",
             '{"regression_attention_kv_weight": 0.0}',
         )
@@ -257,7 +257,7 @@ def test_raw_fpm_binding_decodes_exact_nonfinite_weight_sentinels(
 ) -> None:
     """Raw ``options_json`` callers use quoted sentinels rather than non-JSON numbers."""
     with pytest.raises(ValueError, match=field):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+        aisimulate_core.RustForwardPassPerfModel.from_regression(
             "aggregated",
             json.dumps({field: sentinel}),
         )
@@ -265,7 +265,7 @@ def test_raw_fpm_binding_decodes_exact_nonfinite_weight_sentinels(
 
 def test_raw_fpm_binding_rejects_unknown_nonfinite_weight_sentinel() -> None:
     with pytest.raises(ValueError, match="invalid options JSON"):
-        aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+        aisimulate_core.RustForwardPassPerfModel.from_regression(
             "decode",
             '{"regression_ffn_token_weight":"Inf"}',
         )
@@ -291,16 +291,16 @@ def test_native_operation_constructors_preserve_legacy_keyword_names() -> None:
 
 
 def test_distribution_carries_typing_contract() -> None:
-    root = importlib.resources.files("aiconfigurator_core")
+    root = importlib.resources.files("aisimulate_core")
     assert (root / "py.typed").is_file()
-    assert (root / "_aiconfigurator_core.pyi").is_file()
+    assert (root / "_native.pyi").is_file()
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
+@pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
-    root = importlib.resources.files("aiconfigurator_core")
-    stub = ast.parse((root / "_aiconfigurator_core.pyi").read_text(encoding="utf-8"))
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
     model = next(
         node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
     )
@@ -323,10 +323,10 @@ def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: s
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
+@pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -> None:
-    root = importlib.resources.files("aiconfigurator_core")
-    stub = ast.parse((root / "_aiconfigurator_core.pyi").read_text(encoding="utf-8"))
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
     engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
     method_name = "evaluate_context_attention_kernels_json"
     method = next(

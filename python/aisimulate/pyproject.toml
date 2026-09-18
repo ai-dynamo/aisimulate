@@ -98,11 +98,9 @@ requires = ["maturin>=1.12,<2"]
 build-backend = "maturin"
 
 [project.scripts]
-# AISimulate owns and ships the application, but preserves the established
-# AIConfigurator command identity. The distribution name is not a second
-# top-level application command for AIC workflows.
+# Retain the legacy executable; all Python implementation lives under AISimulate.
 aisimulate = "aisimulate.supervision:main"
-aiconfigurator = "aiconfigurator.main:main"
+aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"
 
 [tool.maturin]
 manifest-path = "../../crates/core/Cargo.toml"
@@ -111,40 +109,36 @@ python-source = "src"
 python-packages = [
     "aisimulate",
     "aisimulate_core",
-    "aiconfigurator",
-    "aiconfigurator_core",
 ]
 abi3 = true
 features = ["extension-module"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
 include = [
-    "src/aiconfigurator/cli/*.yaml",
-    "src/aiconfigurator/cli/exps/*.yaml",
-    "src/aiconfigurator/generator/config/**/*.yaml",
-    "src/aiconfigurator/generator/config/backend_templates/**/*.j2",
-    "src/aiconfigurator/generator/rule_plugin/**/*.rule",
-    "src/aiconfigurator/generator/facts/**/*.yaml",
-    "src/aiconfigurator/generator/environment/*.yaml",
-    "src/aiconfigurator/sdk/config_adapter/schemas/*.json",
+    "src/aisimulate/legacy_cli/*.yaml",
+    "src/aisimulate/legacy_cli/exps/*.yaml",
+    "src/aisimulate/generator/config/**/*.yaml",
+    "src/aisimulate/generator/config/backend_templates/**/*.j2",
+    "src/aisimulate/generator/rule_plugin/**/*.rule",
+    "src/aisimulate/generator/facts/**/*.yaml",
+    "src/aisimulate/generator/environment/*.yaml",
+    "src/aisimulate/sdk/config_adapter/schemas/*.json",
     { path = "collector/__init__.py", format = "wheel" },
     { path = "collector/model_cases.py", format = "wheel" },
     { path = "collector/cases/**/*.yaml", format = "wheel" },
     { path = "collector/fpm_forward/**/*.py", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_exec.sh", format = "wheel" },
-    # Keep the AIConfigurator-owned SDK/data tree intact inside this one wheel.
-    # Its stable directory boundary makes upstream commit syncs mechanical even
-    # though AISimulate is now the sole Python distribution owner.
-    "src/aiconfigurator_core/sdk/**/*.md",
-    "src/aiconfigurator_core/systems/*.yaml",
-    "src/aiconfigurator_core/systems/*.csv",
-    "src/aiconfigurator_core/systems/**/*.csv",
-    "src/aiconfigurator_core/systems/**/*.json",
-    "src/aiconfigurator_core/systems/**/*.txt",
-    "src/aiconfigurator_core/systems/**/*.parquet",
-    "src/aiconfigurator_core/systems/data/**/*.yaml",
-    "src/aiconfigurator_core/systems/data/**/README.md",
-    "src/aiconfigurator_core/model_configs/*.json",
-    "src/aiconfigurator_core/model_configs/*.md",
+    # Ship estimator models and profiles with their canonical implementation.
+    "src/aisimulate_core/sdk/**/*.md",
+    "src/aisimulate_core/systems/*.yaml",
+    "src/aisimulate_core/systems/*.csv",
+    "src/aisimulate_core/systems/**/*.csv",
+    "src/aisimulate_core/systems/**/*.json",
+    "src/aisimulate_core/systems/**/*.txt",
+    "src/aisimulate_core/systems/**/*.parquet",
+    "src/aisimulate_core/systems/data/**/*.yaml",
+    "src/aisimulate_core/systems/data/**/README.md",
+    "src/aisimulate_core/model_configs/*.json",
+    "src/aisimulate_core/model_configs/*.md",
 ]
 
 [tool.ruff]
@@ -206,4 +200,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core", "utils", "helper"]
+known-first-party = ["aisimulate", "aisimulate_core", "utils", "helper"]

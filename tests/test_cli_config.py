@@ -1103,8 +1103,8 @@ def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend
 def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeypatch, tmp_path, role):
     import yaml
 
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate_core.sdk import perf_database
 
     system_paths = perf_database.get_systems_paths()
     spec = perf_database.load_system_spec("gb200")

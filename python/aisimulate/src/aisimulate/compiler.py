@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .aic import (
+from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
@@ -116,7 +116,7 @@ def _deployment(
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
-        from aiconfigurator_core.sdk.perf_database import load_system_spec
+        from aisimulate_core.sdk.perf_database import load_system_spec
 
         workers = (engine.workers.prefill, engine.workers.decode)
         for role, worker in zip(("prefill", "decode"), workers, strict=True):

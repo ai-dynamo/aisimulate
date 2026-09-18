@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed system hardware spec parsed from `python/aisimulate/src/aiconfigurator_core/systems/*.yaml`.
+//! Typed system hardware spec parsed from `python/aisimulate/src/aisimulate_core/systems/*.yaml`.
 //!
-//! Mirrors `aiconfigurator.sdk.system_spec.SystemSpec`. The Python type
+//! Mirrors `aisimulate.sdk.system_spec.SystemSpec`. The Python type
 //! subclasses `dict`; the Rust port uses a typed struct because every
 //! downstream consumer here needs typed field access. The on-disk YAML schema
 //! is the contract; struct layout follows the YAML shape one-to-one.
@@ -187,7 +187,7 @@ mod tests {
         // dir is two levels up.
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     #[test]

@@ -12,8 +12,8 @@ source = "src/aiconfigurator"
 target = "python/aisimulate/src/aiconfigurator"
 
 [[mirror]]
-source = "aic-core/src/aiconfigurator_core"
-target = "python/aisimulate/src/aiconfigurator_core"
+source = "src/aisimulate_core"
+target = "python/aisimulate/src/aisimulate_core"
 
 [[mirror]]
 source = "tests"

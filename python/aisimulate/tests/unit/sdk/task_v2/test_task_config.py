@@ -10,10 +10,10 @@ prefix discipline, and the build_* helpers.
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk import common
+from aisimulate.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
@@ -589,7 +589,7 @@ def test_deepseek_prefill_downgrades_decode_keeps_fp8_fmha(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -620,7 +620,7 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -661,7 +661,7 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
 def test_fmha_data_fallback_afd_uses_the_aggregate_role(caplog):
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         task = Task(
@@ -685,7 +685,7 @@ def test_fmha_data_fallback_skips_generation_only_decode(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -712,7 +712,7 @@ def test_fmha_data_fallback_without_bf16_slice_left_untouched(monkeypatch, caplo
     reports the gap instead."""
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda self, role, ctx_op=None: ["fp8_block"])
     with caplog.at_level(logging.WARNING):
@@ -732,7 +732,7 @@ def test_deepseek_v32_v4_context_fmha_downgrade_is_data_driven():
     the data fallback, not a hand-written model rule.  Decode keeps the fp8
     label (no generation table keys on fmha).
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     for mp in ("deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-V4-Pro"):
         t = Task(
@@ -757,8 +757,8 @@ def test_get_model_preserves_task_resolved_fmha():
     user-set identically (both arrive set), and no current-slot vllm data
     resolves fp8 fmha for DSA models since the 0.19/0.22 retirement, so an
     inference-based vehicle would bind this test to a data coordinate."""
-    from aiconfigurator.sdk import common
-    from aiconfigurator.sdk.models import get_model
+    from aisimulate.sdk import common
+    from aisimulate.sdk.models import get_model
 
     t = Task(
         serving_mode="agg",
@@ -789,7 +789,7 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -812,7 +812,7 @@ def test_nextn_never_auto_enabled(caplog):
     def mk(mp):
         return Task(serving_mode="agg", model_path=mp, system_name="h200_sxm", backend_name="trtllm").nextn
 
-    with caplog.at_level(logging.INFO, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.INFO, logger="aisimulate.sdk.task_v2"):
         assert mk("deepseek-ai/DeepSeek-V3") == 0  # HF declares 1 -- still off by default
         assert mk("moonshotai/Kimi-K2.5") == 0
         assert mk("Qwen/Qwen3.5-27B") == 0
@@ -919,7 +919,7 @@ def test_nextn_explicit_override_warns(caplog):
     """An explicit nextn diverging from the checkpoint warns (MTP module reuse)."""
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.sdk.task_v2"):
         t = Task(
             serving_mode="agg",
             model_path="deepseek-ai/DeepSeek-V3",
@@ -961,7 +961,7 @@ def test_dsv4_native_sglang_moe_remap():
     the native FP4-expert checkpoints are rejected outright. megamoe, non-sglang
     backends, and the sgl-project FP8 requant artifacts are exempt.
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     def moe(be, mp="deepseek-ai/DeepSeek-V4-Pro", system="b200_sxm", **kw):
         return Task(
@@ -1256,7 +1256,7 @@ def test_run_validates_by_default():
     DeepSeek task whose tuples are ALL large-EP has only the wideep_context_mla
     table to serve fmha, and that table carries fp8_block only -> validate
     raises (a task that also has fused tuples falls back to them instead)."""
-    from aiconfigurator.sdk.errors import UnsupportedWideepConfigError
+    from aisimulate.sdk.errors import UnsupportedWideepConfigError
 
     t = Task(
         serving_mode="agg",
@@ -1298,7 +1298,7 @@ def test_enable_wideep_normalizes_moe_backend():
 def test_large_ep_replica_size_is_bounded():
     """Large-EP num_gpu_list (replica sizes) must be range(1, max_gpu_per_replica+1), not
     unbounded -- v2 sweep gates replica size by this list, mirroring v1 get_working_list."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     t = Task(
         serving_mode="disagg",
@@ -1323,7 +1323,7 @@ def test_explicit_fmha_fp8_not_downgraded():
     """V3/Kimi context fmha fp8->bf16 downgrade fires only on HF-inferred fp8 (matches v1's
     `not explicit_fmha_mode` guard). An explicit fp8 is kept, so validate can fail fast
     (instead of silently modelling bf16)."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     base = dict(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", backend_name="trtllm")
     assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.bfloat16  # HF-inferred -> downgraded
@@ -1341,7 +1341,7 @@ def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
         calls.append((args, kwargs))
         return database
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database_view)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database_view)
     t = Task(
         serving_mode="agg",
         model_path="deepseek-ai/DeepSeek-V3",
@@ -1375,8 +1375,8 @@ def test_no_orphan_fields():
     import pathlib
     import re
 
-    import aiconfigurator.sdk.sweep as sweep_mod
-    import aiconfigurator.sdk.task_v2 as tv2_mod
+    import aisimulate.sdk.sweep as sweep_mod
+    import aisimulate.sdk.task_v2 as tv2_mod
 
     srcs = pathlib.Path(tv2_mod.__file__).read_text() + pathlib.Path(sweep_mod.__file__).read_text()
     orphans = []
@@ -1475,7 +1475,7 @@ def test_sweep_kwargs_mode_mismatch_raises():
 
 def test_run_dispatches_to_sweep_agg(monkeypatch):
     """run() loads DB internally and dispatches to sweep_agg for agg mode."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1487,7 +1487,7 @@ def test_run_dispatches_to_sweep_agg(monkeypatch):
         captured["agg_kwargs"] = kwargs
         return "agg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_agg", fake_sweep_agg)
 
     t = Task(
@@ -1506,7 +1506,7 @@ def test_run_dispatches_to_sweep_agg(monkeypatch):
 
 def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
     """run() loads two databases (prefill + decode) for disagg and dispatches."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1518,7 +1518,7 @@ def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
         captured["disagg_kwargs"] = kwargs
         return "disagg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
     t = Task(
@@ -1538,7 +1538,7 @@ def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
 
 
 def test_run_passes_autoscale_flag(monkeypatch):
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1549,7 +1549,7 @@ def test_run_passes_autoscale_flag(monkeypatch):
         captured["autoscale"] = kwargs.get("autoscale")
         return "result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
     t = Task(
@@ -1571,7 +1571,7 @@ def test_run_rejects_autoscale_in_agg_mode():
 
 def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
     """Task.predictor is plumbed into sweep_agg's predictor kwarg."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1582,10 +1582,10 @@ def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
         captured["predictor"] = kwargs.get("predictor")
         return "agg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_agg", fake_sweep_agg)
 
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     custom = AnalyticPredictor()  # any Predictor-compatible object
     t = Task(
@@ -1600,7 +1600,7 @@ def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
 
 def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
     """Task.predictor is plumbed into sweep_disagg's predictor kwarg."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1611,10 +1611,10 @@ def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
         captured["predictor"] = kwargs.get("predictor")
         return "disagg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     custom = AnalyticPredictor()
     t = Task(
@@ -1631,7 +1631,7 @@ def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
 
 def test_to_dict_skips_predictor_strategy_field():
     """Strategy fields (Python objects) shouldn't appear in to_dict / YAML output."""
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     t = Task(
         serving_mode="agg",
@@ -1673,7 +1673,7 @@ def _build_fake_summary(
 
 def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     """run_single_agg builds ModelConfig with given dims and calls predict_agg_worker once."""
-    from aiconfigurator.sdk import predict
+    from aisimulate.sdk import predict
 
     captured: dict = {}
 
@@ -1698,9 +1698,9 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
             moe_comm_fallbacks=(MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
         )
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
 
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
@@ -1731,7 +1731,7 @@ def test_run_single_agg_rejects_disagg_task():
 
 def test_run_single_agg_raises_on_oom(monkeypatch):
     """OOM in single-point eval should surface as a clear RuntimeError."""
-    from aiconfigurator.sdk import predict
+    from aisimulate.sdk import predict
 
     def fake_get_database(*a, **kw):
         return "db"
@@ -1749,9 +1749,9 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     def fake_predict_agg_worker(**kwargs):
         return _build_fake_summary(oom=True)
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
 
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
@@ -1762,7 +1762,7 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
 def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     """run_single_disagg calls predict_disagg_worker twice (prefill + decode)
     then rate-matches the pair into one ColumnsDisagg row."""
-    from aiconfigurator.sdk import predict
+    from aisimulate.sdk import predict
 
     call_roles: list[str] = []
 
@@ -1821,9 +1821,9 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
         call_roles.append(kwargs["role"])
         return _phase_summary(kwargs["role"])
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_disagg_worker", fake_predict_disagg_worker)
 
     t = Task(
@@ -2098,7 +2098,7 @@ def test_validate_gemm_quant_transfer_reachable_in_hybrid():
     # transfer ladder is consulted — mirroring the query-entry behavior, so
     # impossible sweep configurations fail early instead of on the first
     # HYBRID query.
-    from aiconfigurator.sdk.errors import MissingSystemFlopsError
+    from aisimulate.sdk.errors import MissingSystemFlopsError
 
     for mode, policy in (("SILICON", None), ("HYBRID", None), ("HYBRID", "xprofile")):
         with pytest.raises(MissingSystemFlopsError, match="fp4_tc_flops"):
@@ -2169,7 +2169,7 @@ def test_validate_gemm_xprofile_requires_listed_level_profile(monkeypatch):
     from the GEMM util-LEVEL table (the runtime ladder would fall back to a
     default level, but the gate enforces the enum-line + level-line
     add-a-quant recipe — the one intentional way it is stricter)."""
-    from aiconfigurator.sdk.operations import gemm as gemm_ops
+    from aisimulate.sdk.operations import gemm as gemm_ops
 
     # int4_wo: resolvable dtype (bf16 pipeline) so the strict-FLOPS check at
     # the top of the gate passes and the level-table refusal is what fires
@@ -2344,7 +2344,7 @@ def test_engine_step_backend_is_validated_at_task_construction():
     paths like the AFD session that never reach the step routing gate."""
     import pytest
 
-    from aiconfigurator.sdk.task_v2 import Task
+    from aisimulate.sdk.task_v2 import Task
 
     def _task(**kwargs):
         return Task(

@@ -46,7 +46,8 @@ latest repository source or an internal nightly automatically.
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../README.md#upgrade-from-standalone-aiconfigurator)
 in the environment you intend to use. The `aisimulate` wheel owns both console
-commands and the compatibility import namespaces.
+commands. Python imports use `aisimulate` and `aisimulate_core`; see
+[Python source migration](python-source-migration.md) for the breaking import change.
 
 ## Platform matrix
 
