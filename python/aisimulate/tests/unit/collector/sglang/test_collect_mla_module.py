@@ -752,6 +752,37 @@ class TestOrdinaryMLAPrecision:
 
 @pytest.mark.unit
 class TestOrdinaryMLACli:
+    @pytest.mark.parametrize("chunk_size", [None, 16384])
+    def test_worker_chunk_size_reaches_subprocess_call(self, monkeypatch, chunk_size):
+        mod = _import_module()
+        captured = {}
+
+        def capture_call(*_args, **kwargs):
+            captured.update(kwargs)
+
+        def popen(argv, **_kwargs):
+            # Execute the generated child call without importing the GPU runtime.
+            tree = ast.parse(argv[2])
+            call = ast.Expression(tree.body[-1].value)
+            eval(compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": capture_call})
+            return types.SimpleNamespace(returncode=0, communicate=lambda timeout: (b"", None))
+
+        monkeypatch.setattr(mod.subprocess, "Popen", popen)
+        mod.run_mla_module_worker(
+            128,
+            1,
+            8,
+            "bfloat16",
+            "bfloat16",
+            "bfloat16",
+            "test",
+            "mla",
+            perf_filename="mla_context_module_perf.txt",
+            chunked_prefill_size=chunk_size,
+        )
+        assert captured["ordinary_mla"] is True
+        assert captured["chunked_prefill_size"] == chunk_size
+
     @pytest.mark.parametrize("chunk_size", [0, -1])
     def test_nonpositive_chunk_size_is_rejected(self, chunk_size):
         mod = _import_module()

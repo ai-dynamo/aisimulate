@@ -2661,6 +2661,7 @@ def _run_mla_subprocess(
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
+    chunked_prefill_size: int | None = None,
 ):
     """Run MLA/DSA benchmark in a subprocess with CUDA_VISIBLE_DEVICES isolation."""
     env = os.environ.copy()
@@ -2677,7 +2678,8 @@ def _run_mla_subprocess(
         f'run_mla_module("{attn_type}", {head_num}, "{model_path}", '
         f'"{kv_cache_dtype}", "{compute_dtype}", "{gemm_type}", {is_prefill}, '
         f"0, {output_repr}, {backend_repr}, {batch_filter_repr}, {target_tp_size}, "
-        f"{dsa_backend_repr}, skip_indexer={skip_indexer}, ordinary_mla={ordinary_mla})\n"
+        f"{dsa_backend_repr}, skip_indexer={skip_indexer}, ordinary_mla={ordinary_mla}, "
+        f"chunked_prefill_size={chunked_prefill_size!r})\n"
     )
 
     proc = subprocess.Popen(
@@ -2739,6 +2741,7 @@ def run_mla_module_worker(
     *,
     perf_filename: str,
     device: str = "cuda:0",
+    chunked_prefill_size: int | None = None,
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
@@ -2803,6 +2806,7 @@ def run_mla_module_worker(
         dsa_prefill_backend=dsa_prefill_backend,
         skip_indexer=skip_indexer,
         ordinary_mla=os.path.basename(perf_filename) == "mla_context_module_perf.txt",
+        chunked_prefill_size=chunked_prefill_size,
     )
 
 

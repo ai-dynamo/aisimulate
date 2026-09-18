@@ -653,7 +653,8 @@ dispatches, and exits with status 1 so partial collection is not reported as suc
 
 Pass the actual per-rank head count and `target_tp_size`. Set
 `--chunked-prefill-size 16384` on the CLI, or `chunked_prefill_size=16384`
-on `run_mla_module()`, to reproduce a serving chunk limit of 16,384 tokens.
+on `run_mla_module()` or `run_mla_module_worker()`, to reproduce a serving
+chunk limit of 16,384 tokens. The worker forwards the limit into its subprocess.
 Explicit limits must be positive for one-shot module collection.
 Omitting the option keeps SGLang's default. The existing
 wide-EP and DSA paths keep their separate behavior. The ordinary context table
