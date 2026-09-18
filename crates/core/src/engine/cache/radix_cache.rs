@@ -811,9 +811,12 @@ impl RadixCache {
             let child_parent = child.parent;
             let original_ck = child.key[0];
             let suffix_key = child.key.split_off(split_pos);
-            let prefix_key = std::mem::replace(&mut child.key, suffix_key);
+            let mut prefix_key = std::mem::replace(&mut child.key, suffix_key);
             let suffix_value = child.value.split_off(split_pos);
-            let prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            let mut prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            // The short prefix must not retain the original edge's allocation.
+            prefix_key.shrink_to_fit();
+            prefix_value.shrink_to_fit();
             let suffix_ck = child.key[0];
             (
                 child_parent,

@@ -101,6 +101,60 @@ impl ReplayTelemetryObserver for FailingTelemetryObserver {
 }
 
 #[test]
+fn replay_accept_length_counts_emitting_requests_including_prefill() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for (speculative, lengths, expected_forwards) in [
+            (false, vec![0], 0),
+            (false, vec![1], 1),
+            (false, vec![2], 2),
+            (false, vec![7, 2], 9),
+            (true, vec![7], 3),
+        ] {
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let requests = lengths
+                .iter()
+                .enumerate()
+                .map(|(index, &length)| {
+                    request(&format!("request-{index}"), index as f64 * 5.0, 4, length)
+                })
+                .collect();
+            let mut spec = aggregated_spec(backend, 1, 0.0, requests);
+            if speculative {
+                let mut engine: ReplayEngineConfig =
+                    serde_json::from_value(spec.engine.clone()).unwrap();
+                engine.rank.aic_nextn = Some(2);
+                engine.rank.aic_nextn_accept_rates = Some("1,1".into());
+                spec.engine = serde_json::to_value(engine).unwrap();
+            }
+            let report = Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_telemetry_observer(
+                    1_000.0,
+                    Box::new(RecordingTelemetryObserver {
+                        samples: Arc::clone(&samples),
+                    }),
+                )
+                .unwrap()
+                .run()
+                .unwrap();
+            assert_eq!(report.request_counts.completed_requests, lengths.len());
+            let tokens = lengths.iter().sum::<usize>();
+            assert_eq!(report.request_counts.total_output_tokens, tokens);
+            let samples = samples.lock().unwrap();
+            let traffic = &samples.last().unwrap().traffic;
+            assert_eq!(
+                traffic.accept_length_forward_count, expected_forwards,
+                "{backend:?}, {lengths:?}"
+            );
+            assert_eq!(
+                traffic.avg_accept_length,
+                (expected_forwards > 0).then(|| tokens as f64 / expected_forwards as f64)
+            );
+        }
+    }
+}
+
+#[test]
 fn telemetry_baseline_preserves_t0_activity_and_emits_a_positive_final_tail() {
     let samples = Arc::new(Mutex::new(Vec::new()));
     let observer = RecordingTelemetryObserver {

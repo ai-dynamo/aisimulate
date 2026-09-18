@@ -472,6 +472,125 @@ fn assert_interval_work(round: &IntervalRound, rank: usize, prefill: u32, decode
 }
 
 #[test]
+fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
+    let mut config = sglang_interval_config(0);
+    config.block_size = 4;
+    config.num_gpu_blocks = 64;
+    config.enable_prefix_caching = true;
+    config.sglang.chunked_prefill_size = 256;
+    config.max_num_batched_tokens = 256;
+    let mut engine = sglang_interval_engine(config, 1);
+    let mut now_ms = 0.0;
+    let seed: Vec<u32> = (0..64).collect();
+    let mut cases = vec![(seed.clone(), Some(64))];
+    for prefix_len in (4..64).step_by(4) {
+        let mut tokens = seed[..prefix_len].to_vec();
+        tokens.extend([1_000 + prefix_len as u32; 4]);
+        cases.push((tokens, Some(4)));
+    }
+    // Force eviction after repeatedly splitting the original long edge.
+    cases.push((vec![10_000; 252], Some(252)));
+    cases.push((seed.clone(), None));
+    let mut tokens = seed[..32].to_vec();
+    tokens.extend([20_000; 4]);
+    cases.push((tokens, Some(4)));
+
+    for (index, (tokens, expected_prefill)) in cases.into_iter().enumerate() {
+        let request_id = Uuid::from_u128(index as u128 + 1);
+        engine
+            .apply_command_effects(
+                SchedulerCommand::new(
+                    0,
+                    Command::Submit(Request {
+                        request_id,
+                        tokens,
+                        max_output_tokens: 0,
+                        output_token_ids: None,
+                    }),
+                ),
+                now_ms,
+            )
+            .unwrap();
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        if let Some(expected) = expected_prefill {
+            assert_eq!(
+                round.ranks[0].forward_pass_metrics.sum_prefill_tokens, expected,
+                "request {index}"
+            );
+        }
+        let outputs = &round.ranks[0].outputs;
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].request_id, request_id);
+        assert!(outputs[0].completed && !outputs[0].rejected);
+        assert!(engine.is_drained());
+    }
+}
+
+#[test]
+fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
+    for (budget, cached_prefix, prompts, expected_work) in [
+        (8, 0, vec![4, 8], vec![8, 4]),
+        (6, 0, vec![5], vec![4, 1]),
+        (8, 0, vec![6], vec![6]),
+        (8, 0, vec![7, 8], vec![7, 8]),
+        (8, 4, vec![4, 8], vec![8, 4]),
+        (6, 4, vec![5], vec![4, 1]),
+    ] {
+        let mut config = sglang_interval_config(0);
+        config.block_size = 4;
+        config.sglang.chunked_prefill_size = budget;
+        config.enable_prefix_caching = cached_prefix > 0;
+        let mut engine = sglang_interval_engine(config, 1);
+        let mut now_ms = 0.0;
+        if cached_prefix > 0 {
+            submit_interval_request(&mut engine, 0, 0, cached_prefix, 0, now_ms);
+            let seed = step_interval_engine(&mut engine, &mut now_ms);
+            assert!(seed.ranks[0].outputs[0].completed);
+        }
+        for (index, &prompt) in prompts.iter().enumerate() {
+            let mut tokens = vec![0; cached_prefix];
+            tokens.extend(vec![index as u32 + 1; prompt]);
+            engine
+                .apply_command_effects(
+                    SchedulerCommand::new(
+                        0,
+                        Command::Submit(Request {
+                            request_id: Uuid::from_u128(index as u128 + 1),
+                            tokens,
+                            max_output_tokens: 0,
+                            output_token_ids: None,
+                        }),
+                    ),
+                    now_ms,
+                )
+                .unwrap();
+        }
+
+        let mut completed = Vec::new();
+        for expected_tokens in expected_work {
+            let round = step_interval_engine(&mut engine, &mut now_ms);
+            assert_eq!(
+                round.ranks[0].forward_pass_metrics.sum_prefill_tokens, expected_tokens,
+                "budget={budget}, cached_prefix={cached_prefix}, prompts={prompts:?}"
+            );
+            for output in &round.ranks[0].outputs {
+                assert!(output.completed && !output.rejected);
+                assert_eq!(output.token_id, None);
+                completed.push(output.request_id);
+            }
+        }
+        completed.sort_unstable();
+        assert_eq!(
+            completed,
+            (1..=prompts.len() as u128)
+                .map(Uuid::from_u128)
+                .collect::<Vec<_>>()
+        );
+        assert!(engine.is_drained());
+    }
+}
+
+#[test]
 fn sglang_interval_default_zero_preserves_consecutive_prefill_chunks() {
     assert_eq!(
         EngineConfig::for_backend(Backend::Sglang).prefill_decode_interval,

@@ -51,6 +51,39 @@ def _run(config: dict):
     )
 
 
+@pytest.mark.parametrize(
+    "timestamps,expected",
+    [
+        ([None, 100], [0, 100]),
+        ([100, None], [0, 100]),
+        ([100, 200], [0, 100]),
+        ([None, None], [0, 0]),
+    ],
+)
+def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, expected):
+    trace = tmp_path / "arrivals.jsonl"
+    rows = []
+    for index, timestamp in enumerate(timestamps):
+        row = {"input_length": 4, "output_length": 1, "hash_ids": [index]}
+        if timestamp is not None:
+            row["timestamp"] = timestamp
+        rows.append(row)
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = _run(
+        {
+            "engine": _engine(),
+            "traffic": {
+                "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)], "block_size": 4},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    records = report.metadata["native_report"]["per_request"]
+    assert sorted(record["arrival_time_ms"] for record in records) == expected
+    assert all(record["output_length"] == 1 for record in records)
+    assert report.metrics["completed_requests"] == 2
+
+
 def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment

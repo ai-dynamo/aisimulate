@@ -1024,6 +1024,9 @@ impl VllmCore {
             return Vec::new();
         }
 
+        if self.pending_destinations.front_due(generation).is_none() {
+            return Vec::new();
+        }
         let (held_completion_blocks, activated_waiting_completion_blocks) =
             self.destination_handoff_completion_headroom(None);
         let reservation_mode = {
@@ -1102,6 +1105,9 @@ impl VllmCore {
             .payloads()
             .map(ReservedVllmDecode::unallocated_completion_blocks)
             .fold(0usize, usize::saturating_add);
+        if self.active_destination_handoffs.is_empty() {
+            return (held, 0);
+        }
         let activated_waiting = self
             .state
             .requests

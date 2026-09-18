@@ -1876,6 +1876,9 @@ impl WorkloadDriver {
         session.in_flight = None;
         session.next_turn_index = next_turn_index;
         session.next_ready_at_ms = next_ready_at_ms;
+        if session_ended {
+            session.cumulative_tokens = Vec::new();
+        }
         if next_ready_at_ms.is_some()
             && let Some(output_tokens) = completed_output_tokens
         {
@@ -1937,6 +1940,12 @@ impl WorkloadDriver {
     pub fn is_drained(&self) -> bool {
         self.in_flight.is_empty()
             && self.agentic_settling.is_empty()
+            // Failed plays can leave queued entries for skipped nodes. Only a
+            // session with unfinished turns proves that work remains.
+            && !self.ready_sessions.peek().is_some_and(|ready| {
+                let session = &self.sessions[ready.session_index];
+                session.next_turn_index < session.turns.len()
+            })
             && self
                 .sessions
                 .iter()
@@ -2877,6 +2886,65 @@ mod tests {
     }
 
     #[test]
+    fn ending_one_delta_session_preserves_another_sessions_partial_output_history() {
+        for terminal in [ReplayTerminalStatus::Canceled, ReplayTerminalStatus::Failed] {
+            let trace = Trace {
+                block_size: 1,
+                sessions: [10, 30]
+                    .into_iter()
+                    .map(|token| SessionTrace {
+                        session_id: token.to_string(),
+                        first_arrival_timestamp_ms: Some(0.0),
+                        turns: vec![
+                            TurnTrace {
+                                input_length: 1,
+                                max_output_tokens: 2,
+                                hash_ids: vec![token],
+                                output_token_ids: Some(vec![token + 1, token + 2]),
+                                ..Default::default()
+                            },
+                            TurnTrace {
+                                input_length: 1,
+                                max_output_tokens: 0,
+                                hash_ids: vec![token + 3],
+                                delay_after_previous_ms: 5.0,
+                                ..Default::default()
+                            },
+                        ],
+                    })
+                    .collect(),
+            };
+            let mut driver = WorkloadDriver::new_trace_accumulating_deltas(trace, 1).unwrap();
+            let first = driver.pop_ready(0.0, usize::MAX);
+            assert_eq!(first.len(), 2);
+            let ending = first
+                .iter()
+                .find(|turn| turn.request.tokens == [10])
+                .unwrap();
+            let surviving = first
+                .iter()
+                .find(|turn| turn.request.tokens == [30])
+                .unwrap();
+            driver.on_output_token(ending.request_uuid, 11).unwrap();
+            driver.on_output_token(surviving.request_uuid, 31).unwrap();
+            driver
+                .on_terminal(ending.request_uuid, 1.0, terminal)
+                .unwrap();
+            driver.on_complete(surviving.request_uuid, 2.0).unwrap();
+            assert!(!driver.is_drained());
+            assert_eq!(driver.next_ready_time_ms(), Some(7.0));
+            assert!(driver.pop_ready(6.0, usize::MAX).is_empty());
+
+            let last = driver.pop_ready(7.0, usize::MAX);
+            assert_eq!(last.len(), 1);
+            assert_eq!(last[0].request.tokens, vec![30, 31, 33]);
+            driver.on_complete(last[0].request_uuid, 8.0).unwrap();
+            assert!(driver.is_drained());
+            assert!(driver.pop_ready(1_000.0, usize::MAX).is_empty());
+        }
+    }
+
+    #[test]
     fn agentic_mode_releases_turn_after_dependency_completion_plus_delay() {
         let trace = agentic_trace(vec![
             agentic_node("r1", "play", 0.0, Vec::new()),
@@ -3287,6 +3355,27 @@ mod tests {
                 .any(|event| event.event == AgenticLifecycleEventKind::Skipped
                     && event.request_id.as_deref() == Some("blocked-child"))
         );
+    }
+
+    #[test]
+    fn failed_play_drains_after_cleanup_without_waiting_for_queued_siblings() {
+        let trace = agentic_trace(vec![
+            agentic_node("root", "play", 0.0, Vec::new()),
+            agentic_node("future-sibling", "play", 1_000_000.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 1).unwrap();
+        let root = driver.pop_ready(0.0, usize::MAX).pop().unwrap();
+        driver
+            .on_causal_terminal(root.request_uuid, 1.0, ReplayTerminalStatus::Failed)
+            .unwrap();
+        assert!(!driver.is_drained(), "engine cleanup is still outstanding");
+        driver.on_quiescent(root.request_uuid, 2.0).unwrap();
+        // Check before dispatch/next_ready_time_ms can discard the skipped entry.
+        assert!(driver.is_drained());
+        let outcome = driver.agentic_play_outcomes().unwrap().pop().unwrap();
+        assert_eq!(outcome.status, AgenticPlayStatus::Failed);
+        assert_eq!(outcome.settled_at_ms, Some(2.0));
+        assert!(driver.pop_ready(1_000_000.0, usize::MAX).is_empty());
     }
 
     #[test]

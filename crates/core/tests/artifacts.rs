@@ -227,6 +227,41 @@ fn native_and_normalized_kv_visibility_preserve_raw_order() {
 }
 
 #[test]
+fn cache_events_advertise_reusable_prefixes_only_when_caching_is_enabled() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for enabled in [false, true] {
+            let mut replay_spec = spec(backend, 1, 1);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay_spec.engine.clone()).unwrap();
+            config.rank.enable_prefix_caching = enabled;
+            replay_spec.engine = serde_json::to_value(config).unwrap();
+            replay_spec.requests = [0.0, 30.0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, at)| {
+                    let mut request =
+                        replay_request(&format!("repeat-{index}"), at, (0..8).collect());
+                    request.output_tokens = 2;
+                    request
+                })
+                .collect();
+            let (report, artifacts) = Replayer::new(replay_spec, ReplayEngineFactory::new())
+                .unwrap()
+                .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+                .unwrap();
+            assert_eq!(report.request_counts.completed_requests, 2);
+            assert_eq!(report.request_counts.total_output_tokens, 4);
+            assert_eq!(artifacts.kv_events.is_empty(), !enabled, "{backend:?}");
+            assert_eq!(
+                report.prefix_cache_reused_ratio > 0.0,
+                enabled,
+                "{backend:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn capped_passes_respect_visibility_boundaries() {
     let capped = |visibility| {
         let mut replay_spec = spec(Backend::Vllm, 1, 1);

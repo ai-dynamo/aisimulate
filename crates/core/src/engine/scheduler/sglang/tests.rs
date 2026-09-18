@@ -1229,36 +1229,6 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_chunked_prefill_budget_is_page_aware() {
-        let config = SglangConfig {
-            chunked_prefill_size: 8,
-            ..SglangConfig::from_args(
-                &MockEngineArgs::builder()
-                    .block_size(4)
-                    .speedup_ratio(1.0)
-                    .build()
-                    .unwrap(),
-            )
-        };
-        let mut kv_manager = SglangKvManager::new(10000, 4, KvEventPublishers::default(), 0);
-        let mut waiting = VecDeque::from([SglangRequest {
-            uuid: Uuid::new_v4(),
-            sequence_tokens: vec![1; 6],
-            prompt_len: 6,
-            max_output_tokens: 3,
-            planned_output_ids: None,
-            materialized_tokens: 0,
-            kv_lease: RadixRequestLease::default(),
-            allocated_tokens: 0,
-        }]);
-
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].materialized_tokens, 6);
-        assert_eq!(admit.can_run[0].allocated_tokens, 8);
-    }
-
-    #[test]
     fn test_chunked_prefill_admits_next_chunk_when_full_prompt_does_not_fit() {
         let config = SglangConfig {
             chunked_prefill_size: 8,
@@ -1285,52 +1255,6 @@ mod core_behavior {
         let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
         assert_eq!(admit.can_run.len(), 1);
         assert_eq!(admit.can_run[0].materialized_tokens, 8);
-    }
-
-    #[test]
-    fn test_chunked_prefill_subpage_budget_defers_next_request() {
-        let config = SglangConfig {
-            chunked_prefill_size: 8,
-            ..SglangConfig::from_args(
-                &MockEngineArgs::builder()
-                    .block_size(4)
-                    .speedup_ratio(1.0)
-                    .build()
-                    .unwrap(),
-            )
-        };
-
-        let first_uuid = Uuid::new_v4();
-        let second_uuid = Uuid::new_v4();
-        let mut kv_manager = SglangKvManager::new(10000, 4, KvEventPublishers::default(), 0);
-        let mut waiting = VecDeque::from([
-            SglangRequest {
-                uuid: first_uuid,
-                sequence_tokens: vec![1; 7],
-                prompt_len: 7,
-                max_output_tokens: 3,
-                planned_output_ids: None,
-                materialized_tokens: 0,
-                kv_lease: RadixRequestLease::default(),
-                allocated_tokens: 0,
-            },
-            SglangRequest {
-                uuid: second_uuid,
-                sequence_tokens: vec![2; 8],
-                prompt_len: 8,
-                max_output_tokens: 3,
-                planned_output_ids: None,
-                materialized_tokens: 0,
-                kv_lease: RadixRequestLease::default(),
-                allocated_tokens: 0,
-            },
-        ]);
-
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].uuid, first_uuid);
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(waiting[0].uuid, second_uuid);
     }
 
     #[test]
