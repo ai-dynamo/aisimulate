@@ -1471,7 +1471,7 @@ aggregate-only SLA semantics, described in its feature guide.
 ### 6.2 Repository and release transition
 
 AISimulate is the home for ongoing development, issues, and releases. The standalone
-AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.12.0
-keeps the AIC compatibility command; removal is targeted for 0.13.0 after all remaining workflows
+AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.13.0
+keeps the AIC compatibility command; removal is targeted for 0.14.0 after all remaining workflows
 have verified unified-CLI replacements. See the [release transition policy](../../README.md#aiconfigurator-repository-transition)
 and [repository history](../repository-history.md).
