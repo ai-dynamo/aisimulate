@@ -69,7 +69,8 @@ This mapping does not consult profile availability. Explicit FMHA overrides,
 FPM identities, Blackwell, and unaudited runtime/geometry combinations remain
 unchanged. Native compilation, KV memory construction, and the estimate-path
 FMHA resolver share this rule. Task preserves explicit-versus-inferred provenance
-when building each role's model config. Direct aggregate/prefill sweeps and prefill-session
+when building each role's model config, including AFD's static prefill pool
+and its inherited aggregate overrides. Direct aggregate/prefill sweeps and prefill-session
 construction also resolve against their database's runtime version and system.
 Explicit modes and decode-only construction remain unchanged.
 Wide-EP's implicit FlashInfer backend is outside the FA3 mapping.

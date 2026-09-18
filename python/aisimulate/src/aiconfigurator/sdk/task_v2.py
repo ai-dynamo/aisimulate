@@ -1174,6 +1174,9 @@ class Task:
                 resolved = from_hf if from_hf is not None else fallback
                 self._set_role_attr(role, key, resolved)
 
+        if self.serving_mode == "afd" and self.afd_combined_with_pd:
+            # Static prefill inherits the aggregate mode unless overridden.
+            fmha_explicit["prefill"] = self.prefill_fmha_quant_mode is not None or fmha_explicit["agg"]
         self._fmha_explicit = fmha_explicit
         self._kvcache_explicit = kvcache_explicit
 

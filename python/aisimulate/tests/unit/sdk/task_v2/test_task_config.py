@@ -52,6 +52,33 @@ def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatc
     assert attention["fmha_quant_mode"] == expected.name
 
 
+@pytest.mark.parametrize("explicit_role", [None, "agg", "prefill"])
+def test_afd_static_prefill_preserves_explicit_fmha(monkeypatch, explicit_role):
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    overrides = {}
+    if explicit_role is not None:
+        field = "fmha_quant_mode" if explicit_role == "agg" else "prefill_fmha_quant_mode"
+        overrides[field] = common.FMHAQuantMode.fp8
+    task = Task(
+        serving_mode="afd",
+        total_gpus=32,
+        afd_combined_with_pd=True,
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        attention_backend="fa3",
+        **overrides,
+    )
+    expected = common.FMHAQuantMode.fp8 if explicit_role else common.FMHAQuantMode.bfloat16
+    mc = task.build_model_config(role="prefill")
+    model = get_model(task.prefill_model_path, mc, "sglang")
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
+    attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == expected.name
+
+
 # ---------------------------------------------------------------------------
 # Construction defaults
 # ---------------------------------------------------------------------------
