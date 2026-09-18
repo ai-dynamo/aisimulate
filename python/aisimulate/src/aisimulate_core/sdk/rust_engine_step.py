@@ -157,7 +157,8 @@ class ForwardPassPerfModelConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
-        payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+        if self.estimation_mode != "fpm_regression" or self.systems_paths:
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
         return payload
 
 

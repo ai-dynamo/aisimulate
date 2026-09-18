@@ -562,7 +562,10 @@ selection and fallback policy.
 `enable_wideep` is obsolete: topology now determines the MoE execution regime.
 The new model controls require default timing on every language role. AFD and
 analytical encoder configurations reject them. Backend/model compatibility is
-validated by the canonical constructor before simulation.
+validated by the canonical constructor before simulation. Use `--stack engine`
+for these controls and exact synthetic shared prefixes. Older Dynamo adapters
+do not support them and fail capability validation before replay. AFD and
+AFD+PD reject positive `cached_prefix_tokens`.
 
 This recommendation example preserves a token-exact shared prefix and explicit
 KV quantization while using the existing capacity field:

@@ -223,3 +223,14 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "fmha_quant_mode",
     "comm_quant_mode",
 )
+
+
+def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
+    """Keep additive defaults out of timing payloads parsed by older runners."""
+    result = dict(config)
+    for name in ("moe_backend", "wideep_num_slots"):
+        if result.get(name) is None:
+            result.pop(name, None)
+    if result.get("enable_eplb") is False:
+        result.pop("enable_eplb")
+    return result

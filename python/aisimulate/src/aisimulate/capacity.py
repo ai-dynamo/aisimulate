@@ -126,7 +126,7 @@ def materialize_aic_num_gpu_blocks(
                 if resolved[source] is not None:
                     lowered[target] = resolved[source]
             for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots"):
-                if resolved.get(name) not in (None, False):
+                if resolved.get(name) is not None and not (name == "enable_eplb" and resolved[name] is False):
                     lowered[f"aic_{name}"] = resolved[name]
             if resolved["systems_paths"]:
                 lowered["systems_path"] = resolved["systems_paths"][0]
@@ -242,9 +242,12 @@ def estimate_num_gpu_blocks(
         raise ValueError(
             f"AIC KV cache capacity estimation does not support {backend_name!r}; supported backends: {supported}"
         )
+    from aisimulate_core.sdk.config_builders import validate_moe_controls
     from aisimulate_core.sdk.memory import (
         estimate_num_gpu_blocks as aic_estimate_num_gpu_blocks,
     )
+
+    validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
 
     if backend_name == "trtllm":
         memory_fraction_kind = "of_free"
@@ -291,7 +294,7 @@ def estimate_num_gpu_blocks(
                     ("enable_eplb", enable_eplb),
                     ("wideep_num_slots", wideep_num_slots),
                 )
-                if value not in (None, False)
+                if value is not None and not (name == "enable_eplb" and value is False)
             },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
@@ -321,6 +324,7 @@ def estimate_kv_bytes_per_token(
         moe_ep_size=moe_ep_size,
         allow_hf_config_download=True,
     )
+    kvcache_quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
     if kvcache_quant_mode is not None:
         from aisimulate_core.sdk.common import KVCacheQuantMode
 

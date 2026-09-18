@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
@@ -252,6 +253,8 @@ class RunnerCapabilities:
     supported_agentic_backends: tuple[str, ...] = ("*",)
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
+    supports_cached_prefix_tokens: bool = False
+    supported_engine_model_controls: tuple[str, ...] = ()
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -302,6 +305,31 @@ class RunnerCapabilities:
         if not self.supports_execution_mode(spec.execution_mode):
             raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
+        if spec.workload.get("cached_prefix_tokens"):
+            if deployment.deployment_mode in {"afd", "afd+pd"}:
+                raise ValueError("cached_prefix_tokens is unsupported for AFD")
+            if not self.supports_cached_prefix_tokens:
+                raise ValueError("runner does not support cached_prefix_tokens; use --stack engine")
+        for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+            if not isinstance(args, Mapping):
+                continue
+            rank = args.get("rank", args)
+            if not isinstance(rank, Mapping):
+                continue
+            timing = rank.get("timing_model")
+            identity = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+            if not isinstance(identity, Mapping):
+                continue  # The timing descriptor validator reports malformed configs.
+            unsupported_controls = [
+                name
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if name not in self.supported_engine_model_controls
+                and identity.get(name, rank.get(f"aic_{name}")) not in (None, False)
+            ]
+            if unsupported_controls:
+                raise ValueError(
+                    f"runner does not support engine model controls {unsupported_controls}; use --stack engine"
+                )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:

@@ -269,7 +269,11 @@ pub(crate) fn validate_options(options: &ForwardPassPerfOptions) -> Result<(), A
         ));
     }
     if let Some(shape) = options.bucket_shape {
-        if shape.contains(&0) || shape[0].checked_mul(shape[1]).is_none() {
+        if shape.contains(&0)
+            || shape[0]
+                .checked_mul(shape[1])
+                .is_none_or(|count| count > isize::MAX as usize)
+        {
             return Err(invalid_perf_options(
                 "bins_per_axis must be positive and have a representable product",
             ));
@@ -277,7 +281,7 @@ pub(crate) fn validate_options(options: &ForwardPassPerfOptions) -> Result<(), A
         return Ok(());
     }
     let sqrt = integer_sqrt(options.bucket_count);
-    if sqrt * sqrt != options.bucket_count {
+    if options.bucket_count > isize::MAX as usize || sqrt * sqrt != options.bucket_count {
         return Err(invalid_perf_options(
             "bucket_count must be a perfect square",
         ));
@@ -490,4 +494,32 @@ mod tests {
 
 fn default_regression_ridge_scale() -> f64 {
     1e-9
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    #[test]
+    fn sampling_grid_requires_signed_representable_cell_count() {
+        for shape in [
+            [isize::MAX as usize + 1, 1],
+            [1, isize::MAX as usize + 1],
+            [usize::MAX, 2],
+        ] {
+            let options = ForwardPassPerfOptions {
+                bucket_shape: Some(shape),
+                ..Default::default()
+            };
+            assert!(matches!(
+                validate_options(&options),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+        let options = ForwardPassPerfOptions {
+            bucket_shape: Some([isize::MAX as usize, 1]),
+            ..Default::default()
+        };
+        validate_options(&options).unwrap();
+    }
 }

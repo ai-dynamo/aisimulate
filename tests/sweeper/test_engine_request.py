@@ -283,3 +283,122 @@ def test_canonical_constructor_rejects_moe_controls_on_dense_model():
                 "enable_eplb": True,
             }
         )
+
+
+@pytest.mark.parametrize("slots", [0, -1, True, 1.5])
+def test_capacity_rejects_invalid_slots_before_delegate(slots, monkeypatch):
+    from aisimulate.capacity import estimate_num_gpu_blocks
+    from aisimulate_core.sdk import memory
+
+    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("must reject before sizing"))
+    with pytest.raises(ValueError, match="wideep_num_slots"):
+        estimate_num_gpu_blocks(
+            backend_name="sglang",
+            system="h200_sxm",
+            model_path="dense",
+            tp_size=1,
+            block_size=16,
+            max_num_batched_tokens=128,
+            wideep_num_slots=slots,
+        )
+
+
+@pytest.mark.parametrize("controls", [{"enable_eplb": True}, {"wideep_num_slots": 128}, {"moe_backend": "deepep_moe"}])
+@pytest.mark.parametrize("is_moe", [False, True])
+def test_memory_cannot_drop_moe_controls_in_naive_fallback(monkeypatch, controls, is_moe):
+    from aisimulate_core.sdk import memory, models
+
+    monkeypatch.setattr(models, "check_is_moe", lambda _: is_moe)
+
+    def unsupported(*args, **kwargs):
+        raise ValueError("native fixture unavailable")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", unsupported)
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", lambda *a, **k: pytest.fail("controls lost"))
+    with pytest.raises(ValueError, match="native fixture unavailable" if is_moe else "require an MoE model"):
+        memory.estimate_kv_cache(
+            "model",
+            "h200_sxm",
+            "sglang",
+            max_num_tokens=128,
+            max_batch_size=8,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=True,
+            **controls,
+        )
+
+
+@pytest.mark.parametrize("alias", [None, "auto", "none", "NULL", "  ", " auto "])
+def test_kv_quantization_auto_aliases_preserve_model_dtype(monkeypatch, alias):
+    from types import SimpleNamespace
+
+    from aisimulate.capacity import estimate_kv_bytes_per_token
+    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+
+    estimator = SimpleNamespace(dtype_bytes=2)
+    estimator.kv_bytes_per_token = lambda: 100 * estimator.dtype_bytes
+    monkeypatch.setattr(NaiveKVCacheEstimator, "from_model_path", lambda *a, **k: estimator)
+    assert estimate_kv_bytes_per_token("model", tp_size=1, pp_size=1, kvcache_quant_mode=alias) == 200
+
+
+def test_optional_runner_must_advertise_new_request_capabilities():
+    from dataclasses import replace
+
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_config()))
+    legacy = RunnerCapabilities(supported_backend_topologies=(("*", "*"),))
+    with pytest.raises(ValueError, match="cached_prefix_tokens"):
+        legacy.require_compatible(spec)
+    without_prefix = replace(spec, workload={**spec.workload, "cached_prefix_tokens": 0})
+    with pytest.raises(ValueError, match="engine model controls"):
+        legacy.require_compatible(without_prefix)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+def test_recommendation_rejects_unconfigured_backend_version():
+    raw = {**_config(), "optimization": {}}
+    raw["engine"]["backend_version"] = {"vllm": "0.24.0"}
+    with pytest.raises(ValidationError, match="unconfigured backend"):
+        CoreRecommendationConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_cached_prefix_rejected_by_direct_sweeper_and_replay(mode):
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisimulate.sweeper.replay import BackendDeploymentSpec
+
+    with pytest.raises(ValueError, match="cached_prefix_tokens is unsupported for AFD"):
+        SmartSearchConfig(
+            search_space={
+                "model_name": "model",
+                "hardware_sku": "h200_sxm",
+                "deployment_mode": [mode],
+                "afd_phase": "decode",
+                "afd_batch_size_candidates": [8],
+            },
+            workload={"isl": 8, "osl": 2, "request_count": 2, "concurrency": 1, "cached_prefix_tokens": 4},
+        )
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(deployment_mode=mode, backend="vllm", backend_version="v"),
+        workload={"cached_prefix_tokens": 4},
+        goal={},
+    )
+    with pytest.raises(ValueError, match="cached_prefix_tokens is unsupported for AFD"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+def test_default_prediction_payload_remains_compatible_with_older_runners():
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    raw = _config()
+    for name in (*CONTROLS, "nextn", "nextn_accepted"):
+        raw["engine"].pop(name, None)
+    raw["traffic"]["source"]["cached_prefix_tokens"] = 0
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    identity = spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+    assert not {"moe_backend", "enable_eplb", "wideep_num_slots"} & identity.keys()
+    RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)

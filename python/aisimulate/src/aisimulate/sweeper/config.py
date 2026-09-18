@@ -802,6 +802,10 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_estimator_controls(self):
+        from aisimulate_core.sdk.common import resolve_transfer_policy
+
+        from ..config.engine import TimingConfig
+
         allowed = {
             "estimation_mode",
             "fallback_policy",
@@ -835,6 +839,16 @@ class SearchSpace(BaseModel):
                     or any(not isinstance(p, str) or not p.strip() for p in paths)
                 ):
                     raise ValueError(f"{role} systems_paths must contain nonempty strings")
+            for name in ("estimation_mode", "fallback_policy", "database_mode", "estimator_config"):
+                if name in controls and controls[name] is None:
+                    raise ValueError(f"{role} {name} must not be null")
+            validated = TimingConfig.model_validate(controls)
+            normalized = validated.model_dump(include=set(controls))
+            if normalized.get("transfer_policy") is not None:
+                normalized["transfer_policy"] = sorted(
+                    kind.value for kind in resolve_transfer_policy(normalized["transfer_policy"])
+                )
+            self.role_estimator_controls[role] = normalized
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
@@ -1108,6 +1122,8 @@ class SmartSearchConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
+        if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
+            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:

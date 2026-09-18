@@ -1050,7 +1050,26 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::ModelConfig(_)
             | AicError::PerfDatabase(_)
             | AicError::Io { .. }
-            | AicError::Yaml { .. }
-            | AicError::Parquet { .. }
     )
+}
+
+#[cfg(test)]
+mod fallback_errors {
+    use super::*;
+
+    #[test]
+    fn corruption_is_not_a_coverage_gap() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>("broken: [").unwrap_err();
+        assert!(!can_fallback_to_regression(&AicError::Yaml {
+            path: "system.yaml".into(),
+            source: yaml
+        }));
+        assert!(!can_fallback_to_regression(&AicError::Parquet {
+            path: "gemm_perf.parquet".into(),
+            source: parquet::errors::ParquetError::General("corrupt footer".into()),
+        }));
+        assert!(can_fallback_to_regression(&AicError::UnsupportedModel(
+            "no coverage".into()
+        )));
+    }
 }

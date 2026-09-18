@@ -14,7 +14,7 @@ from .capacity import (
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
-from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -499,7 +499,7 @@ def _worker_engine_args(
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
-        timing_config = canonical.to_dict()
+        timing_config = omit_inactive_moe_controls(canonical.to_dict())
         for key in (
             "gpu_memory_utilization",
             "mem_fraction_static",

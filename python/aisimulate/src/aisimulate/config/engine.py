@@ -576,6 +576,10 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
                 has_transfer=self.kv_transfer is not None,
             )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        if isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - backends)
+            if unknown:
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
@@ -585,6 +589,8 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
     if engine.speculation is None:
         return
+    if engine.nextn:
+        raise ValueError("speculation cannot be combined with nextn")
     if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
         raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
     for role in ("aggregated", "prefill", "decode"):

@@ -17,6 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .capacity import materialize_aic_num_gpu_blocks
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -271,6 +272,8 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_cached_prefix_tokens=True,
+            supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",

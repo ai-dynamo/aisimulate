@@ -165,7 +165,7 @@ request and is skipped during automatic selection for those identities.
 Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
 `moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
 `ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the pending constructor migration in #242 before its release.
+the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive

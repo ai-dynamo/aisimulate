@@ -597,3 +597,45 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
     }
     with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+
+
+@pytest.mark.parametrize("typed", [True, False])
+def test_explicit_regression_does_not_require_discovered_systems_roots(monkeypatch, tmp_path, typed):
+    monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(tmp_path / "missing"))
+    config = dict(
+        model="model", system="system", backend="vllm", worker_type="aggregated", estimation_mode="fpm_regression"
+    )
+    if typed:
+        config = ForwardPassPerfModelConfig(**config)
+    model = RustForwardPassPerfModel.best_available(config)
+    assert model.diagnostics()["provenance"]["config"]["estimation_mode"] == "fpm_regression"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("estimation_mode", "typo"),
+        ("fallback_policy", "typo"),
+        ("database_mode", "typo"),
+        ("transfer_policy", 3),
+        ("transfer_policy", "typo"),
+        ("estimator_config", []),
+        ("systems_paths", [""]),
+    ],
+)
+def test_search_rejects_invalid_role_policy_before_resolution(field, value):
+    from aisimulate.sweeper.config import SearchSpace
+
+    with pytest.raises(ValueError):
+        SearchSpace(model_name="model", hardware_sku="system", role_estimator_controls={"agg": {field: value}})
+
+
+def test_search_normalizes_role_database_and_transfer_policy():
+    from aisimulate.sweeper.config import SearchSpace
+
+    config = SearchSpace(
+        model_name="model",
+        hardware_sku="system",
+        role_estimator_controls={"agg": {"database_mode": "hybrid", "transfer_policy": "off"}},
+    )
+    assert config.role_estimator_controls["agg"] == {"database_mode": "HYBRID", "transfer_policy": []}

@@ -45,6 +45,7 @@ def build_model_config(
     wideep_num_slots: int | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
+    validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
     return ModelConfig(
         tp_size=tp_size,
         pp_size=pp_size,
@@ -64,6 +65,25 @@ def build_model_config(
         wideep_num_slots=wideep_num_slots,
         speculation=speculation,
     )
+
+
+def validate_moe_controls(
+    *,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
+    moe_backend: str | None = None,
+    model_path: str | None = None,
+) -> None:
+    """Reject invalid MoE identity before model construction or fallback."""
+    if type(enable_eplb) is not bool:
+        raise ValueError("enable_eplb must be a boolean")
+    if wideep_num_slots is not None and (type(wideep_num_slots) is not int or wideep_num_slots <= 0):
+        raise ValueError("wideep_num_slots must be a positive integer")
+    if model_path is not None and (enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default")):
+        from aisimulate_core.sdk.models import check_is_moe
+
+        if not check_is_moe(model_path):
+            raise ValueError("EPLB, slots and moe_backend require an MoE model")
 
 
 def validate_nextn(nextn: int | None) -> int:

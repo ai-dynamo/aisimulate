@@ -10,7 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
@@ -132,7 +132,11 @@ def _engine_args_payload(
         ):
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
-        payload["timing_model"] = {"type": "external", "provider": "aic", "config": dict(forward_pass_estimator.config)}
+        payload["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": omit_inactive_moe_controls(forward_pass_estimator.config),
+        }
         if memory_fraction_field in payload:
             payload["timing_model"]["config"][memory_fraction_field] = payload[memory_fraction_field]
         payload["tensor_parallel_size"] = tp
