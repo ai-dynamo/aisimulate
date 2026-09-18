@@ -175,8 +175,8 @@ will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
 artifacts and then be archived; ongoing development, releases, issues, and pull
 requests move to AISimulate.
 
-The compatibility command remains in the AISimulate 0.12.0 wheel and is
-targeted for removal in AISimulate 0.13.0. Removal is gated on verified unified
+The compatibility command remains in the AISimulate 0.13.0 wheel and is
+targeted for removal in AISimulate 0.14.0. Removal is gated on verified unified
 CLI replacements for every remaining workflow in the migration guide.
 
 For features already implemented by the standalone Sweeper, see

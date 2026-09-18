@@ -9,7 +9,8 @@ SPDX-License-Identifier: Apache-2.0
 > the standalone AISimulate repository. It builds the `aisimulate` 0.13.0
 > wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
 > `aiconfigurator` executable remain compatibility surfaces alongside the public
-> `aisimulate` prediction CLI. The original AIC
+> `aisimulate` prediction CLI. Command removal is targeted for AISimulate 0.14.0,
+> after every remaining workflow has a verified unified-CLI replacement. The original AIC
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
