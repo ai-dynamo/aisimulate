@@ -45,7 +45,8 @@ pub use perfmodel::{
     KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
     KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
     QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
-    SpeculativeConfig,
+    SpeculativeConfig,,
+    LEARNED_AGGREGATE_FEATURE_NAMES, LEARNED_FEATURE_COUNT, LEARNED_REQUEST_FEATURE_NAMES, LEARNED_SCHEMA_NAME, LEARNED_SCHEMA_VERSION, LEARNED_SLOT_COUNT,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,

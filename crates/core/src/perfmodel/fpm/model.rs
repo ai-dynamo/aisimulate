@@ -18,8 +18,9 @@ use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
 use super::correction::CorrectionBuckets;
+use super::learned::{IterationFeatureVector, LearnedForwardPassModel, load_learned};
 use super::metrics::validate_forward_pass_metrics;
-use super::options::{ForwardPassPerfOptions, validate_regression_options};
+use super::options::{ForwardPassPerfOptions, validate_options, validate_regression_options};
 use super::regression::BucketedRegression;
 use super::samples::{AxisRange, StoreStats, WithOptions};
 
@@ -69,6 +70,11 @@ pub enum ForwardPassPerfSource {
     FallbackRegression,
     /// Native AIC estimator with at least one learned correction workload kind.
     AicWithCorrection,
+    /// Offline-trained learned model (tree ensemble over FPM features) with no
+    /// correction workload kind ready yet.
+    Learned,
+    /// Learned model with at least one ready online-correction workload kind.
+    LearnedWithCorrection,
 }
 
 /// Readiness state reported by `ForwardPassPerfDiagnostics`.
@@ -104,7 +110,7 @@ pub enum ForwardPassWorkerType {
 /// Full-iteration workload used to select an independent regression store.
 /// Idle ranks do not contribute, and any locally mixed rank takes precedence
 /// over separate prefill-only and decode-only ranks.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardPassRegressionWorkloadKind {
     PureDecode,
@@ -259,6 +265,12 @@ enum ForwardPassPerfMode {
         worker_type: ForwardPassWorkerType,
         regression: RegressionStores,
     },
+    /// Offline-trained learned model (see [`super::learned`]) used as the base
+    /// estimate, with the same online-correction grid as `Native` on top.
+    Learned {
+        learned: LearnedForwardPassModel,
+        corrections: WorkloadStores<CorrectionBuckets>,
+    },
 }
 
 impl ForwardPassPerfModel {
@@ -279,6 +291,32 @@ impl ForwardPassPerfModel {
             provenance: None,
             is_correction_enabled: true,
         }
+    }
+
+    /// API:
+    /// `ForwardPassPerfModel::from_learned(source, options) -> Result<Self, AicError>`
+    ///
+    /// Description: create a forward-pass model from an offline-trained learned
+    /// artifact (`aic_fpm_learned_forward_perf` JSON written by the Python
+    /// `aiconfigurator_core.sdk.fpm_learned` trainer).
+    ///
+    /// `source` is either a filesystem path or the artifact JSON text itself
+    /// (detected by a leading `{`). The artifact binds the worker type and the
+    /// ordered feature ABI. Estimation is the learned prediction multiplied by
+    /// the native-style online correction factor learned through
+    /// `tune_with_fpms`; iterations whose regression workload kind has no
+    /// trained store return `Ok(None)`.
+    pub fn from_learned(source: &str, options: ForwardPassPerfOptions) -> Result<Self, AicError> {
+        validate_options(&options)?;
+        let learned = load_learned(source, &options)?;
+        Ok(Self {
+            mode: ForwardPassPerfMode::Learned {
+                learned,
+                corrections: WorkloadStores::with_options(&options),
+            },
+            options,
+            last_warning: None,
+        })
     }
 
     /// API:
@@ -434,6 +472,25 @@ impl ForwardPassPerfModel {
                 };
                 Ok(regression.store(feature.workload_kind).predict(&feature.x))
             }
+            ForwardPassPerfMode::Learned {
+                learned,
+                corrections,
+            } => {
+                let Some(base) = learned_base_ms(learned, metrics_by_rank, &self.options)? else {
+                    return Ok(None);
+                };
+                if base == 0.0 {
+                    return Ok(Some(0.0));
+                }
+                let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+                    return Ok(Some(0.0));
+                };
+                Ok(Some(
+                    base * corrections
+                        .store(feature.workload_kind)
+                        .correction_factor_for(&feature.x),
+                ))
+            }
         }
     }
 
@@ -508,6 +565,21 @@ impl ForwardPassPerfModel {
                         .store_mut(observation.feature.workload_kind)
                         .add_observation(observation.feature.x, observation.wall_time_ms);
                 }
+                ForwardPassPerfMode::Learned {
+                    learned,
+                    corrections,
+                } => {
+                    let Some(observation) = IterationObservation::from_metrics(metrics_by_rank)?
+                    else {
+                        continue;
+                    };
+                    let Some(base) = learned_base_ms(learned, metrics_by_rank, options)? else {
+                        continue;
+                    };
+                    corrections
+                        .store_mut(observation.feature.workload_kind)
+                        .add_observation(observation.feature.x, observation.wall_time_ms, base);
+                }
             }
         }
         Ok(())
@@ -552,6 +624,20 @@ impl ForwardPassPerfModel {
                     provenance: self.provenance.clone(),
                 }
             }
+            ForwardPassPerfMode::Learned { corrections, .. } => {
+                let ready_buckets = corrections.ready_bucket_count();
+                ForwardPassPerfDiagnostics {
+                    source: if ready_buckets > 0 {
+                        ForwardPassPerfSource::LearnedWithCorrection
+                    } else {
+                        ForwardPassPerfSource::Learned
+                    },
+                    readiness: ForwardPassPerfReadiness::Ready,
+                    retained_observations: corrections.observation_count(),
+                    correction_ready_buckets: ready_buckets,
+                    last_warning: self.last_warning.clone(),
+                }
+            }
         }
     }
 
@@ -565,6 +651,40 @@ impl ForwardPassPerfModel {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),
             ForwardPassPerfMode::Regression { regression, .. } => regression.diagnostics(),
+            // Learned stores are fixed at load time: every trained store is
+            // ready and holds no retained tuning observations of its own.
+            ForwardPassPerfMode::Learned { learned, .. } => learned
+                .store_kinds()
+                .into_iter()
+                .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
+                    workload_kind,
+                    ready: true,
+                    retained_observations: 0,
+                })
+                .collect(),
+        }
+    }
+
+    /// API:
+    /// `model.learned_feature_names() -> Option<&[String]>`
+    ///
+    /// Description: the ordered feature ABI of a learned model; `None` for
+    /// native and regression models.
+    pub fn learned_feature_names(&self) -> Option<&[String]> {
+        match &self.mode {
+            ForwardPassPerfMode::Learned { learned, .. } => Some(learned.feature_names()),
+            _ => None,
+        }
+    }
+
+    /// API:
+    /// `model.learned_metadata() -> Option<&serde_json::Value>`
+    ///
+    /// Description: free-form trainer metadata embedded in a learned artifact.
+    pub fn learned_metadata(&self) -> Option<&serde_json::Value> {
+        match &self.mode {
+            ForwardPassPerfMode::Learned { learned, .. } => Some(learned.metadata()),
+            _ => None,
         }
     }
 
@@ -637,6 +757,7 @@ impl ForwardPassPerfModel {
         match &self.mode {
             ForwardPassPerfMode::Native { corrections, .. } => corrections.correction_factors(),
             ForwardPassPerfMode::Regression { .. } => Vec::new(),
+            ForwardPassPerfMode::Learned { corrections, .. } => corrections.correction_factors(),
         }
     }
 }
@@ -671,6 +792,27 @@ fn build_native_candidate(
     Err(AicError::UnsupportedModel(
         "native engine construction requires the python feature".into(),
     ))
+}
+
+/// Learned-mode base estimate: classify the iteration with the regression
+/// workload rule bound to the artifact's worker type, then query the matching
+/// trained store. `Ok(Some(0.0))` for empty iterations, `Ok(None)` when the
+/// kind has no store.
+fn learned_base_ms(
+    learned: &LearnedForwardPassModel,
+    metrics_by_rank: &[ForwardPassMetrics],
+    options: &ForwardPassPerfOptions,
+) -> Result<Option<f64>, AicError> {
+    let Some(feature) =
+        RegressionIterationFeatures::from_metrics(metrics_by_rank, learned.worker_type(), options)?
+    else {
+        return Ok(Some(0.0));
+    };
+    if !learned.has_store(feature.workload_kind) {
+        return Ok(None);
+    }
+    let vector = IterationFeatureVector::from_metrics(metrics_by_rank);
+    Ok(learned.predict_ms(feature.workload_kind, &vector))
 }
 
 #[cfg(feature = "python")]
