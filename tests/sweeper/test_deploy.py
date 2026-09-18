@@ -212,6 +212,7 @@ def test_optional_backend_runtime_values_are_forwarded():
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+    assert engine["aic_nextn_accepted"] == 1.5
 
 
 def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
