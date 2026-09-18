@@ -10,6 +10,7 @@ configurations offline, without bringing up a GPU serving cluster.
 
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
+[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
@@ -378,7 +379,7 @@ The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accur
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
 separate and includes a machine-readable aggregate with exact snapshot digests.
-See the [snapshot and regeneration details](python/aisimulate/docs/e2e-accuracy/README.md)
+See the [snapshot and regeneration details](pages/e2e-accuracy/README.md)
 for evidence provenance and instructions to rebuild the report.
 
 The checked-in snapshot excludes multi-node configurations and applies only to
@@ -399,3 +400,15 @@ See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
 complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
 for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
 before sending a change.
+
+### FPM accuracy overview
+
+The [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
+reports daily FPM (KV warmup on), FPM (KV warmup off), and online regression accuracy against
+pinned Hugging Face measurements. It evaluates main and releases >= 0.12.0,
+with MAPE, prediction coverage, and exact source provenance. Results stay in
+GitHub Actions artifacts; the main Pages build publishes qualified aggregates.
+See [evaluation and publication details](pages/fpm-accuracy/README.md).
+
+Webpage sources live in [pages/](pages/README.md). Rust design documentation
+remains under docs and is not deployed.

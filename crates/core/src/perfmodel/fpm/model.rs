@@ -317,6 +317,13 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.speculation.is_some() && mode != EstimationMode::OpLevel {
+                let error =
+                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
                 let mut model = Self::from_regression(config.worker_type, options)?;

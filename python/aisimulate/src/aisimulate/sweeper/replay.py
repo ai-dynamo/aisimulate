@@ -352,7 +352,7 @@ class RunnerCapabilities:
                 if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
                     raise ValueError("agentic M1 execution requires HBM-only KV cache; host offload is unsupported")
                 if not self.supports_agentic_speculative_decoding and any(
-                    rank.get(key) is not None for key in ("aic_nextn", "nextn")
+                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
                 ):
                     raise ValueError("agentic M1 execution requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]

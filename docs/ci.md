@@ -266,6 +266,16 @@ are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
 
+The FP8-block data correction in PR #244 changes only the MiniMax cases to
+enable declared reuse: their vLLM 0.24.0 primary data no longer contains
+invalid eager FP8-block measurements, so corrected GEMMs come from 0.25.0.
+With the original data, enabling reuse reproduces all four old baselines
+exactly. With corrected data, the prefill baselines change from
+42.676331 / 116.409355 ms to 21.898890 / 98.968257 ms, and decode from
+39.364559 / 7396.437641 ms to 6.956580 / 2192.966039 ms (short/long cases).
+The four Qwen baselines and all tolerances remain unchanged. These are
+prediction-stability values, not measured whole-model accuracy.
+
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
 previously working cases becoming broken. If the comparison base predates the
@@ -471,7 +481,7 @@ their publication. Retried jobs preserve successful branches' original run-attem
 provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
 incomplete campaigns cannot publish. A release selector may still show a historical
 snapshot until that release has a qualified campaign. See the
-[accuracy campaign contract](../python/aisimulate/docs/e2e-accuracy/README.md)
+[accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
 ## Reading results and troubleshooting
@@ -639,3 +649,13 @@ an executed shard or an explicit exception; verify actual collection.
 - [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
   Model Data Quality Gate. Existing collector and prediction jobs alone do not
   establish that combined gate.
+
+## FPM accuracy
+
+`FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
+an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
+on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
+and publishes successful branch results independently; failed refreshes retain
+the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
+and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).

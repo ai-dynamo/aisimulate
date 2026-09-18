@@ -97,6 +97,7 @@ def test_stable_function_signatures() -> None:
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
         "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "
         "nextn: 'int' = 0, "
+        "speculation: 'dict | None' = None, "
         "kv_block_size: 'int | None' = None, "
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "

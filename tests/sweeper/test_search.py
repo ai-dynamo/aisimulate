@@ -353,8 +353,8 @@ def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     assert wave_sizes == [2, 1]
     assert len(pools) == 1
     assert pools[0].shutdown_called
-    assert pools[0].shutdown_waits == [True]
-    assert pools[0].shutdown_wait is True
+    assert pools[0].shutdown_waits == [False]
+    assert pools[0].shutdown_wait is False
 
 
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
@@ -400,8 +400,8 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     assert candidates == []
     assert len(pools) > 1
     assert all(pool.shutdown_called for pool in pools)
-    assert all(False in pool.shutdown_waits for pool in pools[:-1])
-    assert pools[-1].shutdown_waits == [True]
+    assert all(True in pool.shutdown_waits for pool in pools[:-1])
+    assert pools[-1].shutdown_waits == [False]
     assert all(result[0] == "infeasible" and "exceed runtime" in result[1] for result in sampler_seen["sampler"].scored)
 
 
@@ -441,7 +441,141 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
         )
 
     assert pools[0].shutdown_called
-    assert pools[0].shutdown_waits == [False]
+    assert pools[0].shutdown_waits == [True]
+
+
+class _CleanupProbeRunner(_FakeRunner):
+    """Exercise real worker lifecycles without allocating a simulation workload."""
+
+    def __init__(self, directory, mode):
+        super().__init__()
+        self.directory = directory
+        self.mode = mode
+
+    def _mark(self, event):
+        import os
+
+        Path(self.directory, f"{os.getpid()}.{event}").touch()
+
+    def run(self, spec):
+        if self.mode == "timeout":
+            import signal
+            import time
+
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            self._mark("running")
+            time.sleep(30)
+        return super().run(spec)
+
+    def close(self):
+        if self.mode == "hung_finalizer":
+            import signal
+            import time
+
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            self._mark("closing")
+            time.sleep(30)
+        self._mark("closed")
+
+
+def _reap_test_pools(pools, workers):
+    """Keep the regression safe even when testing the old leaking implementation."""
+    import psutil
+
+    for worker in workers:
+        try:
+            psutil.Process(worker.pid).kill()
+        except psutil.NoSuchProcess:
+            pass
+    for pool in pools:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_direct_sweeper_reaps_term_resistant_workers_before_replacement(monkeypatch, tmp_path):
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+
+    import psutil
+
+    from aisimulate import supervision
+
+    _stub(monkeypatch, _branch(_pc()))
+    monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
+    pools, workers = [], []
+
+    def make_pool(**kwargs):
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers), "replacement overlaps old workers"
+        pool = ProcessPoolExecutor(**kwargs)
+        pools.append(pool)
+        return pool
+
+    def timeout_when_running(pending, **kwargs):
+        workers.extend(pools[-1]._processes.values())
+        deadline = time.monotonic() + 15
+        while len(list(tmp_path.glob("*.running"))) < 2:
+            assert time.monotonic() < deadline, "workers did not reach the controlled timeout"
+            time.sleep(0.01)
+        return set(), set(pending)
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", make_pool)
+    monkeypatch.setattr(search_mod, "wait", timeout_when_running)
+    try:
+        result = Sweeper(
+            runner_factory=_FakeRunnerFactory(_CleanupProbeRunner(str(tmp_path), "timeout")),
+            sampler_factory=lambda branch, study_id, objectives=None, **kwargs: _FakeSampler(
+                branch, study_id, objectives
+            ),
+            show_progress=False,
+        ).run(_config(parallel_evals=2, candidates_per_round=2, max_eval_seconds=10, max_trials=2))
+        assert result.counts.timed_out == 2
+        assert not result.selected_candidates
+        assert len(pools) == 2
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers)
+    finally:
+        _reap_test_pools(pools, workers)
+
+
+@pytest.mark.parametrize("mode", ["normal", "hung_finalizer"])
+def test_direct_sweeper_bounds_shutdown_and_preserves_completed_results(monkeypatch, tmp_path, mode):
+    from concurrent.futures import ProcessPoolExecutor
+
+    import psutil
+
+    from aisimulate import supervision
+
+    _stub(monkeypatch, _branch(_pc()))
+    monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
+    pools, workers = [], []
+    real_wait = search_mod.wait
+
+    def make_pool(**kwargs):
+        pool = ProcessPoolExecutor(**kwargs)
+        pools.append(pool)
+        return pool
+
+    def capture_workers(pending, **kwargs):
+        workers.extend(worker for worker in pools[-1]._processes.values() if worker not in workers)
+        return real_wait(pending, **kwargs)
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", make_pool)
+    monkeypatch.setattr(search_mod, "wait", capture_workers)
+    try:
+        candidates = _run_sweep(
+            _config(parallel_evals=2, candidates_per_round=2),
+            runner_factory=_FakeRunnerFactory(_CleanupProbeRunner(str(tmp_path), mode)),
+            sampler_factory=_FakeSampler,
+            show_progress=False,
+        )
+        assert [candidate.score for candidate in candidates] == [512.0, 256.0]
+        assert len(workers) == 2
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers)
+        if mode == "hung_finalizer":
+            assert list(tmp_path.glob("*.closing"))
+            assert not list(tmp_path.glob("*.closed")), "shutdown waited for the hung finalizer"
+        else:
+            assert len(list(tmp_path.glob("*.closed"))) == 2
+    finally:
+        _reap_test_pools(pools, workers)
 
 
 def test_over_budget_candidates_are_observed_infeasible(monkeypatch):

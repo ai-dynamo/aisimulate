@@ -419,6 +419,7 @@ def compile_engine(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
@@ -437,9 +438,12 @@ def compile_engine(
     """
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
+    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
+        resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
@@ -456,6 +460,7 @@ def compile_engine(
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            speculation=resolved_speculation,
         )
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.

@@ -82,6 +82,22 @@ options.
 
 ## KV-cache capacity reservation
 
+SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
+pool. Peak activation/workspace estimates remain visible in
+`memory_breakdown.activations_bytes`, but are not deducted from that pool;
+transient execution headroom is already outside the static fraction. Increasing
+the prefill token budget alone therefore does not reduce SGLang KV capacity.
+Resident runtime/communication estimates reduce the pre-load free-memory pool
+before applying the fraction; weights are deducted afterward. The budget is
+`(capacity - resident_overhead) * mem_fraction_static - weights`, less any
+explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
+(non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
+checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
+the unchanged timing graph. Other model layouts retain their prior weight
+accounting.
+vLLM and TRT-LLM continue to deduct activation memory under their own budget
+semantics. No measured server capacity is required by this calculation.
+
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
 non-negative integer no greater than `2**53` and defaults to zero. It is treated
@@ -185,6 +201,15 @@ The returned provenance records the requested and selected modes, failed
 selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
+
+Prompt-lookup verification uses the same constructor: set `speculation` to
+`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
+`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
+It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
+select op-level but cannot fall back to an unsupported speculative estimator.
+The cost configuration is retained in provenance and saved recommendations.
+Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
+configuration; they do not change the model's target-verification graph.
 
 ### Estimator controls
 

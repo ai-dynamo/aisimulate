@@ -52,6 +52,28 @@ pub enum ForwardPassFallbackPolicy {
     LegacyRegression,
 }
 
+/// Target-verification cost; acceptance and scheduler progress belong to replay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ForwardPassSpeculationConfig {
+    Ngram { num_speculative_tokens: u32 },
+}
+
+impl ForwardPassSpeculationConfig {
+    pub fn num_speculative_tokens(&self) -> u32 {
+        match self {
+            Self::Ngram {
+                num_speculative_tokens,
+            } => *num_speculative_tokens,
+        }
+    }
+}
+
 /// Immutable model identity and selection policy for a forward-pass estimator.
 ///
 /// This is the one public construction schema shared by Rust, Python, Replay,
@@ -90,6 +112,8 @@ pub struct ForwardPassPerfModelConfig {
 
     #[serde(default)]
     pub nextn: u32,
+    #[serde(default)]
+    pub speculation: Option<ForwardPassSpeculationConfig>,
     #[serde(default)]
     pub kv_block_size: Option<u32>,
     #[serde(default)]
@@ -145,6 +169,7 @@ impl ForwardPassPerfModelConfig {
             kvcache_quant_mode: None,
             comm_quant_mode: None,
             nextn: 0,
+            speculation: None,
             kv_block_size: None,
             estimation_mode: EstimationMode::Auto,
             database_mode: DatabaseMode::default(),
@@ -248,6 +273,27 @@ impl ForwardPassPerfModelConfig {
         if self.nextn > 5 {
             return Err(invalid_config("nextn must be in 0..=5"));
         }
+        if let Some(speculation) = &self.speculation {
+            if self.nextn != 0 {
+                return Err(invalid_config(
+                    "ngram speculation cannot be combined with nextn",
+                ));
+            }
+            if self.backend != BackendKind::Vllm {
+                return Err(invalid_config("ngram speculation requires backend=vllm"));
+            }
+            if !(1..=5).contains(&speculation.num_speculative_tokens()) {
+                return Err(invalid_config(
+                    "ngram num_speculative_tokens must be in 1..=5",
+                ));
+            }
+            if !matches!(
+                self.estimation_mode,
+                EstimationMode::Auto | EstimationMode::OpLevel
+            ) {
+                return Err(invalid_config("ngram speculation requires op_level timing"));
+            }
+        }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
             return Err(invalid_config(
                 "estimation_mode='fpm_interpolation' does not support MTP speculative decoding",
@@ -321,6 +367,42 @@ mod tests {
             ]
         );
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn prompt_lookup_is_distinct_from_mtp_and_validated_before_selection() {
+        let mut cfg = config(serde_json::json!({
+            "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 2}}
+        }));
+        cfg.validate().unwrap();
+        assert_eq!(cfg.nextn, 0);
+        assert_eq!(
+            serde_json::from_str::<ForwardPassPerfModelConfig>(
+                &serde_json::to_string(&cfg).unwrap()
+            )
+            .unwrap(),
+            cfg
+        );
+        for mode in [
+            EstimationMode::FpmInterpolation,
+            EstimationMode::FpmRegression,
+        ] {
+            cfg.estimation_mode = mode;
+            assert!(cfg.validate().is_err());
+        }
+        cfg.estimation_mode = EstimationMode::Auto;
+        cfg.nextn = 2;
+        assert!(cfg.validate().is_err());
+        cfg.nextn = 0;
+        cfg.backend = BackendKind::Sglang;
+        assert!(cfg.validate().is_err());
+        cfg.backend = BackendKind::Vllm;
+        for depth in [0, 6] {
+            cfg.speculation = Some(ForwardPassSpeculationConfig::Ngram {
+                num_speculative_tokens: depth,
+            });
+            assert!(cfg.validate().is_err());
+        }
     }
 
     #[test]

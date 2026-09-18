@@ -54,7 +54,7 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         cls.site = Path(temporary.name)
         page = cls.site / "fpe-support-matrix/index.html"
         page.parent.mkdir()
-        shutil.copyfile(ROOT / "python/aisimulate/docs/fpe-support-matrix/index.html", page)
+        shutil.copyfile(ROOT / "pages/fpe-support-matrix/index.html", page)
         template_path = ROOT / "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/b200_sxm.csv"
         with template_path.open() as handle:
             template = next(csv.DictReader(handle))
