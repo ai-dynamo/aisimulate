@@ -51,6 +51,69 @@ def _run(config: dict):
     )
 
 
+@pytest.mark.parametrize(
+    "timestamps,expected",
+    [
+        ([None, 100], [0, 100]),
+        ([100, None], [0, 100]),
+        ([100, 200], [0, 100]),
+        ([None, None], [0, 0]),
+    ],
+)
+def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, expected):
+    trace = tmp_path / "arrivals.jsonl"
+    rows = []
+    for index, timestamp in enumerate(timestamps):
+        row = {"input_length": 4, "output_length": 1, "hash_ids": [index]}
+        if timestamp is not None:
+            row["timestamp"] = timestamp
+        rows.append(row)
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = _run(
+        {
+            "engine": _engine(),
+            "traffic": {
+                "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)], "block_size": 4},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    records = report.metadata["native_report"]["per_request"]
+    assert sorted(record["arrival_time_ms"] for record in records) == expected
+    assert all(record["output_length"] == 1 for record in records)
+    assert report.metrics["completed_requests"] == 2
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_prediction_preserves_context_limit_for_all_backends(backend: str, mode: str) -> None:
+    engine = _engine()
+    worker = engine["workers"]["aggregated"]
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine.update(backend=backend, mode=mode, workers=dict.fromkeys(roles, worker))
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    for role in roles:
+        payload = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        assert payload["max_model_len"] == 1024
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_prediction_max_context_preserves_backend_defaults(backend: str, mode: str, monkeypatch) -> None:
+    monkeypatch.setattr("aisimulate.compiler.resolve_model_context_length", lambda _: 4096)
+    engine = _engine()
+    worker = engine["workers"]["aggregated"]
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine.update(backend=backend, mode=mode, context_length="max", workers=dict.fromkeys(roles, worker))
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    for role in roles:
+        payload = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        if backend == "vllm":
+            assert payload["max_model_len"] == 4096
+        else:
+            assert "max_model_len" not in payload
+
+
 def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment

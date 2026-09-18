@@ -441,3 +441,53 @@ def test_afd_runner_rejects_images_before_analytical_dispatch(combined_with_pd):
     spec = replace(spec, workload={**spec.workload, "images": {"height": 448, "width": 448, "count": 1}})
     with pytest.raises(InvalidRunnerError, match="image workloads require an encoder pool"):
         EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"aic_nextn": 2, "aic_nextn_accepted": 1.25},
+        {"nextn": 2, "nextn_accepted": 0},
+        {"aic_enable_eplb": True},
+        {"aic_wideep_num_slots": 128},
+        {"aic_moe_backend": "deepep_moe"},
+        {"aic_attention_backend": "fa3"},
+        {"timing_model": {"type": "external", "provider": "aic", "config": {"gemm_quant_mode": "fp8"}}},
+        {"enable_chunked_prefill": True},
+        {"enable_chunked_prefill": False},
+    ],
+)
+def test_direct_afd_replay_rejects_controls_before_analytical_dispatch(combined, nested, overrides, monkeypatch):
+    import aisimulate.runner as runner_module
+
+    spec = _spec(
+        _topology(phase="prefill" if combined else "both", combined_with_pd=combined),
+        companion_role="decode" if combined else None,
+    )
+    field = "decode_engine_args" if combined else "agg_engine_args"
+    rank = {**(getattr(spec.backend_deployment, field) or {}), **overrides}
+    args = {"rank": rank} if nested else rank
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: args}))
+    monkeypatch.setattr(runner_module, "_run_afd_replay", lambda *a, **kw: pytest.fail("control reached AFD"))
+    with pytest.raises(ValueError, match="unsupported for AFD"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+def test_direct_afd_replay_preserves_inactive_model_defaults():
+    spec = _spec(_topology())
+    spec = replace(
+        spec,
+        backend_deployment=replace(
+            spec.backend_deployment,
+            agg_engine_args={
+                "aic_enable_eplb": False,
+                "aic_moe_backend": "default",
+                "aic_wideep_num_slots": None,
+            },
+        ),
+    )
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+    assert report.metrics["completed_requests"] == 4.0
+    assert report.metrics["duration_ms"] == pytest.approx(18.0)

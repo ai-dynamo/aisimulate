@@ -11,7 +11,7 @@ use crate::engine::HostOffloadObserver;
 use crate::engine::belady::BeladyOracle;
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode,
-    PrefillCost, SchedulingPolicy, WorkerType,
+    PrefillCost, WorkerType,
 };
 use crate::engine::common::speculative::{
     SpeculativeDecodeSampler, normalize_conditional_accept_rates,
@@ -21,8 +21,6 @@ use crate::engine::common::utils::{
 };
 use crate::engine::kv_manager::G1Manager;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
-#[cfg(test)]
-use crate::engine::scheduler::accept_length_sample;
 use crate::engine::scheduler::vllm::host_offload::{
     CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostRequestState,
 };
@@ -37,7 +35,7 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, HandoffId, PressureEvent, PressureKind, PressureState,
+    CacheTierAttribution, DecodeAcceptance, HandoffId, PressureEvent, PressureKind, PressureState,
     modeled_duration_ms,
 };
 
@@ -928,6 +926,9 @@ impl VllmCore {
                     RequestStatus::WaitingForRemoteKv,
                     waiting_order,
                 );
+                if policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len) {
+                    anyhow::bail!("destination prompt must be shorter than max_model_len");
+                }
                 if let Some(message) = policy::destination_capacity_error(
                     self.args.scheduling_policy(),
                     &request.sequence,
@@ -1024,6 +1025,9 @@ impl VllmCore {
             return Vec::new();
         }
 
+        if self.pending_destinations.front_due(generation).is_none() {
+            return Vec::new();
+        }
         let (held_completion_blocks, activated_waiting_completion_blocks) =
             self.destination_handoff_completion_headroom(None);
         let reservation_mode = {
@@ -1102,6 +1106,9 @@ impl VllmCore {
             .payloads()
             .map(ReservedVllmDecode::unallocated_completion_blocks)
             .fold(0usize, usize::saturating_add);
+        if self.active_destination_handoffs.is_empty() {
+            return (held, 0);
+        }
         let activated_waiting = self
             .state
             .requests
@@ -1146,14 +1153,11 @@ impl VllmCore {
             .num_gpu_blocks
             .saturating_mul(self.args.block_size)
             .saturating_sub(prompt_len);
-        let model_remaining = if self.args.scheduling_policy() == SchedulingPolicy::Vllm {
-            self.args
-                .max_model_len
-                .map(|limit| limit.saturating_sub(prompt_len))
-                .unwrap_or(usize::MAX)
-        } else {
-            usize::MAX
-        };
+        let model_remaining = self
+            .args
+            .max_model_len
+            .map(|limit| limit.saturating_sub(prompt_len))
+            .unwrap_or(usize::MAX);
         max_output_tokens.min(kv_remaining).min(model_remaining)
     }
 
@@ -1200,6 +1204,12 @@ impl VllmCore {
                 "planned output token count differs from max_output_tokens; using planned count"
             );
         }
+        max_output_tokens = policy::cap_output_for_model_len(
+            self.args.scheduling_policy(),
+            prompt_len,
+            max_output_tokens,
+            self.args.max_model_len,
+        );
         if let Some(clamped) = policy::normalize_max_output_tokens(
             self.args.scheduling_policy(),
             prompt_len,
@@ -1734,11 +1744,7 @@ impl VllmCore {
                     .get(&uuid)
                     .expect("waiting request missing from state");
                 (
-                    policy::should_reject_for_model_len(
-                        scheduling_policy,
-                        &request.sequence,
-                        self.args.max_model_len,
-                    ),
+                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len),
                     admission.stage_for(request.prompt_is_prebuilt()),
                 )
             };
@@ -2035,8 +2041,14 @@ impl VllmCore {
             );
         }
         let decode_start_ms = compute_start_ms + prefill_time.as_secs_f64() * 1000.0;
-        let (decode_time, mut output_signals) =
-            self.emit_ready_tokens(collector, decode_start_ms, now_ms)?;
+        let mut decode_acceptance = DecodeAcceptance::default();
+        let (decode_time, mut output_signals) = self.emit_ready_tokens(
+            collector,
+            decode_start_ms,
+            now_ms,
+            &scheduled,
+            &mut decode_acceptance,
+        )?;
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -2052,9 +2064,6 @@ impl VllmCore {
         let end_ms = decode_start_ms + decode_time.as_secs_f64() * 1000.0;
 
         let fpm = self.compute_fpm(&scheduled, (end_ms - now_ms) / 1000.0);
-        #[cfg(test)]
-        let (accept_length_output_tokens, accept_length_decode_forwards) =
-            accept_length_sample(&output_signals);
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
             end_ms,
@@ -2085,10 +2094,7 @@ impl VllmCore {
                 .map(CapturedKvEventBuffer::drain)
                 .unwrap_or_default(),
             fpm: Some(fpm),
-            #[cfg(test)]
-            accept_length_output_tokens,
-            #[cfg(test)]
-            accept_length_decode_forwards,
+            decode_acceptance,
         })
     }
 
@@ -2544,6 +2550,8 @@ impl VllmCore {
         mut collector: Option<&mut TraceCollector>,
         decode_start_ms: f64,
         pressure_at_ms: f64,
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        decode_acceptance: &mut DecodeAcceptance,
     ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
         let mut ready = Vec::with_capacity(self.state.running.len());
         let mut already_complete = Vec::new();
@@ -2605,6 +2613,8 @@ impl VllmCore {
                     collector,
                     decode_start_ms,
                     pressure_at_ms,
+                    scheduled,
+                    decode_acceptance,
                 );
             }
 
@@ -2614,6 +2624,8 @@ impl VllmCore {
                 collector,
                 decode_start_ms,
                 pressure_at_ms,
+                scheduled,
+                decode_acceptance,
             )?;
             output_signals.append(&mut speculative_signals);
             return Ok((decode_time, output_signals));
@@ -2643,6 +2655,14 @@ impl VllmCore {
             let Some(sequence) = self.state.running_sequence_mut(uuid) else {
                 continue;
             };
+            if self.args.worker_type != WorkerType::Prefill
+                && scheduled
+                    .get(&uuid)
+                    .is_some_and(|work| work.prompt_tokens == 0 && !work.terminal_after_schedule)
+            {
+                decode_acceptance.accepted_tokens += 1;
+                decode_acceptance.forwards += 1;
+            }
             // Native G1 allocates the token about to be computed at the next
             // scheduler pass, matching vLLM's dangling-sample boundary.
             let token_id = sequence.generate_token();
@@ -2702,6 +2722,8 @@ impl VllmCore {
         collector: Option<&mut TraceCollector>,
         decode_start_ms: f64,
         pressure_at_ms: f64,
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        decode_acceptance: &mut DecodeAcceptance,
     ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
         let max_burst = if self.args.worker_type == WorkerType::Prefill {
             1
@@ -2797,12 +2819,25 @@ impl VllmCore {
                         &request.sequence,
                         self.args.max_model_len,
                     );
-                    let burst = if self.args.worker_type == WorkerType::Prefill {
+                    let accepted = if self.args.worker_type == WorkerType::Prefill {
                         remaining.min(1)
+                    } else if remaining == 0 {
+                        0
                     } else {
-                        sampler.sample_output_tokens(remaining)
+                        sampler.sample_accepted_tokens()
                     };
-                    (*uuid, burst)
+                    // Record only surviving decode work, after reservation succeeds.
+                    // FPM demand can still contain requests preempted above.
+                    if accepted > 0
+                        && self.args.worker_type != WorkerType::Prefill
+                        && scheduled.get(uuid).is_some_and(|work| {
+                            work.prompt_tokens == 0 && !work.terminal_after_schedule
+                        })
+                    {
+                        decode_acceptance.accepted_tokens += accepted;
+                        decode_acceptance.forwards += 1;
+                    }
+                    (*uuid, accepted.min(remaining))
                 })
                 .collect::<Vec<_>>()
         };

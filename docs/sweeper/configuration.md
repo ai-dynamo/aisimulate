@@ -87,10 +87,17 @@ configuration for each candidate.
 | `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
-| `context_length` | `None` | optional KV-feasibility sequence length |
+| `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
+
+An explicit positive `context_length` is passed as AISimulate's internal
+`max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
+prefill/decode deployments. Prompts at or above the limit are rejected, and
+generation stops when prompt plus output reaches the limit. When omitted,
+Sweeper leaves this runtime limit unset. See [engine context limits](../core-api.md#engine-context-limits)
+for the normalized contract and backend frontend differences.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
