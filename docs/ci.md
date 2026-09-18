@@ -587,10 +587,14 @@ currency. Use the direct Fast result and Full aggregate rather than requiring
 each conditional/reusable job. Code review requirements remain independent.
 
 The additive [ruleset payload](../.github/required-main-checks.json) describes
-that policy. **Rollout status checked September 14, 2026:** effective `main`
-rules required review/CODEOWNER approval and conversation resolution, but did
-not yet contain the required CI statuses. Recheck live rules before relying on
-enforcement; committing the JSON does not activate it.
+that policy. Use the [edit-once, administrator-apply procedure](../.github/required-main-checks.md)
+to maintain the file and synchronize the existing GitHub ruleset without
+entering the same rules twice. **Configuration checked September 18, 2026:**
+effective `main` rules include all three required CI statuses and strict branch
+currency, alongside review/CODEOWNER approval and conversation resolution.
+Complete bypass inspection requires ruleset write access; controlled-PR
+enforcement evidence remains separate. Recheck live rules before relying on
+enforcement; committing the JSON does not update GitHub settings.
 
 ```bash
 gh api repos/ai-dynamo/aisimulate/rules/branches/main
