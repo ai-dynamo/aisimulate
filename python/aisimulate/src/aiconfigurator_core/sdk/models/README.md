@@ -73,6 +73,8 @@ when building each role's model config, including AFD's static prefill pool
 and its inherited aggregate overrides. Direct aggregate/prefill sweeps and prefill-session
 construction also resolve against their database's runtime version and system.
 Explicit modes and decode-only construction remain unchanged.
+Task YAML keeps inferred FMHA modes unset so loading it preserves runtime
+precision resolution; `to_dict()` still reports the resolved public fields.
 Wide-EP's implicit FlashInfer backend is outside the FA3 mapping.
 
 ### `create()` Classmethod

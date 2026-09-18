@@ -748,3 +748,38 @@ class TestOrdinaryMLAPrecision:
         attention = types.SimpleNamespace(fused_qkv_a_proj_with_mqa=bf16, q_b_proj=bf16, kv_b_proj=bf16, o_proj=fp8)
         with pytest.raises(ValueError, match="o_proj executes fp8_block"):
             mod._validate_mla_projection_precision(attention, "bfloat16")
+
+
+@pytest.mark.unit
+class TestOrdinaryMLACli:
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--mode", "generation", "--attn-type", "mla"],
+            ["--mode", "context", "--attn-type", "dsa"],
+            ["--mode", "context"],
+        ],
+    )
+    def test_invalid_combination_fails_before_dispatch(self, monkeypatch, capsys, args):
+        mod = _import_module()
+        monkeypatch.setattr(sys, "argv", ["collect_mla_module", "--ordinary-mla", *args])
+        monkeypatch.setattr(mod, "get_mla_module_model_specs", lambda **_kw: pytest.fail("must fail before dispatch"))
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 2
+        assert "--ordinary-mla requires --mode context --attn-type mla" in capsys.readouterr().err
+
+    def test_context_mla_dispatches(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["collect_mla_module", "--ordinary-mla", "--mode", "context", "--attn-type", "mla", "--model", "test"],
+        )
+        monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 8)
+        monkeypatch.setattr(mod, "_get_precision_combos", lambda _mode: [("bfloat16", "bfloat16", "bfloat16")])
+        calls = []
+        monkeypatch.setattr(mod, "run_mla_module", lambda **kwargs: calls.append(kwargs))
+        mod.main()
+        assert calls
+        assert all(call["ordinary_mla"] and call["is_prefill"] and call["attn_type"] == "mla" for call in calls)

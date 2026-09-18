@@ -2827,6 +2827,8 @@ def main():
     parser.add_argument("--output-path", default=None, help="Output directory for perf files")
     parser.add_argument("--device", default="cuda:0", help="CUDA device")
     args = parser.parse_args()
+    if args.ordinary_mla and (args.mode != "context" or args.attn_type != "mla"):
+        parser.error("--ordinary-mla requires --mode context --attn-type mla")
 
     # Determine which attn_types to run
     if args.attn_type:

@@ -2676,14 +2676,19 @@ class Task:
         return out
 
     def to_yaml(self) -> str:
-        """Return a YAML string of :func:`to_dict` output.
+        """Serialize public configuration, keeping inferred FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
         """
         import yaml
 
-        return yaml.safe_dump(self.to_dict(), sort_keys=False)
+        values = self.to_dict()
+        for role, explicit in self._fmha_explicit.items():
+            if not explicit:
+                key = "fmha_quant_mode" if role == "agg" else f"{role}_fmha_quant_mode"
+                values[key] = None
+        return yaml.safe_dump(values, sort_keys=False)
 
     # =====================================================================
     # sweep.py kwargs builders

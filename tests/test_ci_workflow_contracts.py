@@ -1532,8 +1532,10 @@ def test_numerical_baseline_fetch_preserves_checkout_and_rejects_invalid_sha(tmp
     assert steps.index(fetch) < next(i for i, step in enumerate(steps) if step.get("name") == check_name)
     source = tmp_path / "source"
     checkout = tmp_path / "checkout"
-    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "--initial-branch=main", str(source)], check=True, capture_output=True)
     for message in ("baseline", "head"):
+        if message == "head":
+            subprocess.run(["git", "checkout", "--orphan", "squashed"], cwd=source, check=True, capture_output=True)
         subprocess.run(
             [
                 "git",
@@ -1555,6 +1557,8 @@ def test_numerical_baseline_fetch_preserves_checkout_and_rejects_invalid_sha(tmp
         )
         if message == "baseline":
             baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    subprocess.run(["git", "branch", "-D", "main"], cwd=source, check=True, capture_output=True)
+    assert baseline not in subprocess.check_output(["git", "rev-list", "--all"], cwd=source, text=True).splitlines()
     subprocess.run(["git", "clone", "--depth=1", source.as_uri(), str(checkout)], check=True, capture_output=True)
     assert subprocess.run(["git", "cat-file", "-e", baseline], cwd=checkout, capture_output=True).returncode != 0
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)

@@ -646,6 +646,9 @@ Q/KV down-projection is included. Prefill is timed eagerly. The loaded projectio
 weights must match the requested single `gemm_type`; mixed BF16/NVFP4 modules
 are rejected instead of mislabeled.
 
+The CLI flag `--ordinary-mla` requires `--mode context --attn-type mla`.
+Other combinations fail during argument parsing, before collection starts.
+
 Pass the actual per-rank head count and `target_tp_size`. The runner can take
 `chunked_prefill_size` to reproduce the serving chunk limit. The existing
 wide-EP and DSA paths keep their separate behavior. The ordinary context table
