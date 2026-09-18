@@ -10,7 +10,7 @@ from typing import Any
 
 from .power import normalize_power_summary
 
-DETAIL_SECTIONS = ("summary", "memory", "time", "energy")
+DETAIL_SECTIONS = ("summary", "memory", "time", "energy", "source")
 # ReplayReport's serving latency distributions and its trajectory median alias.
 # Durations of the replay or simulator are not request/trajectory latency.
 SERVING_LATENCY_METRICS = frozenset(
@@ -37,7 +37,7 @@ def prediction_summary(native: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in summary.items()
-        if key not in {"memory_diagnostics", "power_diagnostics", "details"}
+        if key not in {"memory_diagnostics", "power_diagnostics", "performance_diagnostics", "details"}
     }
 
 
@@ -87,6 +87,21 @@ def energy_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def performance_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = native.get("performance_diagnostics")
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise ValueError("performance_diagnostics must be a mapping")
+        return deepcopy(diagnostics)
+    return {
+        "status": "unavailable",
+        "scope": "accumulated_active_forward_pass_per_gpu",
+        "latency_unit": "ms",
+        "phases": [],
+        "unavailable_reason": "selected runner did not export operation timing, SOL, or provenance evidence",
+    }
+
+
 def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) -> dict[str, Any]:
     summary = prediction_summary(native)
     result: dict[str, Any] = {}
@@ -119,15 +134,32 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
             }
         elif name == "time":
             metrics = {key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS}
-            if not metrics:
-                skipped[name] = "selected runner did not export serving timing metrics in milliseconds"
-                continue
+            diagnostics = performance_diagnostics(native)
             result[name] = {
-                "status": "available",
+                "status": "available" if metrics else diagnostics["status"],
                 "scope": "serving_workload",
                 "latency_unit": "ms",
                 "serving_metrics": metrics,
+                "diagnostics": diagnostics,
             }
+        elif name == "source":
+            diagnostics = performance_diagnostics(native)
+            result[name] = {
+                "status": diagnostics["status"],
+                "scope": diagnostics["scope"],
+                "phases": [
+                    {
+                        "name": phase["name"],
+                        "operations": [
+                            {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+                            for op in phase["operations"]
+                        ],
+                    }
+                    for phase in diagnostics["phases"]
+                ],
+            }
+            if "unavailable_reason" in diagnostics:
+                result[name]["unavailable_reason"] = diagnostics["unavailable_reason"]
         else:
             raise ValueError(f"unsupported detail section {name!r}")
     return {"schema_version": "1.0", "sections": result, "skipped": skipped}
@@ -145,6 +177,33 @@ def format_prediction_details(details: dict[str, Any], *, energy_top_n: int = 12
         for key, value in section.get("metrics", section.get("serving_metrics", {})).items():
             if isinstance(value, (str, int, float)):
                 lines.append(f"  {key}: {value}")
+        evidence = section.get("diagnostics", section)
+        if "unavailable_reason" in evidence:
+            lines.append(f"  {evidence['unavailable_reason']}")
+        if name in {"time", "source"}:
+            if name == "time":
+                lines.append(f"  operation scope: {evidence['scope']}")
+            for phase in evidence.get("phases", []):
+                lines.append(f"  {phase['name']}:")
+                if name == "time":
+                    lines.append(f"    accumulated latency_ms: {phase['latency_ms']}")
+                    lines.append(f"    SOL: {phase['sol'] or phase['sol_unavailable_reason']}")
+                operations = sorted(phase["operations"], key=lambda op: (-op["latency_ms"], op["name"]))
+                for op in operations[:energy_top_n]:
+                    if name == "time":
+                        lines.append(
+                            f"    {op['name']}: {op['latency_ms']} ms; SOL: "
+                            f"{op['sol'] or op['sol_unavailable_reason']}; latency/SOL: "
+                            f"{op['latency_to_sol_ratio']}"
+                        )
+                    else:
+                        fallback = op["fallbacks"]
+                        lines.append(
+                            f"    {op['name']}: {op['source']}; fallbacks: "
+                            f"{fallback if fallback is not None else 'unavailable'}"
+                        )
+                if len(operations) > energy_top_n:
+                    lines.append(f"    ... {len(operations) - energy_top_n} more operations in JSON")
         for role, memory in section.get("roles", {}).items():
             lines.append(f"  {role}: {memory['status']}")
             if "unavailable_reason" in memory:

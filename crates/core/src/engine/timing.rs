@@ -69,6 +69,7 @@ pub struct TimingOperationEvidence {
     pub latency_ms: f64,
     pub covered_latency_ms: f64,
     pub source: TimingEvidenceSource,
+    pub details: Option<crate::perfmodel::engine::diagnostics::OperationDetails>,
 }
 
 impl TimingOperationEvidence {
@@ -88,6 +89,7 @@ impl TimingOperationEvidence {
             latency_ms,
             covered_latency_ms,
             source,
+            details: None,
         }
         .canonicalized()
     }
@@ -119,6 +121,18 @@ impl TimingOperationEvidence {
             self.covered_latency_ms,
             self.latency_ms
         );
+        if let Some(sol) = self
+            .details
+            .as_ref()
+            .and_then(|details| details.sol.as_ref())
+        {
+            ensure!(
+                [sol.latency_ms, sol.math_ms, sol.memory_ms]
+                    .iter()
+                    .all(|v| v.is_finite() && *v >= 0.0),
+                "invalid SOL evidence"
+            );
+        }
         self.energy_wms = self.energy_wms.filter(|energy| *energy > 0.0);
         if self.energy_wms.is_none() {
             self.covered_latency_ms = 0.0;
@@ -137,6 +151,32 @@ impl TimingOperationEvidence {
             (None, None) => None,
         };
         combined.source = combined.source.merge(other.source);
+        combined.details = match (combined.details, other.details) {
+            (Some(mut left), Some(right)) => {
+                left.sol = match (left.sol, right.sol) {
+                    (Some(mut a), Some(b)) => {
+                        a.latency_ms += b.latency_ms;
+                        a.math_ms += b.math_ms;
+                        a.memory_ms += b.memory_ms;
+                        Some(a)
+                    }
+                    _ => None,
+                };
+                if left.sol.is_none() {
+                    left.sol_unavailable_reason = left
+                        .sol_unavailable_reason
+                        .or(right.sol_unavailable_reason)
+                        .or_else(|| Some("some accumulated operations lack SOL evidence".into()));
+                }
+                for fallback in right.fallbacks {
+                    if !left.fallbacks.contains(&fallback) {
+                        left.fallbacks.push(fallback);
+                    }
+                }
+                Some(left)
+            }
+            _ => None,
+        };
         *self = combined.canonicalized()?;
         Ok(())
     }
@@ -629,6 +669,7 @@ mod tests {
             latency_ms: 10.0,
             covered_latency_ms: 10.0,
             source: TimingEvidenceSource::Empirical,
+            details: None,
         };
 
         let raw_phase = TimingPhaseEvidence {

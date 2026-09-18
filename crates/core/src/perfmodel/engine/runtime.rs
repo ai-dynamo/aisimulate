@@ -1185,6 +1185,143 @@ impl Engine {
         Ok((prefill_component, marginal_decode))
     }
 
+    /// One prefill or decode step with executed provenance and a diagnostic SOL
+    /// comparison. SOL failures do not change the selected estimator or latency.
+    pub(crate) fn static_phase_diagnostics(
+        &self,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        use super::diagnostics::{
+            ExecutedFallback, OperationDetails, SolDiagnostics, StaticOperationDiagnostics,
+        };
+        if prefix > context_length || (!prefill && prefix != 0) {
+            return Err(AicError::InvalidEngineConfig(
+                "invalid static phase prefix".into(),
+            ));
+        }
+        if !prefill && context_length == u32::MAX {
+            return Err(AicError::InvalidEngineConfig(
+                "decode context length overflows the next token".into(),
+            ));
+        }
+        if batch_size == 0 || (prefill && context_length == prefix) {
+            return Ok(Vec::new());
+        }
+        let runtime = RuntimeConfig {
+            batch_size,
+            isl: context_length,
+            prefix,
+            osl: if prefill { 1 } else { 2 },
+            ..Default::default()
+        };
+        let mode = if prefill {
+            StaticMode::Context
+        } else {
+            StaticMode::Generation
+        };
+        let (context, generation) =
+            self.run_static_per_op_with_metadata(&runtime, mode, DEFAULT_STATIC_STRIDE)?;
+        let entries = if prefill { context } else { generation };
+        let sol_db = self.db.sol_full_view();
+        let ops = if prefill {
+            &self.context_ops
+        } else {
+            &self.generation_ops
+        };
+        entries
+            .into_iter()
+            .map(|(name, latency_ms, energy_wms, source, fallbacks)| {
+                let mut sol = PerOpSolFold::default();
+                let comparison = ops
+                    .iter()
+                    .filter(|op| op.name() == name)
+                    .try_for_each(|op| {
+                        let result = if prefill {
+                            query_context_op(
+                                op,
+                                &sol_db,
+                                batch_size,
+                                context_length - prefix,
+                                prefix,
+                                1.0,
+                                None,
+                            )
+                        } else {
+                            query_generation_op(
+                                op,
+                                &sol_db,
+                                batch_size.saturating_mul(self.nextn.saturating_add(1)),
+                                1,
+                                context_length.saturating_add(1),
+                                1.0,
+                                0,
+                                None,
+                            )
+                        }?;
+                        sol.add(op, result)
+                    });
+                let (sol, sol_unavailable_reason) = match comparison {
+                    Ok(()) => match sol.into_values().into_iter().next() {
+                        Some((_, latency_ms, math_ms, memory_ms))
+                            if [latency_ms, math_ms, memory_ms]
+                                .iter()
+                                .all(|v| v.is_finite() && *v >= 0.0) =>
+                        {
+                            (
+                                Some(SolDiagnostics {
+                                    latency_ms,
+                                    math_ms,
+                                    memory_ms,
+                                }),
+                                None,
+                            )
+                        }
+                        _ => (
+                            None,
+                            Some("operation did not export finite SOL evidence".into()),
+                        ),
+                    },
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                let fallbacks = fallbacks
+                    .into_iter()
+                    .flat_map(|(first, rest)| std::iter::once(first).chain(rest))
+                    .map(
+                        |(
+                            phase,
+                            backend,
+                            requested_ep_size,
+                            requested_node_num,
+                            measurement_ep_size,
+                            measurement_node_num,
+                        )| ExecutedFallback {
+                            inference_phase: phase.into(),
+                            comm_backend: backend.into(),
+                            requested_ep_size,
+                            requested_node_num,
+                            measurement_ep_size,
+                            measurement_node_num,
+                        },
+                    )
+                    .collect();
+                Ok(StaticOperationDiagnostics {
+                    name,
+                    latency_ms,
+                    energy_wms,
+                    source: source.into(),
+                    details: OperationDetails {
+                        sol,
+                        sol_unavailable_reason,
+                        fallbacks,
+                    },
+                })
+            })
+            .collect()
+    }
+
     /// [`Self::run_static`] with the per-op values kept instead of summed:
     /// `(context, generation)` lists of `(name, latency_ms, energy_wms,
     /// source)`, NAME-FOLDED (see [`PerOpValue`]): each name crosses once,
@@ -2107,6 +2244,17 @@ mod tests {
         let (_, generation) = engine
             .run_static_per_op_with_metadata(&runtime, StaticMode::Generation, 32)
             .unwrap();
+        let diagnostics = engine.static_phase_diagnostics(1, 1024, 0, false).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].latency_ms, generation[0].1);
+        assert_eq!(diagnostics[0].source, generation[0].3);
+        let records = &diagnostics[0].details.fallbacks;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].requested_ep_size, 32);
+        assert_eq!(records[1].requested_ep_size, 64);
+        assert!(records.iter().all(|r| r.measurement_ep_size == 4
+            && r.measurement_node_num == 1
+            && r.inference_phase == "generation"));
         assert_eq!(generation.len(), 1, "same-name ops must remain name-folded");
         assert_eq!(
             generation[0].4,
@@ -2115,6 +2263,39 @@ mod tests {
                 vec![("generation", "deepep_ll", 64, 16, 4, 1)],
             ))
         );
+    }
+
+    #[test]
+    fn phase_diagnostics_match_latency_and_preserve_sol_with_prefix_and_mtp() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            for prefill in [true, false] {
+                let prefix = if prefill { 128 } else { 0 };
+                let rows = engine
+                    .static_phase_diagnostics(4, 512, prefix, prefill)
+                    .unwrap();
+                let expected = if prefill {
+                    engine.predict_prefill_latency(4, 512, prefix).unwrap()
+                } else {
+                    engine.predict_decode_latency(4, 512, 2).unwrap()
+                };
+                assert!((rows.iter().map(|r| r.latency_ms).sum::<f64>() - expected).abs() < 1e-10);
+                // RMSNorm moves 8192 bytes per token; SOL is memory bandwidth only.
+                let norm = rows.iter().find(|r| r.name == "rmsnorm").unwrap();
+                let tokens = if prefill {
+                    4 * (512 - prefix)
+                } else {
+                    4 * (nextn.unwrap_or(0) + 1)
+                };
+                let expected_sol =
+                    8192.0 * tokens as f64 / engine.database().system_spec.gpu.mem_bw * 1000.0;
+                let sol = norm.details.sol.as_ref().unwrap();
+                assert!((sol.memory_ms - expected_sol).abs() < 1e-12);
+                assert_eq!(sol.math_ms, 0.0);
+                assert_eq!(sol.latency_ms, sol.memory_ms);
+                assert!(norm.details.fallbacks.is_empty());
+            }
+        }
     }
 
     #[test]

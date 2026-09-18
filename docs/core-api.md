@@ -288,6 +288,23 @@ missing-data sentinel, not evidence of a zero-power operation. See the
 aggregation rules, and public output boundary. Typed per-op energy alone does
 not make unified replay power available.
 
+## Static phase diagnostics
+
+The canonical `ForwardPassPerfModel` returned by `best_available` exposes
+`static_phase_diagnostics(batch_size, context_length, prefix, prefill)` in Rust; the Python
+`RustForwardPassPerfModel` wrapper accepts the same named arguments (with `prefix=0`).
+It returns name-folded operation latency/energy, source tags, executed MoE communication
+measurement substitutions, and optional SOL latency/compute/memory evidence. Decode means one
+step at `context_length + 1`; prefill removes the cached prefix. Values precede learned online
+correction. Whole-model estimators reject operation decomposition; missing SOL implementations
+carry explicit reasons without changing the selected latency estimate.
+
+Replay requests this evidence through `ReplayOutputRequirements(capture_performance_diagnostics=True)`.
+`TimingOperationEvidence.details` is optional; providers without it must retain `None` (Rust
+struct literals must initialize the new field). The constructor keeps it absent by default.
+The CLI's time/source reports sum the observed phase work, including repeated cached timing
+queries, and preserve every fallback record while folding repeated operation names.
+
 ## Replay timing evidence
 
 The runtime-neutral `TimingModel` contract exposes optional accumulated

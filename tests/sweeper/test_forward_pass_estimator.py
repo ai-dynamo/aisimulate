@@ -597,3 +597,24 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
     }
     with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+
+
+def test_canonical_operation_diagnostics_include_native_sol_and_provenance():
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="Qwen/Qwen3-32B",
+            system="h200_sxm",
+            backend="vllm",
+            backend_version="0.24.0",
+            worker_type="aggregated",
+            tp=2,
+            estimation_mode="op_level",
+        )
+    )
+    rows = model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=64)
+    assert rows
+    assert any(row["details"]["sol"] is not None for row in rows)
+    assert all(isinstance(row["details"]["fallbacks"], list) and row["source"] for row in rows)
+    assert model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=128) == []
+    with pytest.raises(ValueError, match="prefix"):
+        model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=129)

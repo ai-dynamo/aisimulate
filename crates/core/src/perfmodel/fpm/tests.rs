@@ -1952,3 +1952,34 @@ fn native_model_starts_ready_with_aic_source() {
     assert_eq!(diag.readiness, ForwardPassPerfReadiness::Ready);
     assert_eq!(diag.retained_observations, 0);
 }
+
+#[test]
+fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
+    let model = native_model(ForwardPassPerfOptions::default());
+    assert!(
+        model
+            .static_phase_diagnostics(4, u32::MAX, 0, false)
+            .is_err()
+    );
+    assert!(model.static_phase_diagnostics(0, 128, 129, true).is_err());
+    let rows = model.static_phase_diagnostics(4, 512, 0, true).unwrap();
+    assert!(rows.iter().any(|row| row.details.sol.is_some()));
+    assert!(model.static_phase_diagnostics(4, 512, 513, true).is_err());
+    assert!(model.static_phase_diagnostics(4, 512, 1, false).is_err());
+    assert!(
+        model
+            .static_phase_diagnostics(4, 512, 512, true)
+            .unwrap()
+            .is_empty()
+    );
+    let regression = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        regression
+            .static_phase_diagnostics(4, 512, 0, true)
+            .is_err()
+    );
+}

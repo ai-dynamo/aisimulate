@@ -712,7 +712,7 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert saved["power_diagnostics"]["power_w"] is None
     assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
@@ -726,7 +726,23 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert "wall_time_ms" not in sections["time"]["serving_metrics"]
     assert "duration_ms" not in sections["time"]["serving_metrics"]
     assert stdout["summary"]["duration_ms"] > 0
-    assert "phases" not in sections["time"]
+    timing = sections["time"]["diagnostics"]
+    assert timing["status"] == "available"
+    assert timing["scope"] == "accumulated_active_forward_pass_per_gpu"
+    assert sections["source"]["status"] == "available"
+    assert len(timing["phases"]) == 2
+    for phase, source in zip(timing["phases"], sections["source"]["phases"], strict=True):
+        assert phase["latency_ms"] == pytest.approx(sum(op["latency_ms"] for op in phase["operations"]))
+        assert phase["operations"]
+        assert any(op["sol"] is not None for op in phase["operations"])
+        for op, provenance in zip(phase["operations"], source["operations"], strict=True):
+            assert provenance == {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+            assert isinstance(op["fallbacks"], list)
+            if op["sol"] is None:
+                assert op["sol_unavailable_reason"]
+            elif op["sol"]["latency_ms"] > 0:
+                assert op["latency_to_sol_ratio"] == pytest.approx(op["latency_ms"] / op["sol"]["latency_ms"])
+    assert "performance_diagnostics" not in stdout["summary"]
     # Repeating the same prediction without diagnostics keeps modeled metrics identical.
     plain_out = tmp_path / "plain"
     assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
@@ -754,8 +770,11 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
     assert memory["stage"] == "before_native_capacity_adjustments"
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+    assert sections["time"]["diagnostics"]["status"] == "unavailable"
+    assert sections["source"]["status"] == "unavailable"
+    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
 
 
 def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:

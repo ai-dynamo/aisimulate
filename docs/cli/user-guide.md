@@ -416,7 +416,7 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
-| `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, or `all`. See [prediction details](#prediction-details). |
+| `--detail` | comma-separated selectors | omitted | Add `summary`, `memory`, `time`, `energy`, `source`, or `all`. See [prediction details](#prediction-details). |
 | `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
@@ -1840,20 +1840,34 @@ sections and skipped-section reasons to the normal prediction summary.
 - `time`: existing TTFT, TTST, TPOT, inter-token, and end-to-end request latency statistics in
   milliseconds, plus trajectory latency statistics when exported by the runner. Replay duration
   and simulator wall time remain in the summary.
-  This does not provide per-phase/operation timings or SOL. Analytical EPD retains its
-  approximation labels in the summary.
+  On the native op-level engine path, `diagnostics` also contains accumulated prefill/decode
+  and per-operation latency, speed-of-light (SOL) latency/compute/memory comparisons, and
+  latency/SOL ratios. These are sums of scheduled rank-local forward-pass work across the replay,
+  not request TTFT, critical-path duration, or whole-deployment GPU time. Synthetic speedup
+  adjusts modeled latency; the SOL baseline remains unscaled. Missing SOL families have null
+  comparisons and an explicit reason; phase SOL totals require complete operation coverage.
+  Analytical EPD retains its approximation labels in the summary.
 - `energy`: active forward-pass phase and operation energy evidence per GPU, with coverage,
   publication status, sources, and missing-evidence reasons. It preserves the normal summary
   power values. See [Power and energy detail](#power-and-energy-detail).
-- `all`: `summary,memory,time,energy`, with availability reported for each section.
+- `source`: per-phase operation source tags and executed MoE communication measurement
+  substitutions (requested versus measured EP/node topology). An empty fallback list means no
+  substitution was recorded; null means the provider did not export fallback metadata. This is
+  operation evidence, not a full measurement-file lineage or estimator-selection audit.
+- `all`: `summary,memory,time,energy,source`, with availability reported for each section.
 
-Sections without evidence are omitted from `details.sections` and listed with reasons in
-`details.skipped`. A memory section with only some estimated roles is `partial` and records
+`--detail-top-n N` (default 12; `--diagnostics-top-n` remains an alias) limits operation rows
+in time, source, and energy tables only. JSON stdout and `prediction.json` retain every row.
+
+Memory without evidence is omitted from `details.sections` and listed with a reason in
+`details.skipped`. Time, source, and energy retain explicit unavailable evidence. A memory
+section with only some estimated roles is `partial` and records
 why other roles are unavailable. Energy retains an explicit unavailable status and reason when
 the runner exports no typed evidence. Missing measurements are never invented as zero;
-energy-aware runs with no covered operations report numeric zero coverage. `source` remains
-unsupported and is excluded from `all`. SOL and the remaining timing/source diagnostics are
-[migration gaps](migrate-from-aiconfigurator.md#detailed-diagnostics).
+energy-aware runs with no covered operations report numeric zero coverage. Whole-model FPM,
+fixed/polynomial timing, analytical EPD/AFD overlays, and adapters without the native export
+report operation timing/source evidence unavailable. Serving time statistics remain available
+where exported. See [diagnostic availability](migrate-from-aiconfigurator.md#detailed-diagnostics).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -2000,7 +2014,7 @@ Skipped memory: aggregated: explicit KV blocks, nested rank input, or a non-AIC 
 ```
 
 For this run, `details.sections` is empty and `details.skipped.memory` contains the reason
-above. `--detail all` includes summary, time, and energy while skipping memory. The excerpts
+above. `--detail all` includes summary, time, energy, and source while skipping memory. The excerpts
 above omit the subsequently added power labels and energy section; the linked energy capture
 shows them explicitly.
 

@@ -125,6 +125,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                     include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
                     capture_memory_diagnostics="memory" in args.detail,
+                    capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
                 ),
             )
         except (KeyboardInterrupt, ResourceLimitError):

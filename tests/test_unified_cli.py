@@ -1067,7 +1067,7 @@ def test_predict_uses_validated_power_metrics_over_raw_metadata(
         assert summary["power_coverage"] == coverage
 
 
-@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "source", "power"])
+@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "power"])
 def test_detail_rejects_unsupported_sections_before_loading_config(selector, monkeypatch):
     monkeypatch.setattr(cli, "_load_mapping", lambda *_: pytest.fail("must validate selector first"))
     with pytest.raises(SystemExit) as exc:
@@ -1189,7 +1189,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     assert stdout["summary"]["duration_ms"] == 100.0
     details = stdout["details"]
     validate(details, _detail_schema())
-    expected = {"all": {"summary", "time", "energy"}, "time,time": {"time"}, "memory": set()}[selector]
+    expected = {"all": {"summary", "time", "energy", "source"}, "time,time": {"time"}, "memory": set()}[selector]
     assert set(details["sections"]) == expected
     assert ("memory" in details["skipped"]) == (selector != "time,time")
     assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
@@ -1238,9 +1238,10 @@ def test_detail_table_skips_missing_evidence(tmp_path, monkeypatch, capsys):
     )
     stdout = capsys.readouterr().out
     assert "Skipped memory:" in stdout
-    assert "Skipped time:" in stdout
+    assert "Detail: time" in stdout
+    assert "did not export operation timing" in stdout
     assert "Detail: energy" in stdout
-    assert "Detail: source" not in stdout
+    assert "Detail: source" in stdout
 
 
 @pytest.mark.parametrize(
@@ -1371,3 +1372,50 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     text = capsys.readouterr().out
     assert "did not export typed timing-energy evidence" in text
     assert "downstream Dynamo adapter export is not qualified" in text
+
+
+def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
+    from copy import deepcopy
+
+    from jsonschema import validate
+
+    from aisimulate.detail import build_prediction_details, format_prediction_details
+
+    operations = [
+        {
+            "name": f"op{i}",
+            "latency_ms": float(i),
+            "source": "empirical",
+            "fallbacks": [],
+            "sol": None,
+            "sol_unavailable_reason": "unsupported test operation",
+            "latency_to_sol_ratio": None,
+        }
+        for i in range(20)
+    ]
+    native = {
+        "summary": {"mean_ttft_ms": 8},
+        "performance_diagnostics": {
+            "status": "available",
+            "scope": "accumulated_active_forward_pass_per_gpu",
+            "latency_unit": "ms",
+            "phases": [
+                {
+                    "name": "prefill",
+                    "latency_ms": 190,
+                    "sol": None,
+                    "sol_unavailable_reason": "unsupported test operation",
+                    "operations": operations,
+                }
+            ],
+        },
+    }
+    original = deepcopy(native)
+    details = build_prediction_details(native, ("time", "source"))
+    validate(details, _detail_schema())
+    text = format_prediction_details(details, energy_top_n=2)
+    assert "op19:" in text and "op0:" not in text
+    assert "18 more operations in JSON" in text
+    assert len(details["sections"]["time"]["diagnostics"]["phases"][0]["operations"]) == 20
+    assert len(details["sections"]["source"]["phases"][0]["operations"]) == 20
+    assert native == original

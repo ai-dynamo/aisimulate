@@ -203,6 +203,7 @@ class ReplayOutputRequirements:
     capture_telemetry: bool = False
     telemetry_sample_interval_ms: float = 1000.0
     capture_memory_diagnostics: bool = False
+    capture_performance_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         interval = self.telemetry_sample_interval_ms
