@@ -190,8 +190,26 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     experts = layers[2].mlp.experts
     gate = layers[2].mlp.gate
     lm_head = runner.model.lm_head
-    if tuple(gate.weight.shape) != (384, 5120) or tuple(lm_head.weight.shape) != (32320, 5120):
-        raise RuntimeError("native baseline GEMM physical padding differs from TP4 graph")
+    tp_size = runner.model.tp_size
+    # The measured all-reduce uses the default process group. Only pure TP
+    # may label that collective and the loaded expert shards with this size.
+    if dist.get_world_size() != tp_size or dist.get_rank() != tp_rank:
+        raise RuntimeError("native baseline process group differs from model TP ranks")
+    if dist.get_backend() != "nccl":
+        raise RuntimeError("native baseline collectives require the actual NCCL process group")
+    if experts.moe_tp_size != tp_size or experts.moe_ep_size != 1:
+        raise RuntimeError("native baseline experts require model TP with EP=1")
+    # ParallelLMHead is built from the loaded text config (SGLang@1aa0e962,
+    # models/deepseek_v4.py:4079-4085). Verify its physical shard before
+    # recording the GEMM key; a differently padded runtime must fail closed.
+    vocab_size = runner.model.config.vocab_size
+    local_vocab_size = vocab_size // tp_size
+    if (
+        vocab_size % tp_size
+        or tuple(gate.weight.shape) != (384, 5120)
+        or tuple(lm_head.weight.shape) != (local_vocab_size, 5120)
+    ):
+        raise RuntimeError("native baseline GEMM physical padding differs from model TP graph")
     if type(experts.quant_method).__name__ != "Mxfp4FlashinferTrtllmMoEMethod":
         raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM dispatch")
     if experts.quant_method.flashinfer_mxfp4_moe_precision != "default":
@@ -222,7 +240,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                 ),
                 (
                     "gemm",
-                    {"gemm_dtype": "bfloat16", "m": tokens, "n": 32320, "k": 5120},
+                    {"gemm_dtype": "bfloat16", "m": tokens, "n": local_vocab_size, "k": 5120},
                     lambda: lm_head.quant_method.apply(lm_head, hidden),
                     _dispatch(lm_head, "quant_method.apply"),
                 ),
@@ -235,7 +253,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                         "inter_size": 2304,
                         "topk": 6,
                         "num_experts": 384,
-                        "moe_tp_size": 4,
+                        "moe_tp_size": tp_size,
                         "moe_ep_size": 1,
                         "distribution": "uniform",
                     },
@@ -251,7 +269,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                         {
                             "op_name": "all_reduce",
                             "nccl_dtype": "half",
-                            "num_gpus": 4,
+                            "num_gpus": tp_size,
                             "message_size": 2 * tokens * width,
                         },
                         lambda payload=payload: dist.all_reduce(payload),
