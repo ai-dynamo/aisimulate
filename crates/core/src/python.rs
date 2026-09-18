@@ -11,6 +11,7 @@ use crate::engine::{
     TimingModel, TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
     ValidatedTimingPhase,
 };
+use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
     ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
@@ -389,10 +390,18 @@ impl AicTimingConfig {
 
 type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 
+enum AicPhaseProvider {
+    Native(Arc<PerfEngine>),
+    /// Keep the original bridge as an independent test reference and probe seam.
+    #[cfg(test)]
+    Python,
+}
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<ForwardPassPerfModel>,
     decoder_replay: bool,
+    phase_provider: AicPhaseProvider,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceAccumulator>,
@@ -426,6 +435,7 @@ impl AicTimingModel {
         let native = model.native_engine().context(
             "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
         )?;
+        let phase_provider = AicPhaseProvider::Native(Arc::clone(&native));
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let engine = Py::new(py, crate::AicEngine::from_shared_engine(native))?.into_any();
             let ceiling = if use_fpm_decode_totals {
@@ -442,6 +452,7 @@ impl AicTimingModel {
             engine,
             diagnostic_model: Some(model),
             decoder_replay: config.decoder_replay,
+            phase_provider,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
@@ -484,11 +495,69 @@ impl AicTimingModel {
                     Ok(operation)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let phase = TimingPhaseEvidence::try_from_operations(operations)?;
-            self.phase_cache.insert(key, phase.clone());
+            let phase = Arc::new(ValidatedTimingPhase::from_operations(operations)?);
+            self.phase_cache.insert(key, Arc::clone(&phase));
             return Ok(phase);
         }
-        let (context, generation) = Python::with_gil(|py| {
+        let (context, generation) = match &self.phase_provider {
+            AicPhaseProvider::Native(engine) => {
+                let runtime = RuntimeConfig {
+                    batch_size,
+                    beam_width: 1,
+                    isl,
+                    osl,
+                    prefix,
+                    seq_imbalance_correction_scale: 1.0,
+                    gen_seq_imbalance_correction_scale: 1.0,
+                };
+                crate::py::parse_mode(mode)
+                    .and_then(|mode| {
+                        engine.reset_provenance();
+                        engine
+                            .run_static_per_op(&runtime, mode, 32)
+                            .map_err(crate::py::aic_to_py)
+                    })
+                    .map(|(context, generation)| {
+                        let owned_sources = |entries: Vec<crate::perfmodel::engine::PerOpValue>| {
+                            entries
+                                .into_iter()
+                                .map(|(name, latency, energy, source)| {
+                                    (name, latency, energy, source.to_owned())
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        (owned_sources(context), owned_sources(generation))
+                    })
+            }
+            #[cfg(test)]
+            AicPhaseProvider::Python => {
+                self.phase_evidence_through_python(batch_size, isl, osl, prefix, mode)
+            }
+        }
+        .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
+        let entries = if prefill { context } else { generation };
+        ensure!(
+            !entries.is_empty(),
+            "AIC {mode} returned empty operation evidence for nonzero work"
+        );
+        let phase = Arc::new(phase_evidence_from_entries(entries)?);
+        self.phase_cache.insert(key, Arc::clone(&phase));
+        Ok(phase)
+    }
+
+    #[cfg(test)]
+    fn phase_evidence_through_python(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        mode: &str,
+    ) -> PyResult<(
+        Vec<(String, f64, f64, String)>,
+        Vec<(String, f64, f64, String)>,
+    )> {
+        Python::with_gil(|py| {
             let kwargs = PyDict::new(py);
             kwargs.set_item("batch_size", batch_size)?;
             kwargs.set_item("beam_width", 1)?;
@@ -507,15 +576,6 @@ impl AicTimingModel {
                     Vec<(String, f64, f64, String)>,
                 )>()
         })
-        .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-        let entries = if prefill { context } else { generation };
-        ensure!(
-            !entries.is_empty(),
-            "AIC {mode} returned empty operation evidence for nonzero work"
-        );
-        let phase = Arc::new(phase_evidence_from_python(entries)?);
-        self.phase_cache.insert(key, Arc::clone(&phase));
-        Ok(phase)
     }
 
     fn record_evidence(&self, phase: &ValidatedTimingPhase, prefill: bool) -> Result<()> {
@@ -527,7 +587,7 @@ impl AicTimingModel {
     }
 }
 
-fn phase_evidence_from_python(
+fn phase_evidence_from_entries(
     entries: Vec<(String, f64, f64, String)>,
 ) -> Result<ValidatedTimingPhase> {
     let operations = entries
@@ -2124,10 +2184,142 @@ mod tests {
             engine,
             diagnostic_model: None,
             decoder_replay: false,
+            phase_provider: AicPhaseProvider::Python,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
+        }
+    }
+
+    #[test]
+    fn native_phase_evidence_matches_python_bridge() {
+        use crate::operators::{FpmForwardOp, FpmPhase, op::Op, util_empirical::ProvenanceTier};
+        use crate::perfmodel::engine::spec::EngineSpec;
+
+        let mut config = aic_config();
+        config.model = "Qwen/Qwen3.8-2.4T-A95B-FP8".into();
+        config.system = "gb300".into();
+        config.backend = "sglang".into();
+        config.backend_version = Some("0.5.17".into());
+        config.tp = 16;
+        config.moe_tp_size = Some(4);
+        config.moe_ep_size = Some(4);
+        config.systems_paths = vec![
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+        ];
+        let native = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated).unwrap();
+        let raw = match &native.phase_provider {
+            AicPhaseProvider::Native(engine) => Arc::clone(engine),
+            AicPhaseProvider::Python => unreachable!(),
+        };
+        let bridge = Python::with_gil(|py| timing_model(native.engine.clone_ref(py), false));
+        let check =
+            |native: &AicTimingModel, bridge: &AicTimingModel, args| {
+                let (batch, isl, osl, prefix, mode) = args;
+                raw.database().note_provenance(ProvenanceTier::Empirical);
+                let actual = native.predict_phase_evidence(batch, isl, osl, prefix, mode);
+                let provenance = raw.last_provenance();
+                raw.database().note_provenance(ProvenanceTier::Empirical);
+                let expected = bridge.predict_phase_evidence(batch, isl, osl, prefix, mode);
+                assert_eq!(provenance, raw.last_provenance());
+                match (actual, expected) {
+                    (Ok(actual), Ok(expected)) => {
+                        let a = actual.as_phase();
+                        let b = expected.as_phase();
+                        assert_eq!(a, b);
+                        let bits =
+                            |phase: &TimingPhaseEvidence| {
+                                std::iter::once((
+                                    phase.latency_ms,
+                                    phase.energy_wms,
+                                    phase.covered_latency_ms,
+                                ))
+                                .chain(phase.operations.iter().map(|op| {
+                                    (op.latency_ms, op.energy_wms, op.covered_latency_ms)
+                                }))
+                                .map(|(latency, energy, covered)| {
+                                    (
+                                        latency.to_bits(),
+                                        energy.map(f64::to_bits),
+                                        covered.to_bits(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                            };
+                        assert_eq!(bits(a), bits(b));
+                    }
+                    (Err(actual), Err(expected)) => {
+                        assert_eq!(actual.to_string(), expected.to_string())
+                    }
+                    mismatch => panic!("native/bridge mismatch: {mismatch:?}"),
+                }
+            };
+        for args in [
+            (0, 128, 1, 0, "static_ctx"),
+            (4, 1024, 1, 128, "static_ctx"),
+            (4, 128, 1, 128, "static_ctx"),
+            (1, 128, 2, 0, "static_gen"),
+            (32, 4096, 2, 0, "static_gen"),
+            (7, 1777, 3, 0, "invalid-mode"),
+        ] {
+            check(&native, &bridge, args);
+            check(&native, &bridge, args); // Cache hits must retain the same behavior.
+        }
+
+        // Exercise a real missing-data error through both callers. Only the
+        // test engine is synthetic; the production constructor is unchanged.
+        let missing_op = |phase| {
+            Op::FpmForward(FpmForwardOp {
+                name: "missing".into(),
+                phase,
+                model_path: "missing-test-model".into(),
+                match_identity: vec!["missing".into(); 11],
+                weight_bytes: 0.0,
+                verify_width: 1,
+                sol_ops: Vec::new(),
+            })
+        };
+        let identity = serde_json::from_value(serde_json::json!({
+            "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+            "model_name": "missing-test-model", "system_name": "gb300", "backend": "sglang",
+            "tp_size": 16, "pp_size": 1
+        }))
+        .unwrap();
+        let missing = Arc::new(
+            PerfEngine::build(
+                EngineSpec::new(
+                    identity,
+                    vec![missing_op(FpmPhase::Prefill)],
+                    vec![missing_op(FpmPhase::Decode)],
+                ),
+                Arc::clone(raw.database()),
+            )
+            .unwrap(),
+        );
+        let mut native = Python::with_gil(|py| {
+            timing_model(
+                Py::new(
+                    py,
+                    crate::AicEngine::from_shared_engine(Arc::clone(&missing)),
+                )
+                .unwrap()
+                .into_any(),
+                false,
+            )
+        });
+        let bridge = Python::with_gil(|py| timing_model(native.engine.clone_ref(py), false));
+        native.phase_provider = AicPhaseProvider::Native(missing);
+        for mode in ["static_ctx", "static_gen"] {
+            let error = native
+                .predict_phase_evidence(1, 128, 2, 0, mode)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("PerfDataNotAvailableError"),
+                "{error}"
+            );
+            check(&native, &bridge, (1, 128, 2, 0, mode));
         }
     }
 
@@ -2327,7 +2519,7 @@ mod tests {
 
     #[test]
     fn per_op_power_summary_matches_aic_coverage_semantics() {
-        let summary = phase_evidence_from_python(vec![
+        let summary = phase_evidence_from_entries(vec![
             ("covered".into(), 100.0, 50_000.0, "silicon".into()),
             ("missing".into(), 25.0, 0.0, "empirical".into()),
             ("no-op".into(), 0.0, 0.0, "silicon".into()),
@@ -2976,7 +3168,7 @@ mod tests {
     #[test]
     fn python_evidence_rejects_invalid_energy_before_missing_value_conversion() {
         let error =
-            phase_evidence_from_python(vec![("bad".into(), 1.0, f64::NAN, "silicon".into())])
+            phase_evidence_from_entries(vec![("bad".into(), 1.0, f64::NAN, "silicon".into())])
                 .unwrap_err();
         assert!(error.to_string().contains("invalid energy"));
     }
