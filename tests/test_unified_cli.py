@@ -1559,8 +1559,17 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
             return report
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(InvalidDiagnosticsRunner()))
-    result = cli.main(
-        ["predict", "-c", str(_detail_config(tmp_path)), "--detail", "source", "--output-dir", str(tmp_path / "out")]
-    )
-    assert result != 0
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(_detail_config(tmp_path)),
+                "--detail",
+                "source",
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+    assert error.value.code == 2
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
