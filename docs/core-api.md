@@ -82,6 +82,22 @@ options.
 
 ## KV-cache capacity reservation
 
+SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
+pool. Peak activation/workspace estimates remain visible in
+`memory_breakdown.activations_bytes`, but are not deducted from that pool;
+transient execution headroom is already outside the static fraction. Increasing
+the prefill token budget alone therefore does not reduce SGLang KV capacity.
+Resident runtime/communication estimates reduce the pre-load free-memory pool
+before applying the fraction; weights are deducted afterward. The budget is
+`(capacity - resident_overhead) * mem_fraction_static - weights`, less any
+explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
+(non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
+checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
+the unchanged timing graph. Other model layouts retain their prior weight
+accounting.
+vLLM and TRT-LLM continue to deduct activation memory under their own budget
+semantics. No measured server capacity is required by this calculation.
+
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
 non-negative integer no greater than `2**53` and defaults to zero. It is treated

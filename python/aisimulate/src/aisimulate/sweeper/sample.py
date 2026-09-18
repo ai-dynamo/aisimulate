@@ -161,4 +161,6 @@ def unroll_sample(
             "kv_transfer_timing_mode",
         ):
             sample[key] = getattr(search_space, key)
+    if search_space.speculation is not None:
+        sample["speculation"] = search_space.speculation.model_dump(mode="json")
     return sample
