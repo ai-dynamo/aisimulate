@@ -164,15 +164,21 @@ configures automated review separately from GitHub Actions.
 1. Open or update the PR to run Fast CI automatically, including while it is a
    draft. Mark the PR non-draft for automatic CodeRabbit review, subject to its
    configured title and label exclusions. No `review-ready` label is needed.
-2. Complete the reviews required for the risk level on the current commit:
-   CodeRabbit for all tiers, plus Codex for medium/high risk.
+2. Record the risk tier and rationale, responsible CODEOWNER team/reviewer, and
+   expert escalation in the PR's review map, following the
+   [handoff policy](../REVIEW.md#review-handoff-and-finding-disposition).
+   Complete CodeRabbit review for all tiers, plus same-commit Codex review for
+   medium/high risk. Link reviewed SHAs and validation evidence in the PR; a
+   skipped bot review or green status alone is not completed review.
 3. A maintainer admits Full CI after the required initial reviews complete with
    no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER review may
    proceed while Full CI runs.
 4. Before merge, confirm the current head, applicable CODEOWNER approval,
    required conversation resolution, CI results, and effective branch rules.
    High-risk changes also need the relevant domain, architecture, security,
-   or release owner.
+   or release owner. Keep blockers in GitHub conversations and move only agreed
+   non-blocking follow-ups to linked issues with an owner. Refresh this evidence
+   after every push; a review or CI result for an older head is historical.
 
 Trusted copy-pr-bot branches also launch Full CI automatically as a coverage
 backstop. Check that the copy's SHA matches the PR head before using its result.
