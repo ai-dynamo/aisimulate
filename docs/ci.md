@@ -356,6 +356,14 @@ by its zero-padded ten-digit workflow run number, for example
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
 
+Development nightlies must be available before downstream consumers can validate
+and merge an API migration. Pending entries in
+[the stable-release migration checklist](../.github/release-gates.json) therefore
+do not block scheduled or approved manual nightlies. Build, compliance, wheel-smoke,
+FPE qualification, and security requirements continue to apply. Publish the nightly,
+validate and merge the downstream migration against that wheel, then complete the
+migration checklist before a stable release.
+
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
 Artifactory through the protected `automated-release` environment. Each wheel

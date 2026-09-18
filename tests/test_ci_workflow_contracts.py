@@ -40,7 +40,7 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
-def test_release_migration_gate_blocks_publication_until_reviewed_clearance(tmp_path):
+def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
     from scripts.check_release_migrations import GATES, require_completed_migrations
 
     with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
@@ -56,25 +56,29 @@ def test_release_migration_gate_blocks_publication_until_reviewed_clearance(tmp_
     with pytest.raises(FileNotFoundError):
         require_completed_migrations(path)
 
-    jobs = _workflow("nightly-ci.yml")["jobs"]
+
+def test_nightly_can_publish_the_wheel_needed_by_pending_downstream_migrations():
+    workflow = _workflow("nightly-ci.yml")
+    serialized_workflow = json.dumps(workflow)
+    assert "check_release_migrations.py" not in serialized_workflow
+    assert "release-gates.json" not in serialized_workflow
+    jobs = workflow["jobs"]
     guard = jobs["changes-guard"]
-    index = next(i for i, step in enumerate(guard["steps"]) if "check_release_migrations.py" in step.get("run", ""))
-    assert next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "target") < index
-    assert index < next(i for i, step in enumerate(guard["steps"]) if step.get("id") == "decide")
-    assert "if" not in guard["steps"][index]
-    checkouts = [step for step in guard["steps"][:index] if step.get("uses", "").startswith("actions/checkout@")]
-    assert len(checkouts) == 2
-    assert checkouts[0]["with"]["ref"] == "${{ steps.target.outputs.sha }}"
-    assert "path" not in checkouts[0]["with"]
-    assert checkouts[1]["with"]["ref"] == "${{ github.sha }}"
-    assert checkouts[1]["with"]["path"] == "release-policy"
-    assert all("if" not in step and step["with"]["persist-credentials"] == "false" for step in checkouts)
-    assert guard["steps"][index]["run"] == (
-        "python3 release-policy/scripts/check_release_migrations.py --target-gates .github/release-gates.json"
-    )
-    assert "build-artifacts" in jobs["trigger-gitlab-security"]["needs"]
-    assert "changes-guard" in jobs["build-artifacts"]["needs"]
-    assert "needs.changes-guard.outputs.should-build == 'true'" in jobs["build-artifacts"]["if"]
+    commands = "\n".join(_run_commands(job) for job in jobs.values() if "steps" in job)
+    assert "check_release_migrations.py" not in commands
+    assert "release-gates.json" not in commands
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in guard["steps"])
+    steps = [step.get("id") for step in guard["steps"]]
+    assert steps.index("target") < steps.index("version") < steps.index("decide")
+    assert guard["outputs"]["dev-version"] == "${{ steps.version.outputs.dev-version }}"
+    build = jobs["build-artifacts"]
+    assert "scripts/apply_dev_version.py" in _run_commands(build)
+    assert {"changes-guard", "manual-approval", "python-compliance"} <= set(build["needs"])
+    assert "needs.changes-guard.outputs.should-build == 'true'" in build["if"]
+    publish = jobs["trigger-gitlab-security"]
+    assert {"build-artifacts", "manual-approval", "fpe-support-matrix", "license-evidence"} <= set(publish["needs"])
+    for name in ("build-artifacts", "fpe-support-matrix", "license-evidence"):
+        assert f"needs.{name}.result == 'success'" in publish["if"]
 
 
 @pytest.mark.parametrize(
@@ -87,7 +91,7 @@ def test_release_migration_gate_blocks_publication_until_reviewed_clearance(tmp_
         ("clear", "malformed", 1),
     ],
 )
-def test_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
+def test_stable_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
     from scripts import check_release_migrations as checker
 
     paths = {}

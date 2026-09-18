@@ -328,18 +328,14 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   role/options signatures and separate estimator constructors. This is a source
   migration: use `ForwardPassPerfModelConfig::new(...)` in Rust or the SDK config
   class in Python, and use the explicit migration helper for saved EngineConfig
-  values. Downstream Dynamo callers must migrate before this API is released;
+  values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
-- Publication is blocked by [the release gate](../.github/release-gates.json)
-  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Both scheduled
-  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
-  before staging and the downstream publish trigger. Manual dispatch may select
-  a main/release commit, but both the workflow revision's policy and the selected
-  commit's migration declarations must pass before publication. The checker runs
-  from the workflow revision; missing or malformed target gates fail closed.
-  Clear the pending entry in a reviewed change only after the migration evidence
-  is available.
+- [The migration checklist](../.github/release-gates.json) and
+  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  pending entry in a reviewed change after downstream validation and merge.
+  There is currently no standalone stable-publication workflow in this repository;
+  that release process must invoke the checker for both its policy and target
+  declarations (`--target-gates`). Missing or malformed declarations fail closed.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.
