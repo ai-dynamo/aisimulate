@@ -71,11 +71,6 @@ engine versions can require changes in:
   registration, resident weights, and memory/cache descriptions used by the
   consumer. A collection plan's bootstrap template is not proof of consumer support.
 
-Kimi K3 is one such example: its MLA+KDA state and DCP layout needed benchmark
-adaptation. The published decode profile uses warmed MLA KV and random KDA
-state. That records a specific timing experiment; it does not establish full
-KDA-history or cache-lifecycle fidelity in Replay.
-
 Use a small smoke run to qualify those paths before collecting the full surface.
 If it fails or silently schedules different work, fix and revalidate the
 benchmark adapter before using the measurements. For an architecture absent
