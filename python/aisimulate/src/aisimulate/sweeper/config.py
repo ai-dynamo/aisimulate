@@ -568,7 +568,12 @@ class SearchSpace(BaseModel):
                 raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
             if self.encoder is not None:
                 raise ValueError("ngram speculation does not support EPD")
-            for role in ("agg", "prefill", "decode"):
+            roles = []
+            if "agg" in self.deployment_mode:
+                roles.append("agg")
+            if "disagg" in self.deployment_mode:
+                roles.extend(("prefill", "decode"))
+            for role in roles:
                 if getattr(self, f"{role}_native_host_offload") is not None:
                     raise ValueError("ngram speculation does not support host_offload")
                 if getattr(self, f"{role}_forward_model") not in (None, "op_level"):

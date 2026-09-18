@@ -214,6 +214,45 @@ def test_lower_level_sweeper_rejects_legacy_mtp_combination():
         )
 
 
+@pytest.mark.parametrize("mode,inactive_role", [("agg", "prefill"), ("agg", "decode"), ("disagg", "agg")])
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("forward_model", "fpm", "op_level"),
+        ("native_host_offload", {"num_host_blocks": 64}, "host_offload"),
+    ],
+)
+def test_ngram_sweeper_ignores_inactive_roles_until_selected(mode, inactive_role, field, value, error):
+    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+    from aisimulate.sweeper.sample import unroll_sample
+
+    inactive_key = f"{inactive_role}_{field}"
+    values = {
+        "model_name": "test",
+        "hardware_sku": "h200_sxm",
+        "deployment_mode": [mode],
+        "backend": ["vllm"],
+        "speculation": _SPEC,
+        inactive_key: value,
+    }
+    space = SearchSpace(**values)
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    selection = {"deployment_mode": mode, "backend": "vllm"}
+    for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
+        selection[f"{role}_max_num_batched_tokens"] = 64
+        selection[f"{role}_max_num_seqs"] = 4
+    sample = unroll_sample(
+        search_space=space,
+        selection=selection,
+        parallel_config=replica if mode == "agg" else DisaggParallelConfig(prefill=replica, decode=replica),
+    )
+    assert inactive_key not in sample
+    assert sample["speculation"] == _SPEC
+
+    with pytest.raises(ValidationError, match=error):
+        SearchSpace(**{**values, "deployment_mode": ["agg", "disagg"]})
+
+
 def test_generator_does_not_silently_drop_prompt_lookup():
     from aiconfigurator.generator.request import SweeperCandidateError, from_sweeper_candidate
 
