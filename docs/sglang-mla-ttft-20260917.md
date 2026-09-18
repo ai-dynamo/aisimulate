@@ -142,8 +142,12 @@ Crucially, inspecting the **original installed replay wheel** at `2cfe6f83`
 with `get_database(system, "sglang", "0.5.14")` and
 `MLAModule.load_data(database)` gives empty context and generation module views
 for both `b200_sxm` and `b300_sxm`. Thus `context_mla_block` in the per-op report
-is a fallback wrapper name, not proof of a module-table hit: these predictions
-use the granular projection/MLA path. Both profile sidecars pin the refreshed
+is a fallback wrapper name, not proof of a module-table hit. The 26 FP8-weight
+points fall back because module data is absent. The 48 NVFP4-weight points use
+the granular path directly because their BF16 q/kv projections and NVFP4 output
+projection cannot be represented by the current single-gemm-type module key.
+Thus module-table absence alone does not explain all 74 granular paths.
+Both profile sidecars pin the refreshed
 `context_mla_perf` collector to `35b5292364a0c8d004d3450af27f6259a17aa668`, whose
 `collect_mla.py::benchmark_layer` uses the outer graph-enabled benchmark.
 
@@ -154,6 +158,35 @@ path used here; historical GEMM/MoE row provenance remains partly unresolved.
 This does not quantify the TTFT contribution or justify adding a blanket CPU
 launch penalty. No performance data, runtime behavior, or reported MAPE changes
 in this clarification.
+
+### Required module data for these Blackwell points
+
+- Target consumer table: `mla_context_module_perf.parquet` under
+  `<system>/mla/sglang/0.5.14/`, measured with eager prefill and the actual
+  `trtllm_mla` backend. The model geometry has 128 native attention heads;
+  TP4/TP8 correspond to 32/16 local heads.
+- FP8-weight points: B200 TP8 (10 points), B300 TP8 (10), B300 TP4 (6).
+  Their exact module key requires FP8 attention, FP8 KV, and `fp8_block`
+  projections. These 26 points can use the existing consumer module identity.
+- NVFP4-weight points: B200 TP4 (17), TP8 (2); B300 TP4 (16), TP8 (13).
+  All 48 use BF16 downscale/q_b/kv_b projections, NVFP4 output projection,
+  FP8 attention and FP8 KV. An all-NVFP4 module profile is not equivalent.
+  Covering these points with module data first requires an identity that
+  expresses mixed projection precision and preserves the matching checkpoint
+  behavior through collection and lookup.
+- Workloads have nominal 1k/8k inputs, with sampled lengths and scheduled
+  prefill batching/chunking. Collect the actual queried batch/length/prefix
+  domain and neighboring interpolation anchors, not just batch=1 at 1024/8192;
+  client concurrency is not the module batch size.
+- The current `collect_mla_module.py --attn-type mla` path is still routed
+  through `is_wideep_mla` and writes `wideep_context_mla_perf`, with legacy
+  dtype labels. It cannot be assumed to populate the ordinary module table.
+  Ordinary-MLA output routing and execution-precision labels must be made
+  consistent with the consumer before collection. Do not rename wide-EP data
+  into an ordinary module table without validating its measured boundary.
+- Decode module data is also absent, but it is not the first data target for
+  this TTFT investigation. Full attention-module data does not measure the
+  complete transformer forward pass or frontend; no resulting MAPE is assumed.
 
 The next discriminating measurement is a warm single-request R1 prefill with
 per-request stage timestamps and all-rank CUDA/CPU tracing, starting with B200
