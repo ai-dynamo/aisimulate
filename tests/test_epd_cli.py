@@ -152,7 +152,8 @@ def test_epd_language_execution_omitted_version_uses_current(mode):
     assert {role["rank"]["timing_model"]["config"]["backend_version"] for role in execution.values()} == {current}
 
 
-def test_epd_language_execution_uses_the_timing_systems_root(tmp_path):
+@pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
+def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
     from aisimulate_core.sdk import perf_database
 
     bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
@@ -177,7 +178,7 @@ def test_epd_language_execution_uses_the_timing_systems_root(tmp_path):
                 "backend": raw["engine"]["backend"],
                 "tp": 1,
                 "attention_dp": 1,
-                "systems_paths": [str(tmp_path)],
+                root_field: [str(tmp_path)] if root_field == "systems_paths" else str(tmp_path),
             },
         },
     }
@@ -186,6 +187,18 @@ def test_epd_language_execution_uses_the_timing_systems_root(tmp_path):
     execution = _language_execution(spec)
 
     assert execution["aggregated"]["rank"]["timing_model"]["config"]["backend_version"] == custom_version
+
+
+def test_epd_language_execution_without_a_database_fails(monkeypatch):
+    from aisimulate_core.sdk import perf_database
+
+    raw = _prediction()
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="no perf database.*h200_sxm.*sglang"):
+        _language_execution(spec)
 
 
 @pytest.mark.parametrize(
