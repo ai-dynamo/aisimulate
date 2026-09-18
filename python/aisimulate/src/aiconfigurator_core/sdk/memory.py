@@ -294,7 +294,9 @@ class KVCacheEstimator:
         feed the discarded ``kvcache`` key, so they are set to a neutral ``1``. Note
         ``max_batch_size`` does NOT affect non-KV memory (activations use
         ``num_tokens``, KV is recomputed per token), but it is accepted to mirror the
-        request shape.
+        request shape. SGLang retains peak activations in the breakdown for
+        diagnostics but excludes them from the static weights/KV pool: its
+        ``mem_fraction_static`` already reserves transient execution headroom.
 
         Raises when AIC cannot build the model/backend or the perf DB is missing --
         the signal for the caller to fall back to the naive estimator.
@@ -354,7 +356,13 @@ class KVCacheEstimator:
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
-        non_kv_bytes = weights_bytes + activations_bytes + runtime_overhead_bytes + comm_overhead_bytes
+        non_kv_bytes = weights_bytes + runtime_overhead_bytes + comm_overhead_bytes
+        # SGLang sizes its static weights/KV pool before allocating peak forward
+        # activations. mem_fraction_static already leaves headroom for those
+        # transient allocations; charging them inside the pool counts them twice.
+        # Keep the activation estimate in diagnostics, but not in its KV budget.
+        if backend != "sglang":
+            non_kv_bytes += activations_bytes
 
         return cls(
             {
