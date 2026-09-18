@@ -1210,6 +1210,18 @@ impl Engine {
         if batch_size == 0 || (prefill && context_length == prefix) {
             return Ok(Vec::new());
         }
+        let token_count = if prefill {
+            batch_size.checked_mul(context_length - prefix)
+        } else {
+            self.nextn
+                .checked_add(1)
+                .and_then(|width| batch_size.checked_mul(width))
+        };
+        if token_count.is_none() {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase token count exceeds u32".into(),
+            ));
+        }
         let runtime = RuntimeConfig {
             batch_size,
             isl: context_length,
@@ -2269,6 +2281,18 @@ mod tests {
     fn phase_diagnostics_match_latency_and_preserve_sol_with_prefix_and_mtp() {
         for nextn in [None, Some(2)] {
             let engine = build_engine(nextn);
+            assert!(
+                engine
+                    .static_phase_diagnostics(u32::MAX, 2, 0, true)
+                    .is_err()
+            );
+            if nextn.is_some() {
+                assert!(
+                    engine
+                        .static_phase_diagnostics(u32::MAX, 2, 0, false)
+                        .is_err()
+                );
+            }
             for prefill in [true, false] {
                 let prefix = if prefill { 128 } else { 0 };
                 let rows = engine

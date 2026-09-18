@@ -618,3 +618,6 @@ def test_canonical_operation_diagnostics_include_native_sol_and_provenance():
     assert model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=128) == []
     with pytest.raises(ValueError, match="prefix"):
         model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=129)
+
+    with pytest.raises(ValueError, match="token count"):
+        model.static_phase_diagnostics(batch_size=2**32 - 1, context_length=2, prefill=True)
