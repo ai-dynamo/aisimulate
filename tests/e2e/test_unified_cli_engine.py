@@ -19,6 +19,7 @@ from aisimulate import EngineReplayRunnerFactory, ReplayOutputRequirements
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.sweeper import SweepResult
+from aisimulate.sweeper.result import CandidateStatus
 
 pytestmark = [
     pytest.mark.integration,
@@ -387,6 +388,9 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
     empty = SweepResult.from_json((no_result / "recommendation.json").read_text())
     assert empty.selected_candidates == []
     assert empty.counts.infeasible > 0
+    infeasible = [c for c in empty.candidates if c.status is CandidateStatus.INFEASIBLE]
+    assert len(infeasible) == empty.counts.infeasible
+    assert all(c.metrics["mean_e2e_latency_ms"] > 0.001 for c in infeasible)
     assert not list((no_result / "recommendations").glob("*.yaml"))
 
 

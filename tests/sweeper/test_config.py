@@ -66,6 +66,15 @@ def test_min_gpus_sdk_validates_workload(workload, minimum, error):
         )
 
 
+def test_min_gpus_sdk_accepts_goodput_floor_equal_to_offered_request_rate():
+    config = SmartSearchConfig(
+        search_space=_search_space(),
+        workload=_workload(concurrency=None, request_rate=10),
+        goal={"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 10},
+    )
+    assert config.goal.min_goodput_rps == config.workload.request_rate == 10
+
+
 def test_backend_only_yaml_and_adapter_search_space_load(tmp_path):
     path = tmp_path / "sweep.yaml"
     path.write_text(

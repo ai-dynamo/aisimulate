@@ -119,7 +119,7 @@ not create a duplicate ledger row.
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
 | `resource_limited` | Host memory admission or bounded runtime recovery could not complete this candidate. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
 `parallel_projection`, `adapter_constraint`, `resource_limit`, and `unknown`.
 

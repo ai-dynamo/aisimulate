@@ -57,23 +57,32 @@ def test_min_gpus_uses_provisioned_count_not_time_average_or_throughput():
         score_report(REPORT, OptimizationTarget.MIN_GPUS)
 
 
-def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput():
+def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput_and_latency():
     goal = OptimizationGoal(target="min_gpus", sla=SLATarget(itl_ms=30), min_goodput_rps=10)
 
-    def candidate(gpus, goodput, *, rps=10, itl=20):
+    def candidate(gpus, goodput, *, rps=10, itl=20, e2e=1200):
         return make_candidate(
             {"used_gpus": gpus, "name": str(goodput)},
-            dict(REPORT, goodput_request_throughput_rps=rps, goodput_output_throughput_tok_s=goodput, mean_tpot_ms=itl),
+            dict(
+                REPORT,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=goodput,
+                mean_tpot_ms=itl,
+                mean_e2e_latency_ms=e2e,
+            ),
             OptimizationTarget.MIN_GPUS,
         )
 
     large = candidate(8, 10000)
     smaller = candidate(2, 1000)
     tied_better = candidate(2, 2000)
+    tied_lower_latency = candidate(2, 2000, e2e=1000)
     insufficient_rate = candidate(1, 20000, rps=9.99)
     fails_latency = candidate(1, 20000, itl=31)
-    selected = analyze_candidates([large, insufficient_rate, fails_latency, smaller, tied_better], goal)
-    assert selected == [tied_better, smaller, large]
+    selected = analyze_candidates(
+        [large, insufficient_rate, fails_latency, smaller, tied_better, tied_lower_latency], goal
+    )
+    assert selected == [tied_lower_latency, tied_better, smaller, large]
     assert selected[0].metrics["goodput_request_throughput_rps"] == 10
     assert selected[0].metrics["goodput_output_throughput_tok_s"] == 2000
 

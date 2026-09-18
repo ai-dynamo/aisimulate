@@ -18,6 +18,7 @@ from aisimulate.main import main
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
+from aisimulate.sweeper.result import CandidateStatus
 
 
 def _prediction(mode="aggregated"):
@@ -106,7 +107,9 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
     assert result.selected_candidates
     candidate = result.selected_candidates[0]
     if target == "min_gpus":
-        assert candidate.used_gpus == min(c.used_gpus for c in result.selected_candidates)
+        assert candidate.used_gpus == min(
+            c.used_gpus for c in result.candidates if c.status is CandidateStatus.FEASIBLE
+        )
         assert candidate.score == -candidate.used_gpus
     saved = root / "recommendations" / "0001.yaml"
     concrete = CorePredictionConfig.from_yaml(saved)

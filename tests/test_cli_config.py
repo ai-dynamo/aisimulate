@@ -36,19 +36,20 @@ def _engine() -> dict:
         {"type": "poisson", "requests_per_second": 10},
     ],
 )
-def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load):
+@pytest.mark.parametrize("minimum", [9, 10])
+def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load, minimum):
     config = CoreRecommendationConfig.model_validate(
         {
             "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
             "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
             "evaluation": {"sla": {"itl_ms": 30}},
-            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": 9}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
         }
     )
     lowered = recommendation_to_sweeper(config)
     assert lowered.goal.target.value == "min_gpus"
     assert lowered.goal.requires_aggregate_sla
-    assert lowered.goal.min_goodput_rps == 9
+    assert lowered.goal.min_goodput_rps == minimum
     assert lowered.goal.sla.itl_ms == 30
 
 
