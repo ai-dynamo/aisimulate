@@ -1048,6 +1048,7 @@ struct EngineBuildRequest {
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
     nextn: u32,
+    speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
@@ -1092,6 +1093,7 @@ impl AicEngineBuilder {
                 comm_quant_mode: None,
                 attention_backend: None,
                 nextn: 0,
+                speculation: None,
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
@@ -1384,6 +1386,12 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
+        if let Some(speculation) = &request.speculation {
+            let json = serde_json::to_string(speculation)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
+            kwargs.set_item("speculation", value)?;
+        }
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
         engine_mod
@@ -1459,6 +1467,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         comm_quant_mode: config.comm_quant_mode.clone(),
         attention_backend: config.attention_backend.clone(),
         nextn: config.nextn,
+        speculation: config.speculation.clone(),
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
@@ -1515,6 +1524,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         // Attention backend is not carried on EngineConfig; let Python resolve it.
         attention_backend: None,
         nextn,
+        speculation: None,
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
@@ -1698,6 +1708,7 @@ impl PyForwardPassPerfModel {
             kvcache_quant_mode: request.kvcache_quant_mode,
             comm_quant_mode: request.comm_quant_mode,
             nextn: request.nextn,
+            speculation: request.speculation,
             kv_block_size: request.kv_block_size,
             estimation_mode,
             database_mode: legacy.database_mode,

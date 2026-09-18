@@ -152,7 +152,7 @@ function renderSnapshot() {
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
-      ? `<a href="https://github.com/ai-dynamo/aisimulate/blob/${state.branch.published_from_commit}/python/aisimulate/docs/e2e-accuracy/summary.json">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
+      ? `<a href="https://github.com/ai-dynamo/aisimulate/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisimulate/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
       : snapshot.campaign
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
@@ -588,6 +588,7 @@ function validateCatalog(catalog) {
         !(entry.published_from_commit === null || typeof entry.published_from_commit === "string" &&
           /^[0-9a-f]{40}$/.test(entry.published_from_commit))) return true;
       const revision = entry.evaluated_revision;
+      if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
       if (["evaluated", "inherited"].includes(entry.status)) {
         if (!validRevision(revision) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
       } else if (revision != null) return true;

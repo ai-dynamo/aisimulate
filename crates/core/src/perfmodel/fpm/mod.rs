@@ -34,7 +34,10 @@ mod samples;
 #[cfg(test)]
 mod tests;
 
-pub use config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
+pub use config::{
+    EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig,
+    ForwardPassSpeculationConfig,
+};
 pub use estimator::*;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};

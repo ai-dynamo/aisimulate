@@ -9,6 +9,7 @@ paths:
   - "python/aisimulate/src/aisimulate/**"
   - "python/aisimulate/tests/**"
   - "tests/**"
+  - "scripts/fpm_accuracy/**"
 ---
 
 <!--

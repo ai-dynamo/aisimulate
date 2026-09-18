@@ -144,5 +144,6 @@ COPY python/aisimulate/tests/ /workspace/tests/
 COPY python/aisimulate/src/ /workspace/src/
 COPY python/aisimulate/tools/ /workspace/tools/
 COPY python/aisimulate/collector/ /workspace/collector/
-COPY python/aisimulate/docs/support-matrix/index.html /workspace/docs/support-matrix/index.html
+COPY pages/ /workspace/pages/
+COPY python/aisimulate/README.md /workspace/README.md
 COPY python/aisimulate/.agents/ /workspace/.agents/

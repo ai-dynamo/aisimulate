@@ -119,6 +119,7 @@ class ForwardPassPerfModelConfig:
     kvcache_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0
+    speculation: dict[str, Any] | None = None
     kv_block_size: int | None = None
     estimation_mode: str = "auto"
     database_mode: str = "SILICON"

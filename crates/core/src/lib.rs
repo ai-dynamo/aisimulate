@@ -41,10 +41,11 @@ pub use perfmodel::{
     ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
     ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
     ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted,
-    KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction,
-    MemoryBreakdown, ParallelMapping, QuantizationConfig, QueuedRequestMetrics,
-    RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
+    ForwardPassSpeculationConfig, ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate,
+    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
+    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
+    SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,

@@ -96,6 +96,7 @@ def test_stable_function_signatures() -> None:
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
         "nextn: 'int' = 0, "
+        "speculation: 'dict | None' = None, "
         "kv_block_size: 'int | None' = None, "
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "

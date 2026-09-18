@@ -79,6 +79,9 @@ class ForwardPassEstimatorResolver:
             moe_tp_size=moe_tp if moe_tp * moe_ep > 1 else None,
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
             nextn=int(nextn or 0),
+            speculation=self._search_space.speculation.cost_config()
+            if self._search_space.speculation is not None
+            else None,
             kv_block_size=int(block_size),
             estimation_mode=controls.get("estimation_mode", self._search_space.estimation_mode),
             database_mode=controls.get("database_mode", self._search_space.database_mode),
@@ -141,6 +144,7 @@ class ForwardPassEstimatorResolver:
             "moe_tp_size",
             "moe_ep_size",
             "nextn",
+            "speculation",
             "kv_block_size",
             "worker_type",
         ):

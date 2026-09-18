@@ -26,7 +26,7 @@ use crate::{
     ForwardPassPerfModelConfig, ForwardPassWorkerType,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
@@ -176,6 +176,8 @@ struct AicTimingConfig {
     #[serde(default)]
     nextn: u32,
     #[serde(default)]
+    speculation: Option<crate::ForwardPassSpeculationConfig>,
+    #[serde(default)]
     kv_block_size: Option<u32>,
     #[serde(default)]
     gpu_memory_utilization: Option<f64>,
@@ -267,6 +269,7 @@ impl AicTimingConfig {
             kvcache_quant_mode: self.kv_cache_dtype.clone(),
             comm_quant_mode: self.comm_dtype.clone(),
             nextn: self.nextn,
+            speculation: self.speculation.clone(),
             kv_block_size: self.kv_block_size,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
@@ -278,6 +281,30 @@ impl AicTimingConfig {
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
         })
+    }
+
+    fn speculative_depth(&self) -> Result<u32> {
+        let Some(speculation) = &self.speculation else {
+            return Ok(self.nextn);
+        };
+        ensure!(
+            self.nextn == 0,
+            "ngram speculation cannot be combined with nextn"
+        );
+        ensure!(
+            self.backend == "vllm",
+            "ngram speculation requires backend=vllm"
+        );
+        ensure!(
+            self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
+            "ngram speculation requires op_level timing"
+        );
+        let depth = speculation.num_speculative_tokens();
+        ensure!(
+            (1..=5).contains(&depth),
+            "ngram num_speculative_tokens must be in 1..=5"
+        );
+        Ok(depth)
     }
 
     fn resolved_backend_version(&self) -> &str {
@@ -326,6 +353,7 @@ impl AicTimingConfig {
              moe_ep_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
+        self.speculative_depth()?;
         ensure!(
             self.moe_tp_size.is_some() == self.moe_ep_size.is_some(),
             "AIC moe_tp_size and moe_ep_size must be configured together"
@@ -636,10 +664,10 @@ fn materialize_aic_capacity(
         role.rank.block_size
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
+    let timing_depth = config.speculative_depth()?;
     ensure!(
-        config.nextn as usize == engine_nextn,
-        "AIC nextn={} does not match engine aic_nextn={engine_nextn}",
-        config.nextn
+        timing_depth as usize == engine_nextn,
+        "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
     );
     if capacity_is_explicit {
         return Ok(());
@@ -1656,18 +1684,31 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
+fn replay_python_error(error: anyhow::Error) -> PyErr {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::replay::ReplayError>(),
+            Some(crate::replay::ReplayError::ResourceLimited(_))
+        )
+    }) {
+        PyMemoryError::new_err(format!("{error:#}"))
+    } else {
+        PyRuntimeError::new_err(format!("{error:#}"))
+    }
+}
+
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, false))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, true))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// AISimulate native runtime module.
@@ -1688,6 +1729,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn replay_python_error_preserves_contextual_resource_failure() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::Error::new(crate::replay::ReplayError::ResourceLimited(
+            "create exact report sample file: No space left on device".to_string(),
+        ))
+        .context("collecting replay report")
+        .context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
+    #[test]
+    fn replay_python_error_keeps_other_failures_as_runtime_errors() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
 
     struct PowerTiming(TimingEvidenceSummary);
 
@@ -1979,6 +2050,7 @@ mod tests {
             kv_cache_dtype: None,
             comm_dtype: None,
             nextn: 0,
+            speculation: None,
             kv_block_size: None,
             gpu_memory_utilization: None,
             mem_fraction_static: None,
@@ -1996,6 +2068,37 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+        }
+    }
+
+    #[test]
+    fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
+        let mut config = aic_config();
+        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
+            num_speculative_tokens: 2,
+        });
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
+        role.rank.aic_nextn = Some(2);
+        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+        config.nextn = 2;
+        assert!(config.validate_parallel_shape().is_err());
+        config.nextn = 0;
+        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
+            num_speculative_tokens: 6,
+        });
+        assert!(config.validate_parallel_shape().is_err());
+    }
+
+    #[test]
+    fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
+        for payload in [
+            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
+            serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
+        ] {
+            assert!(
+                serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
+            );
         }
     }
 

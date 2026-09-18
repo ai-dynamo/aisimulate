@@ -38,6 +38,8 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
+    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("ngram speculation requires the offline engine stack without adapters")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -371,6 +373,7 @@ def _worker_performance_model_metadata(
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
+            **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
         },
     }
@@ -409,6 +412,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if engine.speculation is not None:
+        payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:
@@ -476,6 +481,7 @@ def _worker_engine_args(
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
             kv_block_size=block_size,
+            speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
             estimator_config=timing.estimator_config

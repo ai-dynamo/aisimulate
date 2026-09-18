@@ -13,9 +13,11 @@ const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
 const nightlyWorkflow = readFileSync(new URL("../.github/workflows/nightly-ci.yml", import.meta.url), "utf8");
-const nightlyScripts = [...nightlyWorkflow.matchAll(/          script: \|\n((?:(?:            .*)?\n)+)/g)].map(match => match[1]);
-const nightlyDecision = nightlyScripts.find(script => script.includes("core.setOutput('should-build'"));
-assert.ok(nightlyDecision, "nightly build decision script must exist");
+function nightlyScript(id) {
+  const step = nightlyWorkflow.split("\n      - ").find(step => step.includes(`\n        id: ${id}\n`));
+  assert.ok(step, `Missing nightly step: ${id}`);
+  return step.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
+}
 
 async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/main", requested = sha,
   branches = ["main", "release/0.12.0", "feature/test"], statuses = { main: "ahead" }, apiError } = {}) {
@@ -42,7 +44,7 @@ async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/ma
       } },
     },
   });
-  await vm.runInContext(`(async () => { ${nightlyScripts[0]} })()`, sandbox);
+  await vm.runInContext(`(async () => { ${nightlyScript("target")} })()`, sandbox);
   return { outputs, failures, compared, lookups };
 }
 
@@ -103,7 +105,7 @@ test("only successful scheduled nightlies can suppress another scheduled build",
           return { data: { workflow_runs: [{ head_sha: previous, html_url: "https://example.invalid/run" }] } };
         } } } },
       });
-      await vm.runInContext(`(async () => { ${nightlyDecision} })()`, sandbox);
+      await vm.runInContext(`(async () => { ${nightlyScript("decide")} })()`, sandbox);
       assert.equal(queries, event === "schedule" ? 1 : 0);
       assert.equal(outputs["should-build"], event === "schedule" && previous === sha ? "false" : "true");
     }
@@ -207,7 +209,7 @@ test("manual evaluation emits only the requested full SHA and branch", async () 
 test("Pages accepts failed accuracy matrices while preserving other producer gates", () => {
   const pages = readFileSync(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8");
   const expression = pages.match(/  build:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
-  for (const name of ["E2E Accuracy Matrix", "FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]) {
+  for (const name of ["E2E Accuracy Matrix", "FPM Accuracy Matrix", "FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]) {
     for (const conclusion of ["success", "failure", "cancelled"]) {
       for (const repository of ["ai-dynamo/aisimulate", "foreign/repo"]) {
         const github = {
@@ -215,7 +217,7 @@ test("Pages accepts failed accuracy matrices while preserving other producer gat
           event: { workflow_run: { name, conclusion, head_repository: { full_name: repository } } },
         };
         assert.equal(vm.runInNewContext(expression, { github }), repository === github.repository &&
-          (conclusion === "success" || (name === "E2E Accuracy Matrix" && conclusion === "failure")));
+          (conclusion === "success" || (["E2E Accuracy Matrix", "FPM Accuracy Matrix"].includes(name) && conclusion === "failure")));
       }
     }
   }

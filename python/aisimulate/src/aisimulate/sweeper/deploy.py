@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -46,6 +47,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
             else "op_level"
         ),
     }
+    if sample.get("speculation") is not None:
+        config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
     return {"provider": "aic", "config": config}
 
 
@@ -94,6 +97,8 @@ def _engine_args_payload(
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
+    if sample.get("speculation") is not None:
+        payload["speculation"] = dict(sample["speculation"])
     if sample.get("aic_nextn") is not None:
         payload["aic_nextn"] = int(sample["aic_nextn"])
     forward_model = sample.get(f"{role}_forward_model")
