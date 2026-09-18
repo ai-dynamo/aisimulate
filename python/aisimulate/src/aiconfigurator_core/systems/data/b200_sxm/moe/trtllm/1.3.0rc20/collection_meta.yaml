@@ -17,9 +17,14 @@ runtime:
 # Final refresh, job 1995371: measured 162 W4A8 MXFP4/MXFP8 rows,
 # replaced 81 existing rows and added 81 TP=2/4/8, EP=1 rows.
 # 218295 prior rows retain exact values; final total: 218457 rows.
-# Final moe_perf.parquet SHA256:
+# Measured-stage moe_perf.parquet SHA256 (before power sentinel normalization):
 # db1930fde20b419284bf1f038fadd4b398d29701b12867fd4ac9da878808e781
 # Source, graph validation and replay: collector/trtllm/gym-w4a8-20260918.md.
+# Packaging correction: 324 latency-only MXFP4 rows use the documented
+# power=0.0, power_limit=0.0 unavailable sentinel instead of nulls. All
+# identities, latencies and 218133 existing power pairs are unchanged.
+# Packaged moe_perf.parquet SHA256:
+# 9c88ebdd67b97ded16310f18abaa5459d4959ff7b880bbd15c6fec43753af411
 tables:
   moe_perf:
     status: complete

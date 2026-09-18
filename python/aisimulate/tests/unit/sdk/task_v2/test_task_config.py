@@ -1407,17 +1407,20 @@ def test_large_ep_replica_size_is_bounded():
     assert max(kw["num_gpu_list"]) <= t.total_gpus
 
 
-def test_explicit_fmha_fp8_not_downgraded():
-    """V3/Kimi context fmha fp8->bf16 downgrade fires only on HF-inferred fp8 (matches v1's
-    `not explicit_fmha_mode` guard). An explicit fp8 is kept, so validate can fail fast
-    (instead of silently modelling bf16)."""
+def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
+    """Audited rc20 FP8 profiles retain inferred FP8 and both explicit overrides."""
     from aiconfigurator.sdk import common
 
-    base = dict(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", backend_name="trtllm")
-    assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.bfloat16  # HF-inferred -> downgraded
-    assert (
-        Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
-    )  # explicit -> kept
+    base = dict(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="1.3.0rc20",
+    )
+    assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8
+    for precision in (common.FMHAQuantMode.fp8, common.FMHAQuantMode.bfloat16):
+        assert Task(**base, fmha_quant_mode=precision).fmha_quant_mode == precision
 
 
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):

@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# B200 TRT-LLM power import
+# B200 TRT-LLM power import and reviewed refreshes
 
-The 18 tables below derive from [AIConfigurator commit
+The original import described below derived 18 tables from [AIConfigurator commit
 915f590680d8a79fe9c39f6f3a9ff13bc267fcce](https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm)
 ([upstream PR #1584](https://github.com/ai-dynamo/aiconfigurator/pull/1584)).
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -63,3 +63,19 @@ The retained local identity/latency pairs are independently pinned from AISimula
 commit `ffcb6576b3a60077ea1200788f1b784213f979cf`, immediately before import commit
 `717f973bea4ebc07673192475b3a0f743d82c168`. The test records their digests and the
 deterministic serialization used to reproduce them from that baseline.
+
+## September 17-18 precision/profile refresh
+
+The inventory and integrity counts above describe the original import. The
+reviewed TRT-LLM campaign subsequently replaced context MLA with 3,080 measured
+latency rows and refreshed GPT-OSS MXFP4 MoE rows, bringing MoE to 218,457 rows.
+See the collection sidecars and `collector/trtllm/gym-w4a8-20260918.md` for
+source revisions, image hashes, Slurm jobs and the historical replay evidence.
+
+The 324 refreshed W4A16/W4A8 MoE rows did not measure power. Their paired
+power fields use `0.0/0.0` (unavailable), not null or an inferred measurement.
+The packaging correction preserves every identity and latency and all 218,133
+other rows exactly. MoE now has 178,875 positive power pairs and 39,582 paired
+zero sentinels. The context MLA refresh has no measured power columns.
+The two corresponding file-integrity pins reflect these reviewed updates;
+the other 16 pins and the attention preservation checks are unchanged.

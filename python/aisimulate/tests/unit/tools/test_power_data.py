@@ -6,7 +6,8 @@
 Source: ai-dynamo/aiconfigurator at 915f590680d8a79fe9c39f6f3a9ff13bc267fcce,
 under aic-core/src/aiconfigurator_core/systems/data/b200_sxm/.
 See the adjacent data README for attribution and the two attention merges.
-These pins describe this import; future reviewed dataset updates may update them.
+The context MLA and MoE pins include the reviewed September 17-18 refresh
+documented in the data README; other pins still describe the original import.
 Version-independent power-field checks live in test_power_data_invariants.py.
 """
 
@@ -61,7 +62,7 @@ DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aiconfigurator_core/syste
         ),
         (
             "mla/trtllm/1.3.0rc20/context_mla_perf.parquet",
-            "ccfbf6075f4644bd4e39b224552160a3214920ddce7bfd7195347dc0225950f9",
+            "905f09a335f56c3a4c37cc7eb74113c1c026e3c57a8ff3dfc40a7c98d1fab30a",
         ),
         (
             "mla/trtllm/1.3.0rc20/generation_mla_perf.parquet",
@@ -81,7 +82,7 @@ DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aiconfigurator_core/syste
         ),
         (
             "moe/trtllm/1.3.0rc20/moe_perf.parquet",
-            "942d7f65c9b624d1ff261f3764820d44ce385cdd55a23dbf949edbbea8792d5a",
+            "9c88ebdd67b97ded16310f18abaa5459d4959ff7b880bbd15c6fec43753af411",
         ),
         (
             "quantize/trtllm/1.3.0rc20/computescale_perf.parquet",
@@ -102,7 +103,7 @@ DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aiconfigurator_core/syste
     ],
 )
 def test_b200_import_file(relative, sha256):
-    # Sixteen pins equal the upstream bytes; two pin the reviewed attention merges.
+    # Fourteen pins equal upstream bytes; two pin attention merges and two the MLA/MoE refresh.
     assert hashlib.sha256((DATA_ROOT / relative).read_bytes()).hexdigest() == sha256
 
 
