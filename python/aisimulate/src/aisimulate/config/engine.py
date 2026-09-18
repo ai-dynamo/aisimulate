@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
+from aisimulate.fpm_profile import FpmModelProfile
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel, SystemsPath, requested_backend_version
 

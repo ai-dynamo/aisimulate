@@ -12,8 +12,8 @@ from typing import Literal
 from packaging.version import Version
 from pydantic import Field, field_validator, model_validator
 
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
+from aisimulate.fpm_profile import FpmModelProfile
 
 
 class SupportIdentity(StrictModel):
