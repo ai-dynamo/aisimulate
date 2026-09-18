@@ -104,7 +104,7 @@ def _build_dataset(
             "tp": tp,
             "pp": 1,
             "dp": dp,
-            "moe_tp": 1,
+            "moe_tp": tp,
             "moe_ep": 1,
             "cp": 1,
         }
@@ -159,7 +159,7 @@ def _build_dataset(
         "tp": tp,
         "pp": 1,
         "dp": dp,
-        "moe_tp": 1,
+        "moe_tp": tp,
         "moe_ep": 1,
         "cp": 1,
         "weight_quantization": "bfloat16",
