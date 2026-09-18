@@ -275,6 +275,9 @@ resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
 exports and verify their object identity. The AFD qualification golden retains
 all numerical values; its replay hash includes the empty
 `forward_pass_estimators` field added by the unified estimator schema.
+The heterogeneous prefill/decode CLI round trip verifies each role's system
+inside `timing_model.config`, along with the external AIC provider, and retains
+the recommendation-versus-replay metric checks.
 
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains
