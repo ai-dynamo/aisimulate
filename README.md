@@ -399,3 +399,8 @@ See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
 complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
 for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
 before sending a change.
+
+Engine replay synthetic workloads accept `length_sampler: numpy_random_state`
+for InferenceX-compatible seeded token lengths. The default `python_random`
+preserves existing workloads. Both sample the full input vector before output
+lengths; unknown sampler names are rejected.

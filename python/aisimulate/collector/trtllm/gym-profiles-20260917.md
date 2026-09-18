@@ -246,3 +246,9 @@ APE falls **293.78% → 3.76%**. All 2,560 requests complete in both arms.
 This is a one-point verification, not a replacement 31/263-point MAPE.
 The automatic Gym mapping and missing W4A8 TP2/4/8 profiles still need correction;
 the earlier W4A16 timings must not be relabeled as W4A8.
+
+## Full correction follow-up
+
+The mapping, W4A8 collection, and complete 263-point rerun are recorded in
+[the 2026-09-18 report](gym-w4a8-20260918.md). Earlier metrics above remain
+historical ablations.

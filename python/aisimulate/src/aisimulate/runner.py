@@ -16,6 +16,8 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
+import numpy as np
+
 from .aic import materialize_aic_num_gpu_blocks
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
@@ -1074,7 +1076,13 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
 
     random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
     random_seed = _random_seed(workload.get("random_seed", 0))
-    length_rng = random.Random(random_seed)
+    sampler = workload.get("length_sampler", "python_random")
+    if sampler == "numpy_random_state":
+        length_rng = np.random.RandomState(random_seed)
+    elif sampler == "python_random":
+        length_rng = random.Random(random_seed)
+    else:
+        raise ValueError(f"unsupported length_sampler: {sampler!r}")
     # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
     input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
     output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
@@ -1444,13 +1452,15 @@ def _sample_synthetic_lengths(
     upper: int,
     count: int,
     random_range_ratio: float,
-    rng: random.Random,
+    rng: random.Random | np.random.RandomState,
 ) -> list[int]:
     if random_range_ratio == 1.0:
         return [upper] * count
     lower = int(upper * random_range_ratio)
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
+    if isinstance(rng, np.random.RandomState):
+        return rng.randint(lower, upper + 1, size=count).tolist()
     return [rng.randint(lower, upper) for _ in range(count)]
 
 

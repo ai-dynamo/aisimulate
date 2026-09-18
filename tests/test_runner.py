@@ -1287,3 +1287,43 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
+def test_runner_honors_length_sampler(sampler):
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            workload={
+                "isl": 10,
+                "osl": 5,
+                "request_count": 5,
+                "arrival_interval_ms": 0.0,
+                "random_range_ratio": 0.8,
+                "random_seed": 0,
+                "length_sampler": sampler,
+            }
+        )
+    )
+    # Fixed vectors from the benchmark's NumPy RandomState contract and the
+    # legacy Python sampler. The entire input vector is drawn first.
+    expected = {
+        "numpy_random_state": [(8, 4), (9, 4), (8, 5), (9, 4), (9, 4)],
+        "python_random": [(9, 5), (9, 5), (8, 5), (9, 5), (10, 5)],
+    }
+    assert [(r["input_tokens"], r["output_tokens"]) for r in runtime.execution_spec["requests"]] == expected[sampler]
+
+
+def test_runner_rejects_unknown_length_sampler():
+    with pytest.raises(ValueError, match="length_sampler"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "length_sampler": "typo",
+                }
+            )
+        )
