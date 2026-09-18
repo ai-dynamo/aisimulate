@@ -444,8 +444,12 @@ def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _fpm_engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
-    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
-    assert "timing_model" not in deployment.agg_engine_args
+    timing = deployment.agg_engine_args["timing_model"]
+    assert timing["type"] == "external"
+    assert timing["provider"] == "aic"
+    assert timing["config"]["estimation_mode"] == "fpm_interpolation"
+    assert timing["config"]["fallback_policy"] == "deny"
+    assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
 
 
@@ -471,7 +475,10 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
-    assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
+    assert "aic_forward_model" not in deployment.decode_engine_args
+    assert deployment.prefill_engine_args["timing_model"]["config"]["estimation_mode"] == "auto"
+    assert deployment.decode_engine_args["timing_model"]["config"]["estimation_mode"] == "fpm_interpolation"
+    assert deployment.decode_engine_args["timing_model"]["config"]["fallback_policy"] == "deny"
     assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
     assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
 

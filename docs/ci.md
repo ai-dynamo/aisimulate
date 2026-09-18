@@ -261,12 +261,20 @@ marked it N/A.
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
 eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
 short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Fast CI and
-the numerical-check job fetch that exact commit when it is absent, including
-source commits no longer reachable from branches after a squash merge. Tolerances
+records a full baseline commit that must resolve in the checkout. Fast CI,
+the numerical-check job, and the application contracts shard fetch that exact
+commit when it is absent, including source commits no longer reachable from
+branches after a squash merge. Tolerances
 are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
+fixture after removal of its invalid FP8-block rows. Installed-wheel checks
+include the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports. The AFD qualification golden retains all numerical values; its replay
+hash includes the empty `forward_pass_estimators` field added by the unified
+estimator schema.
 
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains

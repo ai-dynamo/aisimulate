@@ -663,6 +663,13 @@ jobs:
           python -m pip install uv
           python -m uv pip install --system "${wheels[0]}[dev]"
           echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
+      - name: Fetch numerical baseline source
+        if: matrix.shard.suite == 'contracts'
+        shell: bash
+        run: |
+          baseline_sha=$(python -c 'import json; print(json.load(open(".github/prediction-numerical-sentinels.json"))["baseline_source_sha"])')
+          [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid numerical baseline SHA" >&2; exit 1; }
+          git cat-file -e "${baseline_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$baseline_sha"
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |

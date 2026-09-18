@@ -1520,15 +1520,20 @@ def test_omitted_wheel_base_preserves_dockerfile_default() -> None:
     assert omitted_input_arguments == f"WHEEL_BUILD_BASE={docker_default}"
 
 
-@pytest.mark.parametrize("workflow,job", [("fast-ci.yml", "policy"), ("ci.yml", "engine-golden-regression")])
+@pytest.mark.parametrize(
+    "workflow,job",
+    [("fast-ci.yml", "policy"), ("ci.yml", "engine-golden-regression"), ("ci.yml", "application-tests")],
+)
 def test_numerical_baseline_fetch_preserves_checkout_and_rejects_invalid_sha(tmp_path, workflow, job):
     steps = _workflow(workflow)["jobs"][job]["steps"]
     fetch = next(step for step in steps if step.get("name") == "Fetch numerical baseline source")
-    check_name = (
-        "Check active workflow contracts"
-        if workflow == "fast-ci.yml"
-        else "Check native prediction numerical sentinels"
-    )
+    check_name = {
+        "policy": "Check active workflow contracts",
+        "engine-golden-regression": "Check native prediction numerical sentinels",
+        "application-tests": "Run repository and package contracts",
+    }[job]
+    if job == "application-tests":
+        assert fetch["if"] == "matrix.shard.suite == 'contracts'"
     assert steps.index(fetch) < next(i for i, step in enumerate(steps) if step.get("name") == check_name)
     source = tmp_path / "source"
     checkout = tmp_path / "checkout"

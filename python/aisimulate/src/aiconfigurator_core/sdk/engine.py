@@ -469,9 +469,10 @@ def compile_engine(
     # tolerant database load. Explicit policy is also serialized independently
     # below, so a missing Python view cannot silently downgrade the Rust reload.
     literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
-    resolve_sglang_mla_compute(
-        model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
-    )
+    if backend == "sglang" and literal_version == "0.5.14":
+        resolve_sglang_mla_compute(
+            model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
+        )
     model = get_model(model_path, model_config, backend)
     database = _maybe_load_database(
         system,
