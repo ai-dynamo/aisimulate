@@ -50,9 +50,9 @@ pub use fpm::{
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassWorkerType,
-    FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig, LEARNED_AGGREGATE_FEATURE_NAMES,
-    LEARNED_FEATURE_COUNT, LEARNED_REQUEST_FEATURE_NAMES, LEARNED_SCHEMA_NAME,
-    LEARNED_SCHEMA_VERSION, LEARNED_SLOT_COUNT, learned_feature_names,
+    FpmRegressionConfig, LEARNED_AGGREGATE_FEATURE_NAMES, LEARNED_FEATURE_COUNT,
+    LEARNED_REQUEST_FEATURE_NAMES, LEARNED_SCHEMA_NAME, LEARNED_SCHEMA_VERSION, LEARNED_SLOT_COUNT,
+    RegressionFeatureWeights, SamplingConfig, learned_feature_names,
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,

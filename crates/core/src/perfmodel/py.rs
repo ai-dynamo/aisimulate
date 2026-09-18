@@ -1734,7 +1734,11 @@ impl PyForwardPassPerfModel {
     #[staticmethod]
     #[pyo3(signature = (source, options_json=None))]
     fn from_learned(source: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let options = parse_fpm_options(options_json)?;
+        let options = options_json
+            .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
         let inner =
             crate::ForwardPassPerfModel::from_learned(source, options).map_err(aic_to_py)?;
         Ok(Self { inner })
