@@ -347,3 +347,42 @@ def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -
         "visual_block_upper_triangle": "bool",
     }
     assert ast.unparse(method.returns) == "list[tuple[str, float, float, str]]"
+
+
+@pytest.mark.unit
+def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == "static_phase_diagnostics"
+    )
+    native_class = importlib.import_module("aisimulate_core").RustForwardPassPerfModel
+    parameters = inspect.signature(native_class.static_phase_diagnostics).parameters
+    assert [arg.arg for arg in method.args.args] == list(parameters)
+    assert {arg.arg: ast.unparse(arg.annotation) for arg in method.args.args[1:]} == {
+        "batch_size": "int",
+        "context_length": "int",
+        "prefix": "int",
+        "prefill": "bool",
+    }
+    assert ast.unparse(method.returns) == "str"
+    model = native_class.best_available(
+        json.dumps(
+            {
+                "model": "Qwen/Qwen3-32B",
+                "system": "h200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.24.0",
+                "worker_type": "aggregated",
+                "estimation_mode": "op_level",
+                "tp": 2,
+            }
+        )
+    )
+    # Zero scheduled work is an empty native JSON array, not a Python list.
+    result = model.static_phase_diagnostics(0, 128, 0, True)
+    assert isinstance(result, str)
+    assert json.loads(result) == []
