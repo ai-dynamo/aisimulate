@@ -22,7 +22,6 @@ import types
 from pathlib import Path
 
 import pytest
-
 from collector.version_resolver import _check_compat
 
 pytestmark = pytest.mark.unit

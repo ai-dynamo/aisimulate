@@ -1,16 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public AISimulate core namespace.
+"""AISimulate estimator and native performance-model API."""
 
-The implementation keeps the ``aiconfigurator_core`` package importable for
-the AISimulate 0.13.0 compatibility window. New consumers should import this module or
-``aisimulate_core.sdk``.
-"""
+from aisimulate import __version__
 
-from importlib.metadata import version
-
-from aiconfigurator_core import (
+from ._native import (
     AicEngine,
     RustForwardPassPerfModel,
     _build_smoke,
@@ -24,8 +19,6 @@ from aiconfigurator_core import (
     table_view_attributes,
     weights_ops_json,
 )
-
-__version__ = version("aisimulate")
 
 __all__ = [
     "AicEngine",

@@ -47,7 +47,7 @@ def systems_root(tmp_path):
 
 
 def _resolve(backend, version, sm_version, override, systems_root, architecture=None):
-    from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
+    from aisimulate_core.sdk.attention_lanes import resolve_attention_lane_order
 
     return resolve_attention_lane_order(backend, version, sm_version, override, systems_root, architecture)
 
@@ -98,7 +98,7 @@ _KNOWN_LANES_SORTED = ("fa3", "fla", "flashinfer", "triton", "trtllm_mha")
     ],
 )
 def test_parse_version_dotted_and_glued_forms(version, expected):
-    from aiconfigurator_core.sdk.attention_lanes import _parse_version
+    from aisimulate_core.sdk.attention_lanes import _parse_version
 
     assert _parse_version(version) == expected, f"_parse_version({version!r})"
 
@@ -107,7 +107,7 @@ def test_parse_version_glued_suffix_sorts_at_or_above_its_base_release():
     """The concrete failure mode: a glued release-candidate string must sort
     >= the release it is a candidate for, so it still floor-matches a map
     entry keyed on the plain release version."""
-    from aiconfigurator_core.sdk.attention_lanes import _parse_version
+    from aisimulate_core.sdk.attention_lanes import _parse_version
 
     assert _parse_version("1.3.0rc23") >= _parse_version("1.3.0")
 
@@ -132,7 +132,7 @@ def test_floor_match_version(systems_root):
 
 def test_unknown_backend_sorted_known_lanes_warning(systems_root, caplog):
     """An unknown backend: no map default; result is sorted known lanes then 'default'; warning logged."""
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator_core.sdk.attention_lanes"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate_core.sdk.attention_lanes"):
         result = _resolve("unknown_backend", "0.5.14", 103, None, systems_root)
 
     # All known lanes must appear, sorted, before "default"
@@ -179,7 +179,7 @@ def test_override_equal_to_map_default_not_duplicated(systems_root):
 def test_version_below_all_yaml_entries_warns(systems_root, caplog):
     """Known backend with version below all YAML keys: no map hit, warning logged, sorted known lanes."""
     # sglang YAML starts at "0.5.14"; "0.5.9" is below it → no valid floor-match
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator_core.sdk.attention_lanes"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate_core.sdk.attention_lanes"):
         result = _resolve("sglang", "0.5.9", 103, None, systems_root)
 
     assert result[:-1] == _KNOWN_LANES_SORTED, f"expected sorted known lanes before 'default'; got {result}"
@@ -220,7 +220,7 @@ def test_pinned_head_is_carried_not_reconstructed(systems_root):
     "nothing pinned" and the pinned head was handed to the density ranking as a
     donor. Only an explicitly carried tier boundary distinguishes the two.
     """
-    from aiconfigurator_core.sdk.attention_lanes import split_attention_lane_tiers
+    from aisimulate_core.sdk.attention_lanes import split_attention_lane_tiers
 
     cases = {
         ("sglang", 90, None): ("fa3",),  # framework-default map lane
@@ -249,7 +249,7 @@ def test_custom_systems_root_without_lane_defaults_falls_back_to_packaged_copy(t
     custom_root = tmp_path / "custom-systems"
     custom_root.mkdir()
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator_core.sdk.attention_lanes"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate_core.sdk.attention_lanes"):
         result = _resolve("sglang", "0.5.14", 103, None, str(custom_root))
 
     assert result[0] == "triton", f"packaged sglang/0.5.14/sm103 default must survive; got {result}"
@@ -300,7 +300,7 @@ def test_architecture_default_heads_by_sm_when_no_override(arch_systems_root, sm
 
 
 def test_architecture_default_is_the_only_default_pin(arch_systems_root):
-    from aiconfigurator_core.sdk.attention_lanes import split_attention_lane_tiers
+    from aisimulate_core.sdk.attention_lanes import split_attention_lane_tiers
 
     result = _resolve("sglang", "0.5.17", 103, None, arch_systems_root, architecture=_MAX_ARCH)
     pinned, donors = split_attention_lane_tiers(result)

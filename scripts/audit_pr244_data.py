@@ -16,7 +16,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "python/aisimulate/src/aiconfigurator_core/systems/data"
+DATA = ROOT / "python/aisimulate/src/aisimulate_core/systems/data"
 EVIDENCE = ROOT / "docs/data/pr244"
 SOURCE = "1f29ee459882796db312b8a288c040b83edbb211"
 SYSTEMS = ("b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm")

@@ -3,16 +3,15 @@
 The core API is delivered through the repository's two release artifacts at
 the same version:
 
-- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
-  compatibility namespace `aiconfigurator_core`;
+- the `aisimulate` Python wheel, whose estimator API is `aisimulate_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
 The single wheel owns the application, estimator SDK, model and system data,
 and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
-Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available in AISimulate 0.13.0 for compatibility.
+Rust-to-Python construction path. Legacy Python import namespaces are removed
+in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
 
 ## Stable Python facade
 
@@ -75,10 +74,40 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. Both
-`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
+
+## Engine context limits
+
+`EngineConfig.max_model_len` is an optional positive prompt-plus-output token
+limit for vLLM, TRT-LLM, and SGLang. Recipe adapters can map TRT-LLM
+`max_seq_len` and SGLang `context_length` to this field.
+
+- A prompt at or above the limit is rejected before prefill computation.
+- A decode destination rejects such a prompt before queuing the handoff or
+  reserving KV blocks, even when destination admission is deferred.
+- Terminal rejection removes the request's outstanding Belady input demand
+  before subsequent cache admission and eviction.
+- Generation stops when prompt plus output reaches the limit, including
+  speculative bursts and requests with explicit output token IDs. Reports
+  retain the requested output length and count only tokens actually generated.
+- TRT-LLM completion reservations and SGLang output reservations use the capped
+  output budget. Physical KV capacity remains a separate constraint.
+- The limit applies to aggregated workers and both roles in disaggregated replay.
+  An unset limit preserves the existing backend behavior.
+
+The prediction compiler and recommendation deployment builder pass explicit
+`engine.context_length` values to every backend. Prediction with
+`context_length: max` retains its existing behavior: vLLM resolves model
+metadata, while TRT-LLM and SGLang leave the scheduler limit unset.
+
+This is the simulator's normalized context-limit contract. It does not model
+backend-version-specific frontend validation margins or automatic prompt
+truncation. Successful replay alone does not establish silicon timing accuracy.
+See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045)
+for stricter boundary behavior; they do not establish a fixed token offset
+across versions or configurations.
 
 ## KV-cache capacity reservation
 

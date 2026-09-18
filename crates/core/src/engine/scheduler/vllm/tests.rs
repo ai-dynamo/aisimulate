@@ -703,50 +703,60 @@ mod destination_lifecycle {
         panic!("pending destination was not reserved");
     }
 
-    #[test]
-    fn materialized_prompt_above_max_model_len_is_rejected() {
-        let args = MockEngineArgs::builder()
-            .block_size(4)
-            .num_gpu_blocks(12)
-            .max_model_len(Some(8))
-            .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
-            .enable_chunked_prefill(true)
-            .enable_prefix_caching(true)
-            .worker_type(WorkerType::Decode)
-            .speedup_ratio(0.0)
-            .build()
-            .unwrap();
+    #[rstest]
+    fn destination_rejects_over_limit_prompt_before_reserving_kv(
+        #[values(EngineType::Vllm, EngineType::Trtllm)] engine_type: EngineType,
+        #[values(8, 9)] prompt_len: usize,
+        #[values(false, true)] allow_destination_admission: bool,
+    ) {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.max_model_len = Some(8);
         let mut core = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(30_001));
         let uuid = Uuid::from_u128(30_002);
+        let active_before = core.kv_manager.num_active_blocks();
 
-        assert!(matches!(
-            core.apply_command(SchedulerCommand::ReserveDestination {
-                handoff_id,
-                request: request(uuid, vec![1; 9], 1),
-            })
-            .unwrap(),
-            SchedulerCommandResult::DestinationAccepted { request_id } if request_id == uuid
-        ));
+        let error = core
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(uuid, vec![1; prompt_len], 1),
+                },
+                allow_destination_admission,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("max_model_len"));
+        assert!(!core.destination_is_held(handoff_id));
+        assert_eq!(core.destination_block_count(handoff_id), 0);
+        assert_eq!(core.destination_reservation_attempts(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), active_before);
+        assert!(core.retry_pending_destinations().is_empty());
+        assert!(core.is_drained());
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+
+        // Rejection must leave both IDs and KV capacity reusable by valid work.
+        assert!(reserve_destination(&mut core, handoff_id, uuid, &[1; 7], 1).is_some());
         assert_eq!(
             core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
                 .unwrap(),
             SchedulerCommandResult::Applied
         );
-
         let pass = execute(&mut core, 0.0);
         assert!(matches!(
             pass.output_signals.as_slice(),
             [OutputSignal {
                 uuid: signal_uuid,
-                token_id: None,
+                token_id: Some(_),
                 completed: true,
-                rejected: true,
+                rejected: false,
                 ..
             }] if *signal_uuid == uuid
         ));
-        assert!(!core.state().requests.contains_key(&uuid));
     }
 
     #[test]

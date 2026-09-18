@@ -30,10 +30,10 @@ from __future__ import annotations
 
 import pytest
 
-import aiconfigurator_core.sdk.operations as ops
-from aiconfigurator_core.sdk import config
-from aiconfigurator_core.sdk.models import get_model
-from aiconfigurator_core.sdk.models.blocks import moe as blocks_moe
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import config
+from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.blocks import moe as blocks_moe
 
 pytestmark = pytest.mark.unit
 
@@ -210,7 +210,7 @@ class TestHybridMoEBlocksViaBuilder:
             calls.append(kwargs)
             return original(*args, **kwargs)
 
-        from aiconfigurator_core.sdk.models import hybrid_moe
+        from aisimulate_core.sdk.models import hybrid_moe
 
         monkeypatch.setattr(hybrid_moe, "build_moe_block_ops", probe)
         _build(SCOUT)
@@ -298,7 +298,7 @@ class TestMiniMaxM3MoEBlockViaBuilder:
             calls.append((args, kwargs))
             return original(*args, **kwargs)
 
-        from aiconfigurator_core.sdk.models import minimax_m3
+        from aisimulate_core.sdk.models import minimax_m3
 
         monkeypatch.setattr(minimax_m3, "build_moe_block_ops", probe)
         _build(M3, backend="trtllm")

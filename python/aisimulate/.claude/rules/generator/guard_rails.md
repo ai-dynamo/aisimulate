@@ -2,7 +2,7 @@
 description: >
   Hard constraints (CRASH/OOM/SILENT severity) for generator output.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Guard Rails Reference

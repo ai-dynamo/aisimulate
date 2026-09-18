@@ -55,7 +55,7 @@ dsv4_hca_generation_module_perf.txt
 
 `collect.py` finalizes those staging files as parquet. Packaged tables live
 under
-`aic-core/src/aiconfigurator_core/systems/data/<system>/sparse_attention/sglang/<version>/`
+`src/aisimulate_core/systems/data/<system>/sparse_attention/sglang/<version>/`
 with the corresponding `*.parquet` names.
 
 The ops and their canonical filenames are registered in:
@@ -63,7 +63,7 @@ The ops and their canonical filenames are registered in:
 ```text
 collector/sglang/registry.py
 collector/registry_types.py
-src/aiconfigurator/sdk/common.py
+src/aisimulate/sdk/common.py
 ```
 
 The four files are loaded and merged into the existing DeepSeek-V4 attention

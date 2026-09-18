@@ -7,10 +7,10 @@ from copy import deepcopy
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -253,9 +253,9 @@ class TestGemma4VisionRuntime:
 
     @pytest.mark.parametrize("include_energy", [True, False])
     def test_visual_attention_overlay_uses_native_kernel_without_fused_extras(self, include_energy):
-        from aiconfigurator_core.sdk.engine import build_ops_json
-        from aiconfigurator_core.sdk.perf_database import get_database
-        from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+        from aisimulate_core.sdk.engine import build_ops_json
+        from aisimulate_core.sdk.perf_database import get_database
+        from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
         model = get_model(MODEL, _model_config(), "vllm")
         database = get_database("b200_sxm", "vllm", "0.24.0", database_mode="SOL")
@@ -287,8 +287,8 @@ class TestGemma4VisionRuntime:
         assert source == {name: kernel_source}
 
     def test_visual_attention_overlay_uses_compiled_kernel_evaluation(self, monkeypatch):
-        from aiconfigurator_core.sdk import engine as engine_module
-        from aiconfigurator_core.sdk import rust_engine_step as rust_engine_module
+        from aisimulate_core.sdk import engine as engine_module
+        from aisimulate_core.sdk import rust_engine_step as rust_engine_module
 
         model = self._model()
         runtime = config.RuntimeConfig(

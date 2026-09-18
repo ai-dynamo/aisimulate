@@ -587,7 +587,7 @@ fn checked_u32(value: usize, name: &str) -> Result<u32> {
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     let (memory_fraction_kind, memory_fraction_value) = config.resolved_memory_fraction()?;
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aiconfigurator_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;

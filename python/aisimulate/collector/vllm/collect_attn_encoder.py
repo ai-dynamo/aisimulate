@@ -17,6 +17,8 @@ enabling that path here is left for the future.
 __compat__ = "vllm>=0.24.0,<=0.25.0"
 
 import torch
+from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
+from collector.helper import benchmark_with_power, log_perf
 from vllm.model_executor.models.vision import get_vit_attn_backend
 from vllm.v1.attention.backends.fa_utils import get_flash_attn_version
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -26,9 +28,6 @@ from vllm.v1.attention.ops.vit_attn_wrappers import (
     vit_triton_attn_wrapper,
 )
 from vllm.version import __version__ as vllm_version
-
-from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
-from collector.helper import benchmark_with_power, log_perf
 
 
 def _int_list(values):

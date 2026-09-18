@@ -51,7 +51,7 @@ PERF_FILENAME = PerfFile.MHC_MODULE.value
 _MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "src",
-    "aiconfigurator",
+    "aisimulate_core",
     "model_configs",
 )
 

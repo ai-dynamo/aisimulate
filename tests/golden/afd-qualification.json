@@ -50,7 +50,7 @@
     "backend_version": "1.3.0rc14",
     "deployment_mode": "afd",
     "replay_spec_api_version": 1,
-    "replay_spec_sha256": "3f53f3aef8fccb41331b93d9130fa7581d8cb989a614e36ce0df7f4260cc6b7f"
+    "replay_spec_sha256": "48595691ecefc6e6b595b2e2b9687fd7394f8db3333a26d6563aef66f7fb9180"
   },
   "kind": "aisimulate.afd.qualification",
   "performance_model": {

@@ -13,15 +13,15 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import common, config, sweep
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk import common, config, sweep
+from aisimulate.sdk.errors import (
     InsufficientMemoryError,
     KVCacheCapacityError,
     NoFeasibleConfigError,
 )
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError, has_perf_data_not_available_cause
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.sweep import (
+from aisimulate.sdk.perf_database import PerfDataNotAvailableError, has_perf_data_not_available_cause
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.sweep import (
     _DEFAULT_AGG_BATCH_SCHEDULE,
     _agg_ctx_tokens_list,
     _preferred_sweep_exception,
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.unit
 
 def _legacy_ctx_tokens_list(isl: int, ctx_stride: int, enable_chunked_prefill: bool) -> list[int]:
     """Wrap the legacy helper on BaseBackend for parity comparison."""
-    from aiconfigurator.sdk.backends.factory import get_backend
+    from aisimulate.sdk.backends.factory import get_backend
 
     legacy = get_backend("trtllm")  # any backend exposes the helper, it's on BaseBackend
     return legacy._get_ctx_tokens_list_for_agg_sweep(
@@ -87,7 +87,7 @@ def test_sweep_terminal_error_prefers_structured_perf_data_miss():
 
 
 def test_sweep_afd_forwards_max_a_batch_size(monkeypatch):
-    from aiconfigurator.sdk import pareto_analysis
+    from aisimulate.sdk import pareto_analysis
 
     captured = {}
     expected = object()
@@ -338,7 +338,7 @@ def test_sweep_agg_disables_gen_dedup_for_speculative_schedules(monkeypatch):
     distinguishes b=5 from the batch its capped key collides with). With an
     active profile every guard-passing point must therefore be evaluated,
     while an inactive profile must reproduce the legacy point set exactly."""
-    from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
+    from aisimulate.sdk.speculative import SpeculativeDecodingProfile
 
     def _run(profile):
         points: list[tuple[int, int]] = []
@@ -695,7 +695,7 @@ def test_sweep_disagg_epd_composes_encoder_stage(monkeypatch):
 @pytest.mark.parametrize("video", [False, True])
 @pytest.mark.parametrize("config_builder", [False, True])
 def test_sweep_disagg_epd_kimi_k3_keeps_both_language_workers_encoder_free(video, config_builder):
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
     visual_fields = (
@@ -987,7 +987,7 @@ def test_sweep_disagg_epd_encoder_pool_sizing_under_replica_budget(monkeypatch):
 def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
     """_get_encoder_worker_candidates drops (tp, batch) points that exceed the
     encoder system's GPU memory."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     enc_cfg = common.VisionEncoderConfig(
         depth=2,
@@ -1037,7 +1037,7 @@ def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
 
 @pytest.mark.parametrize("model_path", ["moonshotai/Kimi-K3", "Qwen/Qwen3-VL-8B-Instruct"])
 def test_encoder_worker_candidates_with_real_vision_config(model_path):
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
     rows = sweep._get_encoder_worker_candidates(
@@ -1062,7 +1062,7 @@ def test_encoder_worker_candidates_with_real_vision_config(model_path):
 
 
 def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
     with pytest.raises(ValueError, match="has no vision encoder"):
@@ -1082,7 +1082,7 @@ def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
 def _encoder_candidates_env(monkeypatch, *, latency: float = 50.0):
     """Fixture env for _get_encoder_worker_candidates: real encoder ops,
     mocked perf query, nccl_mem table with keys {1, 2} only."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     enc_cfg = common.VisionEncoderConfig(
         depth=2,
@@ -1165,7 +1165,7 @@ def test_encoder_zero_latency_fails_loud(monkeypatch):
 def test_encoder_batch_candidates_capped_at_sglang_max(monkeypatch):
     """The batch cap (8) holds at every entry: explicit candidates at the
     helper, Task validation, and the single-point arguments."""
-    from aiconfigurator.sdk.task_v2 import Task
+    from aisimulate.sdk.task_v2 import Task
 
     database = _encoder_candidates_env(monkeypatch)
     rows = sweep._get_encoder_worker_candidates(
@@ -1363,7 +1363,7 @@ def test_sweep_disagg_autoscale_forwards_degradation_factors(monkeypatch):
         captured.update(kwargs)
         return {"best_config_df": pd.DataFrame([{"selected": True}])}
 
-    monkeypatch.setattr("aiconfigurator.sdk.picking.pick_autoscale", fake_pick_autoscale)
+    monkeypatch.setattr("aisimulate.sdk.picking.pick_autoscale", fake_pick_autoscale)
 
     result = sweep_disagg(
         model_path="x",

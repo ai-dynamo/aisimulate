@@ -137,8 +137,8 @@ size, but the SDK consumes ONE `moe_a2a_perf.parquet` per
 `(system, backend, version)` directory in the family tree:
 
 ```
-aic-core/src/aiconfigurator_core/systems/data/<system>/comm/sglang/<version>/moe_a2a_perf.parquet
-aic-core/src/aiconfigurator_core/systems/data/<system>/comm/sglang/<version>/collection_meta.yaml
+src/aisimulate_core/systems/data/<system>/comm/sglang/<version>/moe_a2a_perf.parquet
+src/aisimulate_core/systems/data/<system>/comm/sglang/<version>/collection_meta.yaml
 ```
 
 (`moe_a2a_perf` maps to the `comm` family in

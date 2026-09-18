@@ -37,11 +37,11 @@ COLLECTOR_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = COLLECTOR_ROOT / "cases"
 BASE_OP_CASES_DIR = CASE_ROOT / "base_ops"
 MODEL_CASES_DIR = CASE_ROOT / "models"
-_SOURCE_SYSTEMS_DIR = COLLECTOR_ROOT.parent / "src" / "aiconfigurator" / "systems"
+_SOURCE_SYSTEMS_DIR = COLLECTOR_ROOT.parent / "src" / "aisimulate_core" / "systems"
 SYSTEMS_DIR = (
     _SOURCE_SYSTEMS_DIR
     if _SOURCE_SYSTEMS_DIR.is_dir()
-    else Path(os.fspath(pkg_resources.files("aiconfigurator_core") / "systems"))
+    else Path(os.fspath(pkg_resources.files("aisimulate_core") / "systems"))
 )
 
 

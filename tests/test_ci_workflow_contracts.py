@@ -221,7 +221,7 @@ def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
                 [
                     {
                         "filename": "archive/old.py",
-                        "previous_filename": "python/aisimulate/src/aiconfigurator_core/foo.py",
+                        "previous_filename": "python/aisimulate/src/aisimulate_core/foo.py",
                     }
                 ]
             ],
@@ -252,11 +252,11 @@ def test_forward_perf_uses_complete_pr_files(pages, count, expected):
         ("Cargo.toml.bak", False),
         ("crates/core/src/engine/nested/predict.rs", True),
         ("crates/core/src/engine-other/predict.rs", False),
-        ("python/aisimulate/src/aiconfigurator_core/example.py", True),
-        ("python/aisimulate/src/aiconfigurator_core/unrelated/example.py", False),
-        ("python/aisimulate/src/aiconfigurator_core/systems/h100_sxm.yaml", True),
+        ("python/aisimulate/src/aisimulate_core/example.py", True),
+        ("python/aisimulate/src/aisimulate_core/unrelated/example.py", False),
+        ("python/aisimulate/src/aisimulate_core/systems/h100_sxm.yaml", True),
         (
-            "python/aisimulate/src/aiconfigurator_core/systems/unrelated/nested.yaml",
+            "python/aisimulate/src/aisimulate_core/systems/unrelated/nested.yaml",
             False,
         ),
     ],
@@ -717,6 +717,12 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
     assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
+    assert regression_commands.index("check_prediction_numerics.py --fetch-baseline-only") < regression_commands.index(
+        "check_prediction_numerics.py --output"
+    )
+    policy_commands = _run_commands(_workflow("fast-ci.yml")["jobs"]["policy"])
+    fetch = "check_prediction_numerics.py --fetch-baseline-only"
+    assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
     assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
@@ -888,9 +894,9 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     ).read_text()
 
     assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
-    assert "ln -s ../src /workspace/python/aisimulate/aic-core/src" in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs" in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/systems" in dockerfile
+    assert "ln -s ../src" not in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/model_configs" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/systems" in dockerfile
     assert '"cases/**/*.yaml"' in release_verifier
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
@@ -1398,7 +1404,7 @@ def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
             "-C",
             str(REPOSITORY_ROOT),
             "ls-files",
-            "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt",
+            "python/aisimulate/src/aisimulate_core/systems/**/*.txt",
         ],
         text=True,
     ).splitlines()
@@ -1809,7 +1815,7 @@ def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     assert rust_plan["components"]["collector_data"] is True
     assert rust_plan["components"]["cargo_deny"] is False
 
-    data_plan = select_components(["python/aisimulate/src/aiconfigurator_core/systems/data/b200/op.parquet"])
+    data_plan = select_components(["python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet"])
     assert data_plan["components"]["collector_data"] is True
     assert data_plan["components"]["prediction_regression"] is True
     assert data_plan["components"]["engine_golden_regression"] is True

@@ -6,7 +6,7 @@
 //! Proves that `aisimulate-core` with `embed-python` links libpython and can start a Python
 //! interpreter via PyO3's `auto-initialize`. This is the linkage that
 //! `AicEngineBuilder::build` relies on. It does NOT import the
-//! `aiconfigurator_core` extension itself (that `.so` is not on `sys.path`
+//! `aisimulate_core` extension itself (that `.so` is not on `sys.path`
 //! during `cargo test`); it only exercises the embedded interpreter.
 
 #![cfg(feature = "embed-python")]

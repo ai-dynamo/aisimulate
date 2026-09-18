@@ -950,9 +950,9 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
 
 @pytest.mark.parametrize("policy", [None, []])
 def test_candidate_preserves_default_vs_disabled_transfers_and_pinned_capacity(policy):
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     config = _fpm_recommendation()
     smart = recommendation_to_sweeper(config)
@@ -1184,8 +1184,8 @@ def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend
 def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeypatch, tmp_path, role):
     import yaml
 
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate_core.sdk import perf_database
 
     system_paths = perf_database.get_systems_paths()
     spec = perf_database.load_system_spec("gb200")
@@ -1257,7 +1257,7 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.search_space import enumerate_branches
 
-    packaged = Path(str(files("aiconfigurator_core") / "systems"))
+    packaged = Path(str(files("aisimulate_core") / "systems"))
     roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
     workers = {}
     for role in roles:
