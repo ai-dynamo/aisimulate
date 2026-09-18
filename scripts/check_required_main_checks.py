@@ -133,6 +133,12 @@ def inspect_repository(repository: str, *, api=github_api) -> dict:
         # Refuse a success assembled from different settings during a rollout.
         if pages != api(f"repos/{repository}/rules/branches/main?per_page=100"):
             report["errors"].append("Effective rules changed during inspection; rerun the verifier")
+        # Bypass actors are only exposed in source details, not effective rules.
+        # Their second read must follow the effective-rule recheck as well.
+        for detail in report["ci_rulesets"]:
+            (current,) = api(f"repos/{repository}/rulesets/{detail['id']}")
+            if current != detail:
+                report["errors"].append(f"CI ruleset {detail['id']} changed during inspection; rerun the verifier")
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
         report["errors"].append(f"Cannot verify configuration: {error}")
     report["configuration_verified"] = not report["errors"]
