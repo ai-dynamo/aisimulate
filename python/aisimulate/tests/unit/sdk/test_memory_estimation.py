@@ -206,6 +206,7 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)
@@ -254,6 +255,7 @@ def test_breakdown_accepts_nextn_without_acceptance_field(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)

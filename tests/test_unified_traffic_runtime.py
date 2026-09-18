@@ -448,6 +448,7 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
     assert timing["type"] == "external"
     assert timing["provider"] == "aic"
     assert timing["config"]["estimation_mode"] == "fpm_interpolation"
+    assert timing["config"]["fallback_policy"] == "deny"
     assert timing["config"]["worker_type"] == "aggregated"
     assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
@@ -477,6 +478,9 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
     assert "aic_forward_model" not in deployment.decode_engine_args
+    assert deployment.decode_engine_args["timing_model"]["type"] == "external"
+    assert deployment.decode_engine_args["timing_model"]["provider"] == "aic"
+    assert deployment.decode_engine_args["timing_model"]["config"]["fallback_policy"] == "deny"
     prefill = deployment.prefill_engine_args["timing_model"]["config"]
     decode = deployment.decode_engine_args["timing_model"]["config"]
     assert prefill["estimation_mode"] == "auto"

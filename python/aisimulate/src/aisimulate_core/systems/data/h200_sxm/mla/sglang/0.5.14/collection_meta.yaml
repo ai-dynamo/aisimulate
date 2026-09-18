@@ -2,12 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 schema_version: 1
-provenance: legacy
+provenance: local
 runtime:
   framework: sglang
   version: 0.5.14
 tables:
   context_mla_perf:
+    collector_ref: 35b5292364a0c8d004d3450af27f6259a17aa668
+    collector_hash: sha256:8b68f5b01b6228faffcf2114fd1e42b2309e478b8e9b47ca35129dafac9ae55b
+    case_plan_hash: sha256:6db9554fd0a54818b2f77868d80b1bd10016ffd186efebf9a93035a11be34bdb
+    collected_at: '2026-09-17'
+    rows: 3080
+    classified_failures: 0
     status: complete
   generation_mla_perf:
     status: complete

@@ -8,14 +8,102 @@ against the legacy CLI; these tests focus on construction, defaulting,
 prefix discipline, and the build_* helpers.
 """
 
+import json
+
 import pytest
+import yaml
 
 from aisimulate.sdk import common
 from aisimulate.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aisimulate.sdk.models import get_model
 from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
+@pytest.mark.parametrize("wide_ep", [False, True])
+def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatch, explicit, wide_ep):
+    # FP8 table availability must not change the audited FA3 execution dtype.
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    task = Task(
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        attention_backend="fa3",
+        fmha_quant_mode=explicit,
+    )
+    expected = explicit or common.FMHAQuantMode.bfloat16
+    assert task.fmha_quant_mode == common.FMHAQuantMode.fp8
+    mc = task.build_model_config(role="agg")
+    assert mc.fmha_quant_mode == expected
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    assert restored.build_model_config(role="agg").fmha_quant_mode == expected
+    if wide_ep:
+        mc.moe_comm_backend = {"context": "deepep_ht", "generation": "deepep_ll"}
+        mc.moe_tp_size = 1
+        mc.moe_ep_size = mc.attention_dp_size = 32
+    model = get_model(task.model_path, mc, "sglang")
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    if wide_ep:
+        attention = next(spec["WideEpContextMla"] for spec in specs if "WideEpContextMla" in spec)
+    else:
+        block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
+        attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == expected.name
+
+
+@pytest.mark.parametrize("explicit_role", [None, "agg", "prefill"])
+def test_afd_static_prefill_preserves_explicit_fmha(monkeypatch, explicit_role):
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    overrides = {}
+    if explicit_role is not None:
+        field = "fmha_quant_mode" if explicit_role == "agg" else "prefill_fmha_quant_mode"
+        overrides[field] = common.FMHAQuantMode.fp8
+    task = Task(
+        serving_mode="afd",
+        total_gpus=32,
+        afd_combined_with_pd=True,
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        attention_backend="fa3",
+        **overrides,
+    )
+    expected = common.FMHAQuantMode.fp8 if explicit_role else common.FMHAQuantMode.bfloat16
+    mc = task.build_model_config(role="prefill")
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    assert restored.build_model_config(role="prefill").fmha_quant_mode == expected
+    model = get_model(task.prefill_model_path, mc, "sglang")
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
+    attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == expected.name
+
+
+@pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
+def test_disagg_yaml_preserves_attention_precision(monkeypatch, explicit):
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    role_values = {
+        f"{role}_{key}": value
+        for role in ("prefill", "decode")
+        for key, value in {
+            "model_path": "deepseek-ai/DeepSeek-V3",
+            "system_name": "h200_sxm",
+            "backend_name": "sglang",
+            "backend_version": "0.5.14",
+            "fmha_quant_mode": explicit,
+        }.items()
+    }
+    task = Task(serving_mode="disagg", attention_backend="fa3", **role_values)
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    for role in ("prefill", "decode"):
+        assert (
+            restored.build_model_config(role=role).fmha_quant_mode == task.build_model_config(role=role).fmha_quant_mode
+        )
 
 
 # ---------------------------------------------------------------------------

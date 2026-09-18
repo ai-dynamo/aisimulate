@@ -24,6 +24,7 @@ function, only path existence, so stub file contents are fine (mirrors
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -34,9 +35,36 @@ import yaml
 from aisimulate.sdk import common
 from aisimulate.sdk.operations.base import resolve_op_data_path
 from aisimulate.sdk.perf_database import PerfDatabase, get_database
+from aisimulate_core import resolve_op_sources_report_json
 from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
+def test_sglang_mla_module_manifest_and_native_sources(system):
+    systems = Path(__file__).resolve().parents[4] / "src/aisimulate_core/systems"
+    basename = "mla_context_module_perf.parquet"
+    data = systems / "data" / system
+    primary = data / "mla/sglang/0.5.14" / basename
+    sources = set(pq.read_table(primary, columns=["kernel_source"])["kernel_source"].to_pylist())
+    manifest = yaml.safe_load((systems / "perf_data_reuse_manifest.yaml").read_text())
+    declared = {
+        group["kernel_source"]
+        for group in manifest["groups"]
+        if group["op_file"] == basename and system in group["systems"] and "sglang" in group["frameworks"]
+    }
+    assert sources and sources <= declared
+    report = json.loads(
+        resolve_op_sources_report_json(
+            str(systems), str(data), "sglang", "0.5.14", basename, str(primary), enable_shared_layer=True, strict=True
+        )
+    )
+    assert report["records"][0]["path"] == str(primary)
+    assert report["records"][0]["channel"] == "primary"
+    assert report["records"][0]["exists"]
+    assert report["records"][0]["ks_filter"] is None
+
 
 PARQUET_STUB = b"PAR1stub"  # _build_op_sources only checks existence, never parses
 

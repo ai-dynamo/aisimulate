@@ -77,6 +77,21 @@ def _select_default_mla_backend() -> str:
     raise ValueError(f"No SGLang 0.5.14 MLA backend mapping for SM{sm_version}")
 
 
+def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
+    # SGLang v0.5.14 (4289f36ef960fad8268a6b94935686e792a81432):
+    # trtllm_mla_backend.py:687-692 quantizes prefill Q/K/V to FP8 when
+    # self.data_type (the KV dtype) is FP8. Decode quantizes Q likewise.
+    # BF16 input tensors therefore do not imply BF16 kernel compute.
+    # Hopper's absorbed MLA has head_dim=576: flashattention_backend.py:
+    # 861-872 excludes it from FP8 Q casting and :1175-1181 casts KV to Q's
+    # BF16 dtype. Triton also uses BF16 compute.
+    if backend == "trtllm_mla" and kv_cache_dtype == torch.float8_e4m3fn:
+        return "fp8"
+    if backend in {"trtllm_mla", "fa3", "triton"}:
+        return "bfloat16"
+    raise ValueError(f"No audited SGLang 0.5.14 MLA compute-precision mapping for backend {backend!r}")
+
+
 class MockModelConfig:
     def __init__(
         self,
@@ -602,7 +617,7 @@ def run_mla(
     if not log_perf(
         item_list=[
             {
-                "mla_dtype": "bfloat16",
+                "mla_dtype": _mla_compute_dtype(selected_backend, kv_cache_dtype),
                 "kv_cache_dtype": str_type,
                 "num_heads": local_num_heads,
                 "batch_size": batch_size,

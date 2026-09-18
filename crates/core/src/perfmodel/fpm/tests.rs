@@ -49,7 +49,8 @@ fn context_ops() -> Vec<Op> {
             scale_factor: 1.0,
             n: 4096,
             k: 4096,
-            quant_mode: GemmQuantMode::Fp8Block,
+            // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+            quant_mode: GemmQuantMode::Fp8,
             scale_num_tokens: 0,
             low_precision_input: false,
             seq_split: 1,

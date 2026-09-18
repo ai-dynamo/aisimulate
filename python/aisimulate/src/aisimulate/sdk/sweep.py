@@ -52,6 +52,7 @@ from aisimulate.sdk.errors import (
     PerfDataNotAvailableError,
 )
 from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate.sdk.models.vit_ops import EncoderOnlyModel, build_encoder_ops
 from aisimulate.sdk.perf_database import PerfDatabase, has_perf_data_not_available_cause
 from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, merge_moe_comm_fallbacks
@@ -585,6 +586,13 @@ def sweep_agg(
             # Recreating per (parallel, tpot) destroys the cache and causes
             # an ~80x slowdown for a wide tpot list.
             backend = get_backend(backend_name)
+            resolve_sglang_mla_compute(
+                point_model_config,
+                model_path,
+                backend_name,
+                getattr(database, "version", None),
+                getattr(database, "system_spec", {}),
+            )
             model = get_model(
                 model_path=model_path,
                 model_config=point_model_config,
@@ -752,6 +760,14 @@ def _get_disagg_worker_candidates(
                 cp_size=cp_size,
             )
 
+            if role == "prefill":
+                resolve_sglang_mla_compute(
+                    point_mc,
+                    model_path,
+                    backend_name,
+                    getattr(database, "version", None),
+                    getattr(database, "system_spec", {}),
+                )
             model = get_model(model_path=model_path, model_config=point_mc, backend_name=backend_name)
 
             for b in b_list:

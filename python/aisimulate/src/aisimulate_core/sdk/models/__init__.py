@@ -47,6 +47,7 @@ from aisimulate_core.sdk.models.helpers import (
     resolve_dsv4_moe_arch_mode,
     resolve_kimi_k3_moe_arch_mode,
     resolve_nvfp4_for_system,
+    resolve_sglang_mla_compute,
     resolve_vllm_moe_execution_mode,
 )
 
@@ -262,5 +263,6 @@ __all__ = [
     "resolve_dsv4_moe_arch_mode",
     "resolve_kimi_k3_moe_arch_mode",
     "resolve_nvfp4_for_system",
+    "resolve_sglang_mla_compute",
     "resolve_vllm_moe_execution_mode",
 ]

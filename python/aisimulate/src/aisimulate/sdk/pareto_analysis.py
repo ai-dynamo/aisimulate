@@ -21,7 +21,12 @@ from aisimulate.sdk.inference_session import (
     DisaggInferenceSession,
     InferenceSession,
 )
-from aisimulate.sdk.models import check_is_moe, get_model, resolve_context_fmha_by_data
+from aisimulate.sdk.models import (
+    check_is_moe,
+    get_model,
+    resolve_context_fmha_by_data,
+    resolve_sglang_mla_compute,
+)
 from aisimulate.sdk.perf_database import PerfDatabase
 from aisimulate.sdk.utils import enumerate_ttft_tpot_constraints, strip_unicode_to_ascii
 
@@ -115,6 +120,13 @@ def agg_pareto(
             overwritten_model_config.moe_ep_size = moe_ep_size
             overwritten_model_config.attention_dp_size = dp_size
             overwritten_model_config.cp_size = cp_size
+            resolve_sglang_mla_compute(
+                overwritten_model_config,
+                model_path,
+                backend_name,
+                getattr(database, "version", None),
+                getattr(database, "system_spec", {}),
+            )
             model = get_model(
                 model_path=model_path,
                 model_config=overwritten_model_config,

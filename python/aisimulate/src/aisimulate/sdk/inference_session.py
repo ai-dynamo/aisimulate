@@ -13,6 +13,7 @@ from aisimulate.sdk import common, config, models, perf_database
 from aisimulate.sdk.backends.base_backend import BaseBackend
 from aisimulate.sdk.errors import NoFeasibleConfigError
 from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate.sdk.performance_result import merge_moe_comm_fallbacks
 from aisimulate.sdk.picking import (
     _AUTOSCALE_TTFT_CORRECTION_FACTOR,
@@ -336,6 +337,14 @@ class DisaggInferenceSession:
         Returns:
             InferenceSummary: the summary of the inference result
         """
+        prefill_model_config = copy.deepcopy(prefill_model_config)
+        resolve_sglang_mla_compute(
+            prefill_model_config,
+            model_path,
+            self._prefill_backend.name.value,
+            getattr(self._prefill_database, "version", None),
+            getattr(self._prefill_database, "system_spec", {}),
+        )
         prefill_model = models.get_model(model_path, prefill_model_config, self._prefill_backend.name.value)
         decode_model = models.get_model(model_path, decode_model_config, self._decode_backend.name.value)
         prefill_sess = InferenceSession(
@@ -503,6 +512,14 @@ class DisaggInferenceSession:
                 overwritten_model_config.moe_ep_size = moe_ep_size
                 overwritten_model_config.attention_dp_size = dp_size
                 overwritten_model_config.cp_size = cp_size
+                if mode == "static_ctx":
+                    resolve_sglang_mla_compute(
+                        overwritten_model_config,
+                        model_path,
+                        self._prefill_backend.name.value,
+                        getattr(self._prefill_database, "version", None),
+                        getattr(self._prefill_database, "system_spec", {}),
+                    )
                 model = models.get_model(
                     model_path=model_path,
                     model_config=overwritten_model_config,
@@ -1013,12 +1030,23 @@ class AFDInferenceSession:
     # ------------------------------------------------------------------ #
     # Private helpers
     # ------------------------------------------------------------------ #
-    def _build_models(self):
+    def _build_models(self, *, is_context_role: bool = False):
         """Construct A-Worker and F-Worker model instances."""
         from aisimulate.sdk.models import get_model
 
-        a_model = get_model(self._model_path, self._a_model_config, self._backend.name.value)
-        f_model = get_model(self._model_path, self._f_model_config, self._backend.name.value)
+        a_config = copy.deepcopy(self._a_model_config)
+        f_config = copy.deepcopy(self._f_model_config)
+        if is_context_role:
+            for model_config in (a_config, f_config):
+                resolve_sglang_mla_compute(
+                    model_config,
+                    self._model_path,
+                    self._backend.name.value,
+                    getattr(self._database, "version", None),
+                    getattr(self._database, "system_spec", {}),
+                )
+        a_model = get_model(self._model_path, a_config, self._backend.name.value)
+        f_model = get_model(self._model_path, f_config, self._backend.name.value)
         return a_model, f_model
 
     def _sum_latency(
@@ -1851,7 +1879,7 @@ class AFDInferenceSession:
         if free_gpu_memory_fraction is None:
             free_gpu_memory_fraction = self._backend.get_default_free_gpu_memory_fraction(self._database.version)
 
-        a_model, f_model = self._build_models()
+        a_model, f_model = self._build_models(is_context_role=phase != "decode")
 
         prefill_metrics = None
         decode_metrics = None

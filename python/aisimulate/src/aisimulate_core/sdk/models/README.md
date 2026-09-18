@@ -61,6 +61,31 @@ model_path
   -> cls.create(model_info, ...)      # construct via classmethod factory
 ```
 
+System-aware callers resolve measured execution precision before `get_model()`.
+`resolve_sglang_mla_compute()` maps inferred DeepSeek-V3/R1 attention to BF16
+on SGLang 0.5.14 SM90 FA3, for the measured BF16 model with 512-rank KV and
+64-dimensional RoPE. FA3 uses BF16 compute with either BF16 or FP8 KV storage.
+This mapping does not consult profile availability. Explicit FMHA overrides,
+FPM identities, Blackwell, and unaudited runtime/geometry combinations remain
+unchanged. Native compilation, KV memory construction, and the estimate-path
+FMHA resolver share this rule. Task preserves explicit-versus-inferred provenance
+when building each role's model config, including AFD's static prefill pool
+and its inherited aggregate overrides. Direct aggregate/prefill sweeps, the
+legacy `agg_pareto()` API, and prefill-session construction also resolve against
+their database's runtime version and system.
+Explicit modes and decode-only construction remain unchanged.
+Task YAML keeps inferred FMHA modes unset so loading it preserves runtime
+precision resolution; `to_dict()` still reports the resolved public fields.
+Wide-EP's implicit FlashInfer backend is outside the FA3 mapping.
+The raw three-argument `get_model()` API has no database version or system
+specification. External callers, including Dynamo's legacy estimator, must call
+the resolver with their database context before construction to adopt this mapping.
+It is exported by both `aisimulate_core.sdk.models` and the legacy
+`aisimulate.sdk.models` package.
+`tests/unit/sdk/models/test_context_fmha_compat.py` checks the real constructed
+context-op identities through these callers, including `KVCacheEstimator.from_request()`,
+for inferred precision and explicit FP8 overrides.
+
 ### `create()` Classmethod
 
 Each model class has a `create(cls, model_info, model_config, backend_name)` classmethod that handles construction. Per-family construction details (MoE prefix args, post-construction hooks like `set_hybrid_config`) live inside `create()`, keeping `get_model()` itself generic.

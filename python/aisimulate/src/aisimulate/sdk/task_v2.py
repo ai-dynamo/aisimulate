@@ -52,6 +52,7 @@ from aisimulate.sdk.models import (
     resolve_vllm_moe_execution_mode,
 )
 from aisimulate.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate.sdk.moe_comm_resolver import (
     a2a_covers_parallel,
     moe_compute_coverage,
@@ -1173,6 +1174,9 @@ class Task:
                 resolved = from_hf if from_hf is not None else fallback
                 self._set_role_attr(role, key, resolved)
 
+        if self.serving_mode == "afd" and self.afd_combined_with_pd:
+            # Static prefill inherits the aggregate mode unless overridden.
+            fmha_explicit["prefill"] = self.prefill_fmha_quant_mode is not None or fmha_explicit["agg"]
         self._fmha_explicit = fmha_explicit
         self._kvcache_explicit = kvcache_explicit
 
@@ -2139,6 +2143,15 @@ class Task:
                 kvcache_quant_mode_explicit=self._kvcache_explicit.get(role, False),
                 coverage_snapshot=self._large_ep_coverage(role),
             )
+        if role != "decode":
+            resolve_sglang_mla_compute(
+                model_config,
+                self._role_attr(role, "model_path"),
+                self._role_attr(role, "backend_name"),
+                self._role_attr(role, "backend_version"),
+                load_system_spec(self._role_attr(role, "system_name")),
+                fmha_quant_mode_explicit=self._fmha_explicit.get(role, False),
+            )
         return model_config
 
     def _model_config_factory(self, role: Literal["agg", "prefill", "decode"]):
@@ -2663,14 +2676,19 @@ class Task:
         return out
 
     def to_yaml(self) -> str:
-        """Return a YAML string of :func:`to_dict` output.
+        """Serialize public configuration, keeping inferred FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
         """
         import yaml
 
-        return yaml.safe_dump(self.to_dict(), sort_keys=False)
+        values = self.to_dict()
+        for role, explicit in self._fmha_explicit.items():
+            if not explicit:
+                key = "fmha_quant_mode" if role == "agg" else f"{role}_fmha_quant_mode"
+                values[key] = None
+        return yaml.safe_dump(values, sort_keys=False)
 
     # =====================================================================
     # sweep.py kwargs builders

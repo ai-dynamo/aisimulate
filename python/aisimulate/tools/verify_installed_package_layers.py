@@ -146,9 +146,16 @@ def _verify_imports() -> None:
     }
     if set(sdk.__all__) != expected_facade:
         raise RuntimeError(f"unexpected aisimulate_core.sdk facade: {sdk.__all__!r}")
-    for module_name, public_name in (("engine", "EngineHandle"), ("memory", "estimate_kv_cache")):
+    for module_name, public_name in (
+        ("engine", "EngineHandle"),
+        ("memory", "estimate_kv_cache"),
+        ("rust_engine_step", "ForwardPassPerfModelConfig"),
+        ("rust_engine_step", "ForwardPassPerfOptions"),
+    ):
         canonical = importlib.import_module(f"aisimulate_core.sdk.{module_name}")
         legacy = importlib.import_module(f"aisimulate.sdk.{module_name}")
+        if getattr(sdk, public_name) is not getattr(canonical, public_name):
+            raise RuntimeError(f"SDK facade export {public_name} lost object identity")
         if legacy is not canonical or getattr(legacy, public_name) is not getattr(canonical, public_name):
             raise RuntimeError(f"legacy SDK alias for {module_name}.{public_name} lost object identity")
 
