@@ -155,6 +155,47 @@ def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
     assert calls and all(call["speculation"] == _COST and call["nextn"] == 0 for call in calls)
 
 
+def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="meta-llama/Meta-Llama-3.1-8B",
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        worker_type="aggregated",
+        speculation=deepcopy(_COST),
+    )
+    for _ in range(2):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            provenance = model.diagnostics()["provenance"]
+            assert provenance["selected_estimation_mode"] == "op_level"
+            assert provenance["config"]["speculation"] == _COST
+            assert provenance["config"]["nextn"] == 0
+            config = ForwardPassPerfModelConfig(**provenance["config"])
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
+    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
+        RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="m",
+                system="s",
+                backend="vllm",
+                worker_type="aggregated",
+                speculation=deepcopy(_COST),
+                estimation_mode=mode,
+                fallback_policy="allow",
+            )
+        )
+
+
 def test_recommend_predict_round_trip_preserves_speculation(tmp_path):
     raw = yaml.safe_load(
         (_ROOT / "tests/e2e/configs/unified_cli/recommend/engine/02-custom-preset-throughput-per-gpu.yaml").read_text()

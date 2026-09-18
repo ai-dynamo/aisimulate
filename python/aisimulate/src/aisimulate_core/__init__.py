@@ -4,7 +4,7 @@
 """Public AISimulate core namespace.
 
 The implementation keeps the ``aiconfigurator_core`` package importable for
-the AIC 0.12.0 compatibility window. New consumers should import this module or
+the AISimulate 0.13.0 compatibility window. New consumers should import this module or
 ``aisimulate_core.sdk``.
 """
 

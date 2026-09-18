@@ -13,7 +13,7 @@ from typing import ParamSpec, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aiconfigurator/blob/main/docs/aisimulate_migration.md"
+_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md"
 _warned_entry_points: set[str] = set()
 
 _P = ParamSpec("_P")
@@ -21,7 +21,7 @@ _R = TypeVar("_R")
 
 
 def warn_legacy_cli(mode: str | None) -> None:
-    """Warn once when the CLI is run from the legacy AIC distribution."""
+    """Warn once when the legacy compatibility CLI is run."""
 
     command = "aiconfigurator cli" + (f" {mode}" if mode else "")
     key = f"cli:{mode or '<root>'}"
@@ -29,10 +29,11 @@ def warn_legacy_cli(mode: str | None) -> None:
         return
     _warned_entry_points.add(key)
     message = (
-        f"`{command}` is running from the deprecated AIConfigurator "
-        "distribution, which is planned for removal in AIConfigurator 0.13.0. "
-        f"Install `aisimulate==0.12.0` and keep running `{command} ...`; "
-        "AISimulate preserves the established command name and arguments. "
+        f"`{command}` is a deprecated compatibility command shipped by AISimulate 0.13.0. "
+        "Command removal is targeted for AISimulate 0.14.0 after every remaining "
+        "workflow has a verified unified-CLI replacement. "
+        f"Until then, keep running `{command} ...`; AISimulate preserves the "
+        "established command name and arguments. "
         f"Migration guide: {_MIGRATION_GUIDE}"
     )
     warnings.warn(message, DeprecationWarning, stacklevel=4)
@@ -51,10 +52,9 @@ def deprecated_sweeper_entry_point(
         if entry_point not in _warned_entry_points:
             _warned_entry_points.add(entry_point)
             warnings.warn(
-                f"`{entry_point}()` is deprecated and will be removed in "
-                "AIConfigurator 0.13.0. Migrate to "
-                "`aisimulate.sweeper.Sweeper(...).run(config)`. Installing "
-                "`aisimulate==0.12.0` temporarily retains the legacy "
+                f"`{entry_point}()` is deprecated. Migrate to "
+                "`aisimulate.sweeper.Sweeper(...).run(config)`. "
+                "AISimulate 0.13.0 temporarily retains the legacy "
                 f"`aiconfigurator` import namespace. Migration guide: {_MIGRATION_GUIDE}",
                 DeprecationWarning,
                 stacklevel=2,

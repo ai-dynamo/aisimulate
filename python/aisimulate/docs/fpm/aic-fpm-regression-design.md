@@ -213,7 +213,7 @@ Aggregated regression predictor:
 |---|---:|---|
 | `max_observations` | 64 | Maximum number of retained observations |
 | `min_observations` | 5 | Minimum retained observations before a fit can be ready |
-| `bucket_count` | 16 | Internal retention grid: four cells on each of the two feature axes |
+| `sampling.bins_per_axis` | `[4, 4]` | Internal retention grid, independently configurable per axis |
 
 The resulting capacity is:
 
@@ -261,12 +261,16 @@ The public Rust method returns a vector of
 as JSON, and the Python facade returns a list of dictionaries:
 
 ```python
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-model = RustForwardPassPerfModel.from_regression(
-    "aggregated",
-    {"max_observations": 64, "min_observations": 5, "bucket_count": 16},
-)
+model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B", system="h200_sxm", backend="vllm",
+    worker_type="aggregated", estimation_mode="fpm_regression",
+    estimator_config={"fpm_regression": {
+        "sampling": {"max_observations": 64, "bins_per_axis": [4, 4]},
+        "min_observations": 5,
+    }},
+))
 
 summary = model.diagnostics()
 buckets = model.regression_store_diagnostics()
@@ -335,19 +339,21 @@ The caller supplies complete, unique, iteration-aligned rank sets and correct
 worker identities. This PR does not add expected-rank-count or worker-lifecycle
 enforcement inside AISim. Gym retains its existing parser exclusions.
 
-The following signatures already exist and remain available:
+Construction uses one canonical config in both languages:
 
 ```text
-Rust:   from_regression(worker_type, options)
-        best_available(config, worker_type, options)
-        best_available_with_roots(config, worker_type, options, systems_root)
-Python: from_regression(worker_type, options=None)
-        best_available(config, worker_type, options=None)
+Rust:   ForwardPassPerfModel::best_available(config)
+Python: RustForwardPassPerfModel.best_available(config)
 ```
 
-`from_native` and `from_native_with_roots` remain role-free. Each regression
-instance keeps its role for its lifetime. A caller that needs another role
-creates a new predictor.
+`config.worker_type` is required and fixed for the model's lifetime. Select
+`estimation_mode="fpm_regression"` for regression-only construction. Auto searches
+op-level, whole-forward interpolation, then regression even when the default
+`fallback_policy="deny"` is in effect; deny constrains an explicit estimator
+selection. Sampling and fitting controls live under `estimator_config.fpm_regression`.
+The workload routing and fits described here remain unchanged. Native correction
+continues to use its legacy workload stores pending accuracy validation of a
+role-based replacement. See the [canonical API](../../../../docs/core-api.md#choosing-a-forward-pass-api).
 
 ## 9. Validation and limits
 
@@ -509,11 +515,11 @@ cross-rank summation, and derived features must be finite and nonnegative.
 
 The options are construction-time knobs and all default to `1.0`:
 
-| Formula | `ForwardPassPerfOptions` field |
+| Formula | `estimator_config.features` field |
 |---|---|
-| $\alpha$ | `regression_attention_kv_weight` |
-| $\beta$ | `regression_prefill_attention_pair_weight` |
-| $\gamma$ | `regression_ffn_token_weight` |
+| $\alpha$ | `attention_kv_weight` |
+| $\beta$ | `prefill_attention_pair_weight` |
+| $\gamma$ | `ffn_token_weight` |
 
 - $\alpha$ scales KV-token-related attention work for every role:
   $\widetilde H$ for Prefill, $K$ for Decode, and $\widetilde H+K$ for
@@ -529,16 +535,10 @@ constructing a new model, because it changes the feature and retention-cell
 coordinates. To preserve learned history, replay the original per-rank FPM
 observations into the new model.
 
-The ergonomic Python facade accepts ordinary Python floats and marshals the
-three weight fields on a shallow copy of the caller's options dictionary.
-Finite values remain JSON numbers; nonfinite values use the exact valid-JSON
-string sentinels `"NaN"`, `"Infinity"`, and `"-Infinity"`. JSON-oriented raw
-PyO3 callers may send those same sentinels. Rust deserialization maps only
-those exact strings back to their corresponding `f64` values; unknown strings
-and other value types are invalid. This transport does not relax validation:
-`from_native` and a successful native `best_available` ignore all three
-weights, whereas `from_regression` and a fallback `best_available` reject a
-decoded nonfinite value with the corresponding field-specific error.
+New configuration uses the nested feature-weight names above. The legacy
+EngineConfig/options migration adapter retains the old flat names and exact
+nonfinite JSON sentinels. These weights are ignored by a selected native model;
+regression construction rejects nonpositive or nonfinite weights.
 
 ## Reference: retention and fit pipeline
 
@@ -552,7 +552,7 @@ $$
 The existing dynamic two-dimensional grid consumes these continuous `f64`
 coordinates unchanged. Its bounds expand and trigger rebucketing, never
 shrink, and its fattest-cell eviction policy still enforces the per-bucket sample
-cap. With the default `bucket_count=16`, the grid is $4\times4$. Buckets
+cap. With the default `sampling.bins_per_axis=[4, 4]`, the grid is $4\times4$. Buckets
 choose which observations survive; they are not local predictors and are not
 queried during estimation.
 
