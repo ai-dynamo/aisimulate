@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -788,6 +789,14 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "tests/e2e/tools" in application_commands
     assert "test_core_public_api.py" not in application_commands
     assert "test_core_public_api.py" not in compatibility_commands
+
+    contract_steps = [
+        step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
+    ]
+    assert len(contract_steps) == 1
+    contract_command = contract_steps[0]["run"]
+    assert "--ignore=tests/fpm_accuracy" not in contract_command
+    assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
 
     recommendation_path = "tests/e2e/cli/test_cli_recommend.py"
     recommendation_steps = [
@@ -3113,6 +3122,11 @@ new AsyncFunction('github', 'context', 'core', process.argv[2])(github, context,
     )
 
 
+def _current_product_version():
+    manifest = tomllib.loads((REPOSITORY_ROOT / "python/aisimulate/pyproject.toml").read_text())
+    return manifest["project"]["version"]
+
+
 def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
     from packaging.version import Version
 
@@ -3129,20 +3143,26 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
         versions.append(value["dev-version"])
         assert json.loads(_nightly_version(date, number).stdout) == value
     assert versions == ["202609170000001234", "202609170000001235", "202609180000001236"]
-    assert Version("0.12.0.dev20260917") < Version("0.12.0.dev" + versions[0])
-    assert [Version("0.12.0.dev" + v) for v in versions] == sorted(Version("0.12.0.dev" + v) for v in versions)
+    base_version = _current_product_version()
+    assert Version(f"{base_version}.dev20260917") < Version(f"{base_version}.dev{versions[0]}")
+    stamped_versions = [Version(f"{base_version}.dev{version}") for version in versions]
+    assert stamped_versions == sorted(stamped_versions)
     for number in (0, -1, 10000000000, "invalid"):
         assert _nightly_version("2026-09-17T00:00:00Z", number).returncode != 0
 
 
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
-@pytest.mark.parametrize("base_version", ["0.12.0", "0.11.0"])
+@pytest.mark.parametrize("base_version", [None, "0.12.0"], ids=["current", "historical"])
 def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
+    current_version = _current_product_version()
+    base_version = base_version or current_version
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            (REPOSITORY_ROOT / name).read_text().replace('version = "0.12.0"', f'version = "{base_version}"')
+            (REPOSITORY_ROOT / name)
+            .read_text()
+            .replace(f'version = "{current_version}"', f'version = "{base_version}"')
         )
     for args in (
         ["init", "-q"],

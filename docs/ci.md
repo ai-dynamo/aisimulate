@@ -352,7 +352,7 @@ Main branch nightly CI builds the approved release surface: one `aisimulate` whe
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
 

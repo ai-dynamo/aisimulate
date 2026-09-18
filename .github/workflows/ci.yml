@@ -661,10 +661,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: matrix.shard.suite == 'contracts'
-        with:
-          node-version: "22"
       - name: Fetch the application test wheel from Artifactory
         shell: bash
         env:
@@ -699,7 +695,8 @@ jobs:
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
           aiconfigurator version
-          python -m pytest -q -c pytest.ini tests -n 4
+          python -m pytest -q -c pytest.ini tests -n 4 \
+            --ignore=tests/test_ci_workflow_contracts.py
       - name: Run unit tests
         if: matrix.shard.suite == 'unit'
         run: >-
@@ -907,8 +904,8 @@ jobs:
           release-smoke/bin/python -c
           "import importlib.metadata as metadata;
           import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0';
-          assert metadata.version('aisimulate') == '0.12.0';
+          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.13.0';
+          assert metadata.version('aisimulate') == '0.13.0';
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"

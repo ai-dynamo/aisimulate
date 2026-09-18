@@ -12,7 +12,7 @@ and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
 Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available during the AIC 0.12.0 compatibility window.
+namespace remains available in AISimulate 0.13.0 for compatibility.
 
 ## Stable Python facade
 

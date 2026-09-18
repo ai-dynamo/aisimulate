@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,41 @@ def test_fetch_baseline_fails_when_origin_cannot_supply_commit(tmp_path):
     subprocess.run(["git", "remote", "add", "origin", str(tmp_path / "missing")], cwd=tmp_path, check=True)
     with pytest.raises(subprocess.CalledProcessError):
         resolve_baseline({"baseline_source_sha": "0" * 40}, fetch=True, repository_root=tmp_path)
+
+
+def test_fetch_baseline_cli_does_not_require_prediction_cases_or_write_results(tmp_path):
+    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"baseline_source_sha": baseline}))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/check_prediction_numerics.py"),
+            "--manifest",
+            str(manifest),
+            "--fetch-baseline-only",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == f"Numerical baseline available: {baseline}"
+    assert set(tmp_path.iterdir()) == {manifest}
+
+
+@pytest.mark.parametrize("arguments", [[], ["--fetch-baseline-only", "--output", "results.json"]])
+def test_numerical_cli_requires_exactly_one_mode(tmp_path, arguments):
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/check_prediction_numerics.py"), *arguments],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--fetch-baseline-only" in result.stderr
+    assert "--output" in result.stderr
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("base", ["", "runner:latest", "runner:2.0", "runner@sha256:abc", "runner@sha256:" + "x" * 64])
