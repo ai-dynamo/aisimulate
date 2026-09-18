@@ -166,7 +166,9 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ops.ElementWise(
             "encoder_act",
             depth,
-            inter_vit // tp_size,
+            # SwiGLU activation reads both the gate and up projections (two
+            # per-shard intermediate tensors); a plain FFN reads only one.
+            2 * (inter_vit // tp_size) if enc_cfg.gated_mlp else inter_vit // tp_size,
             inter_vit // tp_size,
             0.8,
         ),

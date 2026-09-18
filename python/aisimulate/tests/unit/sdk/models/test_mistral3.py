@@ -15,6 +15,7 @@ import pytest
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk import config as sdk_config
+from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.models import get_model, get_model_family
 from aiconfigurator.sdk.models.blocks.vit import build_encoder_ops
 from aiconfigurator.sdk.utils import _parse_hf_config_json
@@ -160,3 +161,22 @@ class TestMistral3ModelGraph:
         model_config = sdk_config.ModelConfig(tp_size=1, attention_dp_size=1)
         get_model(_MODEL_PATH, model_config, backend_name="trtllm")
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
+
+    def test_encoder_memory_accounts_for_gated_swiglu_intermediate(self):
+        # The gated_mlp field must reach the encoder memory consumer: SwiGLU
+        # keeps gate+up intermediates live, so the estimate uses 2*intermediate.
+        model = get_model(_MODEL_PATH, sdk_config.ModelConfig(tp_size=1, attention_dp_size=1), backend_name="sglang")
+        enc_cfg = model.encoder_config
+        assert enc_cfg.gated_mlp is True
+
+        memory = BaseBackend()._get_encoder_component_memory(model, num_tokens=1024, embed_tokens=64)
+
+        encoder_tp = model.config.tp_size
+        qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
+        gated_width = (2 * enc_cfg.intermediate_size) // encoder_tp
+        # The SwiGLU intermediate dominates, proving gated_mlp is consumed here.
+        assert gated_width > max(3 * enc_cfg.hidden_size, qkv_width)
+        expected = 2 * 1024 * max(3 * enc_cfg.hidden_size, qkv_width, gated_width)
+        expected += 2 * 64 * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
+        expected = max(expected, 32 * 1024 * 1024)
+        assert memory["activations"] == pytest.approx(expected / (1 << 30))

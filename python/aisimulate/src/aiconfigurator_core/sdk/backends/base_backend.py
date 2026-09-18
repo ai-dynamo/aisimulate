@@ -1616,7 +1616,12 @@ class BaseBackend:
                 # an analytical lower bound, not a calibrated peak-memory model.
                 encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
                 qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
-                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
+                live_width = max(3 * enc_cfg.hidden_size, qkv_width)
+                if enc_cfg.gated_mlp:
+                    # SwiGLU keeps the gate and up intermediates live before the
+                    # down projection (same width as the Gemma4 branch above).
+                    live_width = max(live_width, (2 * enc_cfg.intermediate_size) // encoder_tp)
+                activations = 2 * num_tokens * live_width
                 # Projected embeddings (all projector instances concatenated along hidden)
                 activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
