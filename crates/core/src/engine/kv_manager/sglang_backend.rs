@@ -4,6 +4,7 @@
 //! SGLang KV manager — wraps [`RadixCache`] with request-level lifecycle
 //! operations and KV event publishing.
 
+use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::radix_cache::{KvPageId, NodeId, RadixCache};
 use crate::engine::common::hashing::{
     LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
@@ -231,6 +232,10 @@ impl SglangKvManager {
 
     pub fn cache(&self) -> &RadixCache {
         &self.cache
+    }
+
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.cache.set_belady_oracle(oracle);
     }
 
     #[cfg(test)]

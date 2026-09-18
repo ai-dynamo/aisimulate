@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: local
+runtime:
+  framework: vllm
+  version: 0.25.0
+  image: vllm/vllm-openai
+  image_digest: sha256:2f726db9babd627fb59addaed2038577fc767108680901271b069d91759d1286
+tables:
+  dsv4_csa_context_module_perf:
+    rows: 5840
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:38a6cd429db806b370f13a9b847ad836440166e29d1e68c8e0c56da13396d5db
+      collected_at: '2026-09-17'
+      rows: 5840
+      status: complete
+  dsv4_csa_generation_module_perf:
+    rows: 1544
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:21f9356813701f48d6451510032ec2746c9a64e3433c7f9954a0156c187dcae0
+      collected_at: '2026-09-17'
+      rows: 1544
+      status: complete
+  dsv4_hca_attn_module_perf:
+    rows: 3918
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:0e844f577823301a0af954d0d20baab4642bb1c0368652998bc28160dfab816d
+      collected_at: '2026-09-17'
+      rows: 3918
+      status: complete
+  dsv4_hca_context_module_perf:
+    rows: 5840
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:d36420598033f22968df6d517a051324bdac1f448ff41be9aacf12beec3dd893
+      collected_at: '2026-09-17'
+      rows: 5840
+      status: complete
+  dsv4_hca_generation_module_perf:
+    rows: 1544
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:f6f9fe724d2fa5ad60fb6d0a162f93cd7901bd26093925a5fef0cbae9f310eb4
+      collected_at: '2026-09-17'
+      rows: 1544
+      status: complete
+  dsv4_paged_mqa_logits_module_perf:
+    rows: 3918
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:5882781b43c67c93f89e3e238978f461e242c83f681effd9ee6129a4be1637eb
+      case_plan_hash: sha256:0b35d1427f37f58a74ae69d6503f0eecb1ba5d60499325b10e1dad10a8199250
+      collected_at: '2026-09-17'
+      rows: 3918
+      status: complete

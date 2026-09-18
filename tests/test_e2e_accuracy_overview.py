@@ -278,7 +278,7 @@ def test_unknown_hardware_requires_explicit_multinode_scope() -> None:
 
 
 def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> None:
-    public_dir = ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy"
+    public_dir = ROOT / "pages" / "e2e-accuracy"
     summary = json.loads((public_dir / "summary.json").read_text())
 
     assert summary["schema_version"] == OVERVIEW.SCHEMA_VERSION
@@ -305,7 +305,7 @@ def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> No
 
 
 def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
-    public_dir = ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy"
+    public_dir = ROOT / "pages" / "e2e-accuracy"
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
@@ -315,7 +315,7 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
 
 
 def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
-    public_dir = ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy"
+    public_dir = ROOT / "pages" / "e2e-accuracy"
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
@@ -325,7 +325,7 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
 
 
 def test_public_page_uses_compact_dashboard_structure() -> None:
-    page = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "index.html").read_text()
+    page = (ROOT / "pages" / "e2e-accuracy" / "index.html").read_text()
 
     assert '<html lang="en" data-theme="dark">' in page
     assert 'class="top-header"' in page
@@ -340,7 +340,7 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
 
 
 def test_public_page_validates_snapshot_urls() -> None:
-    script = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js").read_text()
+    script = (ROOT / "pages" / "e2e-accuracy" / "app.js").read_text()
 
     assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
 
@@ -555,7 +555,7 @@ def test_successful_replay_rejects_zero_latency() -> None:
 
 
 def test_page_explains_cli_migration_and_aic_deprecation() -> None:
-    page = (ROOT / "python/aisimulate/docs/e2e-accuracy/index.html").read_text()
+    page = (ROOT / "pages/e2e-accuracy/index.html").read_text()
     assert "new AISim CLI with the legacy AIC CLI" in page
     assert "confidence" in page
     assert "deprecate the AIC CLI" in page

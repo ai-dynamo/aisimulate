@@ -38,6 +38,8 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
+    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("ngram speculation requires the offline engine stack without adapters")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -312,6 +314,8 @@ def _worker_performance_model_metadata(
         "nextn": None,
         "forward_model": worker.timing.forward_model,
     }
+    if engine.speculation is not None:
+        config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
         config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
     return {
@@ -353,6 +357,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if engine.speculation is not None:
+        payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:

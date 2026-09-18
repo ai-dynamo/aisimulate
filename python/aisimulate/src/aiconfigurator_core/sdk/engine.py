@@ -417,6 +417,7 @@ def compile_engine(
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
@@ -441,6 +442,9 @@ def compile_engine(
             raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
+    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+
+    resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     model_config = build_model_config(
@@ -456,6 +460,7 @@ def compile_engine(
         comm_quant_mode=comm_quant_mode,
         forward_model=forward_model,
         attention_backend=attention_backend,
+        speculation=resolved_speculation,
     )
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
