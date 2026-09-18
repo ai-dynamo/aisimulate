@@ -4,6 +4,8 @@
 """GPU-free regression tests for TRT precision labels and native MXFP4 padding."""
 
 import ast
+import inspect
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -88,3 +90,55 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
         assert namespace["RenormalizeMoeRoutingMethod"].call_args.kwargs["output_dtype"] is namespace["torch"].bfloat16
     else:
         assert not namespace["RenormalizeMoeRoutingMethod"].call_args.kwargs
+
+
+@pytest.mark.parametrize("outcomes", ["fail,fail", "fail,pass", "pass,fail", "pass,pass", "fatal", "cached"])
+def test_moe_autotuning_requires_success_or_loaded_cache(outcomes):
+    tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_moe_torch")
+    tuning = next(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Name)
+        and node.test.operand.id == "cache_loaded"
+    )
+
+    class AcceleratorError(RuntimeError):
+        pass
+
+    failure = RuntimeError("ordinary tuning failure")
+    fatal = AcceleratorError("CUDA context lost")
+    effects = {"fail": failure, "pass": None, "fatal": fatal, "cached": None}
+    forward = MagicMock(side_effect=[effects[item] for item in outcomes.split(",")])
+    namespace = {
+        "torch": SimpleNamespace(
+            AcceleratorError=AcceleratorError,
+            cuda=SimpleNamespace(synchronize=lambda: None),
+            inference_mode=nullcontext,
+        ),
+        "cache_loaded": outcomes == "cached",
+        "num_tokens_lists": [2, 4, 8],
+        "max_tokens": 4,
+        "inspect": inspect,
+        "autotune": nullcontext,
+        "moe": SimpleNamespace(forward=forward),
+        "hidden_states_max_tokens": MagicMock(),
+        "logits_max_tokens": MagicMock(),
+        "min_latency_mode": False,
+    }
+    block = compile(ast.Module(body=[tuning], type_ignores=[]), "collect_moe.py", "exec")
+    if outcomes == "fail,fail":
+        with pytest.raises(RuntimeError, match="any eligible token count") as caught:
+            exec(block, namespace)
+        assert caught.value.__cause__ is failure
+    elif outcomes == "fatal":
+        with pytest.raises(AcceleratorError) as caught:
+            exec(block, namespace)
+        assert caught.value is fatal
+    else:
+        exec(block, namespace)
+    expected_calls = 0 if outcomes == "cached" else 1 if outcomes == "fatal" else 2
+    assert forward.call_count == expected_calls

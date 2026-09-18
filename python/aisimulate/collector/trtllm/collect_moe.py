@@ -688,6 +688,8 @@ def run_moe_torch(
 
         if not cache_loaded:
             torch.cuda.synchronize()
+            tuning_succeeded = False
+            last_tuning_error = None
             for i in range(len(num_tokens_lists)):
                 max_tokens_for_tuning = num_tokens_lists[-i - 1]
                 if max_tokens_for_tuning > max_tokens:
@@ -710,9 +712,16 @@ def run_moe_torch(
                                 do_finalize=not min_latency_mode,
                             )
                         torch.cuda.synchronize()
+                        tuning_succeeded = True
                     except Exception as e:
-                        print(f"tune failed for {max_tokens_for_tuning} tokens: {e}, fallback to samller tokens")
+                        accelerator_error = getattr(torch, "AcceleratorError", None)
+                        if accelerator_error is not None and isinstance(e, accelerator_error):
+                            raise
+                        last_tuning_error = e
+                        print(f"tune failed for {max_tokens_for_tuning} tokens: {e}, trying smaller tokens")
                         continue
+            if not tuning_succeeded:
+                raise RuntimeError("MoE autotuning did not succeed for any eligible token count") from last_tuning_error
 
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":

@@ -667,3 +667,12 @@ Explicit limits must be positive for one-shot module collection.
 Omitting the option keeps SGLang's default. The existing
 wide-EP and DSA paths keep their separate behavior. The ordinary context table
 uses the existing consumer schema; this does not add mixed-precision modeling.
+
+## TRT-LLM MoE autotuning failures
+
+TRT-LLM MoE collection requires either a loaded tactic cache or at least one
+successful autotuning attempt before measuring a tuning-enabled case. Ordinary
+failures may try smaller eligible token counts; if every attempt fails, the
+case raises before timing or publishing rows. CUDA accelerator errors propagate
+immediately. The successful collection path and historical profile values are
+unchanged by this failure guard.
