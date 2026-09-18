@@ -18,6 +18,12 @@ from aisimulate.sweeper.sample import unroll_sample
 BACKEND_VERSION = "1.3.0rc10"
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_deployment_preserves_context_limit_for_all_backends(backend):
+    deployment = _agg_deployment(space=_space(context_length=4096), selection=_agg_selection(backend=backend))
+    assert deployment.agg_engine_args["max_model_len"] == 4096
+
+
 def _space(**overrides) -> SearchSpace:
     values = {"model_name": "example/model", "hardware_sku": "example_sku"}
     values.update(overrides)

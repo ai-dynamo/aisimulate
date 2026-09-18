@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_source_sha": "af91885dfdeddedebd256c0c4df11a6f3e75e97e",
+  "baseline_source_sha": "d066e918705b98e2d55eed55743ce8d225f129ea",
   "interpretation": "Native prediction stability sentinels; not measured-hardware accuracy. Two percent relative and 0.0001 ms absolute tolerance permit small numerical changes; baseline changes require explained review.",
   "cases": [
     {
@@ -184,6 +184,182 @@
         "osl": 256
       },
       "expected_ms": 2192.9660386705996,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "trtllm-Qwen3-32B-predict_prefill_latency-1-1024",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_prefill_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 1024,
+        "prefix": 0
+      },
+      "expected_ms": 24.59240663850414,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "trtllm-Qwen3-32B-predict_prefill_latency-1-8192",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_prefill_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 8192,
+        "prefix": 128
+      },
+      "expected_ms": 148.56245547690375,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "trtllm-Qwen3-32B-predict_decode_latency-1-1024",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_decode_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 1024,
+        "osl": 2
+      },
+      "expected_ms": 7.390312495740691,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "trtllm-Qwen3-32B-predict_decode_latency-8-8192",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_decode_latency",
+      "arguments": {
+        "bs": 8,
+        "isl": 8192,
+        "osl": 256
+      },
+      "expected_ms": 1972.7326953236038,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "sglang-Qwen3-32B-predict_prefill_latency-1-1024",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_prefill_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 1024,
+        "prefix": 0
+      },
+      "expected_ms": 22.305479433256153,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "sglang-Qwen3-32B-predict_prefill_latency-1-8192",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_prefill_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 8192,
+        "prefix": 128
+      },
+      "expected_ms": 142.86746566710053,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "sglang-Qwen3-32B-predict_decode_latency-1-1024",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_decode_latency",
+      "arguments": {
+        "bs": 1,
+        "isl": 1024,
+        "osl": 2
+      },
+      "expected_ms": 7.367158565634071,
+      "rtol": 0.02,
+      "atol_ms": 0.0001
+    },
+    {
+      "id": "sglang-Qwen3-32B-predict_decode_latency-8-8192",
+      "compile": {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "tp_size": 4,
+        "database_mode": "SILICON",
+        "shared_layer": false,
+        "forward_model": "op_level"
+      },
+      "method": "predict_decode_latency",
+      "arguments": {
+        "bs": 8,
+        "isl": 8192,
+        "osl": 256
+      },
+      "expected_ms": 1916.6777711920129,
       "rtol": 0.02,
       "atol_ms": 0.0001
     }
