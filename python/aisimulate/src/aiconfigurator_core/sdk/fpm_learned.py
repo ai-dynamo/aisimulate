@@ -143,18 +143,29 @@ def _open_text(path: str | os.PathLike[str]):
 
 
 def _unwrap_record(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Accept a flat FPM record, a Dynamo trace envelope, or a sink record."""
+    """Accept a flat FPM record, a Dynamo trace envelope, or a sink record.
+
+    The trace sink's ``observed_at_unix_ms`` (envelope level) is copied onto the
+    FPM mapping so callers can window records by wall-clock time.
+    """
     if "scheduled_requests" in raw:
         return raw
+    fpm = None
     event = raw.get("event")
     if isinstance(event, dict):
-        fpm = event.get("fpm")
-        if isinstance(fpm, dict) and "scheduled_requests" in fpm:
-            return fpm
-    fpm = raw.get("fpm")
-    if isinstance(fpm, dict) and "scheduled_requests" in fpm:
-        return fpm
-    return None
+        candidate = event.get("fpm")
+        if isinstance(candidate, dict) and "scheduled_requests" in candidate:
+            fpm = candidate
+    if fpm is None:
+        candidate = raw.get("fpm")
+        if isinstance(candidate, dict) and "scheduled_requests" in candidate:
+            fpm = candidate
+    if fpm is None:
+        return None
+    for key in ("observed_at_unix_ms", "recv_ms"):
+        if key in raw and key not in fpm:
+            fpm[key] = raw[key]
+    return fpm
 
 
 def iter_fpm_records(paths: Iterable[str | os.PathLike[str]]) -> Iterator[dict[str, Any]]:
