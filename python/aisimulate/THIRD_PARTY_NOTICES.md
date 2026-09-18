@@ -440,8 +440,8 @@ SOFTWARE.
 ## SGLang DeepSeek-V4.1 serving contracts
 
 The V4.1 execution and performance-model logic in
-`src/aiconfigurator_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
-(with the same `src/aiconfigurator_core/` prefix), and repository-root
+`src/aisimulate_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
+(with the same `src/aisimulate_core/` prefix), and repository-root
 `crates/core/src/perfmodel/operators/dsv41.rs` is informed by and modified from
 SGLang's serving architecture at immutable commit
 `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`:
@@ -475,11 +475,11 @@ adaptations of, the named DeepSeek model repositories:
 | `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
 | `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
 | `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
 | `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
 
-The V4.1 descriptor and performance formulas in `src/aiconfigurator_core/sdk/deepseek_v41.py`,
-`src/aiconfigurator_core/sdk/models/deepseek_v41.py`, and repository-root
+The V4.1 descriptor and performance formulas in `src/aisimulate_core/sdk/deepseek_v41.py`,
+`src/aisimulate_core/sdk/models/deepseek_v41.py`, and repository-root
 `crates/core/src/perfmodel/operators/dsv41.rs` are AISimulate performance-model
 adaptations of the architecture described by `inference/model.py` and
 `DeepSeek_V41_Tech_Report.pdf` at the same V4.1 revision (modified; no model execution code).
