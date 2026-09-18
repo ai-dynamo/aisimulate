@@ -1520,6 +1520,60 @@ def test_omitted_wheel_base_preserves_dockerfile_default() -> None:
     assert omitted_input_arguments == f"WHEEL_BUILD_BASE={docker_default}"
 
 
+@pytest.mark.parametrize("workflow,job", [("fast-ci.yml", "policy"), ("ci.yml", "engine-golden-regression")])
+def test_numerical_baseline_fetch_preserves_checkout_and_rejects_invalid_sha(tmp_path, workflow, job):
+    steps = _workflow(workflow)["jobs"][job]["steps"]
+    fetch = next(step for step in steps if step.get("name") == "Fetch numerical baseline source")
+    check_name = (
+        "Check active workflow contracts"
+        if workflow == "fast-ci.yml"
+        else "Check native prediction numerical sentinels"
+    )
+    assert steps.index(fetch) < next(i for i, step in enumerate(steps) if step.get("name") == check_name)
+    source = tmp_path / "source"
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    for message in ("baseline", "head"):
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=CI Test",
+                "-c",
+                "user.email=ci@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "--signoff",
+                "-m",
+                message,
+            ],
+            cwd=source,
+            check=True,
+            capture_output=True,
+        )
+        if message == "baseline":
+            baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    subprocess.run(["git", "clone", "--depth=1", source.as_uri(), str(checkout)], check=True, capture_output=True)
+    assert subprocess.run(["git", "cat-file", "-e", baseline], cwd=checkout, capture_output=True).returncode != 0
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+    manifest = checkout / ".github/prediction-numerical-sentinels.json"
+    manifest.parent.mkdir()
+    payload = json.dumps({"baseline_source_sha": baseline})
+    manifest.write_text(payload)
+    # Execute the actual workflow shell, including its normal fail-fast flags.
+    subprocess.run(["bash", "-eo", "pipefail", "-c", fetch["run"]], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(["git", "cat-file", "-e", f"{baseline}^{{commit}}"], cwd=checkout, check=True)
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout) == head
+    assert manifest.read_text() == payload
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=checkout, check=True)
+    subprocess.run(["bash", "-eo", "pipefail", "-c", fetch["run"]], cwd=checkout, check=True, capture_output=True)
+    manifest.write_text(json.dumps({"baseline_source_sha": "main"}))
+    result = subprocess.run(["bash", "-eo", "pipefail", "-c", fetch["run"]], cwd=checkout, capture_output=True)
+    assert result.returncode != 0
+
+
 def test_containerized_workflows_do_not_require_git_lfs_during_checkout() -> None:
     jobs = (
         ("ci.yml", "engine-golden-regression"),

@@ -833,6 +833,12 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+      - name: Fetch numerical baseline source
+        shell: bash
+        run: |
+          baseline_sha=$(python -c 'import json; print(json.load(open(".github/prediction-numerical-sentinels.json"))["baseline_source_sha"])')
+          [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid numerical baseline SHA" >&2; exit 1; }
+          git cat-file -e "${baseline_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$baseline_sha"
       - name: Check native prediction numerical sentinels
         run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

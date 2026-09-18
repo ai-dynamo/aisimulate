@@ -261,7 +261,9 @@ marked it N/A.
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
 eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
 short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
+records a full baseline commit that must resolve in the checkout. Fast CI and
+the numerical-check job fetch that exact commit when it is absent, including
+source commits no longer reachable from branches after a squash merge. Tolerances
 are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
