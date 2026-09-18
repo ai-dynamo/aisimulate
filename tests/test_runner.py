@@ -1468,9 +1468,7 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, la
 
 
 @pytest.mark.parametrize("root_location", ["role", "timing"])
-def test_direct_replay_resolves_aliases_in_the_effective_systems_root(
-    monkeypatch, tmp_path, root_location
-):
+def test_direct_replay_resolves_aliases_in_the_effective_systems_root(monkeypatch, tmp_path, root_location):
     from pathlib import Path
 
     import yaml
