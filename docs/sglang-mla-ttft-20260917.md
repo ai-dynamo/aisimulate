@@ -227,3 +227,11 @@ A closer analytical value does not justify copying that multiplier into replay.
 - Every raw file has a SHA256 entry in the paired artifact. Raw external source
   and server logs remain in the local evidence directory; they are not vendored
   into this repository.
+
+### Compatible module data follow-up
+
+The [436-row module collection and unchanged-input replay](sglang-mla-module-20260917.md)
+improves all-84 TTFT MAPE from 58.83% to 55.35% on the KV-corrected baseline.
+The 26 uniform FP8 points improve from 64.56% to 53.34%; the 48 mixed-projection
+NVFP4 and 10 H200 controls remain identical. Mixed-projection module modeling
+is deferred and recorded in the perf-alignment deck's **Known gaps** section.
