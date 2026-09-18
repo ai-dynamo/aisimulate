@@ -5,7 +5,7 @@
 
 Exercises the naive-fallback math (MLA-aware per-token KV, rough weight estimate,
 80%-of-post-weight reservation, default constants) and the OfFree/OfTotal native
-budget formulas. ``sdk.memory`` imports the compiled ``aiconfigurator_core``
+budget formulas. ``sdk.memory`` imports the compiled ``aisimulate_core``
 extension at module top, so these tests are skipped (``pytest.importorskip``)
 when it is not built. The native budget math is tested with a synthetic breakdown
 (no perf DB / model build), and the routing in ``estimate_kv_cache`` is driven by
@@ -23,14 +23,14 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# ``sdk.memory`` imports the compiled ``aiconfigurator_core`` extension at module
+# ``sdk.memory`` imports the compiled ``aisimulate_core`` extension at module
 # top, so these pure-Python tests require it to be importable. Skip them when it
 # is not built rather than stubbing ``sys.modules`` — a stub would leak to other
 # test modules in the same xdist worker and break tests that use the real
 # extension (e.g. the FPM pyclass).
-pytest.importorskip("aiconfigurator_core")
+pytest.importorskip("aisimulate_core")
 
-from aiconfigurator.sdk import memory
+from aisimulate.sdk import memory
 
 _GIB = 1 << 30
 
@@ -206,6 +206,7 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)
@@ -254,6 +255,7 @@ def test_breakdown_accepts_nextn_without_acceptance_field(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)
@@ -270,6 +272,56 @@ def test_breakdown_accepts_nextn_without_acceptance_field(monkeypatch):
     )
     assert captured["nextn"] == 2
     assert captured["has_nextn_accepted"] is False
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("extra_graph_gib", [0, 1])
+def test_prefill_workspace_respects_backend_kv_pool(monkeypatch, backend, extra_graph_gib):
+    """A larger prefill budget must not consume SGLang's static KV pool."""
+
+    class Model:
+        def get_kvcache_bytes_per_sequence(self, seq_len):
+            return 1024 * seq_len
+
+        def get_kvcache_max_tokens(self, budget):
+            return int(budget // 1024)
+
+    class Backend:
+        def _get_memory_usage(self, *args, num_tokens, **kwargs):
+            return {"weights": 59, "activations": num_tokens / 1024, "others": 2, "nccl": 1}
+
+    class Database:
+        def __init__(self):
+            self.version = "0.5.12"
+            self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
+
+    monkeypatch.setattr(memory, "get_model", lambda *args: Model())
+    monkeypatch.setattr(memory, "get_backend", lambda *args: Backend())
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *args, **kwargs: Database())
+    budgets = []
+    for tokens in (1024, 16384):
+        result = memory.estimate_kv_cache(
+            "test-model",
+            "test-system",
+            backend,
+            max_num_tokens=tokens,
+            max_batch_size=128,
+            memory_fraction_kind="of_free" if backend == "trtllm" else "of_total",
+            memory_fraction_value=0.8,
+            cuda_graph_reserved_bytes=extra_graph_gib * _GIB,
+        )
+        # Diagnostics describe the forward footprint even when it is outside
+        # the static pool. Explicit extra graph reservation still consumes KV.
+        assert result["memory_breakdown"]["activations_bytes"] == tokens / 1024 * _GIB
+        assert result["memory_breakdown"]["cuda_graph_reserved_bytes"] == extra_graph_gib * _GIB
+        budgets.append(result["total_kv_size_bytes"])
+        assert result["total_kv_size_tokens"] == result["total_kv_size_bytes"] // 1024
+    expected_gib = {
+        "sglang": [18.6 - extra_graph_gib, 18.6 - extra_graph_gib],
+        "vllm": [17 - extra_graph_gib, 2 - extra_graph_gib],
+        "trtllm": [(37 - extra_graph_gib) * 0.8, (22 - extra_graph_gib) * 0.8],
+    }
+    assert budgets == pytest.approx([value * _GIB for value in expected_gib[backend]], abs=1)
 
 
 def test_native_capacity_override_wins():

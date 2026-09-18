@@ -979,6 +979,7 @@ engine:
 | `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
+| `engine.speculation` | Omitted (disabled) | `x` | `-` | Optional ngram draft count, conditional acceptance rates, and sampling seed; see [prompt lookup](#prompt-lookup-ngram-speculative-decoding). |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
 | `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
@@ -1125,6 +1126,60 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+<a id="prompt-lookup-ngram-speculative-decoding"></a>
+
+### Prompt-lookup (ngram) speculative decoding
+
+Both `predict` and `recommend` accept an optional `engine.speculation` block.
+For example, add this block under `engine` in a vLLM configuration:
+
+```yaml
+speculation:
+  kind: ngram
+  num_speculative_tokens: 3
+  acceptance_rates: [0.8, 0.6, 0.4]
+  seed: 42
+```
+
+Or override the same configuration from the command line:
+
+```bash
+aisimulate predict -c prediction.yaml \
+  --set engine.backend=vllm \
+  --set 'engine.speculation={kind: ngram, num_speculative_tokens: 3, acceptance_rates: [0.8, 0.6, 0.4], seed: 42}' \
+  --output-dir ./ngram-prediction
+```
+
+The draft-token count is an integer from 1 to 5, matching the native Replay
+sampler's current limit. Supply exactly one conditional acceptance probability
+per draft token, each finite and in `[0, 1]`. Entry `i` is the probability of
+accepting token `i` given that all preceding draft tokens were accepted.
+These are workload assumptions: the example's expected progress per decode
+round is `1 + 0.8 + 0.8*0.6 + 0.8*0.6*0.4 = 2.472` tokens. The seed is an
+unsigned 64-bit integer (default `42`). Sampling stops at the first rejection
+and clips the last burst to the remaining output length.
+
+The existing ngram performance model prices target verification at draft count
+plus one, with no draft network, draft weights, or draft KV cache. Replay uses
+that iteration cost together with sampled accepted-token progress. It assumes
+a lookup draft is available every decode round (`trigger_rate = 1`); actual
+prompt/output token matching, mixed drafted/draftless rounds, and host lookup
+latency are not modeled. Fixed/polynomial timing overrides still work, but their
+decode latency is per verification round and does not estimate ngram costs.
+Prompt lookup is separate from `kv_cache.prefix_caching` and AIC's `--prefix N`
+cached-prompt assumption.
+
+This release supports offline engine-stack vLLM aggregated and disaggregated
+language workers with operation-level timing. SGLang, TensorRT-LLM, FPM,
+AFD/EPD, host/G3 offload, AgentX agentic execution, and Dynamo adapters are not
+qualified for this option. MTP/EAGLE and other schemes remain on their existing
+SDK/compatibility interfaces. Omit `engine.speculation` to disable speculation.
+
+Recommendation pins this block for every candidate; it does not search draft
+length or acceptance. Saved prediction YAML retains the block for replay.
+Backend deployment artifact generation rejects these candidates until the
+ngram runtime flags are supported.
 
 <a id="native-vllm-host-offload-prediction"></a>
 

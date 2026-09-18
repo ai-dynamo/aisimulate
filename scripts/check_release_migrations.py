@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Block release staging while source-controlled downstream migrations remain."""
+"""Check downstream migrations before stable publication; not a nightly gate."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def require_completed_migrations(path: Path = GATES) -> None:
             raise ValueError("each release gate needs a pull_request and requirement")
     if pending:
         details = "\n".join(f"- {item['pull_request']}: {item['requirement']}" for item in pending)
-        raise RuntimeError(f"Release publication is blocked by pending downstream migrations:\n{details}")
+        raise RuntimeError(f"Stable release publication is blocked by pending downstream migrations:\n{details}")
 
 
 def main(argv: list[str] | None = None) -> int:

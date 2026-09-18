@@ -7,7 +7,7 @@ on:
     - cron: "17 9 * * *"
   workflow_run:
     # Retain the old main workflow name for runs started before the rename.
-    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI", "E2E Accuracy Matrix"]
+    workflows: ["FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI", "E2E Accuracy Matrix", "FPM Accuracy Matrix"]
     types: [completed]
     branches: [main, 'release/**']
   pull_request:
@@ -31,12 +31,21 @@ on:
       - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
       - "scripts/check_fpe_support_matrix_browser.py"
-      - "python/aisimulate/docs/index.html"
-      - "python/aisimulate/docs/support-matrix/**"
-      - "python/aisimulate/docs/e2e-accuracy/**"
-      - "python/aisimulate/docs/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+      - "pages/fpm-accuracy/**"
+      - "scripts/fpm_accuracy/**"
+      - "scripts/run_fpm_accuracy.py"
+      - "scripts/prepare_fpm_accuracy_pages.py"
+      - "scripts/check_fpm_accuracy_browser.py"
+      - "tests/fpm_accuracy/**"
+      - "tests/test_fpm_accuracy_workflow.mjs"
+      - ".github/workflows/fpm-accuracy.yml"
+      - ".github/workflows/fpm-accuracy-branch.yml"
+      - "pages/index.html"
+      - "pages/support-matrix/**"
+      - "pages/e2e-accuracy/**"
+      - "pages/fpe-support-matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
   push:
     branches: [main]
     paths:
@@ -54,12 +63,21 @@ on:
       - "scripts/run_release_fpe.py"
       - ".github/workflows/release-nightly-ci.yml"
       - ".github/workflows/fpe-release-qualify.yml"
-      - "python/aisimulate/docs/index.html"
-      - "python/aisimulate/docs/support-matrix/**"
-      - "python/aisimulate/docs/e2e-accuracy/**"
-      - "python/aisimulate/docs/fpe-support-matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+      - "pages/fpm-accuracy/**"
+      - "scripts/fpm_accuracy/**"
+      - "scripts/run_fpm_accuracy.py"
+      - "scripts/prepare_fpm_accuracy_pages.py"
+      - "scripts/check_fpm_accuracy_browser.py"
+      - "tests/fpm_accuracy/**"
+      - "tests/test_fpm_accuracy_workflow.mjs"
+      - ".github/workflows/fpm-accuracy.yml"
+      - ".github/workflows/fpm-accuracy-branch.yml"
+      - "pages/index.html"
+      - "pages/support-matrix/**"
+      - "pages/e2e-accuracy/**"
+      - "pages/fpe-support-matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
 
 permissions:
   # Build and validate repository content without Pages access.
@@ -76,7 +94,8 @@ jobs:
       (github.ref == 'refs/heads/main' &&
       (github.event_name != 'workflow_run' ||
       ((github.event.workflow_run.conclusion == 'success' ||
-      (github.event.workflow_run.name == 'E2E Accuracy Matrix' &&
+      ((github.event.workflow_run.name == 'E2E Accuracy Matrix' ||
+      github.event.workflow_run.name == 'FPM Accuracy Matrix') &&
       github.event.workflow_run.conclusion == 'failure')) &&
       github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-latest
@@ -107,28 +126,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
+      - name: Prepare qualified FPM accuracy snapshots
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_fpm_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-fpm"
       - name: Build public deployment with qualified FPE and accuracy data
         if: github.event_name != 'pull_request'
         run: |
           python scripts/build_pages_site.py --accuracy-refs --output-dir _site \
-            --fpe-data-dir fpe-pages-data --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy"
+            --fpe-data-dir fpe-pages-data --accuracy-artifacts "${RUNNER_TEMP}/qualified-accuracy" \
+            --fpm-artifacts "${RUNNER_TEMP}/qualified-fpm"
       - name: Build pull request preview from repository data
         if: github.event_name == 'pull_request'
         run: python scripts/build_pages_site.py --accuracy-refs --output-dir _site
       - name: Test public artifact and accuracy contracts
         run: |
-          python -m pip install pytest==8.4.2 pyyaml==6.0.3
-          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py -q
+          python -m pip install pytest==8.4.2
+          python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/fpm_accuracy -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Test accuracy UI state
-        run: node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
+        run: node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs tests/test_fpm_accuracy_workflow.mjs
       - name: Test FPE branch selection in Chromium
         run: |
           python -m pip install playwright==1.63.0
           python -m playwright install --with-deps chromium
           python scripts/check_fpe_support_matrix_browser.py
+          python scripts/check_fpm_accuracy_browser.py
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

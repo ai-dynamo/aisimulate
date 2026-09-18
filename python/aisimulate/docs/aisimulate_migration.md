@@ -47,7 +47,7 @@ owner without renaming the user-facing CLI.
 
 ## Migrate Sweeper code
 
-Replace direct calls to `aiconfigurator.sdk.sweep.sweep_agg`,
+Replace direct calls to `aisimulate.sdk.sweep.sweep_agg`,
 `sweep_disagg`, or `sweep_afd` with the AISimulate Sweeper and an explicit
 runner:
 

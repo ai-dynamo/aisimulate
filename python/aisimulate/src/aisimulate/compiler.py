@@ -8,13 +8,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .aic import (
+from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
-from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -39,6 +39,8 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
+    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("ngram speculation requires the offline engine stack without adapters")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -73,7 +75,7 @@ def prediction_to_replay_spec(
 def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
     if deployment.backend_version not in {"current", "previous", "next"}:
         return deployment
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     updates = {}
     metadata = dict(deployment.performance_model_metadata)
@@ -164,7 +166,7 @@ def _deployment(
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
-        from aiconfigurator_core.sdk.perf_database import load_system_spec
+        from aisimulate_core.sdk.perf_database import load_system_spec
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -372,6 +374,7 @@ def _worker_performance_model_metadata(
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": engine.nextn or None,
+            **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
             **{
                 name: getattr(engine, name)
@@ -415,6 +418,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if engine.speculation is not None:
+        payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:
@@ -464,7 +469,7 @@ def _worker_engine_args(
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
-        from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -484,6 +489,7 @@ def _worker_engine_args(
             kv_block_size=block_size,
             nextn=engine.nextn,
             **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
             estimator_config=timing.estimator_config
@@ -493,7 +499,7 @@ def _worker_engine_args(
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
-        timing_config = canonical.to_dict()
+        timing_config = omit_inactive_moe_controls(canonical.to_dict())
         for key in (
             "gpu_memory_utilization",
             "mem_fraction_static",

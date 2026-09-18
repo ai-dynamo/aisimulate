@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -18,6 +19,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
 SPEC = importlib.util.spec_from_file_location("build_pages_site", SCRIPT_PATH)
 assert SPEC and SPEC.loader
@@ -64,7 +66,7 @@ def qualified_archive(
         "fpe-qualification.json": json.dumps(report),
         FPE.DATA_PREFIX + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
         FPE.DATA_PREFIX + "b200_sxm.csv": csv_output.getvalue(),
-        "python/aisimulate/docs/fpe-support-matrix/index.html": "untrusted artifact HTML",
+        "pages/fpe-support-matrix/index.html": "untrusted artifact HTML",
         "../../escape.py": "untrusted artifact code",
     }
     files.update(overrides or {})
@@ -804,14 +806,14 @@ class LegacySnapshotTest(unittest.TestCase):
         self.repository = self.root / "repo"
         self.repository.mkdir()
         self.git("init", "-b", "main")
-        docs = self.repository / PAGES.DOCS_ROOT
+        docs = self.repository / PAGES.PAGES_ROOT
         docs.mkdir(parents=True)
         (docs / "index.html").write_text("landing page")
         for page in PAGES.PUBLIC_PAGE_DIRECTORIES:
             (docs / page).mkdir()
             (docs / page / "index.html").write_text(page)
         shutil.copyfile(
-            ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json",
+            ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json",
             docs / "e2e-accuracy/summary.json",
         )
         for name in PAGES.PUBLIC_DATASETS.values():
@@ -999,7 +1001,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     git("init", "-b", "main")
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Test")
-    relative = PAGES.DOCS_ROOT / "e2e-accuracy/summary.json"
+    relative = PAGES.PAGES_ROOT / "e2e-accuracy/summary.json"
     source = repo / relative
     source.parent.mkdir(parents=True)
     main_summary = json.loads((ROOT / relative).read_text())
@@ -1013,13 +1015,16 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
         **release_summary["snapshot"]["evaluated_revision"],
     }
     source.write_text(json.dumps(release_summary))
+    legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
+    legacy_source.parent.mkdir(parents=True)
+    source.rename(legacy_source)
     (source.parent / "app.js").write_text("untrusted release javascript")
     git("add", ".")
     git("commit", "-qm", "release snapshot")
     release_sha = git("rev-parse", "HEAD")
     git("update-ref", "refs/remotes/origin/release/0.12.0", release_sha)
     git("update-ref", "refs/remotes/origin/release/nested/rc1", release_sha)
-    source.unlink()
+    legacy_source.unlink()
     git("add", ".")
     git("commit", "-qm", "no snapshot yet")
     git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
@@ -1036,6 +1041,8 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     assert entries["release/0.13.0"]["summary_path"] is None
     assert entries["release/0.13.0"]["status"] == "unavailable"
     assert entries["release/0.12.0"]["published_from_commit"] == release_sha
+    assert entries["release/0.12.0"]["published_source_path"] == "python/aisimulate/docs/e2e-accuracy/summary.json"
+    assert entries["main"]["published_source_path"] == "pages/e2e-accuracy/summary.json"
     assert not list(output.rglob("*.js"))
     assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3
     published = json.loads((output / "e2e-accuracy" / entries["release/0.12.0"]["summary_path"]).read_text())
@@ -1081,7 +1088,7 @@ def test_malformed_accuracy_data_fails_publication() -> None:
 def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     from copy import deepcopy
 
-    valid = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    valid = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     invalid_cases = [
         {"schema_version": 1, "models": [], "snapshot": {}},
         {**valid, "scope": {}},
@@ -1115,7 +1122,7 @@ def test_generated_topology_summary_satisfies_publication_contract() -> None:
 def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
     from copy import deepcopy
 
-    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     summary["snapshot"].update(
         evaluated_revision={"branch": "main", "commit_sha": "d" * 40},
         aic_commit_sha="d" * 40,
@@ -1134,7 +1141,7 @@ def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
 
 
 def test_publication_accepts_valid_evaluated_branches() -> None:
-    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     for branch in ("main", "release/a", "release/0.12.0", "release/0.13.0/rc1"):
         summary["snapshot"]["evaluated_revision"]["branch"] = branch
         summary["snapshot"]["aic_source"]["branch"] = branch
@@ -1144,7 +1151,7 @@ def test_publication_accepts_valid_evaluated_branches() -> None:
 def test_publication_rejects_evaluated_branches_outside_exporter_contract() -> None:
     from copy import deepcopy
 
-    valid = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    valid = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     for branch in (
         "",
         "feature/private",
@@ -1164,7 +1171,7 @@ def test_publication_rejects_evaluated_branches_outside_exporter_contract() -> N
 
 
 def test_evaluated_snapshot_requires_legacy_cli_provenance() -> None:
-    summary = json.loads((ROOT / PAGES.DOCS_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     del summary["snapshot"]["aic_source"]
     with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "legacy AIC CLI source"):
         PAGES._accuracy_summary(json.dumps(summary))

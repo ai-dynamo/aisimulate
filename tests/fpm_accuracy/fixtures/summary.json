@@ -1,0 +1,319 @@
+{
+  "schema_version": 1,
+  "snapshot": {
+    "branch": "main",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "hf_repo": "nvidia/aisimulate-fpm-dataset",
+    "hf_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evaluator_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "completed_at": "2026-09-17T12:00:00+00:00",
+    "run_id": "123",
+    "run_attempt": "1",
+    "configuration_count": 2,
+    "complete": true
+  },
+  "methods": [
+    "warmup",
+    "nowarmup",
+    "regression"
+  ],
+  "rows": [
+    {
+      "configuration_id": "Example/Alpha-h200",
+      "configuration_path": "data/Example--Alpha/h200/vllm/1.0/tp4",
+      "snapshot_id": "fixture",
+      "model": "Example/Alpha",
+      "gpu": "H200",
+      "framework": "vllm",
+      "framework_version": "1.0",
+      "parallelism": "tp4",
+      "worker_role": "decode",
+      "status": "ready",
+      "protocol_id": "forward-pass-measurement-v1",
+      "parser_policy_id": "fixture-v1",
+      "ordering": "chronological",
+      "membership_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "measurement_count": 100,
+      "skipped_count": 0,
+      "configuration_manifest": "data/Example--Alpha/h200/vllm/1.0/tp4/manifest.json",
+      "measurement_manifest": "data/Example--Alpha/h200/vllm/1.0/tp4/measurements/manifest.json",
+      "results": {
+        "warmup": {
+          "status": "evaluated",
+          "artifact": {
+            "id": "warmup",
+            "path": "data/Example--Alpha/h200/vllm/1.0/tp4/fpm/input.parquet",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "metadata_path": "data/Example--Alpha/h200/vllm/1.0/tp4/fpm/input.metadata.json",
+            "metadata_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "nowarmup": {
+          "status": "evaluated",
+          "artifact": {
+            "id": "nowarmup",
+            "path": "data/Example--Alpha/h200/vllm/1.0/tp4/fpm/input.kv-off.parquet",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "metadata_path": "data/Example--Alpha/h200/vllm/1.0/tp4/fpm/input.metadata.json",
+            "metadata_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "regression": {
+          "status": "evaluated",
+          "artifact": null,
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "configuration_id": "Example/Beta-h200",
+      "configuration_path": "data/Example--Beta/h200/vllm/1.0/tp4",
+      "snapshot_id": "fixture",
+      "model": "Example/Beta",
+      "gpu": "H200",
+      "framework": "vllm",
+      "framework_version": "1.0",
+      "parallelism": "tp4",
+      "worker_role": "decode",
+      "status": "ready",
+      "protocol_id": "forward-pass-measurement-v1",
+      "parser_policy_id": "fixture-v1",
+      "ordering": "chronological",
+      "membership_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "measurement_count": 100,
+      "skipped_count": 0,
+      "configuration_manifest": "data/Example--Beta/h200/vllm/1.0/tp4/manifest.json",
+      "measurement_manifest": "data/Example--Beta/h200/vllm/1.0/tp4/measurements/manifest.json",
+      "results": {
+        "warmup": {
+          "status": "evaluated",
+          "artifact": {
+            "id": "warmup",
+            "path": "data/Example--Beta/h200/vllm/1.0/tp4/fpm/input.parquet",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "metadata_path": "data/Example--Beta/h200/vllm/1.0/tp4/fpm/input.metadata.json",
+            "metadata_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "nowarmup": {
+          "status": "evaluated",
+          "artifact": {
+            "id": "nowarmup",
+            "path": "data/Example--Beta/h200/vllm/1.0/tp4/fpm/input.kv-off.parquet",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "metadata_path": "data/Example--Beta/h200/vllm/1.0/tp4/fpm/input.metadata.json",
+            "metadata_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "regression": {
+          "status": "evaluated",
+          "artifact": null,
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 80,
+              "unavailable_count": 20,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        }
+      }
+    }
+  ]
+}

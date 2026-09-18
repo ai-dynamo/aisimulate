@@ -317,6 +317,13 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.speculation.is_some() && mode != EstimationMode::OpLevel {
+                let error =
+                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
                 let mut model = Self::from_regression(config.worker_type, options)?;
@@ -1072,7 +1079,26 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::ModelConfig(_)
             | AicError::PerfDatabase(_)
             | AicError::Io { .. }
-            | AicError::Yaml { .. }
-            | AicError::Parquet { .. }
     )
+}
+
+#[cfg(test)]
+mod fallback_errors {
+    use super::*;
+
+    #[test]
+    fn corruption_is_not_a_coverage_gap() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>("broken: [").unwrap_err();
+        assert!(!can_fallback_to_regression(&AicError::Yaml {
+            path: "system.yaml".into(),
+            source: yaml
+        }));
+        assert!(!can_fallback_to_regression(&AicError::Parquet {
+            path: "gemm_perf.parquet".into(),
+            source: parquet::errors::ParquetError::General("corrupt footer".into()),
+        }));
+        assert!(can_fallback_to_regression(&AicError::UnsupportedModel(
+            "no coverage".into()
+        )));
+    }
 }

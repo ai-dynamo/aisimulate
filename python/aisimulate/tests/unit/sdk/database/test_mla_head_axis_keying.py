@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator_core.sdk.perf_database import PerfDatabase
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+from aisimulate_core.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -128,7 +128,7 @@ def _view_over_parquet(tmp_path: Path, basename: str, attribute: str, write_rows
     replacement for calling the retired Python loader on a bare file path.
     ``write_rows`` is a callable(path) so callers control schema deviations
     (e.g. a missing column)."""
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     systems_root = tmp_path / "systems"
     data_dir = systems_root / "data" / "vllm" / "test"
@@ -296,9 +296,9 @@ def test_kernel_views_reject_rows_without_num_heads(tmp_path, basename, attribut
 
 
 def _data_root() -> Path:
-    import aiconfigurator_core
+    import aisimulate_core
 
-    return Path(aiconfigurator_core.__file__).parent / "systems" / "data"
+    return Path(aisimulate_core.__file__).parent / "systems" / "data"
 
 
 def test_shipped_mla_module_models_are_pinned():

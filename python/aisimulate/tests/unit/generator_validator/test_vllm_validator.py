@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from tools.generator_validator import validator
 from tools.generator_validator.backend import vllm as vllm_backend
 

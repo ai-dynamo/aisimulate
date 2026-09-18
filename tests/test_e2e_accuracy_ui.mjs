@@ -6,10 +6,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/app.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../pages/e2e-accuracy/app.js", import.meta.url), "utf8");
 const bootstrap = "initialize().catch(showError);";
 assert.ok(source.includes(bootstrap), "Application bootstrap changed; update the UI test harness before executing it.");
-const published = JSON.parse(readFileSync(new URL("../python/aisimulate/docs/e2e-accuracy/summary.json", import.meta.url), "utf8"));
+const published = JSON.parse(readFileSync(new URL("../pages/e2e-accuracy/summary.json", import.meta.url), "utf8"));
 const historical = structuredClone(published);
 // Exercise the legacy contract even after the published snapshot is refreshed.
 delete historical.snapshot.evaluated_revision;

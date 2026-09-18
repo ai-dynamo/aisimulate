@@ -16,7 +16,8 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
-from .aic import materialize_aic_num_gpu_blocks
+from .capacity import materialize_aic_num_gpu_blocks
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -90,6 +91,10 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "moe_backend": ("aic_moe_backend",),
+    "attention_backend": ("aic_attention_backend",),
+    "enable_eplb": ("aic_enable_eplb",),
+    "wideep_num_slots": ("aic_wideep_num_slots",),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -184,7 +189,7 @@ class AICAFDCompanionPerformanceModel:
 
         estimator = self._estimator
         if estimator is None:
-            from aiconfigurator.cli.api import cli_estimate
+            from aisimulate.legacy_cli.api import cli_estimate
 
             estimator = cli_estimate
         prefix = f"{role}_"
@@ -240,7 +245,7 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aiconfigurator.cli.api.cli_estimate",
+                "source": "aisimulate.legacy_cli.api.cli_estimate",
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
                 "metric": metric,
@@ -271,6 +276,8 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_cached_prefix_tokens=True,
+            supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -417,7 +424,16 @@ class EngineReplayRunner:
             allow_nan=False,
             separators=(",", ":"),
         )
-        report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        try:
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        except MemoryError as error:
+            # Resource-aware installations classify a report storage failure as host
+            # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
+            try:
+                from .resources import ResourceLimitError
+            except ImportError:
+                raise error from None
+            raise ResourceLimitError(str(error)) from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
@@ -1311,8 +1327,11 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "enable_eplb":
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
@@ -1340,7 +1359,7 @@ def _materialize_engine_role(
         def resolved_version(value):
             if value not in {"current", "previous", "next"}:
                 return value
-            from aiconfigurator_core.sdk.perf_database import resolve_query_version
+            from aisimulate_core.sdk.perf_database import resolve_query_version
 
             from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -1386,9 +1405,37 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
+        if any(
+            is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        ):
+            raise ValueError("engine model controls require an AIC timing model")
         aic_timing_overrides.clear()
         if capacity_materialized:
             memory_fraction_overrides.clear()
+
+    speculation_raw = rank.pop("speculation", None)
+    speculation = None
+    if speculation_raw is not None:
+        from .config.engine import NgramSpeculationConfig
+
+        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
+        if backend != "vllm" or rank.get("native_host_offload") is not None:
+            raise ValueError("ngram speculation requires vllm without host_offload")
+        if any(
+            rank.get(key) is not None
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
@@ -1444,7 +1491,7 @@ def _materialize_engine_role(
             timing_config["kv_block_size"] = block_size
         timing_config.update(memory_fraction_overrides)
         timing_config.update(aic_timing_overrides)
-        if nextn is not None:
+        if nextn is not None and speculation is None:
             timing_config["nextn"] = nextn
         rank["timing_model"] = {
             "type": "external",
@@ -1485,13 +1532,23 @@ def _materialize_engine_role(
         ):
             timing_model = dict(timing_model)
             timing_config = dict(timing_model["config"])
+            if speculation is not None:
+                cost_config = speculation.cost_config()
+                if timing_config.get("nextn") not in (None, 0):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                if timing_config.get("speculation") not in (None, cost_config):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
+                if timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("ngram speculation requires op_level timing")
+                timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if configured_nextn is not None and configured_nextn != nextn:
+            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            timing_config["nextn"] = nextn
+            if speculation is None:
+                timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
 

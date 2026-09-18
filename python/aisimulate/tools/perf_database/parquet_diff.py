@@ -27,7 +27,7 @@ if str(_TOOLS_DIR) not in sys.path:
 
 from power_data import power_metric_issues as _power_metric_issues
 
-PERF_DATA_PREFIX = "aic-core/src/aiconfigurator_core/systems/data"
+PERF_DATA_PREFIX = "src/aisimulate_core/systems/data"
 COMMENT_MARKER = "<!-- perf-parquet-diff-comment -->"
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
 DEFAULT_DETAIL_DIR = "parquet-diff-details"

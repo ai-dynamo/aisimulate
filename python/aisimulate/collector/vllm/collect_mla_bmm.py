@@ -27,7 +27,6 @@ __compat__ = "vllm>=0.25.0,<=0.27.0,!=0.25.1,!=0.26.0"
 
 import pkg_resources
 import torch
-
 from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, log_perf
 

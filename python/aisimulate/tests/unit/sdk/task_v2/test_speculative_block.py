@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 

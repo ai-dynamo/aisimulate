@@ -4,7 +4,7 @@
 """Regression evidence for the B200 TRT-LLM 1.3.0rc20 import.
 
 Source: ai-dynamo/aiconfigurator at 915f590680d8a79fe9c39f6f3a9ff13bc267fcce,
-under aic-core/src/aiconfigurator_core/systems/data/b200_sxm/.
+under src/aisimulate_core/systems/data/b200_sxm/.
 See the adjacent data README for attribution and the two attention merges.
 These pins describe this import; future reviewed dataset updates may update them.
 Version-independent power-field checks live in test_power_data_invariants.py.
@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aiconfigurator_core/systems/data/b200_sxm"
+DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aisimulate_core/systems/data/b200_sxm"
 
 
 @pytest.mark.parametrize(

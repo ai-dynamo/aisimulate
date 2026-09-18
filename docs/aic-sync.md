@@ -1,21 +1,28 @@
 # Synchronizing AIConfigurator
 
 AIConfigurator remains active during its deprecation window. AISimulate
-therefore combines publication without flattening the imported source:
+therefore retains explicit mappings from the pinned upstream layout into the
+two canonical Python packages:
 
 | Upstream AIConfigurator path | Stable AISimulate mirror |
 | --- | --- |
-| `src/aiconfigurator/` | `python/aisimulate/src/aiconfigurator/` |
-| `aic-core/src/aiconfigurator_core/` | `python/aisimulate/src/aiconfigurator_core/` |
+| `src/aiconfigurator/sdk/` | `python/aisimulate/src/aisimulate/sdk/` |
+| `src/aiconfigurator/generator/` | `python/aisimulate/src/aisimulate/generator/` |
+| `src/aiconfigurator/cli/` | `python/aisimulate/src/aisimulate/legacy_cli/` |
+| `aic-core/src/aiconfigurator_core/` | `python/aisimulate/src/aisimulate_core/` |
 | `tests/` | `python/aisimulate/tests/` |
 | `collector/`, `tools/`, `docs/` | matching folders under `python/aisimulate/` |
 | `aic-core/rust/aiconfigurator-core/src/` | `crates/core/src/perfmodel/` |
 | `aic-core/rust/aiconfigurator-core/tests/` | `crates/core/tests/perfmodel/` |
 | `aic-core/rust/aiconfigurator-core/parity_tests/` | `crates/core/parity_tests/perfmodel/` |
 
-Do not place AISimulate-specific glue inside these mirrors. Python compatibility
-facades belong in `python/aisimulate/src/aisimulate_core/`; Rust composition,
-Replay, and PyO3 integration belong outside `crates/core/src/perfmodel/`.
+The patch renderer maps directory paths, not Python imports. Review application
+changes in the manual report: root `main.py` and `deprecation.py` move to
+`aisimulate/legacy_cli/entrypoint.py` and `aisimulate/legacy_cli/deprecation.py`,
+and removed resource aliases must not be restored. Update imported code to use
+`aisimulate` and `aisimulate_core` while preserving immutable upstream citations.
+Rust composition, Replay, and PyO3 integration remain outside the estimator
+source mirror.
 
 The machine-readable mapping and synchronization ledger live in
 `scripts/aic_sync.toml`. Manual-path reviews for each synchronization range are

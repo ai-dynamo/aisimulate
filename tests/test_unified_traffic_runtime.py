@@ -440,22 +440,28 @@ def _fpm_engine() -> dict:
     }
 
 
-def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
+def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _fpm_engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
+    timing = deployment.agg_engine_args["timing_model"]
+    assert timing["type"] == "external"
+    assert timing["provider"] == "aic"
+    assert timing["config"]["estimation_mode"] == "fpm_interpolation"
+    assert timing["config"]["fallback_policy"] == "deny"
+    assert timing["config"]["worker_type"] == "aggregated"
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert deployment.agg_engine_args["timing_model"]["config"]["estimation_mode"] == "fpm_interpolation"
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
 
 
-def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> None:
+def test_prediction_spec_lowers_default_timing_into_canonical_auto_selection() -> None:
     engine = _fpm_engine()
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
     parsed = CorePredictionConfig.model_validate({"engine": engine})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.agg_engine_args
+    assert deployment.agg_engine_args["timing_model"]["config"]["estimation_mode"] == "auto"
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
 
 
@@ -472,7 +478,15 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
     assert "aic_forward_model" not in deployment.decode_engine_args
-    assert deployment.decode_engine_args["timing_model"]["config"]["estimation_mode"] == "fpm_interpolation"
+    assert deployment.decode_engine_args["timing_model"]["type"] == "external"
+    assert deployment.decode_engine_args["timing_model"]["provider"] == "aic"
+    assert deployment.decode_engine_args["timing_model"]["config"]["fallback_policy"] == "deny"
+    prefill = deployment.prefill_engine_args["timing_model"]["config"]
+    decode = deployment.decode_engine_args["timing_model"]["config"]
+    assert prefill["estimation_mode"] == "auto"
+    assert prefill["worker_type"] == "prefill"
+    assert decode["estimation_mode"] == "fpm_interpolation"
+    assert decode["worker_type"] == "decode"
     assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
     assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
 
@@ -777,7 +791,8 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
     assert "whole-model FPM" in sections["source"]["unavailable_reason"]
 
 
-def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
+@pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic(prefix, reused) -> None:
     engine = _engine()
     engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
     report = _run(
@@ -787,7 +802,7 @@ def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
                     "type": "synthetic",
                     "input_tokens": 8,
                     "output_tokens": 2,
-                    "cached_prefix_tokens": 4,
+                    "cached_prefix_tokens": prefix,
                 },
                 "load": {"type": "concurrency", "concurrency": 1},
                 "stop": {"requests": 2},
@@ -797,4 +812,4 @@ def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
     )
 
     records = report.metadata["native_report"]["per_request"]
-    assert [row["reused_input_tokens"] for row in records] == [0, 4]
+    assert [row["reused_input_tokens"] for row in records] == [0, reused]

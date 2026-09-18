@@ -3,16 +3,15 @@
 The core API is delivered through the repository's two release artifacts at
 the same version:
 
-- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
-  compatibility namespace `aiconfigurator_core`;
+- the `aisimulate` Python wheel, whose estimator API is `aisimulate_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
 The single wheel owns the application, estimator SDK, model and system data,
 and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
-Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available during the AIC 0.12.0 compatibility window.
+Rust-to-Python construction path. Legacy Python import namespaces are removed
+in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
 
 ## Stable Python facade
 
@@ -75,12 +74,27 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. Both
-`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 
 ## KV-cache capacity reservation
+
+SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
+pool. Peak activation/workspace estimates remain visible in
+`memory_breakdown.activations_bytes`, but are not deducted from that pool;
+transient execution headroom is already outside the static fraction. Increasing
+the prefill token budget alone therefore does not reduce SGLang KV capacity.
+Resident runtime/communication estimates reduce the pre-load free-memory pool
+before applying the fraction; weights are deducted afterward. The budget is
+`(capacity - resident_overhead) * mem_fraction_static - weights`, less any
+explicit additional graph reservation. For ordinary SGLang DeepSeek-V3/R1
+(non-CP, non-PP, non-speculative, non-large-EP), the estimator also respects
+checkpoint dense/MoE layer counts and TP-sharded embeddings independently of
+the unchanged timing graph. Other model layouts retain their prior weight
+accounting.
+vLLM and TRT-LLM continue to deduct activation memory under their own budget
+semantics. No measured server capacity is required by this calculation.
 
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
@@ -151,11 +165,14 @@ request and is skipped during automatic selection for those identities.
 Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
 `moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
 `ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the pending constructor migration in #242 before its release.
+the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
 value creates shared input tokens; cache hits still depend on runtime state.
+The value must align to the trace's `block_size` and must not exceed any sampled
+input length. Unified replay uses one-token trace blocks for an exact prefix,
+then applies the engine's cache block size when calculating reuse.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -185,6 +202,15 @@ The returned provenance records the requested and selected modes, failed
 selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
+
+Prompt-lookup verification uses the same constructor: set `speculation` to
+`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
+`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
+It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
+select op-level but cannot fall back to an unsupported speculative estimator.
+The cost configuration is retained in provenance and saved recommendations.
+Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
+configuration; they do not change the model's target-verification graph.
 
 ### Estimator controls
 
@@ -343,18 +369,14 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   role/options signatures and separate estimator constructors. This is a source
   migration: use `ForwardPassPerfModelConfig::new(...)` in Rust or the SDK config
   class in Python, and use the explicit migration helper for saved EngineConfig
-  values. Downstream Dynamo callers must migrate before this API is released;
+  values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
-- Publication is blocked by [the release gate](../.github/release-gates.json)
-  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Both scheduled
-  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
-  before staging and the downstream publish trigger. Manual dispatch may select
-  a main/release commit, but both the workflow revision's policy and the selected
-  commit's migration declarations must pass before publication. The checker runs
-  from the workflow revision; missing or malformed target gates fail closed.
-  Clear the pending entry in a reviewed change only after the migration evidence
-  is available.
+- [The migration checklist](../.github/release-gates.json) and
+  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  pending entry in a reviewed change after downstream validation and merge.
+  There is currently no standalone stable-publication workflow in this repository;
+  that release process must invoke the checker for both its policy and target
+  declarations (`--target-gates`). Missing or malformed declarations fail closed.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.

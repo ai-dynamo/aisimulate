@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .aic import resolve_model_context_length
+from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
 from .config.traffic import TrafficPredictionConfig
@@ -74,6 +74,8 @@ def _run_recommendation(
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
+    if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
@@ -188,6 +190,8 @@ def recommendation_to_sweeper(
         and not set(modes) & {"afd", "afd+pd"}
         and workers.get("encoder") is None
     }
+    if engine.get("speculation") is not None:
+        search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
@@ -802,6 +806,8 @@ def _candidate_prediction(
         ):
             if name in raw_engine:
                 engine[name] = deepcopy(raw_engine[name])
+    if sample.get("speculation") is not None:
+        engine["speculation"] = deepcopy(sample["speculation"])
     if deployment.encoder is not None:
         from .config.epd import encoder_prediction_fields
 

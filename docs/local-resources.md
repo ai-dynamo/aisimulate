@@ -140,6 +140,15 @@ supervision when baseline headroom exists; this is explicitly an unqualified
 estimate. Known lower bounds still reject impossible workloads before allocation.
 The low-level Runner protocol itself remains an execution primitive.
 
+Direct `Sweeper` callers also receive bounded process-pool cleanup. A timeout
+or orchestration failure stops and reaps owned workers and their observed
+descendants before a replacement pool starts. Successful sweeps allow worker
+finalizers a grace period, then stop workers that fail to exit. Cleanup failure
+raises an error instead of starting replacement workers. This also applies to
+custom factories without host-resource admission; it does not add memory
+admission or RSS monitoring to those factories or supervise sequential Runner
+execution.
+
 RSS monitoring is best effort, not an operating-system memory sandbox. Allocations
 can outpace polling, estimates can be conservative, and other programs can change
 available RAM between samples. macOS offers no portable hard RSS cap; preallocation

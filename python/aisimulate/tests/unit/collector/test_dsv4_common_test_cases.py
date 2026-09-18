@@ -6,7 +6,6 @@ from __future__ import annotations
 import sys
 
 import pytest
-
 from collector import case_generator as common_test_cases
 
 pytestmark = pytest.mark.unit

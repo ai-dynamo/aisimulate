@@ -9,8 +9,9 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
+from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
+from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -47,6 +48,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
             else "op_level"
         ),
     }
+    if sample.get("speculation") is not None:
+        config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
     return {"provider": "aic", "config": config}
 
 
@@ -58,7 +61,7 @@ def _engine_args_payload(
     forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
 ) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
-    if any(sample.get(name) not in (None, False) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
+    if any(is_active_engine_model_control(name, sample.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
         forward_pass_estimator is None or sample.get(f"{role}_timing_model") is not None
     ):
         raise ValueError("engine model controls require a resolved canonical forward-pass estimator for every role")
@@ -99,6 +102,8 @@ def _engine_args_payload(
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
+    if sample.get("speculation") is not None:
+        payload["speculation"] = dict(sample["speculation"])
     if sample.get("aic_nextn"):
         payload["aic_nextn"] = int(sample["aic_nextn"])
     forward_model = sample.get(f"{role}_forward_model")
@@ -127,7 +132,11 @@ def _engine_args_payload(
         ):
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
-        payload["timing_model"] = {"type": "external", "provider": "aic", "config": dict(forward_pass_estimator.config)}
+        payload["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": omit_inactive_moe_controls(forward_pass_estimator.config),
+        }
         if memory_fraction_field in payload:
             payload["timing_model"]["config"][memory_fraction_field] = payload[memory_fraction_field]
         payload["tensor_parallel_size"] = tp

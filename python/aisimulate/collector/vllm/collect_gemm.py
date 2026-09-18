@@ -62,6 +62,9 @@ from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
+from collector.case_generator import get_gemm_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.kernels.linear.scaled_mm.flashinfer import (
@@ -74,10 +77,6 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
-
-from collector.case_generator import get_gemm_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.vllm.utils import setup_distributed, with_exit_stack
 
 FP8_BLOCK_SHAPE = (128, 128)
 

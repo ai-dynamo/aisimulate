@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.api import EstimateResult
-from aiconfigurator.cli.main import (
+from aisimulate.legacy_cli.api import EstimateResult
+from aisimulate.legacy_cli.main import (
     _execute_tasks,
     _resolve_cli_log_level,
     _validate_fpm_sweep_tasks,
@@ -25,9 +25,9 @@ from aiconfigurator.cli.main import (
     build_experiment_tasks,
     configure_parser,
 )
-from aiconfigurator.cli.main import main as cli_main
-from aiconfigurator.cli.report_and_save import _apply_inclusive_tpot
-from aiconfigurator.sdk.errors import NoFeasibleConfigError
+from aisimulate.legacy_cli.main import main as cli_main
+from aisimulate.legacy_cli.report_and_save import _apply_inclusive_tpot
+from aisimulate.sdk.errors import NoFeasibleConfigError
 
 pytestmark = pytest.mark.unit
 
@@ -97,7 +97,7 @@ class TestCLILogLevelResolution:
 class TestCLIIntegration:
     """Workflow tests for the CLI orchestration layer (builders/executor/save)."""
 
-    @patch("aiconfigurator.cli.main._run_recommend")
+    @patch("aisimulate.legacy_cli.main._run_recommend")
     def test_cli_recommend_preserves_auto_until_api_dispatch(self, mock_run_recommend, cli_parser):
         args = cli_parser.parse_args(
             [
@@ -121,7 +121,7 @@ class TestCLIIntegration:
         assert args.nextn_accepted == 0.7
         mock_run_recommend.assert_called_once_with(args)
 
-    @patch("aiconfigurator.cli.main._run_recommend", side_effect=ValueError("nextn=7 requires acceptance"))
+    @patch("aisimulate.legacy_cli.main._run_recommend", side_effect=ValueError("nextn=7 requires acceptance"))
     def test_cli_recommend_reports_acceptance_error_without_traceback(self, _mock_run_recommend, cli_parser):
         args = cli_parser.parse_args(
             [
@@ -140,8 +140,8 @@ class TestCLIIntegration:
         with pytest.raises(SystemExit, match="Error: nextn=7 requires acceptance"):
             cli_main(args)
 
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_default_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_default_tasks")
     def test_cli_main_success_flow(self, mock_build_default, mock_execute, sample_cli_args_with_save_dir):
         """Test successful CLI main execution flow for default mode."""
         mock_task_config = MagicMock(name="TaskConfig")
@@ -159,7 +159,7 @@ class TestCLIIntegration:
             {},
         )
 
-        with patch("aiconfigurator.cli.main.save_results") as mock_save:
+        with patch("aisimulate.legacy_cli.main.save_results") as mock_save:
             cli_main(sample_cli_args_with_save_dir)
 
         mock_build_default.assert_called_once()
@@ -176,8 +176,8 @@ class TestCLIIntegration:
         assert save_kwargs["tasks"] == {"agg": mock_task_config}
         assert save_kwargs["save_dir"] == sample_cli_args_with_save_dir.save_dir
 
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_default_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_default_tasks")
     def test_cli_main_forwards_serving_mode_to_default_builder(
         self,
         mock_build_default,
@@ -217,9 +217,9 @@ class TestCLIIntegration:
         assert mock_build_default.call_args.kwargs["afd_candidate_overflow"] == "truncate"
         mock_execute.assert_called_once()
 
-    @patch("aiconfigurator.cli.main.save_results")
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_experiment_tasks")
+    @patch("aisimulate.legacy_cli.main.save_results")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_experiment_tasks")
     def test_cli_main_success_flow_exp_mode(
         self,
         mock_build_exp,
@@ -268,11 +268,11 @@ class TestCLIIntegration:
     @pytest.mark.parametrize(
         "mode,build_patch",
         [
-            ("default", "aiconfigurator.cli.main.build_default_tasks"),
-            ("exp", "aiconfigurator.cli.main.build_experiment_tasks"),
+            ("default", "aisimulate.legacy_cli.main.build_default_tasks"),
+            ("exp", "aisimulate.legacy_cli.main.build_experiment_tasks"),
         ],
     )
-    @patch("aiconfigurator.cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
     def test_cli_main_build_dispatch(self, mock_execute, mode, build_patch, cli_args_factory, mock_exp_yaml_path):
         """Main should dispatch to the correct builder based on CLI mode."""
         mock_execute.return_value = ("agg", {"agg": True}, {}, {}, {}, {})
@@ -300,8 +300,8 @@ class TestCLIIntegration:
 
         _validate_fpm_sweep_tasks(args, tasks)
 
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_experiment_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_experiment_tasks")
     def test_cli_fpm_rejects_incompatible_tasks_before_sweep(
         self,
         mock_build_exp,
@@ -362,8 +362,8 @@ class TestCLIIntegration:
     @pytest.mark.parametrize(
         "builder_patch",
         [
-            "aiconfigurator.cli.main.build_default_tasks",
-            "aiconfigurator.cli.main.build_experiment_tasks",
+            "aisimulate.legacy_cli.main.build_default_tasks",
+            "aisimulate.legacy_cli.main.build_experiment_tasks",
         ],
     )
     def test_cli_main_unsupported_mode_raises(self, builder_patch, cli_args_factory):
@@ -379,11 +379,11 @@ class TestCLIIntegration:
     @pytest.mark.parametrize(
         "builder_patch",
         [
-            "aiconfigurator.cli.main.build_default_tasks",
-            "aiconfigurator.cli.main.build_experiment_tasks",
+            "aisimulate.legacy_cli.main.build_default_tasks",
+            "aisimulate.legacy_cli.main.build_experiment_tasks",
         ],
     )
-    @patch("aiconfigurator.cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
     def test_cli_main_runtime_failure(self, mock_execute, builder_patch, cli_args_factory, tmp_path):
         """Execution errors propagate as RuntimeError for visibility."""
         mock_execute.side_effect = RuntimeError("failed")
@@ -440,8 +440,8 @@ class TestCLIIntegration:
         assert "Traceback" not in caplog.text
         assert all(record.exc_info is None for record in caplog.records)
 
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_experiment_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_experiment_tasks")
     def test_cli_exp_mode_with_database_mode_in_yaml(self, mock_build_exp, mock_execute, tmp_path):
         """Test that database_mode from YAML is correctly parsed in exp mode."""
         yaml_content = """
@@ -468,8 +468,8 @@ exp_with_db_mode:
         mock_build_exp.assert_called_once()
         mock_execute.assert_called_once()
 
-    @patch("aiconfigurator.cli.main._execute_tasks")
-    @patch("aiconfigurator.cli.main.build_experiment_tasks")
+    @patch("aisimulate.legacy_cli.main._execute_tasks")
+    @patch("aisimulate.legacy_cli.main.build_experiment_tasks")
     def test_cli_exp_mode_passes_global_engine_step_backend(
         self,
         mock_build_exp,
@@ -503,7 +503,7 @@ exp_with_db_mode:
 class TestBuildDefaultTaskConfigs:
     """Tests for build_default_tasks function."""
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_normalizes_engine_step_backend_before_task_construction(self, mock_task_config):
         mock_task_config.return_value = MagicMock(name="MockTaskConfig")
 
@@ -517,7 +517,7 @@ class TestBuildDefaultTaskConfigs:
         assert mock_task_config.call_args.kwargs["engine_step_backend"] == "rust"
 
     @pytest.mark.parametrize("falsey_value", ["", 0, False])
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_rejects_falsey_engine_step_backend(self, mock_task_config, falsey_value):
         with pytest.raises(ValueError, match="unknown engine_step_backend"):
             build_default_tasks(
@@ -529,7 +529,7 @@ class TestBuildDefaultTaskConfigs:
 
         mock_task_config.assert_not_called()
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_skips_disagg_when_total_gpus_less_than_2(self, mock_task_config):
         """Disagg config should be skipped when total_gpus < 2."""
         mock_task_config.return_value = MagicMock(name="MockTaskConfig")
@@ -546,7 +546,7 @@ class TestBuildDefaultTaskConfigs:
         # TaskConfig should only be called once (for agg)
         assert mock_task_config.call_count == 1
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_includes_disagg_when_total_gpus_at_least_2(self, mock_task_config):
         """Disagg config should be included when total_gpus >= 2."""
         mock_task_config.return_value = MagicMock(name="MockTaskConfig")
@@ -563,8 +563,8 @@ class TestBuildDefaultTaskConfigs:
         # TaskConfig should be called twice (agg + disagg)
         assert mock_task_config.call_count == 2
 
-    @patch("aiconfigurator.cli.main.Task")
-    @patch("aiconfigurator.cli.main.perf_database.get_supported_databases")
+    @patch("aisimulate.legacy_cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.perf_database.get_supported_databases")
     def test_silicon_mode_allows_declared_explicit_version_for_shared_layer(
         self,
         mock_supported_databases,
@@ -589,8 +589,8 @@ class TestBuildDefaultTaskConfigs:
         assert mock_task_config.call_args_list[1].kwargs["prefill_backend_version"] == "0.5.12"
         assert mock_task_config.call_args_list[1].kwargs["decode_backend_version"] == "0.5.12"
 
-    @patch("aiconfigurator.cli.main.Task")
-    @patch("aiconfigurator.cli.main.perf_database.get_supported_databases")
+    @patch("aisimulate.legacy_cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.perf_database.get_supported_databases")
     def test_silicon_mode_rejects_undeclared_explicit_version_for_shared_layer(
         self,
         mock_supported_databases,
@@ -612,8 +612,8 @@ class TestBuildDefaultTaskConfigs:
 
         mock_task_config.assert_not_called()
 
-    @patch("aiconfigurator.cli.main.Task")
-    @patch("aiconfigurator.cli.main.perf_database.get_supported_databases")
+    @patch("aisimulate.legacy_cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.perf_database.get_supported_databases")
     def test_auto_hybrid_mode_filters_to_declared_shared_layer_versions(
         self,
         mock_supported_databases,
@@ -644,8 +644,8 @@ class TestBuildDefaultTaskConfigs:
         assert mock_task_config.call_args_list[1].kwargs["prefill_backend_version"] == "0.5.12"
         assert mock_task_config.call_args_list[1].kwargs["decode_backend_version"] == "0.5.12"
 
-    @patch("aiconfigurator.cli.main.Task")
-    @patch("aiconfigurator.cli.main.perf_database.get_supported_databases")
+    @patch("aisimulate.legacy_cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.perf_database.get_supported_databases")
     def test_hybrid_mode_rejects_undeclared_explicit_version_for_shared_layer(
         self,
         mock_supported_databases,
@@ -667,8 +667,8 @@ class TestBuildDefaultTaskConfigs:
 
         mock_task_config.assert_not_called()
 
-    @patch("aiconfigurator.cli.main.Task")
-    @patch("aiconfigurator.cli.main.perf_database.get_supported_databases")
+    @patch("aisimulate.legacy_cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.perf_database.get_supported_databases")
     def test_auto_megamoe_sweeps_only_sglang(self, mock_supported_databases, mock_task_config):
         """The SGLang-only MegaMoE override must not be passed to TRT-LLM or vLLM."""
         mock_supported_databases.return_value = {
@@ -700,7 +700,7 @@ class TestBuildDefaultTaskConfigs:
     # The flag-conditioned SGLang DeepEP task variants (agg_deepep/disagg_deepep)
     # and their perf-data skip probe are gone: large-EP/DeepEP participation is
     # coverage-driven per tuple inside the ONE task per (model, serving mode).
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_moe_sglang_builds_one_task_per_mode(self, mock_task_config):
         """No DeepEP fan-out: an sglang MoE model yields exactly one agg and one
         disagg task; auto-exploration replaces both flag variants."""
@@ -732,7 +732,7 @@ class TestDeprecatedWideepCliFlags:
     def _fresh_warned_keys(self):
         # Warn-once dedupe is process-global; isolate each test (same pattern
         # as the task_v2 deprecation tests).
-        from aiconfigurator.sdk import task_v2
+        from aisimulate.sdk import task_v2
 
         before = set(task_v2._warned_large_ep_keys)
         task_v2._warned_large_ep_keys.clear()
@@ -753,7 +753,7 @@ class TestDeprecatedWideepCliFlags:
             **kwargs,
         )
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_enable_wideep_warns_and_is_ignored(self, mock_task_config):
         with pytest.warns(DeprecationWarning, match="'enable_wideep' is deprecated and ignored"):
             flagged = self._build(mock_task_config, enable_wideep=True)
@@ -766,7 +766,7 @@ class TestDeprecatedWideepCliFlags:
         assert set(flagged) == set(flagless) == {"agg", "disagg"}
         assert flagged_calls == flagless_calls  # zero effect on the built tasks
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_moe_backend_deepep_moe_warns_megamoe_does_not(self, mock_task_config):
         import warnings
 
@@ -786,7 +786,7 @@ class TestDeprecatedWideepCliFlags:
 class TestBuildExperimentTaskConfigs:
     """Tests for experiment config construction."""
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_global_engine_step_backend_applies_unless_exp_overrides(self, mock_task):
         config = {
             "global_backend": {
@@ -820,7 +820,7 @@ class TestBuildExperimentTaskConfigs:
         assert by_backend["rust"]["model_path"] == "Qwen/Qwen3-32B"
         assert by_backend["exp-level-token"]["model_path"] == "Qwen/Qwen3-32B"
 
-    @patch("aiconfigurator.cli.main.Task")
+    @patch("aisimulate.legacy_cli.main.Task")
     def test_default_database_mode_is_passed_to_task_yaml(self, mock_task):
         config = {
             "default_mode": {

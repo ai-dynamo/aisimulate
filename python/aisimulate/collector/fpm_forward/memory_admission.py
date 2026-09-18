@@ -9,8 +9,8 @@ import logging
 import math
 from dataclasses import dataclass
 
-from aiconfigurator.sdk.memory import KVCacheEstimator
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+from aisimulate.sdk.memory import KVCacheEstimator
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
 from .capabilities import ModelCapabilityProfile
 from .types import ParallelTopology

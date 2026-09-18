@@ -34,7 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from aiconfigurator_core.sdk.operations.moe_comm import communication_dtype_for as _shared_communication_dtype_for
+from aisimulate_core.sdk.operations.moe_comm import communication_dtype_for as _shared_communication_dtype_for
 from collector.framework_manifest import get_collector_runtime
 from collector.helper import finalize_perf_files, log_perf, stale_output_artifacts
 from collector.registry_types import PerfFile

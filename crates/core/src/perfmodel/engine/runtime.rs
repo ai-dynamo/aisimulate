@@ -5,7 +5,7 @@
 
 //! `Engine`: the compiled-spec execution core.
 //!
-//! Mirrors `aiconfigurator.sdk.backends.base_backend`'s static orchestration
+//! Mirrors `aisimulate.sdk.backends.base_backend`'s static orchestration
 //! (`run_static` / `run_static_latency_only` / `_run_static_breakdown` /
 //! `_run_context_phase` / `_run_generation_phase`) but executes a precompiled
 //! [`EngineSpec`] — Python no longer walks the op list per call. The per-phase
@@ -442,7 +442,7 @@ impl Engine {
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
     /// Runs the `Engine::from_spec_bytes(bytes) + PerfDatabase::load`
-    /// flow. `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems` and is used
+    /// flow. `systems_root` points at `python/aisimulate/src/aisimulate_core/systems` and is used
     /// only as a fallback: when the decoded `spec.engine.systems_path` is
     /// `Some`, that path is authoritative and overrides the `systems_root`
     /// argument.
@@ -509,19 +509,10 @@ impl Engine {
     }
 
     pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
-        let Some((prefill, decode)) = self.fpm_ops() else {
-            return super::readiness::validate(
-                &self.db,
-                self.context_ops.iter().chain(&self.generation_ops),
-            );
-        };
-        self.db
-            .fpm_forward
-            .select_cell(&prefill.match_identity, &prefill.model_path)?;
-        self.db
-            .fpm_forward
-            .select_cell(&decode.match_identity, &decode.model_path)?;
-        Ok(())
+        super::readiness::validate(
+            &self.db,
+            self.context_ops.iter().chain(&self.generation_ops),
+        )
     }
 
     /// Shared perf database handle.
@@ -2000,7 +1991,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
@@ -2023,7 +2014,8 @@ mod tests {
                 scale_factor: 1.0,
                 n: 4096,
                 k: 4096,
-                quant_mode: GemmQuantMode::Fp8Block,
+                // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+                quant_mode: GemmQuantMode::Fp8,
                 scale_num_tokens: 0,
                 low_precision_input: false,
                 seq_split: 1,
@@ -2107,7 +2099,18 @@ mod tests {
 
     /// Build an `Engine` from the hand-built op lists over the real fixture DB.
     fn build_engine(nextn: Option<u32>) -> Engine {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        // Match SILICON's shared-layer default and honor the declared reuse
+        // of graph-timed FP8-block GEMM measurements from vLLM 0.25.0.
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
         let spec = EngineSpec::new(
             fixture_engine_config(nextn),
             context_ops(),
@@ -2540,9 +2543,17 @@ mod tests {
 
         for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
             let db = Arc::new(
-                PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
-                    .unwrap()
-                    .with_mode(mode, TransferPolicy::default()),
+                PerfDatabase::load_resolved(
+                    &systems_root(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.24.0",
+                    mode == DatabaseMode::Silicon,
+                    false,
+                    false,
+                )
+                .unwrap()
+                .with_mode(mode, TransferPolicy::default()),
             );
             let mut config = fixture_engine_config(Some(3));
             config.database_mode = mode;
@@ -3536,6 +3547,44 @@ mod tests {
             generation_ops_list,
         );
         (spec, db)
+    }
+
+    #[test]
+    fn fpm_readiness_checks_granular_draft_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        for missing_gemm in [false, true] {
+            let tail = if missing_gemm {
+                Op::Gemm(GemmOp::new("draft_gemm", 16, 16, GemmQuantMode::Bfloat16))
+            } else {
+                generation_ops().remove(0)
+            };
+            let (spec, _) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![tail], vec![]);
+            let mut db = PerfDatabase::load(tmp.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result = engine.validate_forward_pass_readiness();
+            if missing_gemm {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("gemm_perf.parquet")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     /// Hybrid shape validation: draft tails are legal; a width/nextn

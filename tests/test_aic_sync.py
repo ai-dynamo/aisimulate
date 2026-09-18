@@ -34,7 +34,7 @@ def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> N
 
     SYNC._require_source_path(tmp_path, commit, "aic-core/src/aiconfigurator_core")
     with pytest.raises(ValueError, match="does not exist"):
-        SYNC._require_source_path(tmp_path, commit, "src/aiconfigurator_core")
+        SYNC._require_source_path(tmp_path, commit, "src/aisimulate_core")
 
 
 def test_manual_changes_require_and_populate_a_report(tmp_path: Path, monkeypatch) -> None:
@@ -129,3 +129,44 @@ target = "mapped"
         ("git", "-C", str(destination), "apply", "--check", str(patch_path)),
         check=True,
     )
+
+
+def test_repository_ledger_maps_original_packages_without_restoring_old_names(tmp_path: Path) -> None:
+    import tomllib
+
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    ledger = tomllib.loads(SYNC.LEDGER.read_text())
+    for mapping in ledger["mirror"]:
+        root = tmp_path / mapping["source"]
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "fixture.txt").write_text("base\n")
+    paths = {
+        "aic-core/src/aiconfigurator_core/sdk/engine.py": "python/aisimulate/src/aisimulate_core/sdk/engine.py",
+        "src/aiconfigurator/sdk/task_v2.py": "python/aisimulate/src/aisimulate/sdk/task_v2.py",
+        "src/aiconfigurator/generator/api.py": "python/aisimulate/src/aisimulate/generator/api.py",
+        "src/aiconfigurator/cli/main.py": "python/aisimulate/src/aisimulate/legacy_cli/main.py",
+    }
+    for source in paths:
+        path = tmp_path / source
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("before\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "-c", "commit.gpgsign=false", "commit", "-m", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    for source in paths:
+        (tmp_path / source).write_text("after\n")
+    (tmp_path / "src/aiconfigurator/main.py").write_text("entrypoint\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "-c", "commit.gpgsign=false", "commit", "-m", "target")
+    target = _git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(SYNC.ManualChangesRequired, match="src/aiconfigurator"):
+        SYNC.render(tmp_path, base, target)
+    report = tmp_path / "manual.md"
+    patch = SYNC.render(tmp_path, base, target, manual_report=report)
+    for destination in paths.values():
+        assert f"+++ b/{destination}".encode() in patch
+    assert b"python/aisimulate/src/aiconfigurator" not in patch
+    assert "src/aiconfigurator/main.py" in report.read_text()

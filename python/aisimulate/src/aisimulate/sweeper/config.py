@@ -27,7 +27,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from ..config.engine import NgramSpeculationConfig
 
 
 class OptimizationTarget(str, Enum):
@@ -525,6 +526,7 @@ class SearchSpace(BaseModel):
     kvcache_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
+    speculation: NgramSpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
     # Attention--FFN disaggregation. The A/F topology is a finite, complete
@@ -622,6 +624,23 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.speculation is not None:
+            if self.aic_nextn is not None:
+                raise ValueError("speculation cannot be combined with aic_nextn")
+            if self.backend != ["vllm"] or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode):
+                raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+            if self.encoder is not None:
+                raise ValueError("ngram speculation does not support EPD")
+            roles = []
+            if "agg" in self.deployment_mode:
+                roles.append("agg")
+            if "disagg" in self.deployment_mode:
+                roles.extend(("prefill", "decode"))
+            for role in roles:
+                if getattr(self, f"{role}_native_host_offload") is not None:
+                    raise ValueError("ngram speculation does not support host_offload")
+                if getattr(self, f"{role}_forward_model") not in (None, "op_level"):
+                    raise ValueError("ngram speculation requires op_level timing")
         for field_name, allowed in SEARCH_CHOICES.items():
             values = getattr(self, field_name)
             if not values:
@@ -783,6 +802,10 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_estimator_controls(self):
+        from aisimulate_core.sdk.common import resolve_transfer_policy
+
+        from ..config.engine import TimingConfig
+
         allowed = {
             "estimation_mode",
             "fallback_policy",
@@ -816,6 +839,16 @@ class SearchSpace(BaseModel):
                     or any(not isinstance(p, str) or not p.strip() for p in paths)
                 ):
                     raise ValueError(f"{role} systems_paths must contain nonempty strings")
+            for name in ("estimation_mode", "fallback_policy", "database_mode", "estimator_config"):
+                if name in controls and controls[name] is None:
+                    raise ValueError(f"{role} {name} must not be null")
+            validated = TimingConfig.model_validate(controls)
+            normalized = validated.model_dump(include=set(controls))
+            if normalized.get("transfer_policy") is not None:
+                normalized["transfer_policy"] = sorted(
+                    kind.value for kind in resolve_transfer_policy(normalized["transfer_policy"])
+                )
+            self.role_estimator_controls[role] = normalized
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
@@ -871,7 +904,9 @@ class SearchSpace(BaseModel):
             raise ValueError("aic_nextn requires explicit nextn_accepted")
         if self.nextn_accepted is not None and (not self.aic_nextn or self.nextn_accepted > self.aic_nextn):
             raise ValueError("nextn_accepted requires aic_nextn > 0 and must be within [0, aic_nextn]")
-        active = self.aic_nextn or any(getattr(self, name) not in (None, False) for name in ENGINE_MODEL_CONTROL_FIELDS)
+        active = self.aic_nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
         if active and (
             self.encoder is not None
             or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode)
@@ -1089,6 +1124,8 @@ class SmartSearchConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
+        if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
+            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:

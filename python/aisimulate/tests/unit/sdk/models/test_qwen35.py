@@ -8,10 +8,10 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common, models
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.operations import CustomAllReduce, OverlapOp
-from aiconfigurator_core.sdk import models as core_models
+from aisimulate.sdk import common, models
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.operations import CustomAllReduce, OverlapOp
+from aisimulate_core.sdk import models as core_models
 
 pytestmark = pytest.mark.unit
 

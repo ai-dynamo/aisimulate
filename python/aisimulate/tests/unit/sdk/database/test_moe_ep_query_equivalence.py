@@ -34,17 +34,17 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk import common, engine
-from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.operations.moe import MoE
-from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
-from aiconfigurator_core.sdk.perf_database import get_database
+from aisimulate_core.sdk import common, engine
+from aisimulate_core.sdk.engine_table_view import fetch_table_view
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.operations.moe import MoE
+from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
+from aisimulate_core.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 SGLANG_CONTEXT_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_context_moe_perf.parquet"
@@ -309,8 +309,8 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
     # kernel resolution and the table walk. An uncollected ctor mode must
     # MISS loudly; the collected mode (a fresh twin, the pattern production
     # uses) must hit the same value as the direct table recompute.
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-    from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
 
     db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     legacy_table = fetch_table_view(db, "_wideep_context_moe_data")

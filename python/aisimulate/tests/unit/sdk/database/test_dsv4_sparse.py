@@ -216,9 +216,9 @@ def test_shipped_dsv4_module_tables_are_rank_local():
     here before it ships.  Uses parquet column reads only — the whole scan is
     a few dozen small files."""
     pq = pytest.importorskip("pyarrow.parquet")
-    import aiconfigurator_core
+    import aisimulate_core
 
-    data_root = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
+    data_root = Path(aisimulate_core.__file__).parent / "systems" / "data"
     module_files = sorted(
         p
         for p in data_root.glob("*/sparse_attention/*/*/dsv4_*_module_perf.parquet")

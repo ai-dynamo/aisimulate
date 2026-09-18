@@ -34,6 +34,13 @@ Both commands now come from AISimulate. Existing AIC flags and experiment YAML c
 `aiconfigurator`; there is no automatic converter to the new CLI input format. See the
 [Legacy AIC CLI User Guide](legacy-aic-user-guide.md) for the six-command reference.
 
+### 1.1 Migrate Python imports
+
+AISimulate 0.13.0 removes the legacy `aiconfigurator` and
+`aiconfigurator_core` Python packages. The `aiconfigurator` executable remains
+available. See [Python source migration](../python-source-migration.md) for
+replacement imports, the package layout, and downstream qualification requirements.
+
 ## 2. AIC to AISimulate command mapping
 
 The rows follow the legacy guide's command order. “Keep AIC” means use the compatibility command
@@ -242,6 +249,7 @@ required result, keep the AIC command above.
 - [4.9 AFD](#49-afd-translation)
 - [4.10 Prediction details](#410-inspect-prediction-details)
 - [4.11 Power and energy analysis](#411-power-and-energy-analysis)
+- [4.12 Ngram prompt-lookup speculative decoding](#412-ngram-prompt-lookup-speculative-decoding)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -546,7 +554,7 @@ selection and fallback policy.
 | Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
 | EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
 | MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
-| Quantization overrides | `engine.gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` |
+| Quantization overrides | `engine.gemm_quant_mode`, `engine.moe_quant_mode`, `engine.kvcache_quant_mode`, `engine.fmha_quant_mode`, `engine.comm_quant_mode` |
 | Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
 | Maximum sequence length | Existing `engine.context_length` |
 | GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
@@ -554,7 +562,10 @@ selection and fallback policy.
 `enable_wideep` is obsolete: topology now determines the MoE execution regime.
 The new model controls require default timing on every language role. AFD and
 analytical encoder configurations reject them. Backend/model compatibility is
-validated by the canonical constructor before simulation.
+validated by the canonical constructor before simulation. Use `--stack engine`
+for these controls and exact synthetic shared prefixes. Older Dynamo adapters
+do not support them and fail capability validation before replay. AFD and
+AFD+PD reject positive `cached_prefix_tokens`.
 
 This recommendation example preserves a token-exact shared prefix and explicit
 KV quantization while using the existing capacity field:
@@ -596,6 +607,8 @@ For MTP-capable models, specify both `engine.nextn: 2` and
 replay uses one guaranteed accepted draft token and a 25% chance of a second.
 Saved candidate YAML retains these values and all engine model controls.
 A shared prefix does not mean a prewarmed cache; the first request remains cold.
+Only complete cache blocks can be reused, so a shared prefix shorter than the
+engine cache block size can produce zero hits.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -1101,6 +1114,61 @@ approximates mixed/decode step counts; AISimulate schedules individual requests,
 executed forward passes and power estimates differ. Within each CLI,
 adding `--detail energy` preserves summary power and adds the breakdown.
 
+<a id="ngram-prompt-lookup-speculative-decoding"></a>
+
+### 4.12 Ngram prompt-lookup speculative decoding
+
+**Before — AIC estimates decode cost using a supplied average acceptance:**
+
+```bash
+aiconfigurator cli estimate \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --estimate-mode static_gen --tp-size 2 --batch-size 64 --isl 1024 --osl 128 \
+  --spec-method ngram --spec-num-draft-tokens 3 --spec-accepted-tokens 1.5
+```
+
+AIC prices target verification at four token positions and uses the supplied mean of
+1.5 accepted draft tokens to estimate 2.5 output tokens of progress per iteration.
+
+**After — simulate serving with ngram speculation.** Reuse `prediction.yaml` from
+[section 3.1](#31-migrate-one-concrete-deployment):
+
+```bash
+aisimulate predict --config prediction.yaml \
+  --set 'engine.speculation={kind: ngram, num_speculative_tokens: 3, acceptance_rates: [0.75, 0.8, 0.25], seed: 42}' \
+  --output-dir ./ngram-prediction
+```
+
+To search deployment configurations with the same speculative assumptions, reuse
+`budget-search.yaml` from [section 3.2](#32-search-with-a-fixed-gpu-budget):
+
+```bash
+aisimulate recommend --config budget-search.yaml \
+  --set engine.backend=vllm \
+  --set 'engine.speculation={kind: ngram, num_speculative_tokens: 3, acceptance_rates: [0.75, 0.8, 0.25], seed: 42}' \
+  --output-dir ./ngram-recommendations
+```
+
+**Result to inspect:** `ngram-prediction/prediction.json` contains serving latency and throughput.
+`ngram-recommendations/recommendation.json` contains the search results, and saved prediction YAML
+under `ngram-recommendations/recommendations/` preserves the speculation block. Recommendation
+keeps draft count and acceptance fixed; it does not search them.
+
+**What changed:** AIC's fixed-batch estimate uses a scalar mean. Replay samples each draft token's
+acceptance conditional on all earlier draft tokens being accepted. This illustrative distribution
+has the same mean: `0.75 + 0.75*0.8 + 0.75*0.8*0.25 = 1.5` accepted draft tokens. A scalar mean
+does not uniquely determine that distribution. These values are workload assumptions, not
+predicted acceptance. AISimulate also models request arrivals and scheduling, so matching the
+acceptance mean does not make the two CLIs' latency or throughput results equivalent.
+
+The initial scope is offline engine-stack vLLM aggregated/disaggregated language workers with
+op-level timing. The model assumes a lookup draft is available every round; actual token matching,
+host lookup latency, and mixed drafted/draftless rounds are not modeled. Prompt lookup is separate
+from KV prefix reuse and AIC's `--prefix N` cached-input assumption. See the
+[ngram configuration and supported combinations](user-guide.md#prompt-lookup-ngram-speculative-decoding).
+Other speculative schemes retain their [compatibility/SDK interfaces](#estimator-controls-and-speculative-decoding).
+
 ## 5. Remaining feature and performance gaps
 
 These gaps concern the unified `aisimulate predict` and `aisimulate recommend` commands. The
@@ -1320,8 +1388,9 @@ For supported estimator selection, fallback, database/transfer policies, system 
 regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
 Unified prediction and recommendation also support pinned quantization/kernel controls and
 MTP with explicit accepted-token assumptions; see [section 4.6.3](#preserve-pinned-engine-and-request-controls).
-Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP, and
-per-operation source diagnostics continue to use the compatibility CLI or SDK.
+Ngram prediction and recommendation are covered in [section 4.12](#412-ngram-prompt-lookup-speculative-decoding).
+Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP and ngram,
+and per-operation source diagnostics continue to use the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
@@ -1366,26 +1435,12 @@ workload sharing. `traffic.source.cached_prefix_tokens` likewise sets an exact s
 synthetic requests, with a cold first request and reuse governed by cache state. Keep AIC when
 you require its fixed cached-token assumption.
 
-**Estimate speculative decoding.** For an n-gram example with three draft tokens and a caller-supplied
-average of 1.5 accepted tokens:
-
-```bash
-aiconfigurator cli estimate \
-  --model-path Qwen/Qwen3-8B \
-  --system h100_sxm --backend vllm --backend-version 0.24.0 \
-  --estimate-mode static_gen --isl 64 --osl 128 --batch-size 8 \
-  --gemm-quant-mode bfloat16 --kvcache-quant-mode bfloat16 \
-  --fmha-quant-mode bfloat16 \
-  --spec-method ngram --spec-num-draft-tokens 3 --spec-accepted-tokens 1.5
-```
-
-**Result to inspect:** the estimate projects speculative iteration cost into latency and throughput
-using the supplied acceptance. `1.5` is an illustrative assumption, not predicted acceptance. MTP,
-EAGLE-3, DFlash, DSpark, and standalone draft models also have compatibility/SDK cost models, subject
-to [scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
-The unified CLI supports MTP through `engine.nextn` and an explicit `engine.nextn_accepted`,
-as shown in [section 4.6.3](#preserve-pinned-engine-and-request-controls). It does not expose the
-other speculative schemes above, and it does not predict acceptance rates.
+**Other speculative-decoding schemes.** Ngram prediction and recommendation are covered in
+[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). The unified CLI supports MTP through
+`engine.nextn` and an explicit `engine.nextn_accepted`, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). Neither path predicts acceptance rates.
+EAGLE-3, DFlash, DSpark, and standalone draft models still use the compatibility CLI or SDK, subject to
+[scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
@@ -1509,7 +1564,7 @@ aggregate-only SLA semantics, described in its feature guide.
 ### 6.2 Repository and release transition
 
 AISimulate is the home for ongoing development, issues, and releases. The standalone
-AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.12.0
-keeps the AIC compatibility command; removal is targeted for 0.13.0 after all remaining workflows
+AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.13.0
+keeps the AIC compatibility command; removal is targeted for 0.14.0 after all remaining workflows
 have verified unified-CLI replacements. See the [release transition policy](../../README.md#aiconfigurator-repository-transition)
 and [repository history](../repository-history.md).

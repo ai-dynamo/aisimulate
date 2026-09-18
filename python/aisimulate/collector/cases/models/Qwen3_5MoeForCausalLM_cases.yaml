@@ -321,8 +321,8 @@ model_case_values:
         #     the repo (unlike Qwen--Qwen3.8-2.4T-A95B[-FP8]_config.json for
         #     the base/-FP8 ids). collect_moe.py's _load_model_moe_config
         #     (collect_moe.py:100-104) raises FileNotFoundError when one is
-        #     missing; that root, src/aiconfigurator/model_configs (a
-        #     symlink to aic-core/src/aiconfigurator_core/model_configs), is
+        #     missing; that root, src/aisimulate_core/model_configs (a
+        #     symlink to src/aisimulate_core/model_configs), is
         #     OUTSIDE collector/'s module boundary (layer_permissions.md) --
         #     adding it is a separate, human-approved, cross-module commit,
         #     same as the NemotronH Lightning row's precedent above.

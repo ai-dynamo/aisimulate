@@ -97,7 +97,7 @@ def _role_capacity_tokens(
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
             hardware_sku=str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
             backend=str(resolved.get("backend", sample["backend"])),
-            backend_version=resolved.get("backend_version", backend_version),
+            backend_version=resolved.get("backend_version") or backend_version,
             systems_paths=resolve_systems_paths(roots),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
@@ -106,7 +106,8 @@ def _role_capacity_tokens(
             model_controls=tuple(
                 (name, resolved.get(name, sample.get(name)))
                 for name in ENGINE_MODEL_CONTROL_FIELDS
-                if resolved.get(name, sample.get(name)) not in (None, False)
+                if resolved.get(name, sample.get(name)) is not None
+                and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
             ),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one

@@ -16,7 +16,7 @@ import shlex
 
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
+from aisimulate.generator.api import generate_backend_artifacts
 
 _BACKEND_VERSION = "0.20.1"
 
