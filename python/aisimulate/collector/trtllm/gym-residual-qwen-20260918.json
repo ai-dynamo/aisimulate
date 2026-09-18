@@ -1,0 +1,1377 @@
+{
+  "point": {
+    "config_id": 1553,
+    "hardware": "b200",
+    "isl": 8192,
+    "osl": 1024,
+    "conc": 512,
+    "silicon_ttft_ms": 2915.429193386558,
+    "silicon_tpot_ms": 35.09371775002287,
+    "silicon_head_sha": "f9426a550344a64a9d9b11fc58f10cb5c61d015e",
+    "silicon_image": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc18"
+  },
+  "replay": {
+    "completed_requests": 5120,
+    "mean_ttft_ms": 1399.7995774718843,
+    "mean_tpot_ms": 116.84926175958326,
+    "median_itl_ms": 21.606636747685545,
+    "p75_itl_ms": 315.76599538560885,
+    "p90_itl_ms": 349.67405611266713
+  },
+  "source_args": {
+    "attention_dp_config": {
+      "batching_wait_iters": 10,
+      "enable_balance": true,
+      "timeout_iters": 500
+    },
+    "backend": "pytorch",
+    "block_size": 32,
+    "cuda_graph_config": {
+      "enable_padding": true,
+      "max_batch_size": 128
+    },
+    "disable_overlap_scheduler": false,
+    "enable_attention_dp": true,
+    "enable_chunked_prefill": false,
+    "enable_expert_parallel": true,
+    "enable_iter_perf_stats": true,
+    "enable_layerwise_nvtx_marker": false,
+    "enable_prefix_caching": false,
+    "ep_size": 8,
+    "free_gpu_memory_fraction": 0.9,
+    "kv_cache_config": {
+      "dtype": "fp8",
+      "enable_block_reuse": false,
+      "free_gpu_memory_fraction": 0.9
+    },
+    "kv_cache_dtype": "fp8",
+    "max_batch_size": 128,
+    "max_model_len": 9472,
+    "max_num_batched_tokens": 32768,
+    "max_num_seqs": 128,
+    "max_num_tokens": 32768,
+    "max_seq_len": 9472,
+    "moe_config": {
+      "backend": "CUTEDSL",
+      "use_low_precision_moe_combine": true
+    },
+    "moe_expert_parallel_size": 8,
+    "num_postprocess_workers": 4,
+    "port": 8000,
+    "print_iter_log": true,
+    "recipe_environment": {},
+    "scheduler_config": {
+      "capacity_scheduler_policy": "MAX_UTILIZATION",
+      "context_chunking_policy": "FIRST_COME_FIRST_SERVED"
+    },
+    "stream_interval": 20,
+    "tensor_parallel_size": 8,
+    "tp_size": 8,
+    "trust_remote_code": true
+  },
+  "controlled_shape_probes": [
+    {
+      "prefill_tokens": 0,
+      "decode_requests": 64,
+      "total_ms": 21.296758499874564,
+      "ops_ms": {
+        "generation_gdn_moe": 5.877504229545593,
+        "generation_gdn_recurrence": 3.2862239778041844,
+        "generation_full_moe": 1.9591680765151978,
+        "generation_attention": 1.7407140162666999,
+        "generation_gdn_in_proj_gemm": 1.4266746755920425,
+        "generation_gdn_moe_post_dispatch": 1.22085,
+        "generation_gdn_moe_pre_dispatch": 0.9267749999999999,
+        "generation_gdn_out_proj_gemm": 0.7170000113546848,
+        "generation_qkv_gemm": 0.4091212255861758,
+        "generation_full_moe_post_dispatch": 0.40695,
+        "generation_logits_gemm": 0.3743678187554012,
+        "generation_gdn_shared_gate_up_gemm": 0.3271680101752281,
+        "generation_full_moe_pre_dispatch": 0.308925,
+        "generation_gdn_router_gemm": 0.2823360040783882,
+        "generation_proj_gemm": 0.23900000378489497,
+        "generation_gdn_in_proj_ba_gemm": 0.2103840038180351,
+        "generation_gdn_conv1d": 0.19843200221657753,
+        "generation_gdn_shared_down_gemm": 0.1534079946577549,
+        "generation_gdn_norm": 0.1503201038961039,
+        "generation_gdn_ffn_norm": 0.1503201038961039,
+        "generation_gdn_shared_merge": 0.14649007792207794,
+        "generation_gdn_shared_expert_gate_mul": 0.14266005194805195,
+        "generation_gdn_shared_act_gate": 0.13787251948051948,
+        "generation_full_shared_gate_up_gemm": 0.1090560033917427,
+        "generation_full_router_gemm": 0.09411200135946274,
+        "generation_full_shared_down_gemm": 0.05113599821925163,
+        "generation_full_attn_norm": 0.050106701298701296,
+        "generation_full_ffn_norm": 0.050106701298701296,
+        "generation_full_shared_merge": 0.048830025974025984,
+        "generation_full_shared_expert_gate_mul": 0.04755335064935065,
+        "generation_full_shared_act_gate": 0.045957506493506495,
+        "generation_gdn_shared_expert_gate_gemm": 0.003112644155844156,
+        "generation_embedding": 0.0030851116883116882,
+        "generation_full_shared_expert_gate_gemm": 0.001037548051948052,
+        "generation_embedding_ar": 0.0,
+        "generation_gdn_ar": 0.0,
+        "generation_full_ar": 0.0,
+        "generation_p2p": 0.0
+      },
+      "raw": [
+        [
+          [
+            "generation_embedding",
+            0.0030851116883116882,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_embedding_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_norm",
+            0.1503201038961039,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_in_proj_gemm",
+            1.4266746755920425,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_in_proj_ba_gemm",
+            0.2103840038180351,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_conv1d",
+            0.19843200221657753,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_recurrence",
+            3.2862239778041844,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_out_proj_gemm",
+            0.7170000113546848,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_ffn_norm",
+            0.1503201038961039,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_router_gemm",
+            0.2823360040783882,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_moe_pre_dispatch",
+            0.9267749999999999,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_moe",
+            5.877504229545593,
+            3339.940757641196,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_shared_expert_gate_gemm",
+            0.003112644155844156,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "generation_gdn_shared_gate_up_gemm",
+            0.3271680101752281,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_shared_act_gate",
+            0.13787251948051948,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_shared_down_gemm",
+            0.1534079946577549,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_gdn_shared_expert_gate_mul",
+            0.14266005194805195,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_shared_merge",
+            0.14649007792207794,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_gdn_moe_post_dispatch",
+            1.22085,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_attn_norm",
+            0.050106701298701296,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_qkv_gemm",
+            0.4091212255861758,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_attention",
+            1.7407140162666999,
+            0.0,
+            "mixed",
+            null
+          ],
+          [
+            "generation_proj_gemm",
+            0.23900000378489497,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_full_ffn_norm",
+            0.050106701298701296,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_full_router_gemm",
+            0.09411200135946274,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_moe_pre_dispatch",
+            0.308925,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_moe",
+            1.9591680765151978,
+            1113.3135858803987,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_shared_expert_gate_gemm",
+            0.001037548051948052,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "generation_full_shared_gate_up_gemm",
+            0.1090560033917427,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_shared_act_gate",
+            0.045957506493506495,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_full_shared_down_gemm",
+            0.05113599821925163,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_full_shared_expert_gate_mul",
+            0.04755335064935065,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_full_shared_merge",
+            0.048830025974025984,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "generation_full_moe_post_dispatch",
+            0.40695,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_logits_gemm",
+            0.3743678187554012,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "generation_p2p",
+            0.0,
+            0.0,
+            "silicon",
+            null
+          ]
+        ]
+      ]
+    },
+    {
+      "prefill_tokens": 8192,
+      "decode_requests": 63,
+      "total_ms": 348.07352138803776,
+      "ops_ms": {
+        "context_gdn_moe": 106.67924380720706,
+        "context_gdn_in_proj_gemm": 39.263254786581655,
+        "context_gdn_scan": 38.95699240488466,
+        "context_full_moe": 35.559747935735686,
+        "context_gdn_moe_post_dispatch": 34.70198648071289,
+        "context_gdn_out_proj_gemm": 15.344664687654586,
+        "context_attention": 11.618762380313546,
+        "context_full_moe_post_dispatch": 11.567328826904298,
+        "context_qkv_gemm": 10.812369121078838,
+        "context_gdn_moe_pre_dispatch": 10.553711881256104,
+        "context_proj_gemm": 5.114888229218195,
+        "context_gdn_shared_gate_up_gemm": 4.193096553819487,
+        "context_full_moe_pre_dispatch": 3.5179039604187015,
+        "context_gdn_norm": 2.111054025974026,
+        "context_gdn_ffn_norm": 2.111054025974026,
+        "context_gdn_shared_down_gemm": 2.0929180279126736,
+        "generation_attention": 1.8725684262581672,
+        "context_gdn_shared_merge": 1.6170405194805195,
+        "context_full_shared_gate_up_gemm": 1.3976988512731623,
+        "context_gdn_conv1d": 1.352346191970355,
+        "context_gdn_router_gemm": 1.1344584530852444,
+        "context_gdn_shared_expert_gate_mul": 1.1230270129870128,
+        "context_full_attn_norm": 0.7036846753246753,
+        "context_full_ffn_norm": 0.7036846753246753,
+        "context_full_shared_down_gemm": 0.6976393426375579,
+        "context_full_shared_merge": 0.5390135064935065,
+        "context_gdn_shared_act_gate": 0.5055101298701299,
+        "context_gdn_in_proj_ba_gemm": 0.438045983111806,
+        "context_gdn_shared_expert_gate_gemm": 0.3953551675324675,
+        "context_full_router_gemm": 0.37815281769508147,
+        "context_full_shared_expert_gate_mul": 0.3743423376623376,
+        "context_logits_gemm": 0.3277096512950256,
+        "context_full_shared_act_gate": 0.16850337662337664,
+        "context_full_shared_expert_gate_gemm": 0.13178505584415584,
+        "context_embedding": 0.013978077922077921,
+        "context_embedding_ar": 0.0,
+        "context_gdn_ar": 0.0,
+        "context_full_ar": 0.0,
+        "context_p2p": 0.0
+      },
+      "raw": [
+        [
+          [
+            "context_embedding",
+            0.013978077922077921,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_embedding_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_norm",
+            2.111054025974026,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_in_proj_gemm",
+            39.263254786581655,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_in_proj_ba_gemm",
+            0.438045983111806,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_conv1d",
+            1.352346191970355,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_scan",
+            38.95699240488466,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_out_proj_gemm",
+            15.344664687654586,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_ffn_norm",
+            2.111054025974026,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_router_gemm",
+            1.1344584530852444,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_pre_dispatch",
+            10.553711881256104,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe",
+            106.67924380720706,
+            57773.49575421454,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_post_dispatch",
+            34.70198648071289,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_gemm",
+            0.3953551675324675,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_gdn_shared_gate_up_gemm",
+            4.193096553819487,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_act_gate",
+            0.5055101298701299,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_down_gemm",
+            2.0929180279126736,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_mul",
+            1.1230270129870128,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_merge",
+            1.6170405194805195,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_attn_norm",
+            0.7036846753246753,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_qkv_gemm",
+            10.812369121078838,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_proj_gemm",
+            5.114888229218195,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_ffn_norm",
+            0.7036846753246753,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_router_gemm",
+            0.37815281769508147,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_pre_dispatch",
+            3.5179039604187015,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe",
+            35.559747935735686,
+            19257.831918071515,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_post_dispatch",
+            11.567328826904298,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_gemm",
+            0.13178505584415584,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_full_shared_gate_up_gemm",
+            1.3976988512731623,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_act_gate",
+            0.16850337662337664,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_down_gemm",
+            0.6976393426375579,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_mul",
+            0.3743423376623376,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_merge",
+            0.5390135064935065,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_logits_gemm",
+            0.3277096512950256,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_p2p",
+            0.0,
+            0.0,
+            "silicon",
+            null
+          ]
+        ],
+        [
+          [
+            "context_attention",
+            11.618762380313546,
+            0.0,
+            "mixed",
+            null
+          ]
+        ],
+        [
+          [
+            "generation_attention",
+            1.8725684262581672,
+            0.0,
+            "mixed",
+            null
+          ]
+        ]
+      ]
+    },
+    {
+      "prefill_tokens": 16384,
+      "decode_requests": 62,
+      "total_ms": 686.1578198016927,
+      "ops_ms": {
+        "context_gdn_moe": 212.53141655400694,
+        "context_gdn_in_proj_gemm": 78.34115899381607,
+        "context_gdn_scan": 76.60430236626415,
+        "context_full_moe": 70.84380551800231,
+        "context_gdn_moe_post_dispatch": 69.13493272705078,
+        "context_gdn_out_proj_gemm": 30.456656743772328,
+        "context_full_moe_post_dispatch": 23.044977575683593,
+        "context_attention": 22.08116329355207,
+        "context_qkv_gemm": 21.447794611656352,
+        "context_gdn_moe_pre_dispatch": 19.823836837005615,
+        "context_proj_gemm": 10.152218914590776,
+        "context_gdn_shared_gate_up_gemm": 7.921644625224871,
+        "context_full_moe_pre_dispatch": 6.607945612335205,
+        "context_gdn_shared_down_gemm": 4.161134881069302,
+        "context_gdn_norm": 4.0717879480519485,
+        "context_gdn_ffn_norm": 4.0717879480519485,
+        "context_gdn_shared_merge": 3.087590961038961,
+        "context_full_shared_gate_up_gemm": 2.64054820840829,
+        "context_gdn_conv1d": 2.481584580724302,
+        "context_gdn_router_gemm": 2.385850335514988,
+        "context_gdn_shared_expert_gate_mul": 2.103393974025974,
+        "generation_attention": 1.8508555535017286,
+        "context_full_shared_down_gemm": 1.3870449603564337,
+        "context_full_attn_norm": 1.3572626493506494,
+        "context_full_ffn_norm": 1.3572626493506494,
+        "context_gdn_in_proj_ba_gemm": 1.117341085417138,
+        "context_full_shared_merge": 1.029196987012987,
+        "context_gdn_shared_act_gate": 0.8731477402597403,
+        "context_full_router_gemm": 0.7952834451716626,
+        "context_gdn_shared_expert_gate_gemm": 0.7875976909090908,
+        "context_full_shared_expert_gate_mul": 0.7011313246753247,
+        "context_logits_gemm": 0.3277096512950256,
+        "context_full_shared_act_gate": 0.2910492467532468,
+        "context_full_shared_expert_gate_gemm": 0.2625325636363636,
+        "context_embedding": 0.024871044155844155,
+        "context_embedding_ar": 0.0,
+        "context_gdn_ar": 0.0,
+        "context_full_ar": 0.0,
+        "context_p2p": 0.0
+      },
+      "raw": [
+        [
+          [
+            "context_embedding",
+            0.024871044155844155,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_embedding_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_norm",
+            4.0717879480519485,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_in_proj_gemm",
+            78.34115899381607,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_in_proj_ba_gemm",
+            1.117341085417138,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_conv1d",
+            2.481584580724302,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_scan",
+            76.60430236626415,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_out_proj_gemm",
+            30.456656743772328,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_ffn_norm",
+            4.0717879480519485,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_router_gemm",
+            2.385850335514988,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_pre_dispatch",
+            19.823836837005615,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe",
+            212.53141655400694,
+            115099.08069943215,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_post_dispatch",
+            69.13493272705078,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_gemm",
+            0.7875976909090908,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_gdn_shared_gate_up_gemm",
+            7.921644625224871,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_act_gate",
+            0.8731477402597403,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_down_gemm",
+            4.161134881069302,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_mul",
+            2.103393974025974,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_merge",
+            3.087590961038961,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_attn_norm",
+            1.3572626493506494,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_qkv_gemm",
+            21.447794611656352,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_proj_gemm",
+            10.152218914590776,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_ffn_norm",
+            1.3572626493506494,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_router_gemm",
+            0.7952834451716626,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_pre_dispatch",
+            6.607945612335205,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe",
+            70.84380551800231,
+            38366.36023314405,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_post_dispatch",
+            23.044977575683593,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_gemm",
+            0.2625325636363636,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_full_shared_gate_up_gemm",
+            2.64054820840829,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_act_gate",
+            0.2910492467532468,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_down_gemm",
+            1.3870449603564337,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_mul",
+            0.7011313246753247,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_merge",
+            1.029196987012987,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_logits_gemm",
+            0.3277096512950256,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_p2p",
+            0.0,
+            0.0,
+            "silicon",
+            null
+          ]
+        ],
+        [
+          [
+            "context_attention",
+            22.08116329355207,
+            0.0,
+            "mixed",
+            null
+          ]
+        ],
+        [
+          [
+            "generation_attention",
+            1.8508555535017286,
+            0.0,
+            "mixed",
+            null
+          ]
+        ]
+      ]
+    },
+    {
+      "prefill_tokens": 32768,
+      "decode_requests": 60,
+      "total_ms": 1363.860381400988,
+      "ops_ms": {
+        "context_gdn_moe": 424.2357620476067,
+        "context_gdn_in_proj_gemm": 155.20523459183642,
+        "context_gdn_scan": 152.4656435650096,
+        "context_full_moe": 141.41192068253557,
+        "context_gdn_moe_post_dispatch": 138.00082521972655,
+        "context_gdn_out_proj_gemm": 61.02545473346254,
+        "context_full_moe_post_dispatch": 46.000275073242186,
+        "context_attention": 44.09956014795271,
+        "context_qkv_gemm": 42.866419816310945,
+        "context_gdn_moe_pre_dispatch": 38.56117231521606,
+        "context_proj_gemm": 20.341818244487513,
+        "context_gdn_shared_gate_up_gemm": 15.82644628401613,
+        "context_full_moe_pre_dispatch": 12.853724105072022,
+        "context_gdn_shared_down_gemm": 8.30679812640301,
+        "context_gdn_norm": 7.993255792207792,
+        "context_gdn_ffn_norm": 7.993255792207792,
+        "context_gdn_shared_merge": 6.028691844155844,
+        "context_full_shared_gate_up_gemm": 5.275482094672043,
+        "context_gdn_conv1d": 4.849421634855441,
+        "context_gdn_router_gemm": 4.761855174670927,
+        "context_gdn_shared_expert_gate_mul": 4.064127896103896,
+        "context_full_shared_down_gemm": 2.768932708801003,
+        "context_full_attn_norm": 2.664418597402597,
+        "context_full_ffn_norm": 2.664418597402597,
+        "context_gdn_in_proj_ba_gemm": 2.221437309810864,
+        "context_full_shared_merge": 2.009563948051948,
+        "generation_attention": 1.8074298079888513,
+        "context_gdn_shared_act_gate": 1.6084229610389609,
+        "context_full_router_gemm": 1.5872850582236424,
+        "context_gdn_shared_expert_gate_gemm": 1.5720827376623379,
+        "context_full_shared_expert_gate_mul": 1.3547092987012987,
+        "context_full_shared_act_gate": 0.536140987012987,
+        "context_full_shared_expert_gate_gemm": 0.5240275792207792,
+        "context_logits_gemm": 0.3277096512950256,
+        "context_embedding": 0.04665697662337662,
+        "context_embedding_ar": 0.0,
+        "context_gdn_ar": 0.0,
+        "context_full_ar": 0.0,
+        "context_p2p": 0.0
+      },
+      "raw": [
+        [
+          [
+            "context_embedding",
+            0.04665697662337662,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_embedding_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_norm",
+            7.993255792207792,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_in_proj_gemm",
+            155.20523459183642,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_in_proj_ba_gemm",
+            2.221437309810864,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_conv1d",
+            4.849421634855441,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_scan",
+            152.4656435650096,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_out_proj_gemm",
+            61.02545473346254,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_ffn_norm",
+            7.993255792207792,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_router_gemm",
+            4.761855174670927,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_pre_dispatch",
+            38.56117231521606,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe",
+            424.2357620476067,
+            229750.25058986738,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_moe_post_dispatch",
+            138.00082521972655,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_gemm",
+            1.5720827376623379,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_gdn_shared_gate_up_gemm",
+            15.82644628401613,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_act_gate",
+            1.6084229610389609,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_down_gemm",
+            8.30679812640301,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_gdn_shared_expert_gate_mul",
+            4.064127896103896,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_gdn_shared_merge",
+            6.028691844155844,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_attn_norm",
+            2.664418597402597,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_qkv_gemm",
+            42.866419816310945,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_proj_gemm",
+            20.341818244487513,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_ar",
+            0.0,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_ffn_norm",
+            2.664418597402597,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_router_gemm",
+            1.5872850582236424,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_pre_dispatch",
+            12.853724105072022,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe",
+            141.41192068253557,
+            76583.41686328914,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_moe_post_dispatch",
+            46.000275073242186,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_gemm",
+            0.5240275792207792,
+            0.0,
+            "sol",
+            null
+          ],
+          [
+            "context_full_shared_gate_up_gemm",
+            5.275482094672043,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_act_gate",
+            0.536140987012987,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_down_gemm",
+            2.768932708801003,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_full_shared_expert_gate_mul",
+            1.3547092987012987,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_full_shared_merge",
+            2.009563948051948,
+            0.0,
+            "empirical",
+            null
+          ],
+          [
+            "context_logits_gemm",
+            0.3277096512950256,
+            0.0,
+            "silicon",
+            null
+          ],
+          [
+            "context_p2p",
+            0.0,
+            0.0,
+            "silicon",
+            null
+          ]
+        ],
+        [
+          [
+            "context_attention",
+            44.09956014795271,
+            0.0,
+            "mixed",
+            null
+          ]
+        ],
+        [
+          [
+            "generation_attention",
+            1.8074298079888513,
+            0.0,
+            "mixed",
+            null
+          ]
+        ]
+      ]
+    }
+  ],
+  "hashes": {
+    "residual-20260918/upstream/qwen-recipe.sh": "b2e0acd41478295bef2d8d32cce98830eae9bd74760966a722b24f94e62c350b",
+    "residual-20260918/upstream/rc18-py_executor.py": "1e0ff56ed5bab5ae6aecba507218b77cf2ce92e24ba615d939be662ba3bf14f7",
+    "w4a8-fix/client_lengths/0249.spec.json": "3e1bb3f11f9b2d9aff8886a6e947b0b22578c924c02f535e51f9143e8fadd0a7",
+    "w4a8-fix/client_lengths/0249.report.json.gz": "9eb473a01ff764089caf4308184c7aff488979bbaeaa369e3abd06d4783d28fe"
+  },
+  "interpretation": "Scheduling controls are confirmed absent from replay; attribution of the residual TPOT error remains supported, not quantified or fixed. Controlled shape probes are not observed silicon step timings."
+}
