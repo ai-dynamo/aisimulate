@@ -1667,6 +1667,24 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Share typed FPM option validation with the compilation adapter.
+    #[staticmethod]
+    #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None))]
+    fn _normalize_fpm_options(
+        options_json: &str,
+        fmha_quant_mode: Option<&str>,
+        comm_quant_mode: Option<&str>,
+    ) -> PyResult<String> {
+        let options: crate::FpmInterpolationConfig =
+            serde_json::from_str(options_json).map_err(|e| {
+                PyValueError::new_err(format!("invalid FPM interpolation options: {e}"))
+            })?;
+        options
+            .validate_quant_modes(fmha_quant_mode, comm_quant_mode)
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&options).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Migration adapter for previously saved flat tuning options.
     #[staticmethod]
     fn legacy_estimator_config(options_json: &str) -> PyResult<String> {
@@ -1742,6 +1760,7 @@ impl PyForwardPassPerfModel {
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
         };
+        config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 

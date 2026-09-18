@@ -44,6 +44,27 @@ pub enum UnrecordedFpmQuantMode {
     Comm,
 }
 
+impl FpmInterpolationConfig {
+    pub(crate) fn validate_quant_modes(
+        &self,
+        fmha: Option<&str>,
+        comm: Option<&str>,
+    ) -> Result<(), AicError> {
+        for mode in &self.unrecorded_quant_modes {
+            let explicit = match mode {
+                UnrecordedFpmQuantMode::Fmha => fmha,
+                UnrecordedFpmQuantMode::Comm => comm,
+            };
+            if explicit.is_some() {
+                return Err(super::config::invalid_config(
+                    "an unrecorded FPM quant mode cannot have an explicit quantization override",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// These weights currently affect regression. Native correction keeps its
 /// established workload coordinates until a replacement is accuracy-qualified.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -799,3 +799,38 @@ def test_session_cache_separates_text_only_mode(fpm_session):
         assert _cached_engine_handle(plain, database) is plain_handle
     finally:
         _engine_handle_cache_clear()
+
+
+def test_dcp_cannot_select_regression_without_a_profile(kimi_fpm_profile):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
+    data = Path(config.systems_paths[0]) / "data" / SYSTEM / BACKEND / VERSION
+    for name in ("fpm_forward_perf.parquet", "fpm_forward_perf.metadata.json"):
+        (data / name).unlink()
+    for mode, fallback in (("fpm_regression", "deny"), ("auto", "deny"), ("fpm_interpolation", "allow")):
+        with pytest.raises(ValueError, match="DCP timing requires measured vLLM FPM interpolation"):
+            RustForwardPassPerfModel.best_available(replace(config, estimation_mode=mode, fallback_policy=fallback))
+
+
+@pytest.mark.parametrize(
+    "options,overrides,error",
+    [
+        ({"unrecorded_quant_modes": ["fmha"]}, {"fmha_quant_mode": "bfloat16"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["comm"]}, {"comm_quant_mode": "half"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["unknown_mode"]}, {}, "unknown variant"),
+        (False, {}, "invalid FPM interpolation options"),
+    ],
+)
+def test_direct_compile_validates_fpm_options(options, overrides, error, monkeypatch):
+    from aisimulate_core.sdk import compile_engine
+
+    def unexpected_model_build(*args, **kwargs):
+        pytest.fail("invalid options must be rejected before model construction")
+
+    monkeypatch.setattr("aiconfigurator_core.sdk.engine.get_model", unexpected_model_build)
+    with pytest.raises(ValueError, match=error):
+        compile_engine(MODEL_PATH, SYSTEM, BACKEND, forward_model="fpm", fpm_options=options, **overrides)

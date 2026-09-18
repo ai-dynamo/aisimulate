@@ -597,3 +597,22 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
     }
     with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+
+
+def test_legacy_migration_validates_recorded_dcp():
+    legacy = {
+        "schema_version": 1,
+        "model_name": "Qwen/Qwen3-32B",
+        "system_name": "h200_sxm",
+        "backend": "vllm",
+        "tp_size": 8,
+        "pp_size": 1,
+        "forward_model": "fpm",
+    }
+    for dcp in (None, 1, 8):
+        payload = legacy if dcp is None else {**legacy, "dcp_size": dcp}
+        config = ForwardPassPerfModelConfig.from_legacy_engine_config(payload, "decode")
+        assert config.tp == 8 and config.dcp == dcp
+    for dcp in (0, 3):
+        with pytest.raises(ValueError, match="dcp must be positive and divide tp"):
+            ForwardPassPerfModelConfig.from_legacy_engine_config({**legacy, "dcp_size": dcp}, "decode")

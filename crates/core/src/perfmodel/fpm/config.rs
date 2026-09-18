@@ -224,21 +224,12 @@ impl ForwardPassPerfModelConfig {
         if self.dcp.is_some_and(|dcp| dcp == 0 || self.tp % dcp != 0) {
             return Err(invalid_config("dcp must be positive and divide tp"));
         }
-        for mode in &self
-            .estimator_config
+        self.estimator_config
             .fpm_interpolation
-            .unrecorded_quant_modes
-        {
-            let explicit = match mode {
-                super::UnrecordedFpmQuantMode::Fmha => &self.fmha_quant_mode,
-                super::UnrecordedFpmQuantMode::Comm => &self.comm_quant_mode,
-            };
-            if explicit.is_some() {
-                return Err(invalid_config(
-                    "an unrecorded FPM quant mode cannot have an explicit quantization override",
-                ));
-            }
-        }
+            .validate_quant_modes(
+                self.fmha_quant_mode.as_deref(),
+                self.comm_quant_mode.as_deref(),
+            )?;
         if self.moe_tp_size.is_some() != self.moe_ep_size.is_some() {
             return Err(invalid_config(
                 "moe_tp_size and moe_ep_size must be configured together",
@@ -303,7 +294,7 @@ impl ForwardPassPerfModelConfig {
     }
 }
 
-fn invalid_config(message: impl Into<String>) -> AicError {
+pub(super) fn invalid_config(message: impl Into<String>) -> AicError {
     AicError::InvalidEngineConfig(format!(
         "invalid forward pass perf model config: {}",
         message.into()

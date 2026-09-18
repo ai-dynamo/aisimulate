@@ -440,13 +440,17 @@ def compile_engine(
     # does not take a model_path (quant inference is done inside `get_model`).
     from aiconfigurator_core.sdk.speculation import SpeculationConfig
 
-    fpm_options = fpm_options or {}
     recorded_attention_backend = attention_backend
     if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
         attention_backend = "flashinfer"
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
+        fpm_options = json.loads(
+            aiconfigurator_core.RustForwardPassPerfModel._normalize_fpm_options(
+                json.dumps({} if fpm_options is None else fpm_options), fmha_quant_mode, comm_quant_mode
+            )
+        )
         resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
