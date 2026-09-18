@@ -20,6 +20,8 @@ There are two distinct workflows:
 Offline FPM does not require an additional regression-training step. Predicting
 request-level TTFT, ITL/TPOT, and throughput also requires scheduler and traffic
 simulation; a forward-pass latency alone is not an end-to-end serving metric.
+The published parquet and same-stem metadata sidecar may live outside the
+AISimulate checkout; pass its path as `fpm_parquet_path`.
 
 ## References
 

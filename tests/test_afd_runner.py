@@ -330,13 +330,14 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 @pytest.mark.parametrize("forward_model", ["fpm", "op_level", None])
-def test_aic_companion_preserves_requested_forward_model(phase, companion_role, forward_model):
+@pytest.mark.parametrize("field", ["forward_model", "aic_forward_model"])
+def test_aic_companion_preserves_requested_forward_model(phase, companion_role, forward_model, field):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
     engine_args.update(aic_model_path="test-model", aic_system="test-system")
     if forward_model is not None:
-        engine_args["aic_forward_model"] = forward_model
+        engine_args[field] = forward_model
     calls = []
 
     def estimator(model, hardware, **kwargs):
@@ -356,16 +357,35 @@ def test_aic_companion_preserves_requested_forward_model(phase, companion_role, 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 @pytest.mark.parametrize("forward_model", ["unsupported", "", None, False, {}])
-def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, companion_role, forward_model):
+@pytest.mark.parametrize("field", ["forward_model", "aic_forward_model"])
+def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, companion_role, forward_model, field):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
-    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_forward_model=forward_model)
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    engine_args[field] = forward_model
 
     def estimator(*args, **kwargs):
         pytest.fail("an invalid forward model must not reach estimation")
 
-    with pytest.raises(ValueError, match=f"{companion_role}.*aic_forward_model.*fpm.*op_level"):
+    with pytest.raises(ValueError, match=f"{companion_role}.*forward_model"):
+        AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("field", ["forward_model", "fpm_parquet_path"])
+def test_aic_companion_rejects_duplicate_selection_aliases(phase, companion_role, field):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    value = "fpm" if field == "forward_model" else "/data/reviewed-fpm.parquet"
+    engine_args.update({field: value, f"aic_{field}": value})
+
+    def estimator(*args, **kwargs):
+        pytest.fail("duplicate selection aliases must not reach estimation")
+
+    with pytest.raises(ValueError, match=f"{companion_role}.*duplicates AIC field {field}"):
         AICAFDCompanionPerformanceModel(estimator).measure(spec)
 
 

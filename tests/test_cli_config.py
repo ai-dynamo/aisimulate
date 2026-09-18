@@ -15,7 +15,7 @@ from aisimulate.config.engine import (
 )
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
 
@@ -805,12 +805,27 @@ def test_prediction_timing_forward_model_defaults_to_op_level() -> None:
 
 def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> None:
     engine = _engine()
-    engine["workers"]["aggregated"] = {"timing": {"type": "default", "forward_model": "fpm"}}
+    engine["workers"]["aggregated"] = {
+        "timing": {
+            "type": "default",
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+        }
+    }
 
     config = CorePredictionConfig.model_validate({"engine": engine})
 
     assert config.engine.workers.aggregated is not None
     assert config.engine.workers.aggregated.timing.forward_model == "fpm"
+    assert config.engine.workers.aggregated.timing.fpm_parquet_path == "/artifacts/reviewed-fpm.parquet"
+
+
+def test_prediction_timing_rejects_fpm_path_for_op_level() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"}}
+
+    with pytest.raises(ValidationError, match="fpm_parquet_path requires"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 @pytest.mark.parametrize(
@@ -906,33 +921,52 @@ def test_recommendation_lowers_forward_model_per_role() -> None:
     assert space.agg_forward_model == "op_level"
 
 
-def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
-    config = _fpm_recommendation()
+@pytest.mark.parametrize("path", [None, "/artifacts/reviewed-fpm.parquet"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode) -> None:
+    raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
+    worker = raw["engine"]["workers"].pop("aggregated")
+    roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
+    raw["engine"]["mode"] = mode
+    for public_role in roles:
+        raw["engine"]["workers"][public_role] = {
+            **worker,
+            "timing": {
+                "type": "default",
+                "forward_model": "fpm",
+                "fpm_parquet_path": f"{path}.{public_role}" if path else None,
+            },
+        }
+    config = CoreRecommendationConfig.model_validate(raw)
     smart = recommendation_to_sweeper(config)
-    assert smart.search_space.agg_forward_model == "fpm"
-
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    selection = {"deployment_mode": "agg" if mode == "aggregated" else "disagg", "backend": "vllm"}
+    for role in roles.values():
+        selection[f"{role}_max_num_batched_tokens"] = 8192
+        selection[f"{role}_max_num_seqs"] = 256
     sample = unroll_sample(
         search_space=smart.search_space,
-        selection={
-            "deployment_mode": "agg",
-            "backend": "vllm",
-            "agg_max_num_batched_tokens": 8192,
-            "agg_max_num_seqs": 256,
-        },
-        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        selection=selection,
+        parallel_config=replica if mode == "aggregated" else DisaggParallelConfig(replica, replica),
     )
-    assert sample["agg_forward_model"] == "fpm"
     deployment = build_backend_deployment(sample, backend_version="test")
-    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
-
     prediction = _candidate_prediction(
         config,
         sample,
         ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
         adapter_sections={},
     )
-
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "fpm"}
+    for public_role, role in roles.items():
+        expected_path = f"{path}.{public_role}" if path else None
+        assert sample[f"{role}_fpm_parquet_path"] == expected_path
+        args = getattr(deployment, f"{role}_engine_args")
+        assert args["aic_forward_model"] == "fpm"
+        assert args.get("aic_fpm_parquet_path") == expected_path
+        assert deployment.performance_model_metadata[public_role]["config"].get("fpm_parquet_path") == expected_path
+        expected = {"type": "default", "forward_model": "fpm"}
+        if path is not None:
+            expected["fpm_parquet_path"] = expected_path
+        assert prediction["engine"]["workers"][public_role]["timing"] == expected
     CorePredictionConfig.model_validate(prediction)
 
 

@@ -12,9 +12,31 @@
 //! root, so `crate::EngineConfig`, `crate::BackendKind`, ... resolve unchanged.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Validate an explicit FPM input before loading data or entering Python.
+pub(crate) fn validate_fpm_parquet_path(
+    path: Option<&Path>,
+    is_fpm: bool,
+) -> Result<Option<&str>, crate::AicError> {
+    let Some(path) = path else { return Ok(None) };
+    let path = path.to_str().ok_or_else(|| {
+        crate::AicError::InvalidEngineConfig("fpm_parquet_path must be valid UTF-8".into())
+    })?;
+    if path.is_empty() {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path cannot be empty".into(),
+        ));
+    }
+    if !is_fpm {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path requires forward_model='fpm' with exactly one FpmForward op per phase".into(),
+        ));
+    }
+    Ok(Some(path))
+}
 
 pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // bincode op payloads are positional, so a producer/consumer skew is only
@@ -114,6 +136,12 @@ pub struct EngineConfig {
     /// predictor API (additive-optional: absent in older payloads).
     #[serde(default)]
     pub forward_model: Option<String>,
+
+    /// Optional external FPM parquet used when `forward_model == "fpm"`.
+    /// The required metadata sidecar is resolved by replacing the parquet
+    /// extension with `.metadata.json`.
+    #[serde(default)]
+    pub fpm_parquet_path: Option<PathBuf>,
 
     // KV
     pub kv_block_size: Option<u32>,

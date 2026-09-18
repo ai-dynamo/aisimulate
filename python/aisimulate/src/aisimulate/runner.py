@@ -16,6 +16,8 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
+from aiconfigurator_core.sdk.engine import EngineHandle
+
 from .aic import materialize_aic_num_gpu_blocks
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
@@ -89,6 +91,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -181,6 +184,7 @@ class AICAFDCompanionPerformanceModel:
                 provenance={"provider": "fixed", "field": key},
             )
 
+        timing_overrides = _pop_aic_timing_overrides(dict(args), role)
         estimator = self._estimator
         if estimator is None:
             from aiconfigurator.cli.api import cli_estimate
@@ -188,12 +192,7 @@ class AICAFDCompanionPerformanceModel:
             estimator = cli_estimate
         prefix = f"{role}_"
         parallel = deployment.parallel_config
-        forward_model = args.get("aic_forward_model", "op_level")
-        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
-                f"got {forward_model!r}"
-            )
+        forward_model = timing_overrides.get("forward_model", "op_level")
         kwargs: dict[str, Any] = {
             "mode": "static_ctx" if role == "prefill" else "static_gen",
             "backend_name": deployment.backend,
@@ -221,14 +220,49 @@ class AICAFDCompanionPerformanceModel:
         hardware = args.get("aic_system")
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
+        fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
+        metric = "ttft" if role == "prefill" else "tpot"
+        source = "aiconfigurator.cli.api.cli_estimate"
         try:
-            result = estimator(model_name, hardware, **kwargs)
+            if fpm_parquet_path is not None:
+                # The legacy estimator cannot consume an external pair. Use
+                # the same Rust static integration through its compiled API.
+                compile_kwargs = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"mode", "backend_name", "isl", "osl", "batch_size"}
+                }
+                for field, parameter in (
+                    ("gemm_dtype", "gemm_quant_mode"),
+                    ("moe_dtype", "moe_quant_mode"),
+                    ("fmha_dtype", "fmha_quant_mode"),
+                    ("kv_cache_dtype", "kvcache_quant_mode"),
+                    ("comm_dtype", "comm_quant_mode"),
+                    ("systems_path", "systems_path"),
+                ):
+                    if field in timing_overrides:
+                        compile_kwargs[parameter] = timing_overrides[field]
+                engine = EngineHandle.compile(
+                    model_name,
+                    hardware,
+                    deployment.backend,
+                    fpm_parquet_path=fpm_parquet_path,
+                    **compile_kwargs,
+                )
+                latency = (
+                    engine.predict_prefill_latency(batch_capacity, isl)
+                    if role == "prefill"
+                    else engine.predict_decode_latency(batch_capacity, isl, osl) / max(1, osl - 1)
+                )
+                raw = {metric: latency}
+                source = "aiconfigurator_core.sdk.engine.EngineHandle"
+            else:
+                result = estimator(model_name, hardware, **kwargs)
+                raw = getattr(result, "raw", None)
         except Exception as exc:
             raise InvalidRunnerError(
                 f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
             ) from exc
-        raw = getattr(result, "raw", None)
-        metric = "ttft" if role == "prefill" else "tpot"
         if not isinstance(raw, Mapping):
             raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
         latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
@@ -239,9 +273,10 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aiconfigurator.cli.api.cli_estimate",
+                "source": source,
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
+                **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
                 "metric": metric,
             },
         )
@@ -1005,6 +1040,29 @@ def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
     return _positive_int(value, "concurrency") if value is not None else None
 
 
+def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
+    aic_timing_overrides: dict[str, JSONValue] = {}
+    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        configured = [alias for alias in aliases if alias in rank]
+        if len(configured) > 1:
+            names = ", ".join(configured)
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
+        if not configured:
+            continue
+        value = rank.pop(configured[0])
+        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+            value = _positive_int(value, f"engine provider {role} {target}")
+        elif not isinstance(value, str) or not value:
+            raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        aic_timing_overrides[target] = value
+
+    return aic_timing_overrides
+
+
 def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
     if payload is None:
         raise ValueError(f"ReplaySpec is missing {role} engine arguments")
@@ -1263,24 +1321,7 @@ def _materialize_engine_role(
         if not num_gpu_blocks_is_explicit:
             memory_fraction_overrides[memory_field] = float(value)
 
-    aic_timing_overrides: dict[str, JSONValue] = {}
-    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
-        configured = [alias for alias in aliases if alias in rank]
-        if len(configured) > 1:
-            names = ", ".join(configured)
-            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
-        if not configured:
-            continue
-        value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
-            value = _positive_int(value, f"engine provider {role} {target}")
-        elif not isinstance(value, str) or not value:
-            raise ValueError(f"engine provider {role} {target} must be a string")
-        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
-            )
-        aic_timing_overrides[target] = value
+    aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
 
     timing_model = rank.get("timing_model")
     uses_aic_timing = timing_model is None or (

@@ -450,10 +450,14 @@ AIC_ALLOW_UNLISTED_VERSIONS=1 aiconfigurator cli estimate \
 
 **After — use FPM timing in a serving prediction for the same model, hardware, and parallelism:**
 
+Supply a matching external `/data/reviewed-fpm.parquet` and
+`/data/reviewed-fpm.metadata.json` pair.
+
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 aisimulate predict \
   --config tests/e2e/configs/unified_cli/predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml \
   --set engine.workers.aggregated.timing.forward_model=fpm \
+  --set engine.workers.aggregated.timing.fpm_parquet_path=/data/reviewed-fpm.parquet \
   --output-dir ./minimax-fpm
 ```
 
@@ -462,7 +466,7 @@ whole-forward profiles.
 
 **What changed:** AIC's `--forward-model` becomes a per-role
 `engine.workers.<role>.timing.forward_model` setting. `op_level` remains the default. The AISimulate
-fixture uses four in-flight requests rather than fixing every scheduler batch to four. The AIC
+prediction controls request concurrency rather than fixing every scheduler batch to four. The AIC
 command pins FMHA precision to match the collected profile. Both commands pin vLLM 0.25.1, which
 requires the shown unlisted-version override. FPM requires
 `timing.type: default` and matching profile coverage; a missing profile fails explicitly. See the

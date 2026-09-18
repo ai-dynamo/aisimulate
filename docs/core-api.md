@@ -154,6 +154,54 @@ Use `from_native(...)` instead when native AIC support is required and an
 unsupported configuration or native data failure should surface rather than
 fall back. This strict-native constructor does not take `worker_type`.
 
+For whole-forward prediction, set `forward_model` to `"fpm"` and provide an
+`fpm_parquet_path`, either absolute or relative to the process working directory
+when the engine is constructed. That location stays fixed if the working
+directory later changes. AISimulate reads that file directly; it does not
+require the FPM data to be installed or copied into the repository. The
+required sidecar must be adjacent and use the same stem with a
+`.metadata.json` suffix. Both files keep the existing schema, digest, row-count,
+system, backend, and version validation.
+
+```python
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+config = {
+    "schema_version": 1,
+    "model_name": "Qwen/Qwen3-32B-FP8",
+    "system_name": "h200_sxm",
+    "backend": "vllm",
+    "backend_version": "0.25.1",
+    "forward_model": "fpm",
+    "fpm_parquet_path": "/data/reviewed-fpm.parquet",
+    "tp_size": 8,
+    "pp_size": 1,
+}
+model = RustForwardPassPerfModel.from_native(config)
+```
+
+In this example the sidecar is `/data/reviewed-fpm.metadata.json`.
+Empty or non-UTF-8 paths and paths configured on an op-level engine are rejected.
+Covered FPM cells need only the system YAML and this external pair; no backend
+version data directory is required. Engines using the same pair share its parsed
+tables. Default KV-capacity estimation uses model/system metadata and also works
+without backend timing tables. Missing or invalid FPM artifacts fail when queried.
+
+Prediction and recommendation YAML accept `fpm_parquet_path` under each worker's
+`timing` alongside `type: default` and `forward_model: fpm`. Recommendation keeps
+the path for each role through search, execution, and emitted candidate YAML;
+prefill and decode may use different pairs.
+
+For the regular prefill/decode companion in AFD+PD, the Python `ReplaySpec`
+engine arguments normalize `forward_model` / `aic_forward_model` and
+`fpm_parquet_path` / `aic_fpm_parquet_path` before selecting the timing engine.
+Supplying both names for one field is rejected. They also preserve
+`systems_path` and the accepted `gemm_dtype`,
+`moe_dtype`, `fmha_dtype`, `kv_cache_dtype`, and `comm_dtype` overrides (including
+their `aic_` aliases). These become the compiled engine's quantization settings
+for exact external-FPM cell matching. The public worker timing YAML does not
+expose these precision overrides or `attention_backend`.
+
 `EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
 `SOL` for native forward-pass construction. The Python dictionary form uses
 those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the
@@ -166,7 +214,7 @@ malformed, or incomplete collection and reuse metadata fail the database load.
 Version-slot validation is unchanged; raw versions outside the maintained slots
 still require the existing explicit SDK or environment escape hatch.
 
-`AicEngineBuilder` exposes `.database_mode(...)`, `.shared_layer(...)`,
+`AicEngineBuilder` exposes `.fpm_parquet_path(...)`, `.database_mode(...)`, `.shared_layer(...)`,
 `.transfer_policy(...)`, and `.strict_provenance(...)`. Python `compile_engine`
 accepts the corresponding keyword names; `shared_layer` is serialized as
 `EngineConfig.enable_shared_layer`.

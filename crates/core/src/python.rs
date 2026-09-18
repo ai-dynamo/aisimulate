@@ -187,6 +187,8 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    fpm_parquet_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -331,6 +333,10 @@ impl AicTimingModel {
         );
         config.resolved_memory_fraction()?;
 
+        crate::config::validate_fpm_parquet_path(
+            config.fpm_parquet_path.as_deref().map(std::path::Path::new),
+            config.forward_model.as_deref() == Some("fpm"),
+        )?;
         let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
@@ -357,6 +363,7 @@ impl AicTimingModel {
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
             kwargs.set_item("forward_model", config.forward_model.as_deref())?;
+            kwargs.set_item("fpm_parquet_path", config.fpm_parquet_path.as_deref())?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -1918,6 +1925,7 @@ mod tests {
             cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
+            fpm_parquet_path: None,
         }
     }
 
@@ -2365,16 +2373,32 @@ mod tests {
     }
 
     #[test]
+    fn aic_timing_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let mut config = aic_config();
+            config.fpm_parquet_path = Some(path.into());
+            config.forward_model = Some(model.into());
+            let err = AicTimingModel::build(config).err().expect("invalid path");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
     fn aic_timing_config_accepts_fpm_forward_model() {
         let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
             "model": "test-model",
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
     }
 
     #[test]

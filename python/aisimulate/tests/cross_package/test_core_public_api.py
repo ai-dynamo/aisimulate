@@ -86,7 +86,7 @@ def test_stable_function_signatures() -> None:
         "forward_model: 'str | None' = None, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
-        "strict_provenance: 'bool | None' = None) -> 'bytes'"
+        "strict_provenance: 'bool | None' = None, fpm_parquet_path: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters

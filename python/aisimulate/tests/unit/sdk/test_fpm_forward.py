@@ -20,18 +20,27 @@ import hashlib
 import json
 import os
 import shutil
+from pathlib import Path
 from typing import ClassVar
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import yaml
 
 from aiconfigurator.sdk import common, models
 from aiconfigurator.sdk import config as sdk_config
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.operations import FPMForwardOp
 from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
 from aiconfigurator_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
+from aisimulate.compiler import prediction_to_replay_spec
+from aisimulate.config import CorePredictionConfig
+from aisimulate.main import main
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper import AFDLayerTimes
+from aisimulate.sweeper.replay import ReplayOutputRequirements
 
 pytestmark = pytest.mark.unit
 
@@ -206,6 +215,32 @@ class TestForwardModelRewrite:
 
         assert context_lane_order[0] == attention_backend
         assert generation_lane_order[0] == attention_backend
+
+    def test_fpm_spec_carries_external_parquet_path(self):
+        from aiconfigurator.sdk.engine import build_engine_spec_json
+
+        model = models.get_model(
+            "Qwen/Qwen3-0.6B",
+            _model_config(forward_model="fpm"),
+            "sglang",
+        )
+        external_path = "/artifacts/reviewed-fpm.parquet"
+
+        spec = json.loads(
+            build_engine_spec_json(
+                model,
+                model_path="Qwen/Qwen3-0.6B",
+                system="b200_sxm",
+                backend="sglang",
+                backend_version="0.5.14",
+                kv_block_size=None,
+                systems_path=None,
+                nextn=0,
+                fpm_parquet_path=external_path,
+            )
+        )
+
+        assert spec["engine"]["fpm_parquet_path"] == external_path
 
     def test_fpm_rejects_construction_without_sol_ops(self):
         # Legacy "exactly one of sol_fn/sol_ops" contract, minus the retired
@@ -603,3 +638,232 @@ class TestFPMStaticAndMixed:
         )
         assert per_op["fpm_forward_decode"] == pytest.approx(7.0)
         assert total == pytest.approx(7.0)
+
+
+@pytest.mark.parametrize(
+    "forward_model,path", [(None, "/missing/fpm.parquet"), ("op_level", "/missing/fpm.parquet"), ("fpm", "")]
+)
+@pytest.mark.parametrize("compile_fn", [compile_engine, EngineHandle.compile])
+def test_compile_rejects_invalid_external_fpm_path(compile_fn, forward_model, path):
+    with pytest.raises(ValueError, match="fpm_parquet_path"):
+        compile_fn(
+            "Qwen/Qwen3-0.6B",
+            SYSTEM,
+            BACKEND,
+            backend_version=VERSION,
+            forward_model=forward_model,
+            fpm_parquet_path=path,
+        )
+
+
+@pytest.fixture
+def external_fpm_config(tmp_path, monkeypatch):
+    # Synthetic exact anchors: one 512-token prefill costs 22 ms, and the
+    # decode anchors around that prompt cost 6 ms. No SOL/op data exists.
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", systems_root / f"{SYSTEM}.yaml")
+    monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(systems_root))
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    model = models.get_model("Qwen/Qwen3-0.6B", _model_config(forward_model="fpm"), BACKEND)
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    rows = [
+        _row("prefill", 1, 512, 0, 22.0, model_path=model.model_path, identity=identity),
+        *[
+            _row("decode", 1, 0, kv, 6.0, model_path=model.model_path, identity=identity)
+            for kv in (511, 512, 513, 1024)
+        ],
+    ]
+    parquet = Path(_write_pair(str(tmp_path / "external"), rows))
+    external = parquet.with_name("reviewed-fpm.parquet")
+    parquet.rename(external)
+    parquet.with_suffix(".metadata.json").rename(external.with_suffix(".metadata.json"))
+    config = CorePredictionConfig.model_validate(
+        yaml.safe_load(f"""
+engine:
+  model: Qwen/Qwen3-0.6B
+  hardware: {SYSTEM}
+  backend: {BACKEND}
+  backend_version: {VERSION}
+  context_length: 1024
+  workers:
+    aggregated:
+      kv_cache:
+        prefix_caching: false
+        capacity: {{type: fixed, blocks: 128}}
+      timing:
+        type: default
+        forward_model: fpm
+        fpm_parquet_path: {external}
+traffic:
+  source: {{type: synthetic, input_tokens: 512, output_tokens: 2}}
+  load: {{type: concurrency, concurrency: 1}}
+  stop: {{requests: 1}}
+""")
+    )
+    return config, systems_root
+
+
+def test_external_fpm_pair_drives_yaml_replay_without_backend_data(external_fpm_config):
+    config, systems_root = external_fpm_config
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            prediction_to_replay_spec(config),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        )
+    )
+    assert not (systems_root / "data").exists()
+    assert report.metrics["completed_requests"] == 1
+    record = report.metadata["native_report"]["per_request"][0]
+    # Replay emits the first token after prefill plus the first decode step.
+    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0 + 6.0)
+    assert record["last_token_ms"] - record["first_token_ms"] == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("query_before_chdir", [False, True], ids=["lazy_load", "live_cache"])
+def test_external_fpm_relative_path_is_bound_at_engine_construction(
+    external_fpm_config, tmp_path, monkeypatch, query_before_chdir
+):
+    config, systems_root = external_fpm_config
+    original = Path(config.engine.workers.aggregated.timing.fpm_parquet_path)
+    rows = pq.read_table(original).to_pylist()
+    first_pair = Path(_write_pair(str(tmp_path / "first"), rows))
+    for row in rows:
+        if row["workload_kind"] == "prefill":
+            row["latency_ms"] = 99.0
+    second_pair = Path(_write_pair(str(tmp_path / "second"), rows))
+
+    def compile_relative():
+        return EngineHandle.compile(
+            "Qwen/Qwen3-0.6B",
+            SYSTEM,
+            BACKEND,
+            backend_version=VERSION,
+            forward_model="fpm",
+            fpm_parquet_path=first_pair.name,
+            systems_path=str(systems_root),
+        )
+
+    monkeypatch.chdir(first_pair.parent)
+    first = compile_relative()
+    if query_before_chdir:
+        assert first.predict_prefill_latency(1, 512) == pytest.approx(22.0)
+    monkeypatch.chdir(second_pair.parent)
+    second = compile_relative()
+    assert first.predict_prefill_latency(1, 512) == pytest.approx(22.0)
+    assert second.predict_prefill_latency(1, 512) == pytest.approx(99.0)
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "latency"), [("decode", "prefill", 22.0), ("prefill", "decode", 6.0)]
+)
+@pytest.mark.parametrize("output_tokens", [2, 4])
+@pytest.mark.parametrize("identity_fields", ["default", "prefixed", "plain"])
+def test_external_fpm_pair_drives_afd_companion_replay(
+    external_fpm_config, phase, companion_role, latency, output_tokens, identity_fields, tmp_path, monkeypatch
+):
+    config, systems_root = external_fpm_config
+    raw = config.model_dump(mode="json", exclude_none=True)
+    raw["traffic"]["source"]["output_tokens"] = output_tokens
+    engine = raw["engine"]
+    engine["mode"] = "afd"
+    engine["afd"] = {
+        "phase": phase,
+        "combined_with_pd": True,
+        "n_a_nodes": 1,
+        "n_f_nodes": 1,
+        "tp_a": 1,
+        "a_batch_size": 1,
+        "num_microbatches": 1,
+    }
+    worker = engine["workers"].pop("aggregated")
+    worker["scheduler"] = {"max_sequences": 1, "max_batched_tokens": 512}
+    engine["workers"] = {companion_role: worker}
+
+    class AFDPerformanceFixture:
+        def measure(self, request):
+            return (
+                AFDLayerTimes(
+                    phase=request.topology.phase.value,
+                    attention_ms=1.0,
+                    ffn_ms=2.0,
+                    a_to_f_ms=0.1,
+                    f_to_a_ms=0.1,
+                    num_layers=2,
+                    provenance={"provider": "test"},
+                ),
+            )
+
+    spec = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(raw), afd_performance_model=AFDPerformanceFixture()
+    )
+    expected_path = worker["timing"]["fpm_parquet_path"]
+    if identity_fields != "default":
+        # Neither model-default precision nor the built-in systems directory
+        # can satisfy this cell. Exercise the real companion compiler/loader.
+        custom_system = "custom_fpm_companion"
+        shutil.copy(systems_root / f"{SYSTEM}.yaml", systems_root / f"{custom_system}.yaml")
+        monkeypatch.delenv("AICONFIGURATOR_SYSTEMS_PATH")
+        model = models.get_model(
+            engine["model"],
+            _model_config(
+                forward_model="fpm",
+                gemm_quant_mode=common.GEMMQuantMode.fp8,
+                moe_quant_mode=common.MoEQuantMode.fp8,
+                fmha_quant_mode=common.FMHAQuantMode.fp8,
+                kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+                comm_quant_mode=common.CommQuantMode.fp8,
+            ),
+            BACKEND,
+        )
+        identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+        rows = [
+            _row(
+                row["workload_kind"],
+                row["batch_size"],
+                row["total_prefill_tokens"],
+                row["total_kv_read_tokens"],
+                row["latency_ms"],
+                model_path=model.model_path,
+                identity=identity,
+            )
+            | {"system": custom_system}
+            for row in pq.read_table(expected_path).to_pylist()
+        ]
+        expected_path = _write_pair(str(tmp_path / "custom-pair"), rows, sidecar_overrides={"system": custom_system})
+        args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+        args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
+        prefix = "aic_" if identity_fields == "prefixed" else ""
+        args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
+        if identity_fields == "plain":
+            args["forward_model"] = args.pop("aic_forward_model")
+            args["fpm_parquet_path"] = args.pop("aic_fpm_parquet_path")
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+    assert not (systems_root / "data").exists()
+    assert report.metrics["completed_requests"] == 1
+    companion = report.metadata["afd_replay"]["companion"]
+    assert companion["source"] == "aiconfigurator_core.sdk.engine.EngineHandle"
+    assert companion["fpm_parquet_path"] == expected_path
+    assert report.metrics["mean_ttft_ms" if companion_role == "prefill" else "mean_tpot_ms"] == pytest.approx(latency)
+
+
+def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_fpm_config, tmp_path, capsys):
+    config, _systems_root = external_fpm_config
+    path = tmp_path / "fpm.yaml"
+    raw = config.model_dump(mode="json", exclude_none=True)
+    raw["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {"type": "default"}
+    path.write_text(yaml.safe_dump(raw))
+    assert (
+        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
+        == 0
+    )
+    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
+    memory = sections["memory"]["roles"]["aggregated"]
+    assert memory["scope"] == "capacity_estimate_per_rank"
+    assert memory["stage"] == "before_native_capacity_adjustments"
+    assert memory["estimated_num_gpu_blocks"] > 0
+    assert "num_gpu_blocks" not in memory
+    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0

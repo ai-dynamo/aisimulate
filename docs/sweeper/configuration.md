@@ -76,7 +76,11 @@ configuration for each candidate.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
-or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+or `fpm` for whole-forward timing from a collected FPM cell). Set `<role>_fpm_parquet_path` to the
+external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent same-stem
+`.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
+and is preserved in deployment metadata, runtime arguments, and candidate YAML.
+A one-item list pins a searched field.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
 override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share

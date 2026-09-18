@@ -106,6 +106,7 @@ fn fixture_engine_config() -> EngineConfig {
         backend: BackendKind::Vllm,
         backend_version: Some("0.24.0".to_string()),
         forward_model: None,
+        fpm_parquet_path: None,
         kv_block_size: None,
         parallel: ParallelMapping {
             tp_size: 8,
@@ -135,7 +136,17 @@ fn fixture_engine_config() -> EngineConfig {
 /// public `from_native` constructors compile via Python; `from_engine` lets
 /// the pure-Rust tests build the native variant directly.
 fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    // FP8-block rows come from declared 0.25.0 reuse after PR #244.
+    let db = PerfDatabase::load_resolved(
+        &systems_root(),
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        true,
+        false,
+        false,
+    )
+    .unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     let engine = Engine::build(spec, Arc::new(db)).unwrap();
     ForwardPassPerfModel::from_engine(Arc::new(engine), options)
@@ -149,7 +160,17 @@ fn regression_model(
 }
 
 fn fixture_engine() -> Arc<Engine> {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    // FP8-block rows come from declared 0.25.0 reuse after PR #244.
+    let db = PerfDatabase::load_resolved(
+        &systems_root(),
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        true,
+        false,
+        false,
+    )
+    .unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     Arc::new(Engine::build(spec, Arc::new(db)).unwrap())
 }
