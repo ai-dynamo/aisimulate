@@ -236,6 +236,17 @@ class AICAFDCompanionPerformanceModel:
                     for key, value in kwargs.items()
                     if key not in {"mode", "backend_name", "isl", "osl", "batch_size"}
                 }
+                timing_overrides = _pop_aic_timing_overrides(dict(args), role)
+                for field, parameter in (
+                    ("gemm_dtype", "gemm_quant_mode"),
+                    ("moe_dtype", "moe_quant_mode"),
+                    ("fmha_dtype", "fmha_quant_mode"),
+                    ("kv_cache_dtype", "kvcache_quant_mode"),
+                    ("comm_dtype", "comm_quant_mode"),
+                    ("systems_path", "systems_path"),
+                ):
+                    if field in timing_overrides:
+                        compile_kwargs[parameter] = timing_overrides[field]
                 engine = EngineHandle.compile(
                     model_name,
                     hardware,
@@ -1034,6 +1045,29 @@ def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
     return _positive_int(value, "concurrency") if value is not None else None
 
 
+def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
+    aic_timing_overrides: dict[str, JSONValue] = {}
+    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        configured = [alias for alias in aliases if alias in rank]
+        if len(configured) > 1:
+            names = ", ".join(configured)
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
+        if not configured:
+            continue
+        value = rank.pop(configured[0])
+        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+            value = _positive_int(value, f"engine provider {role} {target}")
+        elif not isinstance(value, str) or not value:
+            raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        aic_timing_overrides[target] = value
+
+    return aic_timing_overrides
+
+
 def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
     if payload is None:
         raise ValueError(f"ReplaySpec is missing {role} engine arguments")
@@ -1292,24 +1326,7 @@ def _materialize_engine_role(
         if not num_gpu_blocks_is_explicit:
             memory_fraction_overrides[memory_field] = float(value)
 
-    aic_timing_overrides: dict[str, JSONValue] = {}
-    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
-        configured = [alias for alias in aliases if alias in rank]
-        if len(configured) > 1:
-            names = ", ".join(configured)
-            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
-        if not configured:
-            continue
-        value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
-            value = _positive_int(value, f"engine provider {role} {target}")
-        elif not isinstance(value, str) or not value:
-            raise ValueError(f"engine provider {role} {target} must be a string")
-        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
-            )
-        aic_timing_overrides[target] = value
+    aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
 
     timing_model = rank.get("timing_model")
     uses_aic_timing = timing_model is None or (

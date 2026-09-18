@@ -192,6 +192,13 @@ Prediction and recommendation YAML accept `fpm_parquet_path` under each worker's
 the path for each role through search, execution, and emitted candidate YAML;
 prefill and decode may use different pairs.
 
+For the regular prefill/decode companion in AFD+PD, the Python `ReplaySpec`
+engine arguments also preserve `systems_path` and the accepted `gemm_dtype`,
+`moe_dtype`, `fmha_dtype`, `kv_cache_dtype`, and `comm_dtype` overrides (including
+their `aic_` aliases). These become the compiled engine's quantization settings
+for exact external-FPM cell matching. The public worker timing YAML does not
+expose these precision overrides or `attention_backend`.
+
 `EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
 `SOL` for native forward-pass construction. The Python dictionary form uses
 those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the

@@ -760,8 +760,9 @@ def test_external_fpm_relative_path_is_bound_at_engine_construction(
     ("phase", "companion_role", "latency"), [("decode", "prefill", 22.0), ("prefill", "decode", 6.0)]
 )
 @pytest.mark.parametrize("output_tokens", [2, 4])
+@pytest.mark.parametrize("identity_fields", ["default", "prefixed", "plain"])
 def test_external_fpm_pair_drives_afd_companion_replay(
-    external_fpm_config, phase, companion_role, latency, output_tokens
+    external_fpm_config, phase, companion_role, latency, output_tokens, identity_fields, tmp_path, monkeypatch
 ):
     config, systems_root = external_fpm_config
     raw = config.model_dump(mode="json", exclude_none=True)
@@ -798,12 +799,50 @@ def test_external_fpm_pair_drives_afd_companion_replay(
     spec = prediction_to_replay_spec(
         CorePredictionConfig.model_validate(raw), afd_performance_model=AFDPerformanceFixture()
     )
+    expected_path = worker["timing"]["fpm_parquet_path"]
+    if identity_fields != "default":
+        # Neither model-default precision nor the built-in systems directory
+        # can satisfy this cell. Exercise the real companion compiler/loader.
+        custom_system = "custom_fpm_companion"
+        shutil.copy(systems_root / f"{SYSTEM}.yaml", systems_root / f"{custom_system}.yaml")
+        monkeypatch.delenv("AICONFIGURATOR_SYSTEMS_PATH")
+        model = models.get_model(
+            engine["model"],
+            _model_config(
+                forward_model="fpm",
+                gemm_quant_mode=common.GEMMQuantMode.fp8,
+                moe_quant_mode=common.MoEQuantMode.fp8,
+                fmha_quant_mode=common.FMHAQuantMode.fp8,
+                kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+                comm_quant_mode=common.CommQuantMode.fp8,
+            ),
+            BACKEND,
+        )
+        identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+        rows = [
+            _row(
+                row["workload_kind"],
+                row["batch_size"],
+                row["total_prefill_tokens"],
+                row["total_kv_read_tokens"],
+                row["latency_ms"],
+                model_path=model.model_path,
+                identity=identity,
+            )
+            | {"system": custom_system}
+            for row in pq.read_table(expected_path).to_pylist()
+        ]
+        expected_path = _write_pair(str(tmp_path / "custom-pair"), rows, sidecar_overrides={"system": custom_system})
+        args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+        args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
+        prefix = "aic_" if identity_fields == "prefixed" else ""
+        args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
     report = EngineReplayRunnerFactory().create(0).run(spec)
     assert not (systems_root / "data").exists()
     assert report.metrics["completed_requests"] == 1
     companion = report.metadata["afd_replay"]["companion"]
     assert companion["source"] == "aiconfigurator_core.sdk.engine.EngineHandle"
-    assert companion["fpm_parquet_path"] == worker["timing"]["fpm_parquet_path"]
+    assert companion["fpm_parquet_path"] == expected_path
     assert report.metrics["mean_ttft_ms" if companion_role == "prefill" else "mean_tpot_ms"] == pytest.approx(latency)
 
 
