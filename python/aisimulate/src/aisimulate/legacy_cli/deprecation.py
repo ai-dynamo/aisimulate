@@ -21,7 +21,7 @@ _R = TypeVar("_R")
 
 
 def warn_legacy_cli(mode: str | None) -> None:
-    """Warn once when the CLI is run from the legacy AIC distribution."""
+    """Warn once when the retained legacy CLI is used."""
 
     command = "aiconfigurator cli" + (f" {mode}" if mode else "")
     key = f"cli:{mode or '<root>'}"
@@ -29,10 +29,10 @@ def warn_legacy_cli(mode: str | None) -> None:
         return
     _warned_entry_points.add(key)
     message = (
-        f"`{command}` is running from the deprecated AIConfigurator "
-        "distribution, which is planned for removal in AIConfigurator 0.13.0. "
-        f"Install `aisimulate==0.12.0` and keep running `{command} ...`; "
-        "AISimulate preserves the established command name and arguments. "
+        f"`{command}` is a legacy command bundled with AISimulate. "
+        "Use `aisimulate predict` or `aisimulate recommend` for new workflows. "
+        f"You can keep running `{command} ...`; AISimulate "
+        "preserves the established command name and arguments. "
         f"Migration guide: {_MIGRATION_GUIDE}"
     )
     warnings.warn(message, DeprecationWarning, stacklevel=4)
@@ -51,11 +51,9 @@ def deprecated_sweeper_entry_point(
         if entry_point not in _warned_entry_points:
             _warned_entry_points.add(entry_point)
             warnings.warn(
-                f"`{entry_point}()` is deprecated and will be removed in "
-                "AIConfigurator 0.13.0. Migrate to "
-                "`aisimulate.sweeper.Sweeper(...).run(config)`. Installing "
-                "`aisimulate==0.12.0` temporarily retains the legacy "
-                f"`aisimulate.sdk` import namespace. Migration guide: {_MIGRATION_GUIDE}",
+                f"`{entry_point}()` is a deprecated sweep API. Migrate to "
+                "`aisimulate.sweeper.Sweeper(...).run(config)` in the same package. "
+                f"Migration guide: {_MIGRATION_GUIDE}",
                 DeprecationWarning,
                 stacklevel=2,
             )
