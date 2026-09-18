@@ -26,6 +26,8 @@ On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
 so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
 576-dimensional FA3 path uses BF16 compute, including when KV storage is FP8.
 BF16 inputs to the collector do not determine the kernel's compute precision.
+Compute-precision labels are restricted to the audited `trtllm_mla`, `fa3`,
+and `triton` backends; an unknown backend raises instead of receiving a BF16 label.
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
 

@@ -74,6 +74,17 @@ def test_mla_compute_label_follows_kernel_precision(backend, kv_dtype, expected)
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("kv_dtype", ["bf16", "fp8"])
+def test_mla_compute_label_rejects_unaudited_backend(kv_dtype):
+    label = _load_collector_function(
+        "_mla_compute_dtype",
+        {"torch": SimpleNamespace(dtype=str, float8_e4m3fn="fp8")},
+    )
+    with pytest.raises(ValueError, match="compute-precision mapping for backend 'unknown_mla'"):
+        label("unknown_mla", kv_dtype)
+
+
+@pytest.mark.unit
 def test_sglang_mla_getters_fail_closed_instead_of_returning_silent_empty():
     # Below the audited set the selector raises; the getters must propagate
     # it. A silent [] would violate the zero-cases-need-logged-drops rule.

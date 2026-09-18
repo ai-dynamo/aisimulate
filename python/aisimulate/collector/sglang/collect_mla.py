@@ -87,7 +87,9 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
     # BF16 dtype. Triton also uses BF16 compute.
     if backend == "trtllm_mla" and kv_cache_dtype == torch.float8_e4m3fn:
         return "fp8"
-    return "bfloat16"
+    if backend in {"trtllm_mla", "fa3", "triton"}:
+        return "bfloat16"
+    raise ValueError(f"No audited SGLang 0.5.14 MLA compute-precision mapping for backend {backend!r}")
 
 
 class MockModelConfig:
