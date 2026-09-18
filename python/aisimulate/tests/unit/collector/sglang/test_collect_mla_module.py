@@ -25,6 +25,7 @@ def _mock_helper_imports(monkeypatch):
     fake_torch.bfloat16 = "bfloat16"
     fake_torch.float16 = "float16"
     fake_torch.float32 = "float32"
+    fake_torch.float8_e4m3fn = "float8_e4m3fn"
     fake_torch.cuda = types.SimpleNamespace(
         empty_cache=lambda: None,
         get_device_capability=lambda *_a, **_kw: (9, 0),
@@ -720,3 +721,210 @@ class TestFailClosedOrchestration:
 
         assert process.killed
         assert process.waited
+
+
+class TestOrdinaryMLAPrecision:
+    @pytest.mark.parametrize(
+        "gemm_type,dtype,block", [("bfloat16", "bfloat16", None), ("fp8_block", "float8_e4m3fn", [128, 128])]
+    )
+    def test_uniform_projections(self, gemm_type, dtype, block):
+        mod = _import_module()
+        projection = types.SimpleNamespace(
+            weight=types.SimpleNamespace(dtype=dtype),
+            quant_method=types.SimpleNamespace(quant_config=types.SimpleNamespace(weight_block_size=block)),
+        )
+        attention = types.SimpleNamespace(
+            **dict.fromkeys(("fused_qkv_a_proj_with_mqa", "q_b_proj", "kv_b_proj", "o_proj"), projection)
+        )
+        mod._validate_mla_projection_precision(attention, gemm_type)
+
+    def test_mixed_projection_rejected_before_writing_row(self):
+        mod = _import_module()
+        bf16 = types.SimpleNamespace(weight=types.SimpleNamespace(dtype="bfloat16"), quant_method=None)
+        fp8 = types.SimpleNamespace(
+            weight=types.SimpleNamespace(dtype="float8_e4m3fn"),
+            quant_method=types.SimpleNamespace(quant_config=types.SimpleNamespace(weight_block_size=[128, 128])),
+        )
+        attention = types.SimpleNamespace(fused_qkv_a_proj_with_mqa=bf16, q_b_proj=bf16, kv_b_proj=bf16, o_proj=fp8)
+        with pytest.raises(ValueError, match="o_proj executes fp8_block"):
+            mod._validate_mla_projection_precision(attention, "bfloat16")
+
+
+@pytest.mark.unit
+class TestOrdinaryMLACli:
+    @pytest.mark.parametrize("chunk_size", [None, 16384])
+    def test_worker_chunk_size_reaches_subprocess_call(self, monkeypatch, chunk_size):
+        mod = _import_module()
+        captured = {}
+
+        def capture_call(*_args, **kwargs):
+            captured.update(kwargs)
+
+        def popen(argv, **_kwargs):
+            # Execute the generated child call without importing the GPU runtime.
+            tree = ast.parse(argv[2])
+            call = ast.Expression(tree.body[-1].value)
+            eval(compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": capture_call})
+            return types.SimpleNamespace(returncode=0, communicate=lambda timeout: (b"", None))
+
+        monkeypatch.setattr(mod.subprocess, "Popen", popen)
+        mod.run_mla_module_worker(
+            128,
+            1,
+            8,
+            "bfloat16",
+            "bfloat16",
+            "bfloat16",
+            "test",
+            "mla",
+            perf_filename="mla_context_module_perf.txt",
+            chunked_prefill_size=chunk_size,
+        )
+        assert captured["ordinary_mla"] is True
+        assert captured["chunked_prefill_size"] == chunk_size
+
+    @pytest.mark.parametrize("chunk_size", [0, -1])
+    def test_nonpositive_chunk_size_is_rejected(self, chunk_size):
+        mod = _import_module()
+        with pytest.raises(ValueError, match="chunked_prefill_size must be positive"):
+            mod.run_mla_module(
+                "mla",
+                8,
+                "test",
+                "bfloat16",
+                "bfloat16",
+                "bfloat16",
+                True,
+                0,
+                ordinary_mla=True,
+                chunked_prefill_size=chunk_size,
+            )
+
+    @pytest.mark.parametrize("chunk_size", [None, 16384])
+    @pytest.mark.parametrize("tp_size", [4, 8])
+    @pytest.mark.parametrize("explicit_tp", [False, True])
+    def test_cli_serving_options_reach_model_runner(self, monkeypatch, chunk_size, tp_size, explicit_tp):
+        mod = _import_module()
+        args = ["collect_mla_module", "--ordinary-mla", "--mode", "context", "--attn-type", "mla", "--model", "test"]
+        if explicit_tp:
+            args.extend(["--target-tp-size", str(tp_size)])
+        else:
+            args.extend(["--num-heads", str(128 // tp_size)])
+        if chunk_size is not None:
+            args.extend(["--chunked-prefill-size", str(chunk_size)])
+        monkeypatch.setattr(sys, "argv", args)
+        monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 128)
+        monkeypatch.setattr(mod, "_get_precision_combos", lambda _mode: [("bfloat16", "bfloat16", "bfloat16")])
+        monkeypatch.setattr(
+            mod, "get_context_test_cases", lambda _type: [[128, 1, 128 // tp_size, "bfloat16", "bfloat16", "bfloat16"]]
+        )
+        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_kwargs: cases)
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+
+        captured = {}
+        timed = {}
+
+        def load_runner(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        def run_attention(**kwargs):
+            timed.update(kwargs)
+            return len(kwargs["test_cases"])
+
+        monkeypatch.setattr(mod, "load_model_runner", load_runner)
+        monkeypatch.setattr(mod, "run_attention_torch", run_attention)
+        mod.main()
+        assert captured["chunked_prefill_size"] == chunk_size
+        assert captured["target_tp_size"] == tp_size
+        assert captured["head_num"] == 128 // tp_size
+        assert timed["target_tp_size"] == tp_size
+        assert timed["head_num"] == 128 // tp_size
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            ["--target-tp-size", "0"],
+            ["--target-tp-size", "-1"],
+            ["--target-tp-size", "3"],
+            ["--target-tp-size", "4", "--num-heads", "16"],
+            ["--num-heads", "0"],
+            ["--num-heads", "-1"],
+            ["--num-heads", "3"],
+        ],
+    )
+    def test_invalid_tp_shape_fails_before_dispatch(self, monkeypatch, options):
+        mod = _import_module()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "collect_mla_module",
+                "--ordinary-mla",
+                "--mode",
+                "context",
+                "--attn-type",
+                "mla",
+                "--model",
+                "test",
+                *options,
+            ],
+        )
+        monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 128)
+        monkeypatch.setattr(mod, "run_mla_module", lambda **_kw: pytest.fail("must fail before dispatch"))
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--mode", "generation", "--attn-type", "mla"],
+            ["--mode", "context", "--attn-type", "dsa"],
+            ["--mode", "context"],
+        ],
+    )
+    def test_invalid_combination_fails_before_dispatch(self, monkeypatch, capsys, args):
+        mod = _import_module()
+        monkeypatch.setattr(sys, "argv", ["collect_mla_module", "--ordinary-mla", *args])
+        monkeypatch.setattr(mod, "get_mla_module_model_specs", lambda **_kw: pytest.fail("must fail before dispatch"))
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 2
+        assert "--ordinary-mla requires --mode context --attn-type mla" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("fail_first", [False, True])
+    def test_context_mla_dispatches(self, monkeypatch, capsys, fail_first):
+        mod = _import_module()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["collect_mla_module", "--ordinary-mla", "--mode", "context", "--attn-type", "mla", "--model", "test"],
+        )
+        monkeypatch.setattr(mod, "_module_model_native_heads", lambda _model: 8)
+        monkeypatch.setattr(
+            mod,
+            "_get_precision_combos",
+            lambda _mode: [("bfloat16", "bfloat16", "bfloat16"), ("bfloat16", "fp8", "bfloat16")],
+        )
+        calls = []
+
+        def collect(**kwargs):
+            calls.append(kwargs)
+            if fail_first and len(calls) == 1:
+                raise ValueError("projection precision mismatch")
+
+        monkeypatch.setattr(mod, "run_mla_module", collect)
+        if fail_first:
+            with pytest.raises(SystemExit) as exc:
+                mod.main()
+            assert exc.value.code == 1
+            output = capsys.readouterr()
+            assert "projection precision mismatch" in output.err
+            assert "COLLECTION FAILED: 1 dispatches failed" in output.out
+            assert "ALL TESTS COMPLETED" not in output.out
+        else:
+            mod.main()
+            assert "ALL TESTS COMPLETED" in capsys.readouterr().out
+        assert len(calls) > 1
+        assert all(call["ordinary_mla"] and call["is_prefill"] and call["attn_type"] == "mla" for call in calls)

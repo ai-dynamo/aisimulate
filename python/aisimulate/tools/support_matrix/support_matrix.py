@@ -25,14 +25,14 @@ import pandas as pd
 from packaging.version import Version
 from tqdm import tqdm
 
-from aiconfigurator.generator.naive import _estimate_model_weight_bytes
-from aiconfigurator.sdk import common, perf_database
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.models import _get_model_info
-from aiconfigurator.sdk.models.helpers import _apply_model_quant_defaults
-from aiconfigurator.sdk.operations.attention import EncoderAttention
-from aiconfigurator.sdk.operations.util_empirical import PROVENANCE_ORDER, capture_provenance, worst_provenance
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.generator.naive import _estimate_model_weight_bytes
+from aisimulate.sdk import common, perf_database
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.models import _get_model_info
+from aisimulate.sdk.models.helpers import _apply_model_quant_defaults
+from aisimulate.sdk.operations.attention import EncoderAttention
+from aisimulate.sdk.operations.util_empirical import PROVENANCE_ORDER, capture_provenance, worst_provenance
+from aisimulate.sdk.task_v2 import Task
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ either operation family.
 ## The two lines (applies to both GEMM and MoE)
 
 1. **Enum line** — `GEMMQuantMode` *and* `MoEQuantMode` in
-   `aic-core/src/aiconfigurator_core/sdk/common.py`, with
+   `src/aisimulate_core/sdk/common.py`, with
    `QuantMapping(memory, compute, name, compute_dtype)`:
    - `memory` = weight bytes per element **including scales**
      (nvfp4-style 4-bit + 1 fp8 scale per 16 = `9/16`).
@@ -33,11 +33,11 @@ either operation family.
 2. **Util-level line** — one row in each table if the `(memory, compute)`
    profile is not yet listed:
    - GEMM: `_GEMM_QUANT_UTIL_LEVEL`
-     (`aic-core/src/aiconfigurator_core/sdk/operations/gemm.py`) + Rust mirror
+     (`src/aisimulate_core/sdk/operations/gemm.py`) + Rust mirror
      `GEMM_QUANT_UTIL_LEVEL`
      (`aic-core/rust/aiconfigurator-core/src/operators/gemm.rs`)
    - MoE: `_MOE_QUANT_UTIL_LEVEL`
-     (`aic-core/src/aiconfigurator_core/sdk/operations/moe.py`) + Rust mirror
+     (`src/aisimulate_core/sdk/operations/moe.py`) + Rust mirror
      `MOE_QUANT_UTIL_LEVEL`
      (`aic-core/rust/aiconfigurator-core/src/operators/moe.rs`)
 

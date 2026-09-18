@@ -30,7 +30,7 @@ from tools.forward_perf_gate.measurement import (
     redirect_output,
 )
 
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk.errors import (
     EmpiricalNotImplementedError,
     MissingSystemFlopsError,
     PerfDataNotAvailableError,
@@ -331,9 +331,15 @@ def _run_cases(cases: list[dict], *, warmup: int, iterations: int, revision: str
         groups.setdefault(_group_key(case), []).append(case)
 
     results_by_id = {}
+    previous_case = None
+    previous_database = None
     for group in groups.values():
+        database = tuple(group[0][key] for key in ("system_name", "backend_name", "backend_version"))
+        if previous_case is not None and database != previous_database:
+            clear_caches(_benchmark_case(previous_case))
         for result in _run_case_group(group, warmup=warmup, iterations=iterations, revision=revision):
             results_by_id[result["case_id"]] = result
+        previous_case, previous_database = group[0], database
     return [results_by_id[case["case_id"]] for case in cases]
 
 

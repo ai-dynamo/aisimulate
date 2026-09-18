@@ -15,6 +15,42 @@ For operator-facing CLI documentation, see
 This README covers the virtual clock, event queue, logical workers, and the
 placement/scaling boundary used by Dynamo adapters.
 
+## Best-effort Belady eviction
+
+Set `engine.kv_eviction_policy` to `"belady"` in the native replay descriptor to
+evict pages whose next input demand is farthest away. LRU remains the default;
+there is no Cargo gate or new CLI wiring. Supported runs are open-loop, complete
+input traces on fixed aggregated SGLang, vLLM, or TRT-LLM workers, with prefix
+caching and one attention-DP rank per worker. Closed-loop/generated/agentic or
+delta inputs, scaling, disaggregation, and host/G3 offload are rejected.
+
+The forecast counts complete input prefix blocks in global trace order. It does
+not predict which worker will use them or forecast output blocks; native output
+caching still works when a later input matches. Demand retires at the request's
+first committed prefill or terminal removal, never merely because time passes.
+Later chunks and preemption retries do not recreate demand. These are intentional
+assumptions: adding execution-dependent refinement would change the model.
+
+The oracle supplies eviction rankings only. The engine preserves causal arrivals,
+execution, and cache ownership. SGLang evicts unlocked leaf tails; vLLM/TRT evicts
+inactive copies, preferring duplicates before the last useful copy. Multiworker
+forecasts may retain data needed elsewhere, so optimal reuse is not guaranteed.
+Reports label the assumption `global_input_trace_order_v1`; compare
+`first_admission_prefix_cache_reused_ratio` and `committed_prefill_tokens` on
+completed runs, alongside serving throughput and latency.
+
+Mooncake validation used a Llama-3.1-8B/H200 timing profile and 4,096 cache blocks
+of 64 tokens, after smoke sweeps confirmed eviction losses and the load knee.
+All full-trace comparisons completed 23,608 requests and 4,299,817 output tokens.
+Loaded 1/2/4-worker **simulated** throughput gains were 2.01–2.11% for vLLM and
+0.39–0.77% for SGLang, with less prefill work; TRT-LLM gained 3.01% on 1,000 requests.
+Arrival-limited throughput stayed unchanged. A SGLang smoke case lost 0.165%
+despite better reuse because attention batch/context costs increased; maximum
+TTFT also worsened in one full run. Better reuse does not guarantee faster serving
+or better tails. Local simulator wall time rose about 3.4%/7.2% for vLLM/SGLang.
+The [validation record in PR #256](https://github.com/ai-dynamo/aisimulate/pull/256)
+contains the revisions, trace checksums, configuration, commands, and paired results.
+
 ## Where It Sits
 
 The public entrypoint is `Replayer<C>`, where `C: ReplayComposition` supplies
@@ -504,9 +540,12 @@ All runtimes emit request timing into `TraceCollector` in `src/replay/report.rs`
 - token emission
 - completion
 
-The harness does not compute final throughput/latency metrics incrementally. It
-records events, then `TraceCollector::finish()` derives the final
-`ReplayReport`.
+Batch summary reporting folds completed requests into aggregate statistics after
+their completion callbacks and spills exact latency samples as needed.
+`prepare_batch_report()` collects the remaining state and computes the final
+distributions; `TraceCollector::finish()` returns that prepared `ReplayReport`.
+Detailed reporting and steppable runtimes retain the request records needed by
+their consumers and derive the report when `finish()` is called.
 
 ## Mental Model
 
@@ -518,3 +557,34 @@ The easiest way to think about offline replay is:
 4. Record the same request lifecycle timings into `TraceCollector`.
 
 That keeps the harness fast, reproducible, and close to the real scheduler behavior without needing to boot a live runtime.
+
+## Batch report memory
+
+Offline aggregated and disaggregated batch replay discard terminal collector
+records after completion callbacks. Disaggregated handoff state is removed only
+once both pipelines and the coordinator are quiescent. Active request state and
+token timelines still scale with the configured concurrency and output length.
+
+Summary latency distributions retain at most 4096 in-memory samples each, then
+spill exact values to anonymous temporary files. Quantiles use the same rounded
+rank as detailed reports; eight sequential radix-selection passes require fixed
+memory. Counts and quantiles remain exact. Floating-point mean and standard
+deviation accumulation can differ at roundoff because completion order replaces
+request-ID order. Existing ITL and per-user throughput sketches retain their
+existing 0.1% relative quantile error; this change introduces no new sketch.
+
+The 4096-sample threshold only changes where values are stored; it never drops
+samples or stops the replay. Temporary storage grows with the workload, without
+an application-imposed byte or sample cap. Actual filesystem failures stop the
+replay with a `resource_limited` error, without returning a partial report.
+Only the replay's own anonymous temporary files are closed on success, failure,
+or process exit; no existing user files are deleted.
+
+Detailed batch output retains its complete, ordered list API without a request
+cap. It continues retaining the records needed to satisfy that API. This change
+does not introduce a streaming-output API, reduce the requested workload, or
+impose host-resource budgets. Engine state, input traces, detailed records,
+trajectory metadata, and other capture options still require host memory.
+
+Steppable SDK engines preserve completed-request queries until their reporting
+epoch is drained; this batch optimization does not change that API contract.

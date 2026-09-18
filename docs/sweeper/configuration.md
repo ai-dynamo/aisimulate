@@ -26,6 +26,17 @@ search_space:
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
+  backend_version:
+    vllm: current
+    sglang: current
+  database_mode: HYBRID
+  transfer_policy: balanced
+  estimation_mode: auto
+  fallback_policy: deny
+  estimator_config:
+    fpm_regression:
+      min_observations: 5
+  systems_paths: [default]
 
 adapters:
   example.policy:
@@ -67,12 +78,26 @@ configuration for each candidate.
 | `decode_hardware_sku` | `None` | optional disaggregated-decode system override; inherits `hardware_sku` |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
+| `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
+| `database_mode` | `SILICON` | forward-pass estimator data-source policy; see below |
+| `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
+| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select an explicit mode |
+| `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
+| `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
+| `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
-| `context_length` | `None` | optional KV-feasibility sequence length |
+| `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
+
+An explicit positive `context_length` is passed as AISimulate's internal
+`max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
+prefill/decode deployments. Prompts at or above the limit are rejected, and
+generation stops when prompt plus output reaches the limit. When omitted,
+Sweeper leaves this runtime limit unset. See [engine context limits](../core-api.md#engine-context-limits)
+for the normalized contract and backend frontend differences.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
@@ -136,6 +161,38 @@ AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible 
 current performance-model adapter also requires concrete positive `isl` and `osl`, so use a
 synthetic request rate or absolute concurrency rather than a trace-only workload. The complete
 topology and capability contract is documented in [AFD Topology Contract](afd-topology.md).
+
+Estimator controls are parsed once, then each concrete regular language-worker candidate
+resolves through Core after TP, PP, attention-DP, MoE parallelism, and block size are known.
+`estimation_mode` defaults to `auto` and searches op-level, FPM interpolation, then regression.
+`fallback_policy` defaults to `deny`: it constrains explicit modes and does not disable auto
+selection. `estimator_config` carries the complete nested configuration described in the
+[Core API](../core-api.md#estimator-controls). Regression must have a ready fit before an
+offline trial can execute; unavailable or cold estimators fail candidate materialization.
+
+Core pins the effective backend version, estimator mode, transfer policy, selected system root,
+and all estimator controls. Replay and candidate artifacts preserve that resolved identity.
+Generated prediction YAML records role-specific pins and can be passed directly to `predict`.
+AFD, analytical encoder, and custom fixed/polynomial timing paths retain their existing providers;
+nondefault public estimator policies require regular language workers with default timing.
+
+Database modes choose the source of each operation estimate:
+
+| Mode | Resolution |
+|---|---|
+| `SILICON` | collected performance data and supported interpolation only |
+| `HYBRID` | collected data first; calibrated empirical estimation for uncovered operations |
+| `EMPIRICAL` | calibrated estimation for every operation (`latency = SOL / utilization`) |
+| `SOL` | uncalibrated analytic speed-of-light estimate |
+
+`SOL_FULL` is a low-level per-call diagnostic, not an estimator default; public
+prediction and Sweeper configuration reject it.
+
+`transfer_policy` is not a search dimension. It selects which fixed Core transfer kinds the
+empirical forward-pass estimator may use when its own calibration slice is missing. It accepts `off`,
+`conservative`, `balanced`, or `aggressive`, or an explicit list containing `xshape`, `xquant`,
+`xprofile`, and `xop`. Core validates the request and the Sweeper records the normalized explicit
+policy in every candidate. The field is ignored by `SILICON` and `SOL`.
 
 ## Pinned Parallel Configurations
 

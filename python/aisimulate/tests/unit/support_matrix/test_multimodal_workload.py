@@ -2,10 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
 from tools.support_matrix.support_matrix import (
     SUPPORT_MATRIX_IMAGE_WORKLOAD,
     SupportMatrix,
@@ -13,6 +9,10 @@ from tools.support_matrix.support_matrix import (
     _get_encoder_coverage,
     _support_matrix_row_command,
 )
+
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 

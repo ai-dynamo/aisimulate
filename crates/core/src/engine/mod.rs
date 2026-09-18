@@ -3,6 +3,7 @@
 
 //! Runtime-neutral mock inference schedulers and attention-DP composition.
 
+pub(crate) mod belady;
 mod cache;
 mod common;
 mod config;
@@ -21,6 +22,7 @@ pub(crate) use host_offload::{
     HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
 };
 
+pub use belady::KvEvictionPolicy;
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
@@ -30,9 +32,10 @@ pub use config::{
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
 pub use protocol::{
-    Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, ForwardPassMetrics,
-    KvBlock, KvEvent, KvEventData, LifecycleEvent, Metrics, Output, PassCompletionEffects,
-    PassStartEffects, PressureEvent, PressureKind, PressureState, Request, StoredBlocks,
+    Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
+    ForwardPassMetrics, KvBlock, KvEvent, KvEventData, LifecycleEvent, Metrics, Output,
+    PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind, PressureState, Request,
+    StoredBlocks,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;

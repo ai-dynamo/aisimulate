@@ -17,7 +17,9 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
-use crate::engine::{CacheTierAttribution, HostOffloadObserver, KvEvent, PressureEvent};
+use crate::engine::{
+    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, PressureEvent,
+};
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
     ActiveHandoffRequests, DestinationHolds, PendingDestinations, RemovedSource, SourceCompletion,
@@ -116,28 +118,6 @@ pub(crate) fn build_fpm_snapshot(
         var_queued_decode_kv_tokens: queued_decode_acc.variance(),
         wall_time_secs,
     }
-}
-
-/// Return (visible output tokens, request-forwards) for accept-length
-/// accounting. A signal with a token corresponds to one visible token; multiple
-/// token signals with the same UUID in a pass are an MTP/spec-decode burst.
-#[cfg(test)]
-pub(crate) fn accept_length_sample(output_signals: &[OutputSignal]) -> (usize, usize) {
-    let visible_tokens = output_signals
-        .iter()
-        .filter(|signal| !signal.rejected && signal.token_id.is_some())
-        .count();
-    if visible_tokens == 0 {
-        return (0, 0);
-    }
-
-    let request_forwards = output_signals
-        .iter()
-        .filter(|signal| !signal.rejected && signal.token_id.is_some())
-        .map(|signal| signal.uuid)
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    (visible_tokens, request_forwards)
 }
 
 pub(crate) use sglang::SglangCore;
@@ -257,12 +237,7 @@ pub(crate) struct EnginePassResult {
     pub(crate) kv_events: Vec<KvEvent>,
     /// Forward pass metrics snapshot for this iteration.
     pub(crate) fpm: Option<ForwardPassSnapshot>,
-    /// Visible output tokens emitted by this pass for accept-length accounting.
-    #[cfg(test)]
-    pub(crate) accept_length_output_tokens: usize,
-    /// Number of request decode forwards that emitted those visible tokens.
-    #[cfg(test)]
-    pub(crate) accept_length_decode_forwards: usize,
+    pub(crate) decode_acceptance: DecodeAcceptance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -598,47 +573,6 @@ mod tests {
         assert_eq!(acc.count, 0);
         assert_eq!(acc.sum, 0.0);
         assert_eq!(acc.variance(), 0.0);
-    }
-
-    #[test]
-    fn accept_length_ignores_terminal_signals_without_tokens() {
-        let token_uuid = Uuid::from_u128(1);
-        let signals = [
-            OutputSignal {
-                uuid: Uuid::from_u128(2),
-                token_id: None,
-                completed: true,
-                rejected: false,
-                cached_tokens: None,
-                handoff_delay_ms: None,
-            },
-            OutputSignal {
-                uuid: token_uuid,
-                token_id: Some(7),
-                completed: false,
-                rejected: false,
-                cached_tokens: None,
-                handoff_delay_ms: None,
-            },
-            OutputSignal {
-                uuid: token_uuid,
-                token_id: Some(8),
-                completed: true,
-                rejected: false,
-                cached_tokens: None,
-                handoff_delay_ms: None,
-            },
-            OutputSignal {
-                uuid: Uuid::from_u128(3),
-                token_id: Some(9),
-                completed: true,
-                rejected: true,
-                cached_tokens: None,
-                handoff_delay_ms: None,
-            },
-        ];
-
-        assert_eq!(accept_length_sample(&signals), (2, 1));
     }
 
     #[test]
@@ -1199,47 +1133,5 @@ mod tests {
             AdmissionInvariant::new(false).stage_for(false),
             AdmissionStage::FreshKv
         );
-    }
-
-    #[test]
-    fn accept_length_counts_visible_tokens_and_request_forwards() {
-        let first = Uuid::from_u128(1);
-        let second = Uuid::from_u128(2);
-        let signals = [
-            OutputSignal {
-                uuid: first,
-                token_id: Some(11),
-                completed: false,
-                rejected: false,
-                handoff_delay_ms: None,
-                cached_tokens: None,
-            },
-            OutputSignal {
-                uuid: first,
-                token_id: Some(12),
-                completed: false,
-                rejected: false,
-                handoff_delay_ms: None,
-                cached_tokens: None,
-            },
-            OutputSignal {
-                uuid: second,
-                token_id: Some(21),
-                completed: true,
-                rejected: false,
-                handoff_delay_ms: None,
-                cached_tokens: None,
-            },
-            OutputSignal {
-                uuid: second,
-                token_id: None,
-                completed: true,
-                rejected: false,
-                handoff_delay_ms: None,
-                cached_tokens: None,
-            },
-        ];
-
-        assert_eq!(accept_length_sample(&signals), (3, 2));
     }
 }

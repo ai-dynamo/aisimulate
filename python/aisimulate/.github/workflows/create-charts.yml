@@ -13,8 +13,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - 'aic-core/src/aiconfigurator_core/systems/**'
-      - '!aic-core/src/aiconfigurator_core/systems/data/b60/**'
+      - 'src/aisimulate_core/systems/**'
+      - '!src/aisimulate_core/systems/data/b60/**'
 
 jobs:
   create-charts:

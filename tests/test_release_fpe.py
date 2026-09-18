@@ -97,7 +97,7 @@ def test_harness_uses_release_inventory_and_current_probe_code(tmp_path):
         RELEASE.prepare_harness(source, destination)
 
 
-@pytest.mark.parametrize("branch", ["main", "release/../main", "release/", "release/a/b"])
+@pytest.mark.parametrize("branch", ["feature/test", "release/../main", "release/", "release/a/b"])
 def test_release_identity_rejects_unsafe_branches(tmp_path, branch):
     with pytest.raises(ValueError, match="release/<version>"):
         RELEASE.identity(tmp_path, SHA, TOOLING, branch)
@@ -128,8 +128,7 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
         "aisimulate/__init__.py",
         "aisimulate/_runtime.so",
         "aisimulate_core/__init__.py",
-        "aiconfigurator/__init__.py",
-        "aiconfigurator_core/__init__.py",
+        "aisimulate_core/_native.py",
     ]
     wheel = tmp_path / "aisimulate-test.whl"
     site = tmp_path / "site"
@@ -245,3 +244,14 @@ def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path):
     with pytest.raises(ValueError, match="missing shards"):
         RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("branch", ["main", "release/0.12.0"])
+def test_current_harness_keeps_selected_source_and_tooling_identities_distinct(tmp_path, branch):
+    with patch.object(RELEASE, "revision", side_effect=[SHA, TOOLING]), patch.object(RELEASE.subprocess, "run"):
+        assert RELEASE.identity(tmp_path, SHA, TOOLING, branch) == {
+            "schema_version": 1,
+            "source_branch": branch,
+            "source_sha": SHA,
+            "tooling_sha": TOOLING,
+        }

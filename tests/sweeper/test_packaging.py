@@ -77,8 +77,8 @@ def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
 
     scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
-        "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
+        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisimulate": "aisimulate.supervision:main",
     }
 
 
@@ -165,10 +165,9 @@ def test_aisimulate_source_versions_are_synchronized():
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
 
-    expected_python = "0.12.0"
-    expected_cargo = "0.12.0"
-    assert project["project"]["version"] == expected_python
-    assert core["package"]["version"] == expected_cargo
+    workspace_version = workspace["workspace"]["package"]["version"]
+    assert project["project"]["version"] == workspace_version
+    assert core["package"]["version"] == workspace_version
     assert workspace["workspace"]["members"] == ["crates/core"]
     assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
 

@@ -16,9 +16,14 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+if __package__:
+    from .fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+else:
+    from fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+
 ROOT = Path(__file__).resolve().parents[1]
-DOCS_ROOT = Path("python/aisimulate/docs")
-SYSTEMS_ROOT = Path("python/aisimulate/src/aiconfigurator_core/systems")
+PAGES_ROOT = Path("pages")
+SYSTEMS_ROOT = Path("python/aisimulate/src/aisimulate_core/systems")
 
 # Directories are opt-in so adding internal documentation under docs/ never
 # publishes it accidentally. Every listed page is now part of the required
@@ -26,6 +31,7 @@ SYSTEMS_ROOT = Path("python/aisimulate/src/aiconfigurator_core/systems")
 PUBLIC_PAGE_DIRECTORIES = {
     "support-matrix": True,
     "e2e-accuracy": True,
+    "fpm-accuracy": True,
     "fpe-support-matrix": True,
 }
 PUBLIC_ASSET_SUFFIXES = {".css", ".html", ".js", ".json", ".png", ".svg", ".webp"}
@@ -329,6 +335,18 @@ def _accuracy_summary(text: str) -> dict:
         raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc
 
 
+def committed_accuracy(repo_root: Path, commit: str) -> tuple[str, str] | None:
+    """Read current or pre-migration release data, never branch executable assets."""
+    for path in ("pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"):
+        entry = _git(repo_root, "ls-tree", commit, "--", path)
+        if not entry:
+            continue
+        if not entry.startswith("100644 blob "):
+            raise PagesBuildError("accuracy summary must be a regular file")
+        return _git(repo_root, "show", f"{commit}:{path}"), path
+    return None
+
+
 def _build_accuracy_catalog(
     repo_root: Path, output_dir: Path, include_refs: bool, artifacts: Path | None = None
 ) -> None:
@@ -337,7 +355,7 @@ def _build_accuracy_catalog(
     A branch's tree is a publication location, never evidence that its current
     commit was evaluated. Legacy package-only results retain that distinction.
     """
-    relative_path = DOCS_ROOT / "e2e-accuracy" / "summary.json"
+    relative_path = PAGES_ROOT / "e2e-accuracy" / "summary.json"
     entries = []
     sources = [("main", None)]
     if include_refs:
@@ -375,17 +393,16 @@ def _build_accuracy_catalog(
                 raise PagesBuildError(f"accuracy summary is missing: {source}") from exc
             if include_refs:
                 entry["published_from_commit"] = _git(repo_root, "rev-parse", "HEAD")
+                entry["published_source_path"] = str(relative_path)
         else:
             commit = _git(repo_root, "rev-parse", ref)
             entry["published_from_commit"] = commit
-            tree_entry = _git(repo_root, "ls-tree", commit, "--", relative_path.as_posix())
-            if not tree_entry:
+            committed = committed_accuracy(repo_root, commit)
+            if committed is None:
                 entry["status"] = "unavailable"
                 entries.append(entry)
                 continue
-            if not tree_entry.startswith("100644 blob "):
-                raise PagesBuildError(f"accuracy summary must be a regular file on {branch}")
-            content = _git(repo_root, "show", f"{commit}:{relative_path.as_posix()}")
+            content, entry["published_source_path"] = committed
         summary = _accuracy_summary(content)
         revision = summary["snapshot"].get("evaluated_revision")
         if revision and revision["branch"] == branch:
@@ -408,6 +425,33 @@ def _build_accuracy_catalog(
     (output_dir / "e2e-accuracy" / "branches.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
 
 
+def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, artifacts: Path | None) -> None:
+    names = ["main"]
+    if include_refs:
+        refs = _git(repo_root, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin/release/")
+        names.extend(name for name in refs.splitlines() if eligible_branch(name))
+    entries = []
+    for branch in names:
+        entry = {"branch": branch, "status": "unavailable", "summary_path": None}
+        source = artifacts / (artifact_key(branch) + ".json") if artifacts is not None else None
+        if source is not None and (source.exists() or source.is_symlink()):
+            if source.is_symlink():
+                raise PagesBuildError("FPM summary cannot be a symlink")
+            summary = validate_summary(strict_json(source.read_text()))
+            snapshot = summary["snapshot"]
+            if snapshot["branch"] != branch:
+                raise PagesBuildError("FPM summary belongs to another branch")
+            relative = "branches/" + artifact_key(branch) + "/summary.json"
+            target = output_dir / "fpm-accuracy" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(summary, allow_nan=False, sort_keys=True) + "\n")
+            head = _git(repo_root, "rev-parse", "origin/" + branch) if include_refs else None
+            entry.update(status="available", summary_path=relative, head_sha=head)
+        entries.append(entry)
+    catalog = {"schema_version": 1, "default_branch": "main", "branches": entries}
+    (output_dir / "fpm-accuracy/branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
+
+
 def build_site(
     repo_root: Path,
     output_dir: Path,
@@ -415,6 +459,7 @@ def build_site(
     fpe_data_dir: Path | None = None,
     accuracy_refs: bool = False,
     accuracy_artifacts: Path | None = None,
+    fpm_artifacts: Path | None = None,
 ) -> set[Path]:
     """Build the public site and return its files relative to ``output_dir``."""
     repo_root = repo_root.resolve()
@@ -425,7 +470,7 @@ def build_site(
         raise PagesBuildError(f"the Pages output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    docs_root = repo_root / DOCS_ROOT
+    docs_root = repo_root / PAGES_ROOT
     index_path = docs_root / "index.html"
     if not index_path.is_file():
         raise PagesBuildError(f"public landing page is missing: {index_path}")
@@ -458,6 +503,7 @@ def build_site(
                 _record_legacy_snapshot(repo_root, output_dir / "data" / public_name)
 
     _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)
+    _build_fpm_catalog(repo_root, output_dir, accuracy_refs, fpm_artifacts)
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
@@ -471,6 +517,7 @@ def main() -> None:
         "--accuracy-refs", action="store_true", help="Include fetched origin/release/* accuracy snapshots"
     )
     parser.add_argument("--accuracy-artifacts", type=Path, help="Validated nightly accuracy summaries")
+    parser.add_argument("--fpm-artifacts", type=Path, help="Validated FPM overview artifacts")
     args = parser.parse_args()
 
     files = build_site(
@@ -479,6 +526,7 @@ def main() -> None:
         fpe_data_dir=args.fpe_data_dir,
         accuracy_refs=args.accuracy_refs,
         accuracy_artifacts=args.accuracy_artifacts,
+        fpm_artifacts=args.fpm_artifacts,
     )
     print(f"Built {len(files)} public files in {args.output_dir.resolve()}")
 

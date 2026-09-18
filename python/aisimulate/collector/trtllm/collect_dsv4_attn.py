@@ -104,7 +104,7 @@ CONTEXT_PREFIX_ANCHORS = (0, 128, 2048, 4096)
 _MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "src",
-    "aiconfigurator",
+    "aisimulate_core",
     "model_configs",
 )
 

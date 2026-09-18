@@ -29,10 +29,10 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.sdk.moe_comm_resolver import a2a_covers_parallel
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.perf_database import (
+from aisimulate.sdk.moe_comm_resolver import a2a_covers_parallel
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.perf_database import (
     LoadedOpData,
     PerfDataFilename,
     _moe_a2a_dtype_candidates,
@@ -42,7 +42,7 @@ from aiconfigurator_core.sdk.perf_database import (
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 DEEPEP_NORMAL_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_deepep_normal_perf.parquet"

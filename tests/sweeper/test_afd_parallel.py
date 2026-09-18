@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.task_v2 import build_afd_parallel_lists
 from aisimulate.config import CoreRecommendationConfig
 from aisimulate.recommend import recommendation_to_sweeper
+from aisimulate.sdk.task_v2 import build_afd_parallel_lists
 from aisimulate.sweeper import (
     AFDInfeasible,
     AFDReasonCategory,

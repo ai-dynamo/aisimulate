@@ -5,11 +5,13 @@
 //!
 //! Reference: sglang/python/sglang/srt/mem_cache/radix_cache.py
 
-use crate::engine::common::hashing::LocalBlockHash;
+use crate::engine::belady::BeladyOracle;
 #[cfg(test)]
 use crate::engine::common::hashing::compute_block_hash_for_seq;
+use crate::engine::common::hashing::{LocalBlockHash, SequenceHash, compute_next_seq_hash};
 use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::time::Instant;
 
@@ -185,10 +187,21 @@ pub struct RadixCache {
     /// Unlocked leaves ordered by their last access time for O(log n) updates
     /// and O(1) oldest-victim lookup.
     evictable_leaves: BTreeSet<(Instant, NodeId)>,
+    belady: Option<BeladyLeaves>,
     /// Total token count in evictable nodes.
     pub evictable_size: usize,
     /// Total token count in protected (locked) nodes.
     pub protected_size: usize,
+}
+
+/// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
+struct BeladyLeaves {
+    oracle: BeladyOracle,
+    cursor: usize,
+    page_hashes: Vec<Option<SequenceHash>>,
+    candidates: BTreeSet<(Reverse<usize>, Instant, NodeId)>,
+    by_hash: FxHashMap<SequenceHash, BTreeSet<NodeId>>,
+    indexed: FxHashMap<NodeId, (SequenceHash, usize)>,
 }
 
 impl RadixCache {
@@ -211,8 +224,65 @@ impl RadixCache {
             #[cfg(test)]
             test_now: None,
             evictable_leaves: BTreeSet::new(),
+            belady: None,
             evictable_size: 0,
             protected_size: 0,
+        }
+    }
+
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        assert_eq!(
+            self.nodes.len(),
+            1,
+            "attach Belady before populating the cache"
+        );
+        self.belady = Some(BeladyLeaves {
+            oracle,
+            cursor: 0,
+            page_hashes: vec![None; self.page_pool.total() / self.page_size],
+            candidates: BTreeSet::new(),
+            by_hash: FxHashMap::default(),
+            indexed: FxHashMap::default(),
+        });
+    }
+
+    fn record_belady_pages(
+        &mut self,
+        prefix_node: NodeId,
+        keys: &[LocalBlockHash],
+        pages: &[KvPageId],
+    ) {
+        let Some(belady) = &mut self.belady else {
+            return;
+        };
+        let mut previous = self.nodes[prefix_node]
+            .value
+            .last()
+            .map(|page| belady.page_hashes[page.index()].expect("cached page has prefix identity"));
+        for (&key, &page) in keys.iter().zip(pages) {
+            let hash = previous.map_or(key.0, |parent| compute_next_seq_hash(parent, key));
+            belady.page_hashes[page.index()] = Some(hash);
+            previous = Some(hash);
+        }
+    }
+
+    fn sync_belady_priorities(&mut self) {
+        let Some(belady) = &mut self.belady else {
+            return;
+        };
+        for (hash, next_use) in belady.oracle.changes_since(&mut belady.cursor) {
+            let Some(leaves) = belady.by_hash.get(&hash) else {
+                continue;
+            };
+            for &id in leaves {
+                let (_, previous) = belady.indexed.get_mut(&id).expect("indexed leaf");
+                let accessed = self.nodes[id].last_access_time;
+                belady
+                    .candidates
+                    .remove(&(Reverse(*previous), accessed, id));
+                belady.candidates.insert((Reverse(next_use), accessed, id));
+                *previous = next_use;
+            }
         }
     }
 
@@ -258,13 +328,37 @@ impl RadixCache {
         );
         let inserted = self.evictable_leaves.insert(self.evictable_key(id));
         debug_assert!(inserted, "evictable leaf was already indexed");
+        if let Some(belady) = &mut self.belady {
+            let node = &self.nodes[id];
+            let page = node.value.last().expect("non-root edge has pages");
+            let hash = belady.page_hashes[page.index()].expect("cached page has prefix identity");
+            let next_use = belady.oracle.next_use(hash);
+            belady
+                .candidates
+                .insert((Reverse(next_use), node.last_access_time, id));
+            belady.by_hash.entry(hash).or_default().insert(id);
+            let previous = belady.indexed.insert(id, (hash, next_use));
+            debug_assert!(previous.is_none(), "Belady leaf was already indexed");
+        }
     }
 
     fn remove_evictable_leaf(&mut self, id: NodeId) -> bool {
         if !self.is_evictable_leaf(id) {
             return false;
         }
-        self.evictable_leaves.remove(&self.evictable_key(id))
+        let removed = self.evictable_leaves.remove(&self.evictable_key(id));
+        if removed && let Some(belady) = &mut self.belady {
+            let (hash, next_use) = belady.indexed.remove(&id).expect("indexed leaf");
+            belady
+                .candidates
+                .remove(&(Reverse(next_use), self.nodes[id].last_access_time, id));
+            let leaves = belady.by_hash.get_mut(&hash).expect("indexed hash");
+            leaves.remove(&id);
+            if leaves.is_empty() {
+                belady.by_hash.remove(&hash);
+            }
+        }
+        removed
     }
 
     fn touch_node(&mut self, id: NodeId, now: Instant) {
@@ -287,6 +381,25 @@ impl RadixCache {
             self.evictable_leaves, expected,
             "SGLang evictable-leaf index drifted from radix nodes"
         );
+        if let Some(belady) = &self.belady {
+            let expected_candidates = expected
+                .iter()
+                .map(|&(accessed, id)| {
+                    let page = self.nodes[id].value.last().unwrap();
+                    let hash = belady.page_hashes[page.index()].unwrap();
+                    let &(indexed_hash, next_use) = belady.indexed.get(&id).unwrap();
+                    assert_eq!(indexed_hash, hash);
+                    assert!(belady.by_hash[&hash].contains(&id));
+                    (Reverse(next_use), accessed, id)
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(belady.candidates, expected_candidates);
+            assert_eq!(belady.indexed.len(), expected.len());
+            assert_eq!(
+                belady.by_hash.values().map(BTreeSet::len).sum::<usize>(),
+                expected.len()
+            );
+        }
     }
 
     #[cfg(test)]
@@ -671,8 +784,10 @@ impl RadixCache {
         value: &[KvPageId],
         now: Instant,
     ) -> NodeId {
-        self.touch_node(node_id, now);
+        let was_indexed = self.remove_evictable_leaf(node_id);
+        self.record_belady_pages(node_id, key, value);
         let node = &mut self.nodes[node_id];
+        node.last_access_time = now;
         debug_assert!(node.children.is_empty());
         debug_assert!(node.lock_ref <= 1);
         node.key.extend_from_slice(key);
@@ -681,6 +796,9 @@ impl RadixCache {
             self.evictable_size += key.len() * self.page_size;
         } else {
             self.protected_size += key.len() * self.page_size;
+        }
+        if was_indexed {
+            self.insert_evictable_leaf(node_id);
         }
         node_id
     }
@@ -693,9 +811,12 @@ impl RadixCache {
             let child_parent = child.parent;
             let original_ck = child.key[0];
             let suffix_key = child.key.split_off(split_pos);
-            let prefix_key = std::mem::replace(&mut child.key, suffix_key);
+            let mut prefix_key = std::mem::replace(&mut child.key, suffix_key);
             let suffix_value = child.value.split_off(split_pos);
-            let prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            let mut prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            // The short prefix must not retain the original edge's allocation.
+            prefix_key.shrink_to_fit();
+            prefix_value.shrink_to_fit();
             let suffix_ck = child.key[0];
             (
                 child_parent,
@@ -740,6 +861,7 @@ impl RadixCache {
         key: &[LocalBlockHash],
         value: &[KvPageId],
     ) -> NodeId {
+        self.record_belady_pages(parent_id, key, value);
         let now = self.now();
         let new_node = TreeNode {
             children: FxHashMap::default(),
@@ -827,14 +949,27 @@ impl RadixCache {
         self.debug_assert_evictable_index();
     }
 
-    /// Evict tokens from the cache by LRU order, rounding partial leaves to full pages.
+    /// Evict eligible leaf pages using the selected policy, rounding to full pages.
     /// Returns `(num_tokens_evicted, evicted_page_ids)`.
     pub fn evict(&mut self, num_tokens: usize) -> (usize, Vec<KvPageId>) {
+        self.sync_belady_priorities();
         let mut evicted = 0;
         let mut evicted_indices =
             Vec::with_capacity(num_tokens.min(self.evictable_size).div_ceil(self.page_size));
         while evicted < num_tokens {
-            let Some((last_access_time, victim_id)) = self.evictable_leaves.pop_first() else {
+            // Global input demand can execute on another worker. It intentionally ranks only
+            // this worker's causally resident, unlocked leaves; it never creates or unlocks KV.
+            let victim = if let Some(belady) = &self.belady {
+                let Some(&(_, accessed, id)) = belady.candidates.first() else {
+                    break;
+                };
+                self.remove_evictable_leaf(id);
+                Some((accessed, id))
+            } else {
+                // LRU can select and remove directly, without a second keyed lookup.
+                self.evictable_leaves.pop_first()
+            };
+            let Some((last_access_time, victim_id)) = victim else {
                 break;
             };
             debug_assert_eq!(
@@ -845,7 +980,13 @@ impl RadixCache {
             let victim_pages = self.nodes[victim_id].key.len();
             let victim_tokens = victim_pages * self.page_size;
             let remaining = num_tokens - evicted;
-            let eviction_pages = remaining.div_ceil(self.page_size).min(victim_pages);
+            // A compressed edge can contain pages with different future demand. Expose and
+            // rerank its next tail after each Belady eviction instead of discarding the edge.
+            let eviction_pages = if self.belady.is_some() {
+                1
+            } else {
+                remaining.div_ceil(self.page_size).min(victim_pages)
+            };
             let eviction_len = eviction_pages * self.page_size;
 
             // A compressed leaf may span pages. Preserve its indexed prefix when
@@ -856,6 +997,11 @@ impl RadixCache {
                 let victim_node = &mut nodes[victim_id];
                 victim_node.key.truncate(split_pos);
                 let evicted_values = &victim_node.value[split_pos..];
+                if let Some(belady) = &mut self.belady {
+                    for page in evicted_values {
+                        belady.page_hashes[page.index()] = None;
+                    }
+                }
                 page_pool.free_pages(evicted_values);
                 evicted_indices.extend_from_slice(evicted_values);
                 victim_node.value.truncate(split_pos);
@@ -877,6 +1023,11 @@ impl RadixCache {
             evicted += tokens;
 
             evicted_indices.extend_from_slice(&victim_node.value);
+            if let Some(belady) = &mut self.belady {
+                for page in &victim_node.value {
+                    belady.page_hashes[page.index()] = None;
+                }
+            }
             self.page_pool.free_pages(&victim_node.value);
 
             if let Some(pid) = parent_id {
@@ -907,6 +1058,114 @@ impl RadixCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::common::hashing::compute_seq_hash_for_block;
+    use uuid::Uuid;
+
+    fn oracle_for_prompts(prompts: &[&[u32]]) -> BeladyOracle {
+        BeladyOracle::new(
+            prompts
+                .iter()
+                .enumerate()
+                .map(|(index, tokens)| {
+                    (
+                        Uuid::from_u128(index as u128 + 1),
+                        compute_seq_hash_for_block(&compute_block_hash_for_seq(tokens, 1)),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn belady_reranks_compressed_tail_before_evicting_its_prefix() {
+        let mut cache = RadixCache::new(3, 1);
+        cache.set_belady_oracle(oracle_for_prompts(&[&[1], &[3], &[1, 2]]));
+        let ab = cache.page_pool.allocate(2).unwrap();
+        cache.insert(&[1, 2], &ab);
+        let c = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[3], &c);
+
+        let (tokens, pages) = cache.evict(2);
+        assert_eq!((tokens, pages), (2, vec![KvPageId(1), KvPageId(2)]));
+        assert_eq!(cache.prefix_match_len(&[1, 2]), 1);
+        assert_eq!(cache.prefix_match_len(&[3]), 0);
+        assert_eq!(cache.available_tokens(), 2);
+    }
+
+    #[test]
+    fn belady_observes_global_retirement_before_local_victim_selection() {
+        let oracle = oracle_for_prompts(&[&[1], &[2]]);
+        let mut cache = RadixCache::new(2, 1);
+        cache.set_belady_oracle(oracle.clone());
+        let a = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[1], &a);
+        let b = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[2], &b);
+
+        // Another worker commits the first request; this worker must refresh its hidden key.
+        oracle.retire_requests([Uuid::from_u128(1)]);
+        assert_eq!(cache.evict(1).1, vec![KvPageId(0)]);
+        assert_eq!(cache.prefix_match_len(&[2]), 1);
+    }
+
+    #[test]
+    fn belady_preserves_locked_prefixes_and_handles_branching_and_extension() {
+        let mut cache = RadixCache::new(8, 1);
+        cache.set_belady_oracle(oracle_for_prompts(&[&[1, 2], &[1, 2, 4], &[9], &[1, 2, 3]]));
+        let mut pages = cache.page_pool.allocate(2).unwrap();
+        let parent = cache.insert(&[1, 2], &pages);
+        cache.inc_lock_ref(parent);
+        pages.extend(cache.page_pool.allocate(1).unwrap());
+        cache.insert_from_node(parent, 2, &[1, 2, 3], &pages);
+        cache.dec_lock_ref(parent);
+        let mut branch = pages[..2].to_vec();
+        branch.extend(cache.page_pool.allocate(1).unwrap());
+        cache.insert(&[1, 2, 4], &branch);
+        let other = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[9], &other);
+
+        assert_eq!(cache.evict(2).1, vec![KvPageId(2), KvPageId(4)]);
+        assert_eq!(cache.prefix_match_len(&[1, 2, 4]), 3);
+        let (_, locked) = cache.match_prefix(&[1, 2]);
+        cache.inc_lock_ref(locked);
+        assert_eq!(cache.evict(8).1, vec![KvPageId(3)]);
+        assert_eq!(cache.protected_size, 2);
+        cache.dec_lock_ref(locked);
+        assert_eq!(cache.evict(2).1, vec![KvPageId(1), KvPageId(0)]);
+        assert_eq!(cache.available_tokens(), 8);
+    }
+
+    #[test]
+    fn belady_recycled_page_has_the_new_prefix_identity() {
+        let oracle = oracle_for_prompts(&[&[2], &[3]]);
+        let mut cache = RadixCache::new(2, 1);
+        cache.set_belady_oracle(oracle);
+        let first = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[1], &first);
+        assert_eq!(cache.evict(1).1, vec![KvPageId(0)]);
+        let reused = cache.page_pool.allocate(1).unwrap();
+        assert_eq!(reused, first);
+        cache.insert(&[2], &reused);
+        let second = cache.page_pool.allocate(1).unwrap();
+        cache.insert(&[3], &second);
+        assert_eq!(cache.evict(1).1, vec![KvPageId(1)]);
+        assert_eq!(cache.prefix_match_len(&[2]), 1);
+    }
+
+    #[test]
+    fn belady_distinguishes_equal_local_pages_below_different_prefixes() {
+        let mut cache = RadixCache::new(4, 1);
+        cache.set_belady_oracle(oracle_for_prompts(&[&[1, 7], &[2]]));
+        let first = cache.page_pool.allocate(2).unwrap();
+        cache.insert(&[1, 7], &first);
+        let second = cache.page_pool.allocate(2).unwrap();
+        cache.insert(&[2, 7], &second);
+
+        assert_eq!(cache.evict(2).1, vec![KvPageId(3), KvPageId(2)]);
+        assert_eq!(cache.prefix_match_len(&[1, 7]), 2);
+        assert_eq!(cache.prefix_match_len(&[2, 7]), 0);
+    }
 
     #[test]
     fn test_page_pool_allocate_extend_and_free() {
@@ -1005,6 +1264,33 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 5);
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[10, 20, 30, 40, 50, 60, 70, 80]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
+    }
+
+    #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
+        let mut cache = RadixCache::new(512, 1);
+        let tokens: Vec<u32> = (0..512).collect();
+        let indices: Vec<usize> = (0..512).collect();
+        cache.insert(&tokens, &indices);
+
+        for prefix_len in (1..512).step_by(4) {
+            assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
+        }
+        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
+
+        // Repeated splits must not leave each short prefix holding a copy of
+        // the original edge's capacity. Allow allocator slack, not exact sizes.
+        let (key_capacity, page_capacity) = cache.nodes.values().fold((0, 0), |sum, node| {
+            (sum.0 + node.key.capacity(), sum.1 + node.value.capacity())
+        });
+        assert!(
+            key_capacity <= 2 * tokens.len(),
+            "retained key capacity: {key_capacity}"
+        );
+        assert!(
+            page_capacity <= 2 * tokens.len(),
+            "retained page capacity: {page_capacity}"
+        );
     }
 
     #[test]

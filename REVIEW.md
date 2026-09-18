@@ -26,11 +26,12 @@ governance status are separate; merge readiness is assessed on the exact head.
 
 ## Risk-tiered review and CI
 
-The `review-ready` label is the explicit admission gate for the inexpensive
-evidence-gathering stage. Once it is applied, Fast CI and CodeRabbit run in
-parallel for every non-draft PR. Medium- and high-risk PRs also require a Codex
-review of the same commit. The risk level changes review depth, not merge
-authority: every tier still requires the applicable CODEOWNER approval.
+Fast CI runs automatically for every PR, including drafts. CodeRabbit reviews
+non-draft PRs automatically, subject to its configured title and label
+exclusions. Neither requires a `review-ready` label. Medium- and high-risk PRs
+also require a Codex review of the same commit. The risk level changes review
+depth, not merge authority: every tier still requires the applicable CODEOWNER
+approval.
 
 | Risk | Review before Full CI | Human merge gate |
 | --- | --- | --- |
@@ -65,11 +66,10 @@ approvals, and exact-head checks must be complete before merge.
 
 `Fast CI Success` and `Full CI Success` are the stable merge-gate results. Both
 run with `always()` semantics and fail when required evidence is missing,
-skipped unexpectedly, canceled, or failed. A non-draft PR without the
-`review-ready` label fails `Fast CI Success`; making a PR ready or removing the
-label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
-`unlabeled` pull-request activity types so those state changes cannot retain a
-stale green result. Standalone Fast CI runs publish `Fast CI Success`. Full CI's
+skipped unexpectedly, canceled, or failed. Fast CI checks depend on job results,
+not draft status or labels. Opening, updating, reopening, or marking a PR ready
+for review triggers Fast CI; label changes do not. Standalone Fast CI runs
+publish `Fast CI Success`. Full CI's
 `Require Fast CI` job verifies a successful run and all substantive jobs on the
 same branch and commit; it does not rerun Fast CI internally. Branch pushes
 require matching Fast push evidence; manual Full CI accepts matching Fast push

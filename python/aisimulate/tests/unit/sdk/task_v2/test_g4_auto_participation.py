@@ -32,13 +32,13 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 # The legacy-adapted large-EP sources for h200_sxm/sglang (comm + compute).
 H200_SGLANG_LARGE_EP_PATHS = [

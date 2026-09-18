@@ -26,12 +26,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from aiconfigurator.sdk import common, models
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.operations import FPMForwardOp
-from aiconfigurator.sdk.perf_database import PerfDatabase
-from aiconfigurator_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
+from aisimulate.sdk import common, models
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.operations import FPMForwardOp
+from aisimulate.sdk.perf_database import PerfDatabase
+from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
 pytestmark = pytest.mark.unit
 
@@ -40,9 +40,9 @@ BACKEND = "vllm"
 VERSION = "test-fpm-version"
 MODEL_PATH = "test-org/test-model"
 
-import aiconfigurator_core
+import aisimulate_core
 
-_CORE_SYSTEMS = os.path.join(os.path.dirname(aiconfigurator_core.__file__), "systems")
+_CORE_SYSTEMS = os.path.join(os.path.dirname(aisimulate_core.__file__), "systems")
 
 
 def _row(
@@ -169,8 +169,8 @@ class TestForwardModelRewrite:
         assert model.context_ops[0].get_weights() == pytest.approx(expected_weights)
 
     def test_fpm_spec_preserves_explicit_attention_backend_for_nested_ops(self):
-        from aiconfigurator.sdk.engine import build_engine_spec_json
-        from aiconfigurator.sdk.perf_database import get_database
+        from aisimulate.sdk.engine import build_engine_spec_json
+        from aisimulate.sdk.perf_database import get_database
 
         attention_backend = "trtllm_mha"
         model = models.get_model(
@@ -266,7 +266,7 @@ class TestForwardModelRewrite:
     }
 
     def test_fpm_hybrid_ngram_sets_verify_width_without_draft_ops(self):
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aisimulate_core.sdk.speculation import SpeculationConfig
 
         cfg = _model_config(
             forward_model="fpm",
@@ -280,7 +280,7 @@ class TestForwardModelRewrite:
         assert model._nextn == 3  # engine widening channel stays consistent
 
     def test_fpm_standalone_draft_keeps_native_ops(self):
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aisimulate_core.sdk.speculation import SpeculationConfig
 
         cfg = _model_config(
             forward_model="fpm",
@@ -298,8 +298,8 @@ class TestForwardModelRewrite:
         assert draft._nextn == 0
 
     def test_fpm_hybrid_eagle3_keeps_draft_ops_op_level(self):
-        from aiconfigurator_core.sdk.engine import _fpm_spec_dict
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aisimulate_core.sdk.engine import _fpm_spec_dict
+        from aisimulate_core.sdk.speculation import SpeculationConfig
 
         cfg = _model_config(
             forward_model="fpm",
@@ -385,13 +385,13 @@ class TestFPMStaticAndMixed:
     @pytest.mark.parametrize("ctx_tokens", [256, 512])
     @pytest.mark.parametrize("gen_requests", [0, 2])
     def test_public_mixed_hybrid_keeps_native_component_sources(self, fpm_session, ctx_tokens, gen_requests):
-        from aiconfigurator.sdk.config import RuntimeConfig
-        from aiconfigurator.sdk.inference_session import InferenceSession
-        from aiconfigurator_core.sdk.operations.elementwise import ElementWise
-        from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
-        from aiconfigurator_core.sdk.speculation.materialize import _fold_width
-        from aiconfigurator_core.sdk.step_estimate import MixedStepInput
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.inference_session import InferenceSession
+        from aisimulate_core.sdk.operations.elementwise import ElementWise
+        from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+        from aisimulate_core.sdk.speculation import SpeculationConfig
+        from aisimulate_core.sdk.speculation.materialize import _fold_width
+        from aisimulate_core.sdk.step_estimate import MixedStepInput
 
         baseline, database, backend, isl, osl = fpm_session
         model = models.get_model(
@@ -448,9 +448,9 @@ class TestFPMStaticAndMixed:
         assert estimate.energy_wms == pytest.approx(sum(row[2] for row in rows.values()))
 
     def test_ngram_verify_width_reaches_native_fpm_query(self, fpm_session):
-        from aiconfigurator.sdk.config import RuntimeConfig
-        from aiconfigurator.sdk.inference_session import InferenceSession
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.inference_session import InferenceSession
+        from aisimulate_core.sdk.speculation import SpeculationConfig
 
         baseline, database, backend, isl, osl = fpm_session
         model = models.get_model(
@@ -469,8 +469,8 @@ class TestFPMStaticAndMixed:
         assert summary.get_generation_latency_dict() == {"fpm_forward_decode": pytest.approx(6.5)}
 
     def test_static_ctx_uses_fpm_row(self, fpm_session):
-        from aiconfigurator.sdk.config import RuntimeConfig
-        from aiconfigurator.sdk.inference_session import InferenceSession
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.inference_session import InferenceSession
 
         model, database, backend, isl, osl = fpm_session
         session = InferenceSession(model, database, backend)
@@ -483,8 +483,8 @@ class TestFPMStaticAndMixed:
         assert latency_dict["fpm_forward_prefill"] == pytest.approx(40.0)
 
     def test_static_gen_uses_fpm_row(self, fpm_session):
-        from aiconfigurator.sdk.config import RuntimeConfig
-        from aiconfigurator.sdk.inference_session import InferenceSession
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.inference_session import InferenceSession
 
         model, database, backend, isl, osl = fpm_session
         session = InferenceSession(model, database, backend)
@@ -498,7 +498,7 @@ class TestFPMStaticAndMixed:
         assert latency_dict["fpm_forward_decode"] == pytest.approx(6.0)
 
     def test_mixed_step_is_prefill_plus_marginal_decode(self, fpm_session):
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl)
@@ -523,7 +523,7 @@ class TestFPMStaticAndMixed:
         # scheduled tokens. ctx=2048 alone sits ON the capture boundary
         # (graph side, 47 ms); the same chunk with 8 decode riders crosses
         # it and must price on the eager plateau (99 ms).
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=2048, osl=osl)
@@ -543,7 +543,7 @@ class TestFPMStaticAndMixed:
         # and (1, 258, 256)=13.0 for ctx=256 of isl=512 — and the component is
         # their per-iteration average, identical to pricing the chunks
         # independently (no double billing, no averaging artifacts).
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl)
@@ -556,7 +556,7 @@ class TestFPMStaticAndMixed:
     def test_mixed_step_gen_zero_prices_pure_chunk(self, fpm_session):
         # Spec test 5 (gen=0 degenerate): a pure-prefill step prices its own
         # totals with no decode marginal term.
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl)
@@ -579,7 +579,7 @@ class TestFPMStaticAndMixed:
         # requires context_tokens > 0, so the gen-only contract lives behind
         # `_get_genonly_step_latency` (the mixed entry raises instead of
         # silently rerouting).
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl)
@@ -594,7 +594,7 @@ class TestFPMStaticAndMixed:
             )
 
     def test_genonly_step_works_with_single_op(self, fpm_session):
-        from aiconfigurator.sdk.config import RuntimeConfig
+        from aisimulate.sdk.config import RuntimeConfig
 
         model, database, backend, isl, osl = fpm_session
         runtime_config = RuntimeConfig(batch_size=2, beam_width=1, isl=isl, osl=osl)

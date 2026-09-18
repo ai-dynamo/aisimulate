@@ -10,7 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from collector.case_generator import MoeCommonTestCase
 
 pytestmark = pytest.mark.unit
@@ -642,9 +641,7 @@ def test_step3p7_preserves_vendor_routing_contract(monkeypatch, model_name):
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
     config_path = (
-        Path(__file__).resolve().parents[3]
-        / "aic-core/src/aiconfigurator_core/model_configs"
-        / f"{model_name}_config.json"
+        Path(__file__).resolve().parents[3] / "src/aisimulate_core/model_configs" / f"{model_name}_config.json"
     )
     model_config = json.loads(config_path.read_text())
     monkeypatch.setattr(module, "_load_model_moe_config", lambda _model_name: model_config)

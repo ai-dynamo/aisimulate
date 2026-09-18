@@ -5873,7 +5873,7 @@ def main():
         type=str,
         default=None,
         help="GPU type for resolving hardware capability floors, for example b200_sxm. "
-        "The SM version is read from src/aiconfigurator/systems/<gpu>.yaml unless --sm is provided.",
+        "The SM version is read from src/aisimulate_core/systems/<gpu>.yaml unless --sm is provided.",
     )
     parser.add_argument(
         "--sm",

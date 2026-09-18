@@ -12,13 +12,12 @@ __compat__ = "sglang==0.5.14"
 
 import pkg_resources
 import torch
+from collector.case_generator import get_mla_bmm_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sgl_kernel import bmm_fp8
 from sglang.srt.layers.quantization.fp8_kernel import (
     per_tensor_quant_mla_fp8,
 )
-
-from collector.case_generator import get_mla_bmm_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def _supported_dtypes() -> set[str]:

@@ -22,8 +22,12 @@ use crate::replay::{
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
+use crate::{
+    EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassWorkerType,
+};
 use anyhow::{Context, Result, anyhow, ensure};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
@@ -150,7 +154,7 @@ struct AicTimingConfig {
     model: String,
     backend: String,
     system: String,
-    #[serde(alias = "tp_size")]
+    #[serde(default = "one", alias = "tp_size")]
     tp: u32,
     #[serde(default)]
     backend_version: Option<String>,
@@ -175,6 +179,8 @@ struct AicTimingConfig {
     #[serde(default)]
     nextn: u32,
     #[serde(default)]
+    speculation: Option<crate::ForwardPassSpeculationConfig>,
+    #[serde(default)]
     kv_block_size: Option<u32>,
     #[serde(default)]
     gpu_memory_utilization: Option<f64>,
@@ -188,6 +194,26 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    worker_type: Option<ForwardPassWorkerType>,
+    #[serde(default)]
+    estimation_mode: Option<EstimationMode>,
+    #[serde(default)]
+    fallback_policy: ForwardPassFallbackPolicy,
+    #[serde(default)]
+    estimator_config: EstimatorConfig,
+    #[serde(default)]
+    database_mode: crate::DatabaseMode,
+    #[serde(default)]
+    transfer_policy: Option<Vec<String>>,
+    #[serde(default)]
+    systems_paths: Vec<PathBuf>,
+    #[serde(default)]
+    attention_backend: Option<String>,
+    #[serde(default)]
+    enable_shared_layer: Option<bool>,
+    #[serde(default)]
+    strict_provenance: bool,
 }
 
 const fn one() -> u32 {
@@ -195,6 +221,95 @@ const fn one() -> u32 {
 }
 
 impl AicTimingConfig {
+    fn estimator_request(
+        &self,
+        worker_type: ForwardPassWorkerType,
+    ) -> Result<ForwardPassPerfModelConfig> {
+        ensure!(
+            self.worker_type
+                .is_none_or(|configured| configured == worker_type),
+            "estimator worker_type does not match replay role"
+        );
+        let legacy_mode = match self.forward_model.as_deref() {
+            Some("fpm") => Some(EstimationMode::FpmInterpolation),
+            Some("op_level") => Some(EstimationMode::OpLevel),
+            Some(other) => return Err(anyhow!("unknown legacy forward_model {other:?}")),
+            None => None,
+        };
+        if let (Some(explicit), Some(legacy)) = (self.estimation_mode, legacy_mode) {
+            ensure!(
+                explicit == legacy,
+                "forward_model conflicts with estimation_mode"
+            );
+        }
+        let mode = self
+            .estimation_mode
+            .or(legacy_mode)
+            .unwrap_or(if self.worker_type.is_some() {
+                EstimationMode::Auto
+            } else {
+                EstimationMode::OpLevel
+            });
+        let roots = if self.systems_paths.is_empty() {
+            self.systems_path.iter().map(PathBuf::from).collect()
+        } else {
+            self.systems_paths.clone()
+        };
+        Ok(ForwardPassPerfModelConfig {
+            model: self.model.clone(),
+            system: self.system.clone(),
+            backend: serde_json::from_value(serde_json::Value::String(self.backend.clone()))?,
+            backend_version: self.backend_version.clone(),
+            worker_type,
+            tp: self.tp,
+            pp: self.pp,
+            attention_dp: self.attention_dp,
+            moe_tp_size: self.moe_tp_size,
+            moe_ep_size: self.moe_ep_size,
+            gemm_quant_mode: self.gemm_dtype.clone(),
+            moe_quant_mode: self.moe_dtype.clone(),
+            fmha_quant_mode: self.fmha_dtype.clone(),
+            kvcache_quant_mode: self.kv_cache_dtype.clone(),
+            comm_quant_mode: self.comm_dtype.clone(),
+            nextn: self.nextn,
+            speculation: self.speculation.clone(),
+            kv_block_size: self.kv_block_size,
+            estimation_mode: mode,
+            fallback_policy: self.fallback_policy,
+            estimator_config: self.estimator_config.clone(),
+            database_mode: self.database_mode,
+            transfer_policy: self.transfer_policy.clone(),
+            systems_paths: roots,
+            attention_backend: self.attention_backend.clone(),
+            enable_shared_layer: self.enable_shared_layer,
+            strict_provenance: self.strict_provenance,
+        })
+    }
+
+    fn speculative_depth(&self) -> Result<u32> {
+        let Some(speculation) = &self.speculation else {
+            return Ok(self.nextn);
+        };
+        ensure!(
+            self.nextn == 0,
+            "ngram speculation cannot be combined with nextn"
+        );
+        ensure!(
+            self.backend == "vllm",
+            "ngram speculation requires backend=vllm"
+        );
+        ensure!(
+            self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
+            "ngram speculation requires op_level timing"
+        );
+        let depth = speculation.num_speculative_tokens();
+        ensure!(
+            (1..=5).contains(&depth),
+            "ngram num_speculative_tokens must be in 1..=5"
+        );
+        Ok(depth)
+    }
+
     fn resolved_backend_version(&self) -> &str {
         self.backend_version
             .as_deref()
@@ -241,6 +356,7 @@ impl AicTimingConfig {
              moe_ep_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
+        self.speculative_depth()?;
         ensure!(
             self.moe_tp_size.is_some() == self.moe_ep_size.is_some(),
             "AIC moe_tp_size and moe_ep_size must be configured together"
@@ -267,67 +383,43 @@ struct AicTimingModel {
 }
 
 impl AicTimingModel {
-    fn build(config: AicTimingConfig) -> Result<Self> {
-        ensure!(
-            !config.model.trim().is_empty(),
-            "AIC timing config field \"model\" cannot be empty"
-        );
-        ensure!(
-            !config.system.trim().is_empty(),
-            "AIC timing config field \"system\" cannot be empty"
-        );
+    fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
         config.validate_parallel_shape()?;
-        ensure!(
-            matches!(config.backend.as_str(), "vllm" | "sglang" | "trtllm"),
-            "unsupported AIC backend {:?}; expected vllm, sglang, or trtllm",
-            config.backend
-        );
-        ensure!(
-            !config.resolved_backend_version().is_empty(),
-            "AIC backend version cannot be empty"
-        );
         config.resolved_memory_fraction()?;
-
-        let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
+        let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
+            .context("AIC timing provider could not construct the requested estimator")?;
+        let provenance = model
+            .provenance()
+            .context("canonical estimator omitted construction provenance")?;
+        config.backend_version = provenance.config.backend_version.clone();
+        config.systems_path = provenance
+            .selected_systems_root
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        config.systems_paths = provenance.config.systems_paths.clone();
+        config.database_mode = provenance.config.database_mode;
+        config.transfer_policy = provenance.config.transfer_policy.clone();
+        config.estimation_mode = Some(provenance.selected_estimation_mode);
+        config.worker_type = Some(worker_type);
+        config.forward_model = None;
+        config.fallback_policy = ForwardPassFallbackPolicy::Deny;
+        config.estimator_config = provenance.config.estimator_config.clone();
+        let use_fpm_decode_totals =
+            provenance.selected_estimation_mode == EstimationMode::FpmInterpolation;
+        let native = model.native_engine().context(
+            "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
+        )?;
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
-            let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("backend_version", config.resolved_backend_version())?;
-            kwargs.set_item("tp_size", config.tp)?;
-            kwargs.set_item("pp_size", config.pp)?;
-            kwargs.set_item("attention_dp_size", config.attention_dp)?;
-            kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
-            kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
-            kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
-            kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
-            kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
-            kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
-            kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
-            kwargs.set_item("nextn", config.nextn)?;
-            kwargs.set_item("kv_block_size", config.kv_block_size)?;
-            kwargs.set_item("systems_path", config.systems_path.as_deref())?;
-            kwargs.set_item("forward_model", config.forward_model.as_deref())?;
-            let spec = sdk.getattr("compile_engine")?.call(
-                (
-                    config.model.as_str(),
-                    config.system.as_str(),
-                    config.backend.as_str(),
-                ),
-                Some(&kwargs),
-            )?;
-            let aic = PyModule::import(py, "aiconfigurator_core")?
-                .getattr("AicEngine")?
-                .call_method1("from_spec", (spec, config.systems_path.as_deref()))?;
-            let fpm_decode_kv_ceiling = if use_fpm_decode_totals {
-                aic.call_method0("fpm_decode_kv_ceiling")?
+            let engine = Py::new(py, crate::AicEngine::from_shared_engine(native))?.into_any();
+            let ceiling = if use_fpm_decode_totals {
+                engine
+                    .bind(py)
+                    .call_method0("fpm_decode_kv_ceiling")?
                     .extract::<Option<u32>>()?
             } else {
                 None
             };
-            Ok((aic.unbind(), fpm_decode_kv_ceiling))
-        })
-        .map_err(|error| {
-            anyhow!("AIC timing provider could not compile the requested engine: {error}")
+            Ok((engine, ceiling))
         })?;
         Ok(Self {
             engine,
@@ -498,7 +590,7 @@ fn checked_u32(value: usize, name: &str) -> Result<u32> {
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     let (memory_fraction_kind, memory_fraction_value) = config.resolved_memory_fraction()?;
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aiconfigurator_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;
@@ -575,10 +667,10 @@ fn materialize_aic_capacity(
         role.rank.block_size
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
+    let timing_depth = config.speculative_depth()?;
     ensure!(
-        config.nextn as usize == engine_nextn,
-        "AIC nextn={} does not match engine aic_nextn={engine_nextn}",
-        config.nextn
+        timing_depth as usize == engine_nextn,
+        "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
     );
     if capacity_is_explicit {
         return Ok(());
@@ -632,6 +724,7 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
+    worker_type: ForwardPassWorkerType,
 ) -> Result<Option<Arc<dyn TimingModel>>> {
     let TimingModelConfig::External { provider, config } = role.rank.timing_model.clone() else {
         return Ok(None);
@@ -641,20 +734,40 @@ fn resolve_role_timing(
         "native timing provider {provider:?} is not installed; only \"aic\" is \
          available in the AISimulate runtime"
     );
-    let config: AicTimingConfig =
+    let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
+    let timing = AicTimingModel::build(&mut config, worker_type)?;
     materialize_aic_capacity(
         &config,
         role,
         capacity_is_explicit,
         estimate_aic_num_gpu_blocks,
     )?;
-    let timing = AicTimingModel::build(config)?;
     cap_role_capacity_to_fpm_decode_domain(
         role,
         timing.fpm_decode_kv_ceiling,
         capacity_is_explicit,
     )?;
+    let mut resolved = serde_json::to_value(config.estimator_request(worker_type)?)?;
+    if let Some(object) = resolved.as_object_mut() {
+        for (name, value) in [
+            ("gpu_memory_utilization", config.gpu_memory_utilization),
+            ("mem_fraction_static", config.mem_fraction_static),
+            ("free_gpu_memory_fraction", config.free_gpu_memory_fraction),
+        ] {
+            if let Some(value) = value {
+                object.insert(name.to_owned(), serde_json::json!(value));
+            }
+        }
+        object.insert(
+            "cuda_graph_reserved_bytes".to_owned(),
+            serde_json::json!(config.cuda_graph_reserved_bytes),
+        );
+    }
+    role.rank.timing_model = TimingModelConfig::External {
+        provider,
+        config: resolved,
+    };
     Ok(Some(Arc::new(timing)))
 }
 
@@ -1304,6 +1417,37 @@ fn scale_power_phase(
     Ok(phase)
 }
 
+fn infer_aic_timing_topology(engine: &mut serde_json::Value) -> Result<()> {
+    let timing = engine.get("rank").and_then(|rank| rank.get("timing_model"));
+    if let Some(timing) = timing
+        && timing.get("type").and_then(serde_json::Value::as_str) == Some("external")
+        && timing.get("provider").and_then(serde_json::Value::as_str) == Some("aic")
+    {
+        let config = timing.get("config").cloned().unwrap_or_default();
+        for (target, fields) in [
+            ("tensor_parallel_size", ["tp", "tp_size"]),
+            ("dp_size", ["attention_dp", "attention_dp_size"]),
+        ] {
+            if let Some(value) = config.get(fields[0]).or_else(|| config.get(fields[1])) {
+                if let Some(explicit) = engine.get(target) {
+                    ensure!(
+                        explicit == value,
+                        "{target} conflicts with canonical AIC timing topology"
+                    );
+                } else if let Some(object) = engine.as_object_mut() {
+                    object.insert(target.to_owned(), value.clone());
+                }
+            }
+        }
+    }
+    for role in ["prefill", "decode"] {
+        if let Some(child) = engine.get_mut(role) {
+            infer_aic_timing_topology(child)?;
+        }
+    }
+    Ok(())
+}
+
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
@@ -1330,6 +1474,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         );
     }
     let serialized_engine = spec.engine.clone();
+    infer_aic_timing_topology(&mut spec.engine)?;
     let mut engine_config: ReplayEngineConfig = if spec.engine.is_null() {
         ReplayEngineConfig::default()
     } else {
@@ -1348,7 +1493,11 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let capacity_is_explicit = role
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
-            let timing = resolve_role_timing(&mut role, capacity_is_explicit)?;
+            let timing = resolve_role_timing(
+                &mut role,
+                capacity_is_explicit,
+                ForwardPassWorkerType::Aggregated,
+            )?;
             if let Some(timing) = timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
             }
@@ -1405,8 +1554,16 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let decode_capacity_is_explicit = decode
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
-            let prefill_timing = resolve_role_timing(&mut prefill, prefill_capacity_is_explicit)?;
-            let decode_timing = resolve_role_timing(&mut decode, decode_capacity_is_explicit)?;
+            let prefill_timing = resolve_role_timing(
+                &mut prefill,
+                prefill_capacity_is_explicit,
+                ForwardPassWorkerType::Prefill,
+            )?;
+            let decode_timing = resolve_role_timing(
+                &mut decode,
+                decode_capacity_is_explicit,
+                ForwardPassWorkerType::Decode,
+            )?;
             if let Some(timing) = prefill_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
             }
@@ -1550,18 +1707,31 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
+fn replay_python_error(error: anyhow::Error) -> PyErr {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::replay::ReplayError>(),
+            Some(crate::replay::ReplayError::ResourceLimited(_))
+        )
+    }) {
+        PyMemoryError::new_err(format!("{error:#}"))
+    } else {
+        PyRuntimeError::new_err(format!("{error:#}"))
+    }
+}
+
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, false))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, true))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// AISimulate native runtime module.
@@ -1582,6 +1752,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn replay_python_error_preserves_contextual_resource_failure() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::Error::new(crate::replay::ReplayError::ResourceLimited(
+            "create exact report sample file: No space left on device".to_string(),
+        ))
+        .context("collecting replay report")
+        .context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
+    #[test]
+    fn replay_python_error_keeps_other_failures_as_runtime_errors() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
 
     struct PowerTiming(TimingEvidenceSummary);
 
@@ -1859,6 +2059,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn canonical_timing_infers_topology_and_rejects_explicit_conflicts() {
+        let mut engine = serde_json::json!({"rank": {"timing_model": {"type":"external", "provider":"aic", "config":{"tp":2, "attention_dp":4}}}});
+        infer_aic_timing_topology(&mut engine).unwrap();
+        assert_eq!(engine["tensor_parallel_size"], 2);
+        assert_eq!(engine["dp_size"], 4);
+        engine["tensor_parallel_size"] = serde_json::json!(1);
+        assert!(infer_aic_timing_topology(&mut engine).is_err());
+    }
+
+    #[test]
+    fn canonical_and_legacy_default_selection_are_distinct() {
+        let mut config = aic_config();
+        assert_eq!(
+            config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap()
+                .estimation_mode,
+            EstimationMode::OpLevel
+        );
+        config.worker_type = Some(ForwardPassWorkerType::Aggregated);
+        assert_eq!(
+            config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap()
+                .estimation_mode,
+            EstimationMode::Auto
+        );
+        config.forward_model = Some("typo".into());
+        assert!(
+            config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .is_err()
+        );
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -1876,13 +2112,55 @@ mod tests {
             kv_cache_dtype: None,
             comm_dtype: None,
             nextn: 0,
+            speculation: None,
             kv_block_size: None,
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             cuda_graph_reserved_bytes: 0,
+            worker_type: None,
+            estimation_mode: None,
+            fallback_policy: ForwardPassFallbackPolicy::Deny,
+            estimator_config: EstimatorConfig::default(),
+            database_mode: crate::DatabaseMode::default(),
+            transfer_policy: None,
+            systems_paths: Vec::new(),
+            attention_backend: None,
+            enable_shared_layer: None,
+            strict_provenance: false,
             systems_path: None,
             forward_model: None,
+        }
+    }
+
+    #[test]
+    fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
+        let mut config = aic_config();
+        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
+            num_speculative_tokens: 2,
+        });
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
+        role.rank.aic_nextn = Some(2);
+        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+        config.nextn = 2;
+        assert!(config.validate_parallel_shape().is_err());
+        config.nextn = 0;
+        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
+            num_speculative_tokens: 6,
+        });
+        assert!(config.validate_parallel_shape().is_err());
+    }
+
+    #[test]
+    fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
+        for payload in [
+            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
+            serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
+        ] {
+            assert!(
+                serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
+            );
         }
     }
 
