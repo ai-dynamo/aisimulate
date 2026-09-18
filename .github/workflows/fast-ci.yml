@@ -87,14 +87,9 @@ jobs:
             echo "::error::Generated CODEOWNERS artifacts are out of date."
             exit 1
           fi
-      - name: Fetch numerical baseline source
-        shell: bash
-        run: |
-          baseline_sha=$(python -c 'import json; print(json.load(open(".github/prediction-numerical-sentinels.json"))["baseline_source_sha"])')
-          [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid numerical baseline SHA" >&2; exit 1; }
-          git cat-file -e "${baseline_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$baseline_sha"
       - name: Check active workflow contracts
         run: |
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
           python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py tests/test_release_fpe.py -q \
             -p no:cacheprovider \
             --override-ini="addopts=" \

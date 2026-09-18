@@ -642,10 +642,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: matrix.shard.suite == 'contracts'
-        with:
-          node-version: "22"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: application-test-wheel-${{ matrix.arch }}
@@ -663,25 +659,20 @@ jobs:
           python -m pip install uv
           python -m uv pip install --system "${wheels[0]}[dev]"
           echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
-      - name: Fetch numerical baseline source
-        if: matrix.shard.suite == 'contracts'
-        shell: bash
-        run: |
-          baseline_sha=$(python -c 'import json; print(json.load(open(".github/prediction-numerical-sentinels.json"))["baseline_source_sha"])')
-          [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid numerical baseline SHA" >&2; exit 1; }
-          git cat-file -e "${baseline_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$baseline_sha"
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
           python -m pip install pip-licenses==5.5.5
           python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
           python -m pip check
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
           aiconfigurator version
-          python -m pytest -q -c pytest.ini tests -n 4
+          python -m pytest -q -c pytest.ini tests -n 4 \
+            --ignore=tests/test_ci_workflow_contracts.py
       - name: Run unit tests
         if: matrix.shard.suite == 'unit'
         run: >-
@@ -840,14 +831,10 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
-      - name: Fetch numerical baseline source
-        shell: bash
-        run: |
-          baseline_sha=$(python -c 'import json; print(json.load(open(".github/prediction-numerical-sentinels.json"))["baseline_source_sha"])')
-          [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid numerical baseline SHA" >&2; exit 1; }
-          git cat-file -e "${baseline_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$baseline_sha"
       - name: Check native prediction numerical sentinels
-        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+        run: |
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
+          python scripts/check_prediction_numerics.py --output numerical-sentinels.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -893,8 +880,8 @@ jobs:
           release-smoke/bin/python -c
           "import importlib.metadata as metadata;
           import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0';
-          assert metadata.version('aisimulate') == '0.12.0';
+          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.13.0';
+          assert metadata.version('aisimulate') == '0.13.0';
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"

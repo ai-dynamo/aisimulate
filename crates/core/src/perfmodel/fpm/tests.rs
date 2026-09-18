@@ -136,10 +136,7 @@ fn fixture_engine_config() -> EngineConfig {
 /// public `from_native` constructors compile via Python; `from_engine` lets
 /// the pure-Rust tests build the native variant directly.
 fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-    let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
-    let engine = Engine::build(spec, Arc::new(db)).unwrap();
-    ForwardPassPerfModel::from_engine(Arc::new(engine), options)
+    ForwardPassPerfModel::from_engine(fixture_engine(), options)
 }
 
 fn regression_model(
@@ -150,7 +147,18 @@ fn regression_model(
 }
 
 fn fixture_engine() -> Arc<Engine> {
-    let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    // Match SILICON's shared-layer default: 0.24.0 declares reuse of the
+    // corrected, graph-timed FP8-block GEMM measurements from 0.25.0.
+    let db = PerfDatabase::load_resolved(
+        &systems_root(),
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        true,
+        false,
+        false,
+    )
+    .unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     Arc::new(Engine::build(spec, Arc::new(db)).unwrap())
 }

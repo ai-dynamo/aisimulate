@@ -1959,7 +1959,18 @@ mod tests {
 
     /// Build an `Engine` from the hand-built op lists over the real fixture DB.
     fn build_engine(nextn: Option<u32>) -> Engine {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        // Match SILICON's shared-layer default and honor the declared reuse
+        // of graph-timed FP8-block GEMM measurements from vLLM 0.25.0.
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
         let spec = EngineSpec::new(
             fixture_engine_config(nextn),
             context_ops(),
@@ -2336,9 +2347,17 @@ mod tests {
 
         for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
             let db = Arc::new(
-                PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
-                    .unwrap()
-                    .with_mode(mode, TransferPolicy::default()),
+                PerfDatabase::load_resolved(
+                    &systems_root(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.24.0",
+                    mode == DatabaseMode::Silicon,
+                    false,
+                    false,
+                )
+                .unwrap()
+                .with_mode(mode, TransferPolicy::default()),
             );
             let mut config = fixture_engine_config(Some(3));
             config.database_mode = mode;
