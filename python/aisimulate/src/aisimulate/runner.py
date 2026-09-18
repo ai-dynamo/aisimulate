@@ -341,6 +341,8 @@ class EngineReplayRunner:
         output_requirements = output_requirements or ReplayOutputRequirements()
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
@@ -929,8 +931,6 @@ def _materialize_engine_execution_spec(
 
     use_workload_driver = spec.workload.get("source_type") is not None
     if use_workload_driver:
-        if "length_sampler" in spec.workload:
-            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         requests: list[dict[str, JSONValue]] = []
         max_in_flight = _configured_in_flight_cap(spec)
     else:

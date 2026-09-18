@@ -6,6 +6,7 @@
 import json
 import math
 import pickle
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -1505,12 +1506,13 @@ def test_length_sampler_is_not_exposed_by_public_cli(capsys):
 
 @pytest.mark.parametrize("source_type", ["synthetic", "trace"])
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random", "typo"])
-def test_workload_driver_rejects_length_sampler_before_native_execution(source_type, sampler):
+@pytest.mark.parametrize("deployment_mode", ["agg", "disagg", "afd", "afd+pd"])
+def test_workload_driver_rejects_length_sampler_before_native_execution(source_type, sampler, deployment_mode):
     runtime = RecordingRuntime()
+    spec = _spec(workload={"source_type": source_type, "length_sampler": sampler})
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, deployment_mode=deployment_mode))
     with pytest.raises(
         ValueError, match="length_sampler requires materialized direct synthetic replay without source_type"
     ):
-        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-            _spec(workload={"source_type": source_type, "length_sampler": sampler})
-        )
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
     assert runtime.execution_spec is None

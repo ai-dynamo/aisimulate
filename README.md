@@ -406,7 +406,8 @@ Direct Python `ReplaySpec.workload` synthetic workloads accept
 lengths in Gym replay. The public prediction/recommendation YAML and CLI, and
 the Sweeper `Workload` schema, do not expose this option and reject it.
 The supported direct path must omit `source_type`; all workload-driver inputs
-with `source_type` reject `length_sampler`. Materialized trace replay rejects
+with `source_type` reject `length_sampler` at the common runner entrypoint,
+including AFD and AFD+PD. Materialized trace replay rejects
 non-default samplers. The default `python_random`
 preserves existing workloads. Both sample the full input vector before output
 lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
