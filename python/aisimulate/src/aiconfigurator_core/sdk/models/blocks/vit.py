@@ -34,6 +34,7 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_proj_gemm     GEMM  (low_precision_input=True)
     encoder_ar_1          CustomAllReduce
     encoder_add_norm_2    ElementWise
+    encoder_gate_gemm     GEMM  (only if gated_mlp; SwiGLU gate projection)
     encoder_ffn1_gemm     GEMM
     encoder_act           ElementWise
     encoder_ffn2_gemm     GEMM  (low_precision_input=True)
@@ -147,6 +148,14 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ),
         ops.CustomAllReduce("encoder_ar_1", depth, h_vit, tp_size),
         ops.ElementWise("encoder_add_norm_2", depth, 2 * h_vit, 2 * h_vit, 0.8),
+        # SwiGLU-style FFN (enc_cfg.gated_mlp) has a separate gate projection
+        # (hidden -> intermediate) alongside the up projection below; plain
+        # up/down FFNs omit it.
+        *(
+            [ops.GEMM("encoder_gate_gemm", depth, inter_vit // tp_size, h_vit, vit_gemm_mode)]
+            if enc_cfg.gated_mlp
+            else []
+        ),
         ops.GEMM(
             "encoder_ffn1_gemm",
             depth,
@@ -157,7 +166,9 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ops.ElementWise(
             "encoder_act",
             depth,
-            inter_vit // tp_size,
+            # SwiGLU activation reads both the gate and up projections (two
+            # per-shard intermediate tensors); a plain FFN reads only one.
+            2 * (inter_vit // tp_size) if enc_cfg.gated_mlp else inter_vit // tp_size,
             inter_vit // tp_size,
             0.8,
         ),
