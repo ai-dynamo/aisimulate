@@ -384,3 +384,169 @@ def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
         CorePredictionConfig.model_validate(_public(state_cache=None, prefix_match_unit=16))
     with pytest.raises(ValidationError, match="Extra inputs"):
         CorePredictionConfig.model_validate(_public(state_cache={**STATE, "prefill_block_size": 1536}))
+
+
+@pytest.fixture
+def gdn_model(tmp_path):
+    geometry = {
+        "model_type": "qwen3_next",
+        "num_hidden_layers": 4,
+        "linear_num_key_heads": 2,
+        "linear_num_value_heads": 4,
+        "linear_key_head_dim": 8,
+        "linear_value_head_dim": 8,
+        "linear_conv_kernel_dim": 4,
+        "torch_dtype": "bfloat16",
+    }
+    (tmp_path / "config.json").write_text(json.dumps(geometry))
+    return tmp_path, geometry
+
+
+def _auto_public(model, **sizing):
+    payload = _public(state_cache=sizing)
+    payload["engine"]["model"] = str(model)
+    return payload
+
+
+def test_inferred_size_roundtrip_and_native_wire(gdn_model, forbid_estimators):
+    path, _ = gdn_model
+    config = CorePredictionConfig.model_validate(_auto_public(path))
+    config = CorePredictionConfig.model_validate(config.model_dump(mode="json"))
+    assert config.engine.workers.aggregated.kv_cache.state_cache.bytes_per_request is None
+    spec = prediction_to_replay_spec(config)
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    # Conv 64*3*2=384, recurrent 4*8*8*2=512, three layers.
+    assert info["raw_bytes_per_layer"] == 896
+    assert info["padded_bytes_per_layer"] == 1024
+    assert info["bytes_per_request"] == 3072
+    assert info["source"] == "inferred"
+    assert info["state_blocks"] == 3
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == {"bytes_per_request": 3072}
+
+
+@pytest.mark.parametrize(
+    "tp,num_spec,conv_dtype,ssm_dtype,expected",
+    [
+        (1, 0, "auto", "auto", 896),
+        (2, 0, "auto", "auto", 448),
+        (1, 2, "auto", "auto", 1152),
+        (1, 0, "float32", "auto", 1792),
+        (1, 0, "auto", "float32", 1408),
+    ],
+)
+def test_gdn_tensor_geometry(gdn_model, tp, num_spec, conv_dtype, ssm_dtype, expected):
+    path, geometry = gdn_model
+    # SGLang's model dtype field must not override vLLM's cache controls.
+    geometry["mamba_ssm_dtype"] = "float32"
+    (path / "config.json").write_text(json.dumps(geometry))
+    payload = _auto_public(path, mamba_cache_dtype=conv_dtype, mamba_ssm_cache_dtype=ssm_dtype)
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": tp}
+    worker["kv_cache"]["bytes_per_token"] = 32
+    worker["kv_cache"]["capacity"] = {"type": "fixed", "blocks": 8}
+    if num_spec:
+        payload["engine"]["speculation"] = {
+            "kind": "ngram",
+            "num_speculative_tokens": num_spec,
+            "acceptance_rates": [0.5] * num_spec,
+        }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["raw_bytes_per_layer"] == expected
+    assert info["num_speculative_tokens"] == num_spec
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"model_type": "kimi_linear"}, "unknown model"),
+        ({"torch_dtype": "float32"}, "set model_dtype"),
+        ({"linear_num_key_heads": 0}, "linear_num_key_heads"),
+        ({"layer_types": ["unknown"] * 4}, "layer_types"),
+        ({"layer_types": ["full_attention"] * 4}, "hybrid"),
+        ({"linear_value_head_dim": 128}, "smaller"),
+    ],
+)
+def test_inference_fails_closed(gdn_model, change, reason):
+    path, geometry = gdn_model
+    (path / "config.json").write_text(json.dumps({**geometry, **change}))
+    config = CorePredictionConfig.model_validate(_auto_public(path))
+    with pytest.raises(ValueError, match=reason):
+        prediction_to_replay_spec(config)
+
+
+@pytest.mark.parametrize("parallel,reason", [({"pipeline": 2}, "PP=1"), ({"tensor": 3}, "divisible")])
+def test_inference_rejects_unsupported_parallelism(gdn_model, parallel, reason):
+    payload = _auto_public(gdn_model[0])
+    payload["engine"]["workers"]["aggregated"]["parallelism"] = parallel
+    with pytest.raises(ValueError, match=reason):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+def test_unknown_layout_override_and_disabled(gdn_model):
+    payload = _auto_public(gdn_model[0], layout="future-layout")
+    with pytest.raises(ValueError, match="unknown layout"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    payload["engine"]["model"] = "must-not-load"
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]["bytes_per_request"] = 1500
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "overridden"
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "disabled"
+    assert "state_cache" not in spec.backend_deployment.agg_engine_args
+
+
+def test_inferred_capacity_validation(gdn_model):
+    payload = _auto_public(gdn_model[0])
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {
+        "type": "fixed",
+        "blocks": 3,
+    }
+    with pytest.raises(ValueError, match="capacity must fit"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+def test_qwen35_nested_text_config(gdn_model):
+    path, geometry = gdn_model
+    geometry["model_type"] = "qwen3_5_moe_text"
+    (path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": geometry}))
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 3072}
+
+
+def test_shipped_qwen_model_geometry():
+    model = "Qwen/Qwen3.5-35B-A3B"
+    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+
+    # Exercise the shipped model config, without downloading or importing vLLM.
+    raw = NaiveKVCacheEstimator._load_config(model, allow_hf_config_download=False)
+    assert raw is not None
+    payload = _auto_public(model)
+    payload["engine"]["workers"]["aggregated"].update(
+        {
+            "parallelism": {"tensor": 4},
+            "kv_cache": {
+                "block_size": 1024,
+                "bytes_per_token": 10240,
+                "capacity": {"type": "fixed", "blocks": 8},
+                "state_cache": {},
+            },
+        }
+    )
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    config = raw.get("text_config", raw)
+    assert info["recurrent_layers_per_rank"] == config["num_hidden_layers"] * 3 // 4
+    assert info["raw_bytes_per_layer"] == 274432
+    assert info["source"] == "inferred"
+
+
+def test_fractional_attention_geometry_rejected(gdn_model):
+    path, geometry = gdn_model
+    geometry["num_hidden_layers"] = 12  # Three attention layers cannot divide 16 bytes/token.
+    (path / "config.json").write_text(json.dumps(geometry))
+    with pytest.raises(ValueError, match="divide evenly"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))

@@ -1027,8 +1027,8 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
 | `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
-| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires manually sized aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. Omit the byte count to infer a supported layout; see [state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1159,7 +1159,7 @@ differ from each worker role's physical `kv_cache.bytes_per_token`.
 
 <a id="manual-state-cache-sizing"></a>
 
-#### 12.1.1 Manual state-cache sizing
+#### 12.1.1 State-cache sizing
 
 For recurrent-state models, set `state_cache.bytes_per_request` under
 `engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
@@ -1174,8 +1174,31 @@ kv_cache:
 ```
 
 This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
-addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
-does not infer state size or adjust block size automatically.
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator does not adjust block size automatically.
+
+Use `state_cache: {}` to infer one state per rank; `bytes_per_request` overrides
+inference without loading model geometry. Omit `state_cache` or set it to `null`
+to disable it. Inference supports Qwen3-Next and Qwen3.5 text/MoE GDN geometry,
+TP with divisible heads, and PP=1. The default `layout: vllm-gdn-a474da28` pins
+vLLM commit `a474da28131f61684849b31e29af0eebaaedc383`, independently of the
+timing database version. Other layouts (including KDA/Mamba2) and PP>1 require
+an explicit byte override.
+
+Optional `model_dtype`, `mamba_cache_dtype`, and `mamba_ssm_cache_dtype` accept
+`auto` (default), `float16`, `bfloat16`, or `float32`. Auto state dtypes follow
+vLLM: conv follows model dtype, SSM follows conv, ignoring SGLang-specific model
+fields. Set `model_dtype` explicitly when the model config is missing its dtype
+or uses float32, whose vLLM auto downcast depends on hardware. Speculation adds
+its draft-token count to the conv-state length.
+
+Supply the **resolved vLLM block geometry**: per-layer attention page size is
+`block_size * bytes_per_token / full_attention_layers`. Inference pads each
+recurrent layer to that page size and rejects geometry smaller than its tensors.
+Simulator block rounding then applies to the total per-rank state. Checkpoint
+copies are accounted for by the state manager, not this estimate. Pool-capacity
+estimation remains separate and fixed capacity is still required. `prediction.json` and saved deployment
+performance metadata report `state_cache` with `source` (`inferred`, `overridden`,
+or `disabled`), resolved bytes, padding, and rounded allocation.
 
 State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
 Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.

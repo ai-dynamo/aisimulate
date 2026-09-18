@@ -17,6 +17,7 @@ from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
+from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
     AFDPerformanceModel,
@@ -110,7 +111,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         resolved = diagnostics["provenance"]["config"]
         versions.add(resolved["backend_version"])
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
-        metadata[role] = {"provider": "aic", "config": resolved, "selection": diagnostics}
+        metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": resolved, "selection": diagnostics}
     if len(versions) > 1:
         raise ValueError(
             f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
@@ -208,9 +209,19 @@ def _deployment(
         assert engine.workers.aggregated is not None
         worker = engine.workers.aggregated
         parallel = _parallel_mapping(worker, prefix="")
+        state_size = resolve_state_size(engine, worker)
+        metadata = _worker_performance_model_metadata(engine, worker)
+        metadata["state_cache"] = state_size
+        if worker.kv_cache.state_cache is not None:
+            resolved_state = worker.kv_cache.state_cache.model_copy(
+                update={"bytes_per_request": state_size["bytes_per_request"]}
+            )
+            worker = worker.model_copy(
+                update={"kv_cache": worker.kv_cache.model_copy(update={"state_cache": resolved_state})}
+            )
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
+            performance_model_metadata={"aggregated": metadata},
             agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
@@ -458,7 +469,7 @@ def _worker_engine_args(
     if cache.prefix_match_unit is not None:
         payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
-        payload["state_cache"] = cache.state_cache.model_dump(mode="json", exclude_none=True)
+        payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:
