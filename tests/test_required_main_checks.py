@@ -29,12 +29,14 @@ def _rules():
     ]
 
 
-def _inspect(rules, *, detail=None, changed_rules=None):
+def _inspect(rules, *, detail=None, changed_rules=None, changed_detail=None):
     calls = []
 
     def api(endpoint):
         calls.append(endpoint)
         if endpoint.endswith("/rulesets/42"):
+            if changed_detail is not None and calls.count(endpoint) > 1:
+                return [changed_detail]
             return [detail if detail is not None else {"id": 42, "enforcement": "active", "bypass_actors": []}]
         if "/rules/branches/" in endpoint:
             if changed_rules is not None and calls.count(endpoint) > 1:
@@ -113,6 +115,17 @@ def test_disabled_source_or_rules_changed_during_inspection_fails():
     detail = {"id": 42, "enforcement": "disabled", "bypass_actors": []}
     assert not _inspect(_rules(), detail=detail)["configuration_verified"]
     assert not _inspect(_rules(), changed_rules=[])["configuration_verified"]
+
+
+def test_new_bypass_actor_fails_even_when_effective_rules_do_not_change():
+    after = {
+        "id": 42,
+        "enforcement": "active",
+        "bypass_actors": [{"actor_type": "OrganizationAdmin", "bypass_mode": "always"}],
+    }
+    report = _inspect(_rules(), changed_detail=after)
+    assert not report["configuration_verified"]
+    assert report["errors"] == ["CI ruleset 42 changed during inspection; rerun the verifier"]
 
 
 @pytest.mark.parametrize("response", [[], [None], [{}], [[None]], [{"default_branch": "other"}]])
