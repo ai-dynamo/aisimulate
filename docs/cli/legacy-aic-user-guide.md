@@ -690,7 +690,7 @@ By default, we output the top 5 configs we have found. You can get the configs a
 - **llm-d**: `llm-d-values.yaml` for Helm deployment with the llm-d-modelservice chart
 - **FPM V1**: exactly `k8s_deploy.yaml` (a reusable keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet), `fpm_env.sh` (rank discovery plus the per-cell collection facts), and `run.sh` (the launch-only vLLM command)
 
-For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [README llm-d section](../../python/aisimulate/README.md#deploying-to-llm-d-platform) for llm-d deployments.
+For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [generator usage guide](../../python/aisimulate/docs/generator_overview.md#using-the-generator) for llm-d deployments.
 
 `--save-dir DIR` allows you to specify more information such as generating the config for a different version of the backend, say estimating the performance using trtllm 1.0.0rc3 but generate config for 1.0.0rc6. This is allowed and feasible. By passing `--generated-config-version 1.0.0rc6` can give you the right result.
 

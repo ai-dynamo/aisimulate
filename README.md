@@ -187,7 +187,7 @@ contract.
 ## AIConfigurator compatibility CLI
 
 The `aisimulate` wheel preserves the established `aiconfigurator` command for
-workflows that have not yet moved to the unified CLI. AISimulate 0.12.0 keeps
+workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
@@ -231,7 +231,7 @@ development, releases, issues, and pull requests; open all new issues and pull
 requests in this repository.
 
 The `aiconfigurator` compatibility command remains available from the
-`aisimulate` wheel in 0.12.0. It is targeted for removal in AISimulate 0.13.0,
+`aisimulate` wheel through 0.13.0. It is targeted for removal in AISimulate 0.14.0,
 after every remaining AIC workflow has a verified replacement in the unified
 `aisimulate` CLI. Until then, use the compatibility command for the workflows
 identified in the migration guide.

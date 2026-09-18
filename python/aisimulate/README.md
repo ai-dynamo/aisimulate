@@ -104,8 +104,10 @@ real benchmarks.
 
 ## Legacy CLI compatibility
 
-The wheel also provides the legacy `aiconfigurator` command for existing workflows.
-Use `aisimulate` for new prediction and recommendation workflows. The
+The wheel provides the legacy `aiconfigurator` command through AISimulate 0.13.0.
+Removal is targeted for AISimulate 0.14.0, after every remaining workflow has a
+verified replacement in the unified CLI. Use `aisimulate` for new prediction and
+recommendation workflows. The
 [migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md)
 explains replacements and remaining differences; the
 [legacy CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/legacy-aic-user-guide.md)

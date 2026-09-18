@@ -299,8 +299,8 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             deployment = prediction_to_replay_spec(concrete).backend_deployment
             assert raw["engine"]["hardware"] == "h200_sxm"
             assert raw["engine"]["workers"]["decode"]["hardware"] == "gb200"
-            assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
-            assert deployment.decode_engine_args["aic_system"] == "gb200"
+            assert deployment.prefill_engine_args["timing_model"]["config"]["system"] == "h200_sxm"
+            assert deployment.decode_engine_args["timing_model"]["config"]["system"] == "gb200"
             assert candidate.config["prefill_hardware_sku"] == "h200_sxm"
             assert candidate.config["decode_hardware_sku"] == "gb200"
             assert candidate.used_gpus == 2

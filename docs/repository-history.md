@@ -12,20 +12,20 @@ migration is tracked by
 
 ### API mapping
 
-| AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
+| AIC 0.11 surface | AISimulate 0.13 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
 | CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See the [AIC migration guide](cli/migrate-from-aiconfigurator.md); this is not a flag-compatible rename |
 | Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
-| `aiconfigurator_core` | `aiconfigurator_core` from the `aisimulate` wheel | Existing import remains available in 0.12.0 |
-| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.12.0 |
+| `aiconfigurator_core` | `aiconfigurator_core` from the `aisimulate` wheel | Existing import remains available in 0.13.0 |
+| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.13.0 |
 | Rust package/import `aiconfigurator-core` / `aiconfigurator_core` | `aisimulate-core` / `aisimulate_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
 
 Temporary Cargo alias:
 
 ```toml
 [dependencies]
-aiconfigurator-core = { package = "aisimulate-core", version = "0.12", features = ["python"] }
+aiconfigurator-core = { package = "aisimulate-core", version = "0.13", features = ["python"] }
 ```
 
 The former AIC crate-root types and builders remain available through this
@@ -175,8 +175,8 @@ will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
 artifacts and then be archived; ongoing development, releases, issues, and pull
 requests move to AISimulate.
 
-The compatibility command remains in the AISimulate 0.12.0 wheel and is
-targeted for removal in AISimulate 0.13.0. Removal is gated on verified unified
+The compatibility command remains in the AISimulate 0.13.0 wheel and is
+targeted for removal in AISimulate 0.14.0. Removal is gated on verified unified
 CLI replacements for every remaining workflow in the migration guide.
 
 For features already implemented by the standalone Sweeper, see

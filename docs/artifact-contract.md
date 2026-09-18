@@ -1,6 +1,6 @@
 # AISimulate artifact contract
 
-AISimulate 0.12.0 has one product version and exactly two release artifacts:
+AISimulate 0.13.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ live inside the `aisimulate` wheel and therefore do not add artifacts.
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
-Both artifacts use version `0.12.0`. The wheel builds its native extension from
+Both artifacts use version `0.13.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
@@ -36,8 +36,8 @@ fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
 Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
-building: the wheel becomes `0.12.0.devYYYYMMDD` (PEP 440) and the crate
-`0.12.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
+`0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
 dotted date is a numeric identifier so pre-release versions order
 numerically). The wheel form follows the ai-dynamo/dynamo nightly
 convention. The release script accepts only this suffix pair and still
