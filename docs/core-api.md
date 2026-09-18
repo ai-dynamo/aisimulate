@@ -330,10 +330,6 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   class in Python, and use the explicit migration helper for saved EngineConfig
   values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
-- Publish a development nightly first so [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065)
-  can install that wheel, validate Planner/wheel smoke, and merge its migration.
-  Scheduled and approved manual nightlies do not wait for downstream PRs to merge.
-  Their build, compliance, wheel-smoke, FPE qualification, and security checks still apply.
 - [The migration checklist](../.github/release-gates.json) and
   `scripts/check_release_migrations.py` apply before stable publication. Clear the
   pending entry in a reviewed change after downstream validation and merge.
