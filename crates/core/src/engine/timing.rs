@@ -186,8 +186,9 @@ impl TimingOperationEvidence {
             }
             (Some(mut details), None) | (None, Some(mut details)) => {
                 details.sol = None;
-                details.sol_unavailable_reason =
-                    Some("some accumulated operations lack diagnostic evidence".into());
+                details.sol_unavailable_reason.get_or_insert_with(|| {
+                    "some accumulated operations lack diagnostic evidence".into()
+                });
                 Some(details)
             }
             (None, None) => None,
@@ -686,25 +687,33 @@ mod tests {
                 measurement_node_num: 1,
             }],
         });
-        for ops in [
-            vec![plain.clone(), detailed.clone()],
-            vec![detailed.clone(), plain],
-        ] {
-            let phase = TimingPhaseEvidence::try_from_operations(ops).unwrap();
-            assert_eq!(phase.latency_ms, 4.0);
-            let details = phase.operations[0].details.as_ref().unwrap();
-            assert_eq!(
-                details.fallbacks,
-                detailed.details.as_ref().unwrap().fallbacks
-            );
-            assert!(details.sol.is_none());
-            assert!(
-                details
-                    .sol_unavailable_reason
-                    .as_ref()
-                    .unwrap()
-                    .contains("lack diagnostic evidence")
-            );
+        for prior_reason in [None, Some("unsupported shape")] {
+            let mut detailed = detailed.clone();
+            if let Some(reason) = prior_reason {
+                let details = detailed.details.as_mut().unwrap();
+                details.sol = None;
+                details.sol_unavailable_reason = Some(reason.into());
+            }
+            for ops in [
+                vec![plain.clone(), detailed.clone()],
+                vec![detailed.clone(), plain.clone()],
+            ] {
+                let phase = TimingPhaseEvidence::try_from_operations(ops).unwrap();
+                assert_eq!(phase.latency_ms, 4.0);
+                let details = phase.operations[0].details.as_ref().unwrap();
+                assert_eq!(
+                    details.fallbacks,
+                    detailed.details.as_ref().unwrap().fallbacks
+                );
+                assert!(details.sol.is_none());
+                assert_eq!(
+                    details.sol_unavailable_reason.as_deref(),
+                    Some(
+                        prior_reason
+                            .unwrap_or("some accumulated operations lack diagnostic evidence")
+                    )
+                );
+            }
         }
     }
 

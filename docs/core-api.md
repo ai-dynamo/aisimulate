@@ -329,7 +329,8 @@ Replay requests this evidence through `ReplayOutputRequirements(capture_performa
 `TimingOperationEvidence.details` is optional; providers without it must retain `None` (Rust
 struct literals must initialize the new field). The constructor keeps it absent by default.
 The CLI's time/source reports sum the observed phase work, including repeated cached timing
-queries, and preserve every fallback record while folding repeated operation names.
+queries, and preserve distinct fallback records while folding repeated operation names.
+Identical substitutions are deduplicated, so record counts are not execution counts.
 
 ## Replay timing evidence
 
