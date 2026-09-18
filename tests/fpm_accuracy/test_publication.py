@@ -4,6 +4,7 @@
 import hashlib
 import io
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -93,6 +94,26 @@ def test_successful_branch_can_publish_from_failed_matrix(summary):
 
 
 @pytest.mark.parametrize(
+    "changes",
+    [
+        {"head_repository": {"full_name": "foreign/repo"}},
+        {"repository": {"full_name": "foreign/repo"}},
+        {"path": ".github/workflows/pages.yml"},
+        {"event": "pull_request"},
+        {"head_branch": "simonec/preview"},
+        {"status": "in_progress"},
+        {"conclusion": "cancelled"},
+    ],
+)
+def test_reject_untrusted_fpm_campaign(summary, changes):
+    producer = run(summary) | changes
+    with pytest.raises(ValueError, match="untrusted FPM campaign"):
+        publish.validate_artifact(
+            archive(summary), producer, "fpm-accuracy-web-" + artifact_key("main"), [job(producer)]
+        )
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("commit_sha", "invalid"),
@@ -146,20 +167,21 @@ def test_reject_wrong_attempt_evaluator_and_branch(summary):
         )
 
 
-def test_invalid_or_expired_new_result_retains_previous(summary, monkeypatch, tmp_path):
+@pytest.mark.parametrize("http_status", [None, 404, 410, 403, 500])
+def test_invalid_or_expired_new_result_retains_previous(summary, monkeypatch, tmp_path, http_status):
     producer = run(summary)
     responses = {
         "actions/runs/123": producer,
         "actions/artifacts/1/zip": b"broken archive",
         "actions/artifacts/2/zip": archive(summary),
     }
-    monkeypatch.setattr(
-        publish,
-        "api",
-        lambda path, **kwargs: (
-            {"workflow_runs": [producer]} if path.startswith("actions/workflows/") else responses[path]
-        ),
-    )
+
+    def api(path, **kwargs):
+        if path == "actions/artifacts/1/zip" and http_status:
+            raise urllib.error.HTTPError(path, http_status, "artifact download failed", None, None)
+        return {"workflow_runs": [producer]} if path.startswith("actions/workflows/") else responses[path]
+
+    monkeypatch.setattr(publish, "api", api)
     monkeypatch.setattr(
         publish,
         "api_items",
@@ -175,6 +197,10 @@ def test_invalid_or_expired_new_result_retains_previous(summary, monkeypatch, tm
     )
     monkeypatch.setattr(publish, "ancestor", lambda *args: True)
     monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "release/0.11.0\nrelease/0.12.0\n")
+    if http_status in {403, 500}:
+        with pytest.raises(urllib.error.HTTPError):
+            publish.prepare(ROOT, tmp_path / "result")
+        return
     publish.prepare(ROOT, tmp_path / "result")
     assert json.loads((tmp_path / "result" / f"{artifact_key('main')}.json").read_text()) == summary
 
@@ -203,7 +229,7 @@ def test_workflow_and_pages_contract():
     assert upload["with"]["retention-days"] == "90" and "if" not in upload
     # Container hooks must remap one directory, not multiline host paths.
     assert upload["with"]["path"] == "${{ runner.temp }}/accuracy-public/"
-    assert "gitlab" not in json.dumps(workflow) + json.dumps(branch)
+    assert "gitlab" not in (json.dumps(workflow) + json.dumps(branch)).lower()
     pages = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
     assert "FPM Accuracy Matrix" in pages["on"]["workflow_run"]["workflows"]
     preview = next(

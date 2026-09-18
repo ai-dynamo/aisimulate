@@ -50,6 +50,8 @@ def _build_dataset(
     evidence_format_id: str | None = None,
     include_fpm: bool = True,
     dp: int = 1,
+    tp: int = 1,
+    dcp: int | None = None,
 ) -> HfDataset:
     measurement_entries = []
     for index, (role, suffix, content) in enumerate(files):
@@ -99,13 +101,15 @@ def _build_dataset(
             "weight_quantization": "bfloat16",
             "kv_cache_dtype": "bfloat16",
             "parallel_strategy": "single",
-            "tp": 1,
+            "tp": tp,
             "pp": 1,
             "dp": dp,
             "moe_tp": 1,
             "moe_ep": 1,
             "cp": 1,
         }
+        if dcp is not None:
+            configuration_selector["dcp"] = dcp
         fpm_relative = f"{CONFIGURATION_PATH}/fpm/fpm.parquet"
         fpm_path = root / fpm_relative
         fpm_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +156,7 @@ def _build_dataset(
         "framework_version": "1.0",
         "parallelism": "single",
         "parallel_strategy": "single",
-        "tp": 1,
+        "tp": tp,
         "pp": 1,
         "dp": dp,
         "moe_tp": 1,
@@ -170,6 +174,8 @@ def _build_dataset(
             "file_count": len(measurement_entries),
         },
     }
+    if dcp is not None:
+        configuration_manifest["dcp"] = dcp
     if evidence_format_id is not None:
         configuration_manifest["measurements"]["evidence_format_id"] = evidence_format_id
     _write_json(root / config_manifest_path, configuration_manifest)
@@ -183,6 +189,77 @@ def _build_dataset(
         },
     )
     return HfDataset.from_local(root, revision=REVISION)
+
+
+@pytest.mark.parametrize(
+    ("relative", "field"),
+    [
+        ("catalog/index.json", "dataset_id"),
+        (f"{CONFIGURATION_PATH}/manifest.json", "snapshot_id"),
+        (f"{CONFIGURATION_PATH}/measurements/manifest.json", "snapshot_id"),
+        (f"{CONFIGURATION_PATH}/fpm/fpm.metadata.json", "parquet_sha256"),
+        (f"{CONFIGURATION_PATH}/fpm/fpm.metadata.json", "model_path"),
+    ],
+)
+def test_duplicate_hf_json_keys_fail_even_with_matching_hashes(tmp_path, relative, field):
+    _build_dataset(tmp_path, protocol_id=None, files=[])
+    path = tmp_path / relative
+    original = path.read_text()
+    path.write_text(original.replace(f'"{field}":', f'"{field}": "ambiguous", "{field}":', 1))
+    # Keep provenance valid so only strict parsing can reject the ambiguous bytes.
+    if relative.endswith("measurements/manifest.json"):
+        configuration = tmp_path / CONFIGURATION_PATH / "manifest.json"
+        manifest = json.loads(configuration.read_text())
+        manifest["measurements"]["manifest_sha256"] = _sha256(path)
+        _write_json(configuration, manifest)
+    with pytest.raises(DataError, match="duplicate JSON key"):
+        dataset = HfDataset.from_local(tmp_path, revision=REVISION)
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("dcp", [None, 1, 8])
+def test_dcp_identity_preserves_legacy_and_explicit_values(tmp_path, dcp):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp)
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert case.configuration.worker_config_record.config.parallelism.decode_context_parallel_size == (dcp or 1)
+
+
+@pytest.mark.parametrize("source", ["selector", "parquet"])
+@pytest.mark.parametrize("value", [None, 1, True])
+def test_dcp_identity_must_match_all_pinned_evidence(tmp_path, source, value):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=8)
+    leaf = tmp_path / CONFIGURATION_PATH
+    metadata = json.loads((leaf / "fpm/fpm.metadata.json").read_text())
+    manifest = json.loads((leaf / "manifest.json").read_text())
+    if source == "selector":
+        if value is None:
+            metadata["configuration_selector"].pop("dcp")
+        else:
+            metadata["configuration_selector"]["dcp"] = value
+    else:
+        parquet_path = leaf / "fpm/fpm.parquet"
+        table = pq.read_table(parquet_path).to_pydict()
+        if value is None:
+            table.pop("dcp")
+        else:
+            table["dcp"] = [value]
+        pq.write_table(pa.table(table), parquet_path)
+        metadata["parquet_sha256"] = manifest["fpm"][0]["sha256"] = _sha256(parquet_path)
+    _write_json(leaf / "fpm/fpm.metadata.json", metadata)
+    _write_json(leaf / "manifest.json", manifest)
+    with pytest.raises(DataError, match="different configuration|missing configuration identity"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "8", None])
+def test_invalid_manifest_dcp_fails_closed(tmp_path, value):
+    dataset = _build_dataset(tmp_path, protocol_id=None, files=[])
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["dcp"] = value
+    _write_json(path, manifest)
+    with pytest.raises(DataError, match="dcp"):
+        dataset.configurations()
 
 
 def _fpm_payload(*, rank: int = 0, counter: int = 1, wall_time: float = 0.01) -> dict[str, object]:
@@ -484,6 +561,69 @@ def test_canonical_single_rank_iteration_is_directly_evaluable(tmp_path: Path) -
     assert case.ordering is OrderingKind.CHRONOLOGICAL
     assert len(case.observations[0].iteration.ranks) == 1
     assert case.observations[0].actual_ms == pytest.approx(7.0)
+
+
+def test_mixed_canonical_groupings_share_millisecond_chronology(tmp_path):
+    listener = _listener_iteration()
+    listener["expected_dp_ranks"] = [0]
+    listener["rank_measurements"] = listener["rank_measurements"][:1]
+    listener["max_rank_wall_time"] = 0.01
+    listener["grouping"]["clock_correction"]["groups"] = listener["grouping"]["clock_correction"]["groups"][:1]
+    rows = []
+    for timestamp in (1000002, 1000000):
+        rank = _fpm_payload(counter=timestamp)
+        rank["observed_at_unix_ms"] = timestamp
+        rows.append(
+            {
+                "version": 1,
+                "source_kind": "rank_event_stream",
+                "iteration_id": str(timestamp),
+                "producer": {"component": "instrumented-scheduler"},
+                "grouping": {"method": "single_rank", "authority": "producer", "key": str(timestamp)},
+                "expected_dp_ranks": [0],
+                "complete": True,
+                "max_rank_wall_time": 0.01,
+                "rank_measurements": [rank],
+            }
+        )
+    rows.insert(1, listener)
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-measurement-v1",
+        include_fpm=False,
+        files=[("truth", "truth.jsonl", "\n".join(map(json.dumps, rows)).encode())],
+    )
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert case.ordering is OrderingKind.CHRONOLOGICAL
+    assert [item.iteration.ranks[0].counter_id for item in case.observations] == [1000000, 11, 1000002]
+
+
+@pytest.mark.parametrize("field", ["moe_ep", "moe_tp"])
+@pytest.mark.parametrize("value", [None, "bad", "2", True, 1.5, 0, -1])
+def test_invalid_manifest_moe_parallelism_fails_with_data_error(tmp_path, field, value):
+    dataset = _build_dataset(tmp_path, protocol_id="forward-pass-measurement-v1", files=[])
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest[field] = value
+    _write_json(path, manifest)
+    with pytest.raises(DataError, match=field):
+        dataset.configurations()
+
+
+def test_missing_moe_parallelism_defaults_match_fpm_identity(tmp_path):
+    content = json.dumps(_fpm_payload()).encode()
+    dataset = _build_dataset(
+        tmp_path, protocol_id="forward-pass-measurement-v1", files=[("truth", "truth.jsonl", content)]
+    )
+    path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(path.read_text())
+    del manifest["moe_ep"], manifest["moe_tp"]
+    _write_json(path, manifest)
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    engine = case.configuration.worker_config_record.config.aic_engine_config
+    assert engine["moe_ep_size"] == engine["moe_tp_size"] == 1
+    assert case.status is CaseStatus.READY
+    assert len(case.fpm_artifacts) == len(case.observations) == 1
 
 
 def test_incomplete_canonical_iteration_is_retained_as_unavailable_evidence(tmp_path: Path) -> None:
@@ -1329,12 +1469,12 @@ def test_empty_override_is_rejected(tmp_path: Path) -> None:
         f"version: 1\noverrides:\n  - configuration_path: {CONFIGURATION_PATH}\n",
         encoding="utf-8",
     )
+    _build_dataset(
+        tmp_path / "dataset",
+        protocol_id="forward-pass-measurement-v1",
+        files=[],
+    )
     with pytest.raises(ConfigurationError, match="at least one binding or correction"):
-        _build_dataset(
-            tmp_path / "dataset",
-            protocol_id="forward-pass-measurement-v1",
-            files=[],
-        )
         HfDataset.from_local(tmp_path / "dataset", revision=REVISION, overrides_path=override)
 
 

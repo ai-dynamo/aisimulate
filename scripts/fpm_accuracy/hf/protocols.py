@@ -624,7 +624,7 @@ def _validate_listener_grouping(
             )
         if any(time < window_start_s or time - window_start_s >= window_size_s for time in corrected_times):
             raise DataError(f"measurement file {file.path} row {source_row} contains a rank outside grouping.window")
-    return window_start_text, (float(window_start_s),)
+    return window_start_text, (float(window_start_s * 1000), 0)
 
 
 def _validate_producer(value: Any, file: MeasurementFile, source_row: int) -> None:

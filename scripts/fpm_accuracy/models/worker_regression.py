@@ -112,6 +112,14 @@ class WorkerRegressionPredictor(ForwardPassTimePredictor):
                 self._children[worker_id] = factory(
                     "regression", replace(context, worker_role=role, options=self.options)
                 )
+                stores = self._children[worker_id].diagnostics()["regression_stores"]
+                available = {store["workload_kind"] for store in stores}
+                missing = set(regression_buckets(role)) - available
+                if missing:
+                    raise ValueError(
+                        f"worker {worker_id!r} regression stores missing {sorted(missing)}; "
+                        f"available: {sorted(available)}"
+                    )
         except Exception as exc:
             try:
                 self.close()

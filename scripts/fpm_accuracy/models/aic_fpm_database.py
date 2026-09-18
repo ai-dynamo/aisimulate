@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from typing import Any, Protocol
 
 import yaml
 
+from fpm_accuracy.contract import strict_json
 from fpm_accuracy.exceptions import ConfigurationError, DependencyError
 
 
@@ -72,7 +72,7 @@ def prepare_aic_fpm_database(
 
 def _read_metadata(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = strict_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ConfigurationError(f"cannot read FPM sidecar {path}: {exc}") from exc
     if not isinstance(raw, dict):

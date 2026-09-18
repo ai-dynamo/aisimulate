@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fpm_accuracy.exceptions import ConfigurationError
+from fpm_accuracy.exceptions import ConfigurationError, DependencyError
 from fpm_accuracy.types.worker_config import WorkerConfigRecord, moe_mapping_from_expert_parallelism
 
 _DTYPE_ALIASES = {
@@ -71,6 +71,8 @@ def map_worker_config_to_aic(
 ) -> dict[str, Any]:
     """Build the strict AISim EngineConfig used by op and FPM predictors."""
 
+    if record.config.parallelism.decode_context_parallel_size != 1:
+        raise DependencyError("Native FPM does not support decode context parallelism (dcp > 1).")
     unknown = set(overrides or {}) - AIC_ENGINE_CONFIG_FIELDS
     if unknown:
         raise ConfigurationError(f"unknown AISim EngineConfig override fields: {sorted(unknown)}")
@@ -122,6 +124,9 @@ def _validate_engine_config(config: Mapping[str, Any], configuration_id: str) ->
         raise ConfigurationError("AISim EngineConfig schema_version must be 1")
     if result["backend"] not in {"vllm", "sglang", "trtllm"}:
         raise ConfigurationError(f"unsupported AISim backend {result['backend']!r}")
+    for name in ("weight_dtype", "moe_dtype", "activation_dtype", "kv_cache_dtype"):
+        if name in result:
+            result[name] = _normalize_dtype(result[name], field=name)
     for name in _POSITIVE_INTEGER_FIELDS:
         value = result.get(name)
         if value is not None and (isinstance(value, bool) or int(value) < 1):
@@ -165,7 +170,7 @@ def _map_worker_schema_v1(payload: Mapping[str, Any]) -> dict[str, Any]:
         "weight_dtype": _normalize_dtype(weight_raw),
         "moe_dtype": _normalize_dtype(_first(payload, "precision.experts", "precision.moe_weights")),
         "activation_dtype": _normalize_dtype(_first(payload, "precision.activations")),
-        "kv_cache_dtype": _normalize_dtype(kv_raw),
+        "kv_cache_dtype": _normalize_dtype(kv_raw, field="kv_cache_dtype"),
         "kv_block_size": _optional_int(_first(payload, "engine.kv_cache_block_size")),
         "nextn": _optional_int(_first(payload, "engine.nextn", "speculative.nextn")),
         "nextn_accept_rates": _first(payload, "engine.nextn_accept_rates", "speculative.nextn_accept_rates"),
@@ -203,10 +208,17 @@ def _normalize_system(value: Any) -> str | None:
     }.get(normalized, normalized)
 
 
-def _normalize_dtype(value: Any) -> str | None:
+def _normalize_dtype(value: Any, *, field: str | None = None) -> str | None:
     if value is None:
         return None
-    return _DTYPE_ALIASES.get(str(value).strip().lower())
+    key = str(value).strip().lower()
+    # Match AISim's dynamo_ci KV-cache adapter; these are not weight aliases.
+    if field == "kv_cache_dtype" and key in {"fp8_e4m3", "fp8_e5m2"}:
+        return "fp8"
+    normalized = _DTYPE_ALIASES.get(key)
+    if normalized is None:
+        raise ConfigurationError(f"unsupported AISim dtype {value!r}")
+    return normalized
 
 
 def _optional_int(value: Any) -> int | None:

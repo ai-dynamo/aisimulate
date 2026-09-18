@@ -19,6 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, snapshot_download
 
+from fpm_accuracy.contract import strict_json
 from fpm_accuracy.exceptions import ConfigurationError, DataError
 from fpm_accuracy.hf.models import (
     CaseStatus,
@@ -63,6 +64,7 @@ _FPM_CONFIGURATION_FIELDS = (
     "moe_tp",
     "moe_ep",
     "cp",
+    "dcp",
 )
 
 
@@ -673,6 +675,8 @@ class HfDataset:
         selector = metadata.get("configuration_selector")
         if not isinstance(selector, Mapping):
             raise DataError(f"FPM sidecar {artifact.metadata_path} is missing configuration_selector")
+        # Legacy libraries omit DCP, which means the unsharded value of one.
+        selector = {"dcp": 1, **selector}
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
         if selector_fields != expected_fields:
@@ -699,18 +703,21 @@ class HfDataset:
                 f"selected FPM Parquet {artifact.path} has {physical_rows} rows; expected {artifact.row_count}"
             )
         parquet_fields = set(parquet.schema_arrow.names)
-        missing_identity_fields = sorted(expected_fields - parquet_fields)
+        parquet_identity = dict(expected_identity)
+        if "dcp" not in parquet_fields and expected_identity["dcp"] == 1:
+            parquet_identity.pop("dcp")
+        missing_identity_fields = sorted(set(parquet_identity) - parquet_fields)
         if missing_identity_fields:
             raise DataError(
                 f"selected FPM Parquet {artifact.path} is missing configuration identity columns: "
                 f"{missing_identity_fields}"
             )
         try:
-            identity_table = parquet.read(columns=list(expected_identity))
+            identity_table = parquet.read(columns=list(parquet_identity))
         except (OSError, pa.ArrowException) as exc:
             raise DataError(f"cannot read selected FPM Parquet identity columns {artifact.path}: {exc}") from exc
         parquet_mismatches: dict[str, list[Any]] = {}
-        for field, expected in expected_identity.items():
+        for field, expected in parquet_identity.items():
             values = identity_table[field].to_pylist()
             invalid = {repr(value) for value in values if not _same_identity_value(value, expected)}
             if invalid:
@@ -821,8 +828,8 @@ class HfDataset:
         if expected_sha256 is not None:
             self._verify_file(path, expected_sha256, description=relative)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            value = strict_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             raise DataError(f"cannot parse HF JSON {relative}: {exc}") from exc
         if not isinstance(value, Mapping):
             raise DataError(f"HF JSON {relative} must contain an object")
@@ -949,7 +956,10 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _worker_config_record(configuration_id: str, manifest: Mapping[str, Any]) -> WorkerConfigRecord:
-    model_kind = "moe" if int(manifest.get("moe_ep", 1)) > 1 or int(manifest.get("moe_tp", 1)) > 1 else None
+    moe_ep = _required_positive_int(manifest, "moe_ep", configuration_id) if "moe_ep" in manifest else 1
+    moe_tp = _required_positive_int(manifest, "moe_tp", configuration_id) if "moe_tp" in manifest else 1
+    dcp = _required_positive_int(manifest, "dcp", configuration_id) if "dcp" in manifest else 1
+    model_kind = "moe" if moe_ep > 1 or moe_tp > 1 else None
     engine = {
         "schema_version": 1,
         "model_name": manifest.get("model_id"),
@@ -959,8 +969,8 @@ def _worker_config_record(configuration_id: str, manifest: Mapping[str, Any]) ->
         "tp_size": manifest.get("tp"),
         "pp_size": manifest.get("pp"),
         "attention_dp_size": manifest.get("dp"),
-        "moe_tp_size": manifest.get("moe_tp"),
-        "moe_ep_size": manifest.get("moe_ep"),
+        "moe_tp_size": moe_tp,
+        "moe_ep_size": moe_ep,
         "cp_size": manifest.get("cp"),
         "weight_dtype": manifest.get("weight_quantization"),
         "kv_cache_dtype": manifest.get("kv_cache_dtype"),
@@ -976,6 +986,7 @@ def _worker_config_record(configuration_id: str, manifest: Mapping[str, Any]) ->
                 "pipeline_parallel_size": manifest.get("pp"),
                 "attention_dp_size": manifest.get("dp"),
                 "context_parallel_size": manifest.get("cp"),
+                "decode_context_parallel_size": dcp,
             },
             "precision": {
                 "weights": manifest.get("weight_quantization"),
@@ -1108,6 +1119,7 @@ def _configuration_identity(configuration: ConfigurationSnapshot) -> dict[str, s
         "moe_tp": embedded.get("moe_tp_size"),
         "moe_ep": embedded.get("moe_ep_size"),
         "cp": config.parallelism.context_parallel_size,
+        "dcp": config.parallelism.decode_context_parallel_size,
     }
     identity: dict[str, str | int] = {}
     for fpm_field in _FPM_CONFIGURATION_FIELDS:

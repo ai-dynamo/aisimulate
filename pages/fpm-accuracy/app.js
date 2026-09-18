@@ -51,7 +51,7 @@
   }
 
   function cells(rows) {
-    return METHODS.map((method) => {
+    return ["regression", "warmup", "nowarmup"].map((method) => {
       const metric = aggregate(rows, method);
       const value = metric.mape === null ? "—" : `${metric.mape.toFixed(2)}%`;
       const tone = metric.mape === null ? "missing" : "";
@@ -92,10 +92,10 @@
       const model = `<tr class="overview-model-row model-row"><th scope="rowgroup"><button class="overview-model-button" data-model="${escape(group.model)}" aria-expanded="${expanded}"><span class="overview-chevron" aria-hidden="true">›</span><span>${escape(group.model)}</span><span class="overview-model-count">${group.rows.length}</span></button></th><td>${escape(group.gpu)}</td><td>${escape(group.framework)}</td><td class="overview-measurement-cell"><strong>${integer(group.measurements)}</strong><span>observations</span></td>${cells(group.rows)}</tr>`;
       return model + [...group.rows].sort((a, b) => [a.gpu, a.framework, a.framework_version, a.parallelism].join().localeCompare([b.gpu, b.framework, b.framework_version, b.parallelism].join())).map((row) => {
         const measurement = row.status === "ready" ? `${integer(row.measurement_count)} observations` : row.status.replaceAll("_", " ");
-        const skipped = row.skipped_count ? `<span>${integer(row.skipped_count)} excluded</span>` : "";
+        const skipped = row.skipped_count ? `<span>${integer(row.skipped_count)} excluded or unavailable</span>` : "";
         return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(row.worker_role)}</span><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "Configuration ↗")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
       }).join("");
-    }).join("");
+    }).join("") || '<tr><td colspan="7" class="empty-cell">No measurements available</td></tr>';
     body.querySelectorAll("[data-model]").forEach((button) => button.addEventListener("click", () => {
       const model = button.dataset.model;
       if (collapsed.has(model)) collapsed.delete(model); else collapsed.add(model);
@@ -131,13 +131,14 @@
       const data = await load(entry.summary_path);
       if (current !== request) return;
       if (data.schema_version !== 1 || data.snapshot?.branch !== branch || JSON.stringify(data.methods) !== JSON.stringify(METHODS) || !Array.isArray(data.rows)) throw new Error("Invalid overview data");
-      summary = data;
+      const rows = data.rows.filter((row) => row.measurement_count > 0);
+      summary = { ...data, rows };
       const snapshot = data.snapshot;
-      const ready = data.rows.filter((row) => row.status === "ready").length;
-      document.getElementById("models-value").textContent = integer(new Set(data.rows.map((row) => row.model)).size);
-      document.getElementById("configurations-value").textContent = integer(data.rows.length);
-      document.getElementById("measurement-value").textContent = `${ready} / ${data.rows.length}`;
-      document.getElementById("evaluated-value").textContent = `${ready} / ${data.rows.length}`;
+      const ready = rows.filter((row) => row.status === "ready").length;
+      document.getElementById("models-value").textContent = integer(new Set(rows.map((row) => row.model)).size);
+      document.getElementById("configurations-value").textContent = integer(rows.length);
+      document.getElementById("measurement-value").textContent = `${ready} / ${rows.length}`;
+      document.getElementById("evaluated-value").textContent = `${ready} / ${rows.length}`;
       document.querySelector(".snapshot-value").innerHTML = `${link(`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.commit_sha}`, `AISim ${snapshot.commit_sha.slice(0, 8)}`)} · ${link(`https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/${snapshot.hf_revision}`, `HF ${snapshot.hf_revision.slice(0, 8)}`)}<br>${escape(new Date(snapshot.completed_at).toISOString())}`;
       const stale = (entry.head_sha && entry.head_sha !== snapshot.commit_sha) || Date.now() - Date.parse(snapshot.completed_at) > 48 * 3600 * 1000;
       const freshness = document.getElementById("freshness");

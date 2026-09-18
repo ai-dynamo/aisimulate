@@ -7,10 +7,14 @@ compares forward-pass predictions with measurements from the public
 ## What is published
 
 - Only Overview: expandable model/configuration rows and sortable metrics.
+- Hide configurations with zero measurements and models with no measured
+  configurations. Overview counts reflect visible configurations; complete
+  evaluation artifacts still retain all configurations.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages.
-- FPM (KV warmup on), FPM (KV warmup off) (KV-off input), and online Regression.
+- Predictor columns: online Regression, FPM (KV warmup on), then
+  FPM (KV warmup off) (KV-off input).
 - MAPE over successful predictions, with predicted/measured counts, coverage,
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
@@ -25,6 +29,9 @@ comparison policy; it is not an independent held-out ranking of input libraries.
 Regression predicts and scores each observation before tuning on its target;
 state is isolated by worker. Worker roles are inferred from scheduled workload
 across the case, never latency. This is an offline role-inference policy.
+Configurations with decode context parallelism (`dcp>1`) retain their measured
+coverage and worker regression results, but show native FPM as unsupported.
+The evaluator validates DCP identity without treating it as ordinary CP.
 Revisions without the worker-scoped regression API (including `release/0.12.0`
 at `1f728534`) show Regression as unsupported. Their measurements remain in its
 coverage denominator; FPM evaluation continues. Legacy shared regression state
@@ -49,6 +56,8 @@ Failed branches cannot replace prior valid results or block another successful
 branch. Incomplete campaigns do not publish; high MAPE does not fail a campaign
 or block release staging. A missing/expired history shows “No completed
 evaluation” when no retained qualified artifact remains.
+Artifacts deleted or expired after listing (HTTP 404/410) are skipped so earlier
+valid results can still publish. Authentication and service errors remain fatal.
 
 Pages serves the JSON alongside the reviewed main-branch HTML/CSS/JS. Browsers
 never need GitHub credentials or direct access to Actions artifacts. PR previews
@@ -60,7 +69,8 @@ directory so that both assets are available.
 ## Local checks and smoke evaluation
 
 ```bash
-python -m pip install pytest -r scripts/fpm_accuracy/requirements.txt
+python -m pip install pytest
+python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
 python -m pytest -c /dev/null -o cache_dir=.cache/pytest tests/fpm_accuracy
 python scripts/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000
@@ -91,11 +101,3 @@ public overview, qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. See the root
 THIRD_PARTY_NOTICES.md and LICENSE. Plotly and other tabs are not included.
-
-## Isolated pre-merge validation
-
-This temporary branch uses the existing manual Pages workflow entry point to
-run the FPM matrix resolver and reusable branch workflow from PR #253. It has
-no Pages deployment job. Dispatch `pages.yml` on
-`simonec/fpm-gym-pipeline-validation` with an eligible branch and exact source
-SHA. Production publication rejects these non-main workflow artifacts.
