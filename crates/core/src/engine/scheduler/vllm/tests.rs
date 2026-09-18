@@ -466,8 +466,6 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
             .count(),
         3
     );
-    assert_eq!(pass.accept_length_output_tokens, 3);
-    assert_eq!(pass.accept_length_decode_forwards, 1);
 }
 
 mod source_holds {

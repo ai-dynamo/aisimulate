@@ -1131,12 +1131,11 @@ fn lower_completion<Observation: ReplayEngineObservation>(
         .iter()
         .filter(|output| output.completed)
         .count();
-    let accept_length_output_tokens = effects
-        .outputs
-        .iter()
-        .filter(|output| output.token_id.is_some())
-        .count();
-    let accept_length_decode_forwards = effects.forward_pass_metrics.num_decode_requests as usize;
+    // IMPORTANT: Preserve scheduler provenance. Outputs merge prefill with
+    // decode and have already been truncated by stopping limits; counting them
+    // here silently changes the acceptance metric (see DecodeAcceptance).
+    let accept_length_output_tokens = effects.decode_acceptance.accepted_tokens;
+    let accept_length_decode_forwards = effects.decode_acceptance.forwards;
     let made_progress = completed_requests > 0
         || !effects.outputs.is_empty()
         || !effects.lifecycle_events.is_empty()

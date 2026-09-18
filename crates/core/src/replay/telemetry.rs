@@ -100,6 +100,8 @@ pub struct ReplayTrafficMetricsSnapshot {
     /// Mean router prefix-overlap ratio over `router_kv_hit_rate_count`.
     pub avg_router_kv_hit_rate: f64,
     pub router_kv_hit_rate_count: usize,
+    /// Accepted tokens including the base token per decode forward, before
+    /// output-limit truncation. Prefill is excluded; non-speculative decode is 1.
     pub avg_accept_length: Option<f64>,
     pub accept_length_forward_count: usize,
 }
