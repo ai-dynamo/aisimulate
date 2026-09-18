@@ -175,7 +175,8 @@ config = ForwardPassPerfModelConfig(
         "fpm_regression": {
             "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
             "min_observations": 5,
-            "fit": {"rebuild_interval": 1024},
+            # Opt into periodic rebuilding; omission leaves it disabled.
+            "fit": {"rebuild_interval": 4096},
         },
         "correction": {"enabled": True},
     },
@@ -230,9 +231,9 @@ nested paths. The supported namespaces are:
 - `fpm_regression`: independent `sampling`, `min_observations` (5), and `fit`.
   The fit kind is `standardized_nnls`, with a free intercept and nonnegative
   slopes. `singular_ridge_scale` defaults to `1e-9` and applies only when retrying
-  a singular equation. `rebuild_interval` defaults to 4096 retained-sample
-  mutations; a positive integer overrides it, and JSON `null` / Python `None`
-  disables periodic rebuilding.
+  a singular equation. `rebuild_interval` defaults to JSON `null` / Python
+  `None`, disabling periodic rebuilding. A positive integer opts into
+  rebuilding after that many retained-sample mutations.
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
@@ -265,21 +266,25 @@ objective and readiness rules stay the same. The retention grid still controls
 which samples are kept; it does not create separate fitted planes within a
 workload store.
 
-Set `estimator_config.fpm_regression.fit.rebuild_interval` through the canonical
-constructor. Rust owns its default and validation. Omission means 4096; a
-positive integer sets a custom interval. Zero, negative values, booleans,
-floating-point values, strings, arrays and objects are rejected with the nested
-field path. The explicit setting survives normalization, provenance, saved
-configuration and reload. No flat legacy option is added.
+See the [recursive regression walkthrough](fpm-recursive-regression.md) for
+the update equations, numerical guards, and measured fitting costs.
 
-The interval counts **one insertion and one eviction as separate mutations**.
-A rebuild runs after the complete retained-sample update transaction and resets
-the mutation counter to zero. With a capacity of 64, an initially empty store,
-and no earlier recovery rebuild, the default first rebuild occurs after 2,080
-accepted observations: 64 initial insertions, then 2,016 insert/evict pairs.
-Further rebuilds occur every 2,048 accepted observations while the store stays
-full. This counts accepted observations per store, not prediction queries or
-wall-clock time.
+Set `estimator_config.fpm_regression.fit.rebuild_interval` through the canonical
+constructor. Rust owns its default and validation. Omission means `None`
+(`null` in JSON), so periodic rebuilding is disabled by default. A positive
+integer, such as 4096, opts into a periodic interval. Zero, negative values,
+booleans, floating-point values, strings, arrays and objects are rejected with
+the nested field path. The explicit setting survives normalization, provenance,
+saved configuration and reload. No flat legacy option is added.
+
+When enabled, the interval counts **one insertion and one eviction as separate
+mutations**. A rebuild runs after the complete retained-sample update transaction
+and resets the mutation counter to zero. With an explicit interval of 4096, a
+capacity of 64, an initially empty store, and no earlier recovery rebuild, the
+first rebuild occurs after 2,080 accepted observations: 64 initial insertions,
+then 2,016 insert/evict pairs. Further rebuilds occur every 2,048 accepted
+observations while the store stays full. This counts accepted observations per
+store, not prediction queries or wall-clock time.
 
 There is at most one periodic rebuild after an update transaction. A full-store
 insert/evict pair can cross an odd interval by one mutation; it still produces
@@ -288,8 +293,8 @@ do not advance the counter. A batch-fit fallback alone does not reset it;
 rebuilding the statistics does. The setting is fixed for each store when the
 model is constructed.
 
-Python can disable only the periodic schedule while keeping numerical recovery
-rebuilds and conservative batch fallbacks:
+The default and explicit Python `None` both disable only the periodic schedule.
+Numerical recovery rebuilds and conservative batch fallbacks remain enabled:
 
 ```python
 config = ForwardPassPerfModelConfig(
@@ -318,8 +323,8 @@ let mut config = ForwardPassPerfModelConfig::new(
     "Qwen/Qwen3-32B", "h200_sxm", BackendKind::Vllm, ForwardPassWorkerType::Decode,
 );
 config.estimation_mode = EstimationMode::FpmRegression;
-config.estimator_config.fpm_regression.fit.rebuild_interval = Some(1024);
-// Use None to disable periodic rebuilding while retaining numerical recovery.
+// Opt into periodic rebuilding; the default None retains numerical recovery.
+config.estimator_config.fpm_regression.fit.rebuild_interval = Some(4096);
 let model = ForwardPassPerfModel::best_available(config)?;
 ```
 

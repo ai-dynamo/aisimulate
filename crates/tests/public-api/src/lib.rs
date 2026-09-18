@@ -204,6 +204,17 @@ mod tests {
     #[test]
     fn regression_constructor_is_environment_independent() {
         let model = regression_model().expect("construct regression model");
+        assert_eq!(
+            model
+                .provenance()
+                .unwrap()
+                .config
+                .estimator_config
+                .fpm_regression
+                .fit
+                .rebuild_interval,
+            None
+        );
         let stores = regression_stores(&model);
         assert_eq!(stores.len(), 4);
         assert_eq!(
@@ -232,7 +243,7 @@ mod tests {
     fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
         use aisimulate_core::RegressionFitConfig;
 
-        assert_eq!(RegressionFitConfig::default().rebuild_interval, Some(4096));
+        assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
         for interval in [Some(1), Some(17), Some(4096), None] {
             let mut config = ForwardPassPerfModelConfig::new(
                 "test/model",
@@ -291,7 +302,7 @@ mod tests {
         use aisimulate_core::ForwardPassPerfOptions;
 
         let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
-        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, Some(4096));
+        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
         assert_eq!(migrated.fpm_regression.sampling.max_observations, 64);
         assert_eq!(migrated.fpm_regression.sampling.bins_per_axis, [4, 4]);
     }

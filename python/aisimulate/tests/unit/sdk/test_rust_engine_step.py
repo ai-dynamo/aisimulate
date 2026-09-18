@@ -895,7 +895,7 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
             assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
-@pytest.mark.parametrize("rebuild_interval", [23, None])
+@pytest.mark.parametrize("rebuild_interval", [23, 4096, None])
 def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, rebuild_interval) -> None:
     import aisimulate_core
 
@@ -944,7 +944,12 @@ def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
 @pytest.mark.parametrize("as_mapping", [False, True])
 @pytest.mark.parametrize(
     ("fit", "expected_interval"),
-    [({}, 4096), ({"rebuild_interval": 17}, 17), ({"rebuild_interval": None}, None)],
+    [
+        ({}, None),
+        ({"rebuild_interval": 17}, 17),
+        ({"rebuild_interval": 4096}, 4096),
+        ({"rebuild_interval": None}, None),
+    ],
 )
 def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping, fit, expected_interval):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
@@ -982,8 +987,27 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     ]
 
 
-@pytest.mark.parametrize("rebuild_interval", [1, 7, None])
-def test_canonical_regression_updates_after_evictions_with_custom_rebuild_schedule(rebuild_interval):
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}, float("nan"), float("inf")])
+def test_canonical_regression_rebuild_interval_rejects_invalid_facade_values_with_path(invalid):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="auto",
+        fallback_policy="allow",
+        estimator_config={"fpm_regression": {"fit": {"rebuild_interval": invalid}}},
+    )
+    # The dataclass facade must preserve invalid values for Rust to reject;
+    # neither Python defaults nor estimator fallback may hide the error.
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.fit\.rebuild_interval"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("fit", [{}, {"rebuild_interval": 1}, {"rebuild_interval": 7}, {"rebuild_interval": None}])
+def test_canonical_regression_updates_after_evictions_with_default_or_custom_rebuild_schedule(fit):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     config = ForwardPassPerfModelConfig(
@@ -995,7 +1019,7 @@ def test_canonical_regression_updates_after_evictions_with_custom_rebuild_schedu
         estimator_config={
             "fpm_regression": {
                 "sampling": {"bins_per_axis": [2, 2], "max_observations": 8},
-                "fit": {"rebuild_interval": rebuild_interval},
+                "fit": fit,
             }
         },
     )

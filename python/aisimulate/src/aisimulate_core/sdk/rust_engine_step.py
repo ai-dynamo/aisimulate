@@ -106,8 +106,9 @@ class ForwardPassPerfModelConfig:
     Estimator controls pass through to Rust unchanged. For regression,
     ``estimator_config["fpm_regression"]["fit"]["rebuild_interval"]`` accepts
     a positive integer mutation count or ``None`` to disable periodic
-    statistics rebuilding. Omitting it uses the Rust default of 4096;
-    numerical recovery and batch fallbacks remain enabled with ``None``.
+    statistics rebuilding. Omitting it uses the Rust default of ``None``;
+    numerical recovery and batch fallbacks remain enabled. An explicit
+    positive interval, such as 4096, opts into periodic rebuilding.
     """
 
     model: str
@@ -225,8 +226,9 @@ class RustForwardPassPerfModel:
     inserted or evicted. The canonical ``fpm_regression.fit.rebuild_interval``
     control counts one mutation per insertion and one per eviction. A scheduled
     rebuild occurs after the complete update transaction, then resets its
-    counter to zero. The Rust default is 4096 mutations; ``None`` disables only
-    scheduled rebuilds, preserving numerical recovery and batch fallbacks.
+    counter to zero. The Rust default is ``None``, which disables only scheduled
+    rebuilds, preserving numerical recovery and batch fallbacks. Set a positive
+    interval, such as 4096 mutations, to enable scheduled rebuilds.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM

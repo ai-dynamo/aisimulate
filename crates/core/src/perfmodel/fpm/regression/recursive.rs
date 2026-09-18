@@ -414,16 +414,18 @@ mod tests {
 
     #[test]
     fn centered_updates_track_batch_across_evictions_and_periodic_rebuilds() {
-        let mut recursive = default_recursive();
-        let mut retained = Vec::new();
-        for i in 0..4300 {
-            let incoming = observation(i);
-            retained.push(incoming);
-            recursive.add(incoming);
-            if retained.len() > 64 {
-                recursive.remove(retained.remove(0));
+        for interval in [RegressionFitConfig::default().rebuild_interval, Some(4096)] {
+            let mut recursive = RecursiveFit::new(1e-9, interval);
+            let mut retained = Vec::new();
+            for i in 0..4300 {
+                let incoming = observation(i);
+                retained.push(incoming);
+                recursive.add(incoming);
+                if retained.len() > 64 {
+                    recursive.remove(retained.remove(0));
+                }
+                compare(&mut recursive, &retained, 5);
             }
-            compare(&mut recursive, &retained, 5);
         }
     }
 
@@ -474,13 +476,13 @@ mod tests {
             // Four warmup insertions, then two mutations per replacement:
             // threshold five is first crossed at six and reset to zero.
             (Some(5), 4, 12, vec![5, 8, 11]),
+            (Some(4096), 64, 4300, vec![2080, 4128]),
             (
                 RegressionFitConfig::default().rebuild_interval,
                 64,
                 4300,
-                vec![2080, 4128],
+                vec![],
             ),
-            (None, 64, 4300, vec![]),
         ];
         for (interval, capacity, updates, expected) in cases {
             let mut recursive = RecursiveFit::new(0.25, interval);

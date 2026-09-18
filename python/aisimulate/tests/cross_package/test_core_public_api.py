@@ -225,7 +225,12 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
 
 @pytest.mark.parametrize(
     ("fit", "expected_interval"),
-    [({}, 4096), ({"rebuild_interval": 31}, 31), ({"rebuild_interval": None}, None)],
+    [
+        ({}, None),
+        ({"rebuild_interval": 31}, 31),
+        ({"rebuild_interval": 4096}, 4096),
+        ({"rebuild_interval": None}, None),
+    ],
 )
 def test_raw_canonical_regression_rebuild_interval_normalizes_and_reloads(fit, expected_interval):
     raw = aisimulate_core.RustForwardPassPerfModel
@@ -269,7 +274,7 @@ def test_raw_canonical_regression_rebuild_interval_rejects_invalid_values_with_p
 
 def test_legacy_options_inherit_rust_rebuild_default_without_a_new_flat_control():
     migrated = json.loads(aisimulate_core.RustForwardPassPerfModel.legacy_estimator_config("{}"))
-    assert migrated["fpm_regression"]["fit"]["rebuild_interval"] == 4096
+    assert migrated["fpm_regression"]["fit"]["rebuild_interval"] is None
     assert migrated["fpm_regression"]["sampling"] == {"bins_per_axis": [4, 4], "max_observations": 64}
     assert "rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__
     assert "regression_rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__

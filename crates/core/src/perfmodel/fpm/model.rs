@@ -1099,14 +1099,14 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn disabled_rebuild_interval_reaches_every_workload_store() {
+    fn default_rebuild_interval_disables_periodic_refresh_for_every_workload_store() {
         let mut stores = RegressionStores::new(
             ForwardPassWorkerType::Aggregated,
             &ForwardPassPerfOptions::default(),
-            None,
+            super::super::estimator::RegressionFitConfig::default().rebuild_interval,
         );
-        // Constant features avoid fit work without numerical damage. Passing
-        // the default in place of None would reset each clock at 4096.
+        // Constant features avoid fit work without numerical damage. A change
+        // back to a 4096-operation default would reset each clock at 4096.
         for (_, store) in &mut stores.stores {
             for _ in 0..2081 {
                 assert!(store.add_observation([1.0, 2.0], 3.0));

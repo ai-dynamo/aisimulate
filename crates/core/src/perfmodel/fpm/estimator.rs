@@ -80,8 +80,8 @@ pub struct RegressionFitConfig {
     pub kind: RegressionFitKind,
     pub singular_ridge_scale: f64,
     /// Refresh centered statistics after this many accepted insertions and
-    /// actual evictions per workload store. `None` disables periodic refreshes;
-    /// numerical recovery and batch-fit fallbacks remain enabled.
+    /// actual evictions per workload store. The default `None` disables periodic
+    /// refreshes; numerical recovery and batch-fit fallbacks remain enabled.
     pub rebuild_interval: Option<usize>,
 }
 
@@ -90,7 +90,7 @@ impl Default for RegressionFitConfig {
         Self {
             kind: RegressionFitKind::StandardizedNnls,
             singular_ridge_scale: 1e-9,
-            rebuild_interval: Some(4096),
+            rebuild_interval: None,
         }
     }
 }
@@ -266,8 +266,9 @@ mod tests {
     #[test]
     fn rebuild_interval_defaults_and_explicit_null_survive_serde() {
         for (json, expected) in [
-            ("{}", Some(4096)),
+            ("{}", None),
             (r#"{"rebuild_interval":7}"#, Some(7)),
+            (r#"{"rebuild_interval":4096}"#, Some(4096)),
             (r#"{"rebuild_interval":null}"#, None),
         ] {
             let fit: RegressionFitConfig = serde_json::from_str(json).unwrap();
