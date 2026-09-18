@@ -885,6 +885,10 @@ class Task:
             self.nextn, self.nextn_accepted = normalize_speculative_decoding(self.nextn, self.nextn_accepted)
         self._validate_deepseek_v4_hardware()
         self._resolve_model_identity()
+        if self.serving_mode == "afd":
+            from aisimulate_core.sdk.afd_partition import validate_afd_model_architecture
+
+            validate_afd_model_architecture(self._architecture)
         if self.nextn == "auto":
             raise ValueError("nextn='auto' requires a model path to resolve num_nextn_predict_layers.")
         self._resolve_backend_version()
@@ -2354,6 +2358,9 @@ class Task:
         # per-role DB check in _validate_database_quant_modes governs support.
 
     def _validate_afd(self) -> None:
+        from aisimulate_core.sdk.afd_partition import validate_afd_model_architecture
+
+        validate_afd_model_architecture(self._architecture)
         if not self.model_path:
             raise ValueError("afd mode requires model_path")
         if not self.system_name:

@@ -1015,6 +1015,10 @@ class AFDInferenceSession:
         backend: BaseBackend,
         afd_config: config.AFDConfig,
     ) -> None:
+        from aisimulate_core.sdk.afd_partition import validate_afd_model_architecture
+        from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+        validate_afd_model_architecture(get_model_config_from_model_path(model_path)["architecture"])
         self._model_path = model_path
         self._a_model_config = a_model_config
         self._f_model_config = f_model_config

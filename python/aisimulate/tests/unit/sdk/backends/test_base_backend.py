@@ -89,6 +89,8 @@ def model():
     model.model_name = "test-model"
     model.forward_model = "op_level"
     model._nextn = 0
+    model.get_resident_weights_bytes.return_value = 0.0
+    model.get_additional_activation_bytes.return_value = 0.0
     model.encoder_ops = []
     model.context_ops = [
         _StaticOp("context_attention", latency_ms=11.0, energy_wms=110.0),
@@ -125,6 +127,8 @@ class TestMTPActivationMemoryScaling:
     def _model():
         return SimpleNamespace(
             context_ops=[SimpleNamespace(get_weights=lambda: 0.0)],
+            get_resident_weights_bytes=lambda: 0.0,
+            get_additional_activation_bytes=lambda _tokens: 0.0,
             config=ModelConfig(
                 tp_size=1,
                 pp_size=1,
