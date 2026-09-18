@@ -5,53 +5,106 @@
 
 `aisimulate predict`, `aisimulate recommend`, and the public
 `run_recommendation` Python API check host resources before preparing a run.
+
+**No manual resource configuration is required.** AISimulate automatically
+detects the local machine's available RAM and CPU capacity, reserves host
+headroom, and limits parallel simulations to fit the estimated resource budget.
+You can omit the entire `execution.resources` section. Set explicit limits only
+when you want to override the automatic budget.
+
+Normal package installation includes the required `psutil` and `ijson`
+dependencies. Downstream images that install an AISimulate wheel with
+`--no-deps` must explicitly install both dependencies before adopting a release
+containing these controls.
+
 These controls describe the machine running AISimulate. Simulated GPU counts,
 KV-cache memory fractions, traffic concurrency, and request counts retain their
 original meaning.
 
+Optional resource settings, with defaults shown:
+
 ```yaml
 execution:
   resources:
-    memory_limit_gib: auto
+    memory_limit_gb: auto
     cpu_limit: auto
-    reserve_memory_gib: 2.0
-    reserve_memory_fraction: 0.1
+    reserve_memory_gb: 1.0
+    reserve_memory_fraction: 0.0
     available_memory_fraction: 0.9
+    initialization_timeout_seconds: 60.0
+    shutdown_timeout_seconds: 5.0
 ```
 
-Let A be available RAM and R the larger of 2 GiB and 10% of effective physical
-RAM. The default memory budget is max(0, min(0.9 A, A - R)). Linux cgroup v1/v2
-memory limits, current usage, ancestor limits, affinity and CPU quotas constrain
-the host snapshot. Swap does not increase the budget. Automatic CPU selection
-leaves one CPU free when more than one whole CPU is available. An explicit
-positive `memory_limit_gib` or integer `cpu_limit` must fit the live host limits.
-Unavailable resource probes stop execution with an explanation.
+Memory settings use decimal GB: 1 GB is 1,000,000,000 bytes. Let A be available
+RAM. The default host reserve is 1 GB, with no additional percentage-of-total-RAM
+reserve. The default memory budget is max(0, min(0.9 A, A - 1 GB)); the separate
+90%-of-available-RAM cap can leave more than 1 GB unused. If configured,
+`reserve_memory_fraction` raises the reserve to the larger of `reserve_memory_gb`
+and that fraction of effective physical RAM.
+
+Linux cgroup v1/v2 memory limits, current usage, ancestor limits, affinity and CPU
+quotas constrain the host snapshot. Swap does not increase the budget. Automatic
+CPU selection leaves one CPU free when more than one whole CPU is available.
+CPU capacity caps the number of parallel simulations; it does not estimate CPU
+speed or simulation duration. An explicit positive `memory_limit_gb` or integer
+`cpu_limit` must fit the live host limits. Unavailable resource probes stop
+execution with an explanation.
 
 The plan reserves coordinator RSS plus 256 MiB and a 512 MiB baseline within
 each candidate estimate. Recommendation execution parallelism is the minimum
 of the requested parallelism, CPU allowance, and memory slots. Reducing it
 preserves the suggestion batch size, trial budget and requested traffic.
-One candidate must fit even when parallelism is one. Domain preflight uses the
-largest requested load without enumerating its Cartesian product; if that
-candidate cannot fit, the whole request is refused. This increment does not
-silently prune the search space or return partial recommendations.
+Admission checks each concrete candidate and the combined memory estimate of
+its batch against fresh host headroom before starting workers. A large load in
+the search domain does not block smaller candidates. If a batch cannot fit,
+AISimulate reduces its parallelism; a candidate that cannot fit alone is recorded
+as `resource_limited`, with no simulated metrics or score. It consumes a trial
+and completes it as an optimizer rejection without a fabricated measurement.
+Completed candidates remain available. Resource-limited candidates are counted
+separately from `evaluated`; the selected recommendations cover only completed
+evaluations, not every requested candidate.
 
-```sh
-aisimulate recommend --stack dynamo --config sweep.yaml --dry-run \
-  --output-dir resource-plan
-```
+Resource checks run automatically on every `predict` and `recommend` command.
+A prediction refused by preflight exits with status 3 before creating its runner and writes
+`resource-plan.json`, including the host snapshot, reserved memory, allocation
+model, lower bound and estimated peak. Refusals during earlier host discovery or
+budget resolution also write the plan, with null for any unavailable host, budget
+or workload estimate. Admitted work proceeds automatically;
+there is no separate dry-run option.
 
-`--dry-run` validates the core schema and writes `resource-plan.json` without
-creating a runner or compiling adapters. It is not full backend/adapter
-validation. The plan records the host snapshot, reserved memory, requested and
-effective parallelism, allocation model, lower bound and estimated peak bytes.
-A refused plan or execution exits with status 3 (`resource_limited`). A runtime
-resource refusal aborts the sweep instead of observing a fictitious model score.
+Execution runs inside an owned subprocess tree. The supervisor fixes the memory
+budget at startup, then samples total owned RSS and live host headroom every
+50 ms, including initialization and output serialization. Runtime thread pools
+are limited to one thread per worker. During recommendation evaluation, memory
+pressure triggers worker cleanup and retries unfinished candidates at lower
+parallelism, at most twice. Completed candidates are retained. Workers must be
+reaped before another batch can start. Persistent pressure produces an explicit
+`resource_limited` candidate and the sweep continues with other candidates.
+A sudden jump past the supervisor limit stops the entire execution tree.
+
+`resource-runtime.json` records observed peak RSS, effective budgets and the
+termination outcome. Fields that could not be observed because resource discovery
+failed are null. Errors loading configuration, applying overrides, or validating
+the core schema preserve existing artifacts, including with `--overwrite`.
+`execution-events.jsonl` checkpoints
+completed candidates and batch decisions so evidence survives a supervisor interruption. A completed
+sweep writes `recommendation.json` and selected prediction files as usual, and
+exits with status 3 if any candidates were resource-limited. If the entire tree
+is stopped, the event log contains the completed subset; it is not a finalized
+recommendation. The Python API returns partial sweep results for individual
+candidate refusals, or raises `ResourceLimitError` with bounded partial events
+when the supervisor stops the whole tree. Host evidence is available through
+`result.execution_resources` and excluded from the portable result fingerprint.
 Use a new output directory or `--overwrite` to replace known outputs.
+
+The public Python recommendation API uses spawned processes. Factories and
+providers must be pickleable, and script calls belong inside an
+`if __name__ == "__main__":` guard. Initialization and shutdown deadlines are
+configurable above; the optimizer's candidate timeout remains independent.
 
 For a synthetic Dynamo workload with 64,512 concurrent requests, 100 requests
 per load unit and 10,240 input tokens, the compatibility estimator calculates
-6,451,200 requests and 264,241,152,000 bytes (246.09375 GiB) of eager input-token
+6,451,200 requests and 264,241,152,000 bytes (about 264.24 GB) of eager input-token
 vectors alone. A laptop budget rejects this request before request allocation.
 This is an allocation calculation, not measured RSS or a diagnosis of an OS
 panic. The regression tests use an allocation sentinel; they do not allocate
@@ -77,65 +130,48 @@ API automatically changes the adapter's allocation behavior.
 
 An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
-Supported JSON traces receive bounded metadata inspection (at most 16 MiB,
-1024 files and 256 KiB per JSON document/record), including scalar token lengths,
-hash expansion and cumulative delta/tool turns. Larger or unknown formats need
-a runner estimate before admission. Fixed-capacity KV-relative recommendation
-domains use a conservative token-capacity bound; other unresolved KV-relative
-counts and unrecognized runner models remain unqualified and are refused. The
-low-level Runner protocol itself remains an execution primitive.
+Supported JSON and JSONL traces are inspected as a stream, including scalar
+token lengths, hash expansion and cumulative delta/tool turns. Inspection does
+not load complete documents or token arrays. There is no fixed file or record
+size cutoff: the conservative storage estimate is checked against live headroom
+before parsing, since a streaming parser still holds individual scalar strings.
+Unknown allocation models can run one candidate at a time under runtime
+supervision when baseline headroom exists; this is explicitly an unqualified
+estimate. Known lower bounds still reject impossible workloads before allocation.
+The low-level Runner protocol itself remains an execution primitive.
 
-Preflight checks complement the supervised execution below; neither is a proof
-that an operating-system panic cannot occur.
+Direct `Sweeper` callers also receive bounded process-pool cleanup. A timeout
+or orchestration failure stops and reaps owned workers and their observed
+descendants before a replacement pool starts. Successful sweeps allow worker
+finalizers a grace period, then stop workers that fail to exit. Cleanup failure
+raises an error instead of starting replacement workers. This also applies to
+custom factories without host-resource admission; it does not add memory
+admission or RSS monitoring to those factories or supervise sequential Runner
+execution.
 
-## Supervised execution
+RSS monitoring is best effort, not an operating-system memory sandbox. Allocations
+can outpace polling, estimates can be conservative, and other programs can change
+available RAM between samples. macOS offers no portable hard RSS cap; preallocation
+checks remain necessary. A successful plan or watchdog test does not prove that
+the original OS panic is resolved.
 
-The CLI now starts a supervised child before importing stack runtimes. The
-public `run_recommendation` Python function uses the same process boundary;
-custom factories/providers must support Python's spawn/pickle contract. Keep
-script entrypoints behind `if __name__ == "__main__":` as with multiprocessing.
-Low-level Runner and Sweeper objects remain explicit execution primitives.
+### Allocation-model provenance
 
-`optimizer.parallelism` defaults to `auto`. Its historical suggestion batch
-size stays 16; an existing integer remains both the suggestion batch size and
-an upper limit on concurrent evaluations. The host budget can reduce execution
-parallelism without changing suggestions, seeds, trial budgets or traffic.
-Supervised sweep workers retire after each candidate to release retained runtime
-memory, at the cost of repeated worker startup. Before each wave, the coordinator
-sums concrete candidate estimates and rechecks current owned RSS and host
-headroom. A wave that no longer fits is refused before dispatch. Timeout recovery terminates,
-escalates to kill and joins old workers before replacing the pool. Normal pool
-shutdown also has a bounded grace period.
+The byte terms in [resources.py](../python/aisimulate/src/aisimulate/resources.py)
+are versioned admission policies. They do not change simulated operation latency,
+energy, or GPU capacity. Their provenance and qualification are:
 
-Worker environments set supported OpenMP, BLAS, Rayon, Polars and TensorFlow
-thread limits to one before imports. Linux execution also inherits a restricted
-CPU affinity set; macOS uses thread settings and reduced scheduling priority.
-These are execution controls, not a portable hard CPU quota for arbitrary
-third-party runtimes. Initialization is limited to 60 seconds by default via
-`execution.resources.initialization_timeout_seconds`. Direct prediction shutdown
-has a separate five-second `shutdown_timeout_seconds` limit.
+| Term | Basis | Qualification |
+|---|---|---|
+| Four bytes per token ID | The native [request protocol](../crates/core/src/engine/protocol.rs) and [sequence storage](../crates/core/src/engine/common/sequence.rs) use `Vec<u32>`. The Dynamo compatibility model explicitly assumes eager u32 prompts. | The width is concrete; applying it to an external adapter requires the stated eager-allocation assumption. |
+| Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
+| Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
+| Trace expansion | Streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard also bounds parser scalar risk before metadata inspection. |
+| Process allowances | 512 MiB per worker and coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
+| Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
-The parent samples its RSS, owned descendant RSS and current host/container
-headroom every 50 ms. A budget/headroom breach stops the run and terminates its
-owned process group and observed descendants. The direct child is reaped before
-returning; timeout replacement separately joins every pool worker. macOS RSS
-polling remains best effort and can miss a fast allocation burst, so the
-preallocation checks remain active. An estimate or watchdog is not proof that
-an OS panic cannot occur.
-
-The CLI writes `resource-runtime.json` with requested limits, the resolved
-budget, observed peak RSS, terminal status and cleanup evidence. It also writes
-`execution-events.jsonl`, preserving normalized requested configurations,
-resource plans, started waves and completed-candidate records. A partial final
-line is discarded after interruption. Resource failures exit 3; cancellation
-exits 130, and supervisor timeouts exit 124. An interrupted run does not publish
-normal completed-run recommendations. Its completed-candidate events are
-partial evidence and must be read with the runtime status.
-
-Checkpoints are bounded to 1 MiB per record and 64 MiB per run. CLI configuration
-parsing is limited to 1 MiB. These bounds prevent diagnostics and parent-side
-configuration handling from becoming a new unbounded allocation path. The SDK
-bounds result transfer before parsing, exposes successful runtime evidence as
-`result.execution_resources`, and raises `ResourceLimitError` with runtime and
-bounded partial-event evidence in `.plan` on a memory refusal. Host evidence is
-separate from the portable result JSON and its input fingerprint.
+The resource tests exercise arithmetic boundaries, combined-wave accounting,
+allocation sentinels, real process cleanup, and retained candidate outcomes.
+These establish control-flow and accounting behavior; they do not qualify the
+heuristic multipliers against every workload's measured peak RSS. Hardware
+prediction regression and the original workload's qualification remain separate.

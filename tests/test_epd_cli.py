@@ -86,7 +86,7 @@ def _recommendation(mode="aggregated"):
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
-def test_native_cli_epd_recommend_yaml_predict(tmp_path, capfd, mode, relative_stop):
+def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
     raw = _recommendation("disaggregated" if mode == "heterogeneous" else mode)
     if mode == "heterogeneous":
         raw["engine"]["workers"]["decode"]["hardware"] = "gb200"
@@ -99,7 +99,7 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capfd, mode, relative_s
     path.write_text(yaml.safe_dump(raw))
     root = tmp_path / "recommend"
     assert main(["recommend", "-c", str(path), "--output-dir", str(root), "--format", "json"]) == 0
-    capfd.readouterr()
+    capsys.readouterr()
     result = SweepResult.from_json((root / "recommendation.json").read_text())
     assert result.selected_candidates
     candidate = result.selected_candidates[0]
@@ -115,7 +115,7 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capfd, mode, relative_s
     assert spec.workload["isl"] == 128  # visual context added only by the runner
     output = tmp_path / "predict"
     assert main(["predict", "-c", str(saved), "--output-dir", str(output), "--format", "json"]) == 0
-    stdout = json.loads(capfd.readouterr().out)
+    stdout = json.loads(capsys.readouterr().out)
     report = json.loads((output / "prediction.json").read_text())
     assert stdout["metric_semantics"] == "analytical_epd_overlay"
     assert report["metadata"]["encoder"] == candidate.config["encoder"]
@@ -135,7 +135,7 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capfd, mode, relative_s
     assert not any(key.startswith(("goodput", "p99")) for key in report["summary"])
     table_output = tmp_path / "table"
     assert main(["predict", "-c", str(saved), "--output-dir", str(table_output)]) == 0
-    assert "aggregate estimates" in capfd.readouterr().out
+    assert "aggregate estimates" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -210,7 +210,7 @@ def test_recommendation_domains_lower_without_loss():
 
 
 @pytest.mark.parametrize("flag", ["--capture-per-request", "--online"])
-def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capfd, flag):
+def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capsys, flag):
     path = tmp_path / "prediction.yaml"
     path.write_text(yaml.safe_dump(_prediction()))
     output = tmp_path / "existing"
@@ -219,7 +219,7 @@ def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capfd,
     sentinel.write_text("keep me")
     with pytest.raises(SystemExit, match="2"):
         main(["predict", "-c", str(path), "--output-dir", str(output), "--overwrite", flag])
-    assert "analytical EPD requires offline" in capfd.readouterr().err
+    assert "analytical EPD requires offline" in capsys.readouterr().err
     assert sentinel.read_text() == "keep me"
 
 
@@ -431,7 +431,7 @@ def test_cli_examples_parse():
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
 @pytest.mark.parametrize("combined_with_pd", [False, True])
-def test_public_cli_rejects_afd_encoder_composition(tmp_path, capfd, command, combined_with_pd):
+def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, combined_with_pd):
     raw = _prediction() if command == "predict" else _recommendation()
     encoder = raw["engine"]["workers"]["encoder"]
     raw["engine"]["mode"] = "afd"
@@ -452,7 +452,7 @@ def test_public_cli_rejects_afd_encoder_composition(tmp_path, capfd, command, co
     with pytest.raises(SystemExit) as exc:
         main([command, "-c", str(path), "--output-dir", str(tmp_path / "out")])
     assert exc.value.code == 2
-    captured = capfd.readouterr()
+    captured = capsys.readouterr()
     assert "AFD does not support analytical EPD encoder pools" in captured.err
 
 
@@ -460,7 +460,7 @@ def test_public_cli_rejects_afd_encoder_composition(tmp_path, capfd, command, co
 @pytest.mark.parametrize("selector", ["memory", "all"])
 @pytest.mark.parametrize("explicit_blocks", [False, True])
 def test_native_epd_detail_preserves_language_capacity_and_encoder_gap(
-    tmp_path, capfd, mode, selector, explicit_blocks
+    tmp_path, capsys, mode, selector, explicit_blocks
 ):
     from jsonschema import validate
 
@@ -475,7 +475,7 @@ def test_native_epd_detail_preserves_language_capacity_and_encoder_gap(
     assert (
         main(["predict", "-c", str(path), "--detail", selector, "--format", "json", "--output-dir", str(output)]) == 0
     )
-    stdout = json.loads(capfd.readouterr().out)
+    stdout = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "prediction.json").read_text())
     assert stdout["details"] == saved["details"]
     assert stdout["summary"] == saved["summary"]
@@ -505,7 +505,7 @@ def test_native_epd_detail_preserves_language_capacity_and_encoder_gap(
             assert estimate == saved["memory_diagnostics"][role]
     plain = tmp_path / "plain"
     assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain)]) == 0
-    plain_summary = json.loads(capfd.readouterr().out)
+    plain_summary = json.loads(capsys.readouterr().out)
     assert plain_summary.keys() == stdout["summary"].keys()
     for name, value in stdout["summary"].items():
         # Native floating-point reductions can differ in their final bits.

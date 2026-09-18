@@ -55,6 +55,7 @@ dependencies = [
     "prettytable>=3.16.0",
     "pydantic>=2.5",
     "psutil>=7.0,<8",
+    "ijson>=3.4,<4",
     "pyarrow>=15.0.0",
     "pyyaml>=6.0",
     "scipy>=1.13.1",
@@ -141,6 +142,7 @@ include = [
     "src/aiconfigurator_core/systems/**/*.txt",
     "src/aiconfigurator_core/systems/**/*.parquet",
     "src/aiconfigurator_core/systems/data/**/*.yaml",
+    "src/aiconfigurator_core/systems/data/**/README.md",
     "src/aiconfigurator_core/model_configs/*.json",
     "src/aiconfigurator_core/model_configs/*.md",
 ]

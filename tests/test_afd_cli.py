@@ -201,7 +201,7 @@ def test_afd_rejects_trace_traffic_at_public_boundary() -> None:
         CorePredictionConfig.model_validate(raw)
 
 
-def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeypatch, capfd) -> None:
+def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "afd-prediction.yaml"
     config_path.write_text(yaml.safe_dump(_pure_prediction()))
     output = tmp_path / "out"
@@ -234,7 +234,7 @@ def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeyp
         )
         == 0
     )
-    assert json.loads(capfd.readouterr().out)["completed_requests"] == 4.0
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 4.0
     assert len((output / "requests.jsonl").read_text().splitlines()) == 4
     qualification = json.loads((output / "afd-qualification.json").read_text())
     replay_spec = json.loads((output / "afd-replay-spec.json").read_text())

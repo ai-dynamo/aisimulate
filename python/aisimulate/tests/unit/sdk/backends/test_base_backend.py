@@ -18,6 +18,16 @@ _CONTEXT_FALLBACK = MoECommFallback("context", "deepep_ht", 32, 8, 8, 1)
 _GENERATION_FALLBACK = MoECommFallback("generation", "deepep_ll", 32, 8, 8, 1)
 
 
+def _decode_step(latency, energy, per_op_latency, per_op_source, fallbacks):
+    return StepEstimate(
+        latency_ms=latency,
+        energy_wms=energy,
+        per_op_latency_ms=per_op_latency,
+        per_op_source=per_op_source,
+        moe_comm_fallbacks=fallbacks,
+    )
+
+
 class _LatencyResult:
     def __init__(self, latency_ms: float, energy_wms: float) -> None:
         self._latency_ms = latency_ms
@@ -434,8 +444,8 @@ def test_run_agg_declares_mtp_decode_share_at_call_site(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (1.0, 1.0, {}, {}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {}, {}, ()),
     )
 
     backend.run_agg(
@@ -482,8 +492,8 @@ def test_run_agg_with_osl_one_does_not_divide_by_zero(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (0.0, 0.0, {}, {}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(0.0, 0.0, {}, {}, ()),
     )
     monkeypatch.setattr(
         backend,
@@ -537,8 +547,8 @@ def test_run_agg_b1_uses_scheduled_activation_peak(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
     )
 
     memory_calls: list[dict] = []
@@ -732,8 +742,8 @@ def test_run_agg_applies_speculative_progress_in_scheduler(
     monkeypatch.setattr(backend, "run_mixed", _run_mixed)
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
     )
 
     summary = backend.run_agg(
@@ -772,8 +782,8 @@ def test_run_agg_records_progress_only_when_explicitly_supplied(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
     )
 
     summary = backend.run_agg(
@@ -814,8 +824,8 @@ def test_run_agg_preserves_executed_moe_fallbacks_from_mixed_and_decode_steps(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(
             5.0,
             50.0,
             {"decode": 5.0},
@@ -851,8 +861,8 @@ def test_run_agg_omits_decode_fallback_when_decode_step_has_zero_weight(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(
             5.0,
             50.0,
             {"decode": 5.0},
@@ -888,8 +898,8 @@ def test_run_agg_cache_separates_video_workloads(
     monkeypatch.setattr(backend, "run_mixed", _run_mixed)
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (1.0, 1.0, {}, {}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {}, {}, ()),
     )
 
     common_kwargs = dict(
@@ -934,8 +944,8 @@ def test_run_agg_validates_backend_before_cache_hit(
     )
     monkeypatch.setattr(
         backend,
-        "_get_genonly_step_latency",
-        lambda *args, **kwargs: (5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(5.0, 50.0, {"decode": 5.0}, {"decode": "silicon"}, ()),
     )
 
     cached = backend.run_agg(
@@ -1058,10 +1068,10 @@ def test_run_agg_does_not_double_count_visual_tokens_in_run_mixed(
 
     def _genonly(model_arg, database_arg, runtime_config_arg, num_tokens, isl, osl):
         genonly_isl.append(isl)
-        return (1.0, 1.0, {}, {}, ())
+        return _decode_step(1.0, 1.0, {}, {}, ())
 
     monkeypatch.setattr(backend, "run_mixed", _run_mixed)
-    monkeypatch.setattr(backend, "_get_genonly_step_latency", _genonly)
+    monkeypatch.setattr(backend, "_get_genonly_step_estimate", _genonly)
 
     runtime_config = RuntimeConfig(
         batch_size=2,
@@ -1173,3 +1183,74 @@ def test_step_requires_a_real_perf_database(
             isl=8,
             osl=5,
         )
+
+
+@pytest.mark.parametrize("encoder_energy,expected_coverage,published", [(1000.0, 0.9125, True), (0.0, 0.7875, False)])
+def test_run_agg_retains_schedule_weighted_energy_for_publication(
+    backend, model, database, monkeypatch, encoder_energy, expected_coverage, published
+):
+    from aiconfigurator.cli.api import _apply_power_coverage_gate
+
+    monkeypatch.setattr(backend, "_mix_step_efficiency", lambda *_: 0.5)
+    monkeypatch.setattr(
+        backend,
+        "_run_encoder_phase",
+        lambda *_: ({"encoder": 10.0}, {"encoder": encoder_energy}, {"encoder": "silicon"}, 0),
+    )
+    mixed = StepEstimate(
+        latency_ms=10.0,
+        energy_wms=9000.0,
+        covered_latency_ms=9.0,
+        per_op_latency_ms={"gemm": 9.0, "missing": 1.0},
+        per_op_energy_wms={"gemm": 9000.0, "missing": 0.0},
+    )
+    decode = StepEstimate(
+        latency_ms=20.0,
+        energy_wms=18000.0,
+        covered_latency_ms=18.0,
+        per_op_latency_ms={"gemm": 18.0, "missing": 2.0},
+        per_op_energy_wms={"gemm": 18000.0, "missing": 0.0},
+    )
+    monkeypatch.setattr(backend, "run_mixed", lambda *_: mixed)
+    monkeypatch.setattr(backend, "_get_genonly_step_estimate", lambda *_: decode)
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=2, isl=8, osl=5, engine_step_backend="rust"),
+        ctx_tokens=8,
+    )
+    groups = summary.get_aggregate_energy_breakdown()
+    assert groups["mix_step"].latency_ms == 10.0  # two mixed steps, each scaled by 0.5
+    assert groups["genonly_step"].latency_ms == 60.0  # three decode-only steps
+    assert groups["encoder"].latency_ms == 10.0
+    assert groups["mix_step"].per_op_energy_wms == {"gemm": 9000.0, "missing": 0.0}
+    assert groups["genonly_step"].per_op_energy_wms == {"gemm": 54000.0, "missing": 0.0}
+    assert summary.get_power_data_coverage() == pytest.approx(expected_coverage)
+    raw = summary.get_result_dict()
+    assert raw["power_w"] == pytest.approx((63000.0 + encoder_energy) / 80.0)
+    gated = _apply_power_coverage_gate(summary, raw)
+    assert (gated["power_w"] is not None) is published
+    assert {k: v for k, v in gated.items() if not k.startswith("power_")} == {
+        k: v for k, v in raw.items() if not k.startswith("power_")
+    }
+
+
+@pytest.mark.parametrize("covered,expected,published", [(9.0, 0.9, True), (8.9, 0.89, False), (0.0, 0.0, False)])
+def test_run_agg_zero_decode_steps_do_not_change_energy_coverage(
+    backend, model, database, monkeypatch, covered, expected, published
+):
+    from aiconfigurator.cli.api import _apply_power_coverage_gate
+
+    mixed = StepEstimate(latency_ms=10.0, energy_wms=1000.0 if covered else 0.0, covered_latency_ms=covered)
+    unused_decode = StepEstimate(latency_ms=1000.0, energy_wms=1000000.0, covered_latency_ms=1000.0)
+    monkeypatch.setattr(backend, "run_mixed", lambda *_: mixed)
+    monkeypatch.setattr(backend, "_get_genonly_step_estimate", lambda *_: unused_decode)
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=1, isl=8, osl=1, engine_step_backend="rust"),
+        ctx_tokens=8,
+    )
+    assert summary.get_aggregate_energy_breakdown()["genonly_step"].latency_ms == 0
+    assert summary.get_power_data_coverage() == pytest.approx(expected)
+    assert (_apply_power_coverage_gate(summary, summary.get_result_dict())["power_w"] is not None) is published

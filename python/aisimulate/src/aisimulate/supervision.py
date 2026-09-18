@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ _THREAD_VARIABLES = (
     "TF_NUM_INTEROP_THREADS",
 )
 _POLL_SECONDS = 0.05
-_GRACE_SECONDS = 1.0
+_GRACE_SECONDS = 2.0
 
 
 def in_supervised_process() -> bool:
@@ -98,42 +99,63 @@ def terminate_processes(processes: list[psutil.Process], *, grace: float = _GRAC
         raise RuntimeError("owned execution processes survived termination; refusing replacement")
 
 
-def terminate_pool(pool, *, workers=None) -> None:
-    """Reap every pool worker before a timeout can create a replacement pool."""
+def terminate_pool(pool, *, workers=None, manager_thread=None) -> None:
+    """Stop owned workers; let the executor manager be their sole waitpid owner."""
     workers = workers if workers is not None else list((getattr(pool, "_processes", None) or {}).values())
+    manager = manager_thread or getattr(pool, "_executor_manager_thread", None)
     descendants: list[psutil.Process] = []
+    owned: list[psutil.Process] = []
     for worker in workers:
         try:
-            descendants.extend(psutil.Process(worker.pid).children(recursive=True))
+            process = psutil.Process(worker.pid)
+            owned.append(process)
+            descendants.extend(process.children(recursive=True))
         except psutil.NoSuchProcess:
             pass
     terminate_processes(descendants)
-    for worker in workers:
-        if worker.is_alive():
-            worker.terminate()
-    deadline = time.monotonic() + _GRACE_SECONDS
-    for worker in workers:
-        worker.join(max(0.0, deadline - time.monotonic()))
-    for worker in workers:
-        if worker.is_alive():
-            worker.kill()
-    for worker in workers:
-        worker.join(_GRACE_SECONDS)
-        if worker.is_alive():
-            raise RuntimeError("worker survived termination; refusing replacement")
+    for process in owned:
+        try:
+            process.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    # Concurrent Process.join() calls race over waitpid and can leave a stale
+    # multiprocessing exitcode even after the OS has reaped the child. The
+    # executor's manager thread owns that join; wait for the manager instead.
+    # Do not call shutdown here: the manager can hold its shutdown lock while
+    # joining a hung finalizer, blocking us before we can kill surviving workers.
+    if manager is not None:
+        manager.join(_GRACE_SECONDS)
+    else:
+        deadline = time.monotonic() + _GRACE_SECONDS
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+    for process in owned:
+        if _live(process):
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+    if manager is not None:
+        manager.join(_GRACE_SECONDS)
+        if manager.is_alive():
+            raise RuntimeError("executor cleanup did not complete; refusing replacement")
+    else:
+        for worker in workers:
+            worker.join(_GRACE_SECONDS)
+    if any(_live(process) for process in owned):
+        raise RuntimeError("worker survived termination; refusing replacement")
     pool.shutdown(wait=True, cancel_futures=True)
 
 
 def close_pool(pool) -> None:
     workers = list((getattr(pool, "_processes", None) or {}).values())
-    if not workers:
-        pool.shutdown(wait=True, cancel_futures=True)
-        return
+    manager = getattr(pool, "_executor_manager_thread", None)
     pool.shutdown(wait=False, cancel_futures=True)
-    deadline = time.monotonic() + _GRACE_SECONDS
-    for worker in workers:
-        worker.join(max(0.0, deadline - time.monotonic()))
-    if any(worker.is_alive() for worker in workers):
+    if manager is not None:
+        manager.join(_GRACE_SECONDS)
+        if manager.is_alive():
+            terminate_pool(pool, workers=workers, manager_thread=manager)
+    elif workers:
         terminate_pool(pool, workers=workers)
 
 
@@ -216,10 +238,15 @@ def _run_process(
     RSS polling is best effort on macOS. Preallocation guards remain mandatory.
     stdout/stderr are inherited rather than accumulated in parent memory.
     """
-    host = discover_host()
-    budget = resolve_budget(policy, host)
-    if budget["memory_limit_bytes"] <= host.process_memory_bytes:
-        raise ResourceLimitError("no host memory remains for an execution process")
+    host = budget = None
+    try:
+        host = discover_host()
+        budget = resolve_budget(policy, host)
+        if budget["memory_limit_bytes"] <= host.process_memory_bytes:
+            raise ResourceLimitError("no host memory remains for an execution process")
+    except ResourceLimitError as exc:
+        exc.plan = {"host": asdict(host) if host is not None else None, "budget": budget, **exc.plan}
+        raise
     env = dict(os.environ)
     env.update(dict.fromkeys(_THREAD_VARIABLES, "1"))
     env["TOKENIZERS_PARALLELISM"] = "false"
@@ -296,10 +323,10 @@ def _run_process(
     }
 
 
-def _save_runtime_report(output: str, report: dict[str, Any], *, overwrite: bool) -> None:
+def _save_report(output: str, filename: str, report: dict[str, Any], *, overwrite: bool) -> None:
     root = Path(output)
     root.mkdir(parents=True, exist_ok=True)
-    path = root / "resource-runtime.json"
+    path = root / filename
     if overwrite and (path.is_file() or path.is_symlink()):
         path.unlink()
     # Exclusive creation prevents a diagnostic from overwriting unrelated evidence.
@@ -322,6 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy = ResourceConfig.model_validate(raw.get("execution", {}).get("resources", {}))
     except (OSError, ValueError, AttributeError):
         # The child retains stack/schema error ordering under conservative limits.
+        raw = None
         policy = ResourceConfig()
     if raw is not None:
         # Validate the lightweight core envelope before --overwrite removes outputs.
@@ -344,32 +372,60 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise ValueError("analytical EPD requires --stack engine without adapters")
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"{args.config}: {exc}")
-    try:
-        output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    except (OSError, ValueError) as exc:
-        parser.error(str(exc))
-    event_output = output / "execution-events.jsonl"
+    event_output = None
+    if raw is not None:
+        try:
+            output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        event_output = str(output / "execution-events.jsonl")
+    resource_plan = None
     try:
         report = run_process(
             [sys.executable, "-m", "aisimulate.resource_worker", "cli", *arguments],
             policy=policy,
-            events_output=str(event_output),
+            events_output=event_output,
         )
     except ResourceLimitError as exc:
-        report = exc.plan
+        resource_plan = {
+            "schema_version": 1,
+            "stack": args.stack,
+            "host": None,
+            "budget": None,
+            "estimate": None,
+            "requested_resources": policy.model_dump(mode="json"),
+            **exc.plan,
+        }
+        report = {
+            "schema_version": 1,
+            "status": "resource_limited",
+            "reason": str(exc),
+            "exit_code": None,
+            "budget": None,
+            "requested_resources": policy.model_dump(mode="json"),
+            "peak_observed_rss_bytes": None,
+            "wall_seconds": None,
+            "thread_limit_per_runtime": None,
+            "termination_complete": None,
+            **exc.plan,
+        }
     if report["status"] != "completed":
         sys.stderr.write(f"aisimulate: {report.get('reason', report['status'])}\n")
-    try:
-        _save_runtime_report(args.output_dir, report, overwrite=args.overwrite)
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f"could not save resource runtime report: {exc}\n")
+    if raw is not None:
+        for filename, payload in (("resource-plan.json", resource_plan), ("resource-runtime.json", report)):
+            if payload is not None:
+                try:
+                    _save_report(args.output_dir, filename, payload, overwrite=args.overwrite)
+                except (OSError, ValueError) as exc:
+                    sys.stderr.write(f"could not save {filename}: {exc}\n")
     if report["status"] == "resource_limited":
         return 3
     if report["status"] == "cancelled":
         return 130
     if report["status"] == "timed_out":
         return 124
-    return int(report.get("exit_code") or 0)
+    code = int(report.get("exit_code") or 0)
+    return 1 if code < 0 else code
 
 
 def supervised_recommendation(config, kwargs):

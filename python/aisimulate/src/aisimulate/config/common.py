@@ -113,10 +113,10 @@ class ResourceConfig(StrictModel):
 
     initialization_timeout_seconds: PositiveFiniteFloat = 60.0
     shutdown_timeout_seconds: PositiveFiniteFloat = 5.0
-    memory_limit_gib: PositiveFiniteFloat | Literal["auto"] = "auto"
+    memory_limit_gb: PositiveFiniteFloat | Literal["auto"] = "auto"
     cpu_limit: PositiveStrictInt | Literal["auto"] = "auto"
-    reserve_memory_gib: float = Field(default=2.0, strict=True, ge=0, allow_inf_nan=False)
-    reserve_memory_fraction: float = Field(default=0.1, strict=True, ge=0, lt=1, allow_inf_nan=False)
+    reserve_memory_gb: float = Field(default=1.0, strict=True, ge=0, allow_inf_nan=False)
+    reserve_memory_fraction: float = Field(default=0.0, strict=True, ge=0, lt=1, allow_inf_nan=False)
     available_memory_fraction: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
 
 
@@ -164,13 +164,9 @@ class OptimizationConfig(StrictModel):
 class OptimizerConfig(StrictModel):
     algorithm: Literal["bayesian", "random"] = "bayesian"
     max_trials: PositiveStrictInt = 320
-    parallelism: PositiveStrictInt | Literal["auto"] = "auto"
+    parallelism: PositiveStrictInt = 16
     candidate_timeout_seconds: PositiveFiniteFloat = 600.0
     seed: NonNegativeStrictInt = 42
-
-    @property
-    def suggestion_batch_size(self) -> int:
-        return 16 if self.parallelism == "auto" else self.parallelism
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:

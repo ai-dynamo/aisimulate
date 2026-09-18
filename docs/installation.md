@@ -106,14 +106,18 @@ to the intended environment.
 ## Use an internal nightly
 
 The [nightly workflow](../.github/workflows/nightly-ci.yml) produces a wheel
-version such as `0.12.0.devYYYYMMDD`, then stages validated artifacts to
-access-controlled Artifactory after approval. A successful build or a dev
-suffix alone does not establish that staging completed. The nightly path is
+version such as `0.12.0.devYYYYMMDD`, then stages artifacts to access-controlled
+Artifactory through the protected release environment. The run subsequently
+checks the downloaded wheel and qualifies its FPE support matrix. Use a
+successful completed nightly: a successful build, staging step, or dev suffix
+alone does not establish that validation completed. The nightly path is
 `nightly/<run_id>/`, not a public PyPI release channel.
 
-Obtain the wheel for your platform and its provenance/checksums from a
-successfully staged run using your organization's authenticated artifact
-access. Verify the recorded SHA-256, then install that exact downloaded file:
+Obtain the wheel for your platform from Artifactory using your organization's
+authenticated artifact access. Obtain `provenance.json` and `SHA256SUMS.txt`
+from the same run's `nightly-dist-amd64` or `nightly-dist-arm64` GitHub artifact.
+Verify the recorded source revision and wheel SHA-256, then install that exact
+downloaded file:
 
 ```bash
 python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl

@@ -19,11 +19,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import ijson
 import psutil
 
 from .config.common import ResourceConfig
 
-GIB = 1024**3
+GB = 1_000_000_000
 MIB = 1024**2
 WORKER_BASELINE_BYTES = 512 * MIB
 COORDINATOR_RESERVE_BYTES = 256 * MIB
@@ -154,23 +155,22 @@ def resolve_budget(policy: ResourceConfig, host: HostResources) -> dict[str, Any
     inherited = os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
     if inherited:
         budget = json.loads(inherited)
-        supervisor_rss = psutil.Process(budget["supervisor_pid"]).memory_info().rss
-        return {
-            "memory_limit_bytes": budget["memory_limit_bytes"],
-            "cpu_limit": budget["cpu_limit"],
-            "reserved_host_memory_bytes": budget["reserved_host_memory_bytes"],
-            "coordinator_memory_bytes": host.process_memory_bytes + supervisor_rss + COORDINATOR_RESERVE_BYTES,
+        try:
+            supervisor_rss = psutil.Process(budget["supervisor_pid"]).memory_info().rss
+        except psutil.Error as exc:
+            raise ResourceLimitError(f"cannot inspect execution supervisor: {exc}") from exc
+        return {key: budget[key] for key in ("memory_limit_bytes", "cpu_limit", "reserved_host_memory_bytes")} | {
+            "coordinator_memory_bytes": host.process_memory_bytes + supervisor_rss + COORDINATOR_RESERVE_BYTES
         }
-    reserve = max(int(policy.reserve_memory_gib * GIB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
+    reserve = max(int(policy.reserve_memory_gb * GB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
     headroom = max(0, host.available_memory_bytes - reserve)
-    if policy.memory_limit_gib == "auto":
+    if policy.memory_limit_gb == "auto":
         budget = min(int(policy.available_memory_fraction * host.available_memory_bytes), headroom)
     else:
-        budget = int(policy.memory_limit_gib * GIB)
+        budget = int(policy.memory_limit_gb * GB)
         if budget > headroom:
             raise ResourceLimitError(
-                f"requested host memory budget {budget / GIB:.2f} GiB "
-                f"exceeds available headroom {headroom / GIB:.2f} GiB"
+                f"requested host memory budget {budget / GB:.2f} GB exceeds available headroom {headroom / GB:.2f} GB"
             )
     cpus = max(1, math.floor(host.cpu_count) - (1 if host.cpu_count > 1 else 0))
     if policy.cpu_limit != "auto":
@@ -242,8 +242,10 @@ def workload_bounds(config: Any) -> dict[str, Any]:
     }
 
 
-def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstimate:
-    """Inspect bounded JSON metadata, never synthesize prompt/output arrays."""
+def _estimate_trace(
+    workload: Mapping[str, Any], *, stack: str, inspection_budget_bytes: int | None = None
+) -> ResourceEstimate:
+    """Stream JSON/JSONL metadata without materializing request or token arrays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
     if stack not in {"engine", "dynamo"} or format_name not in {
@@ -275,71 +277,58 @@ def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstim
     total_bytes = tokens = hashes = records = turns = 0
     block_size = int(workload.get("trace_block_size") or 512)
 
-    def visit(value: Any) -> None:
-        nonlocal tokens, hashes, records, turns, block_size
-        if isinstance(value, dict):
-            if length_keys.intersection(value) or token_keys.intersection(value):
-                records += 1
-            for key, item in value.items():
-                if key in length_keys:
-                    values = item if isinstance(item, list) else [item]
-                    if any(type(number) is not int or number < 0 for number in values):
-                        raise ValueError("trace token lengths must be nonnegative integers")
-                    tokens += sum(values)
-                elif key in token_keys and isinstance(item, list):
-                    tokens += len(item)
-                elif key in hash_keys and isinstance(item, list):
-                    hashes += len(item)
-                elif key in {"block_size", "trace_block_size"} and type(item) is int:
-                    block_size = max(block_size, item)
-                elif key == "num_turns" and type(item) is int:
-                    turns += item + 1
-                else:
-                    visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-
     paths = workload.get("trace_paths") or [workload["trace_path"]]
-    file_count = scanned_bytes = 0
     try:
         for raw_path in paths:
             source = Path(raw_path)
             files = source.rglob("*") if source.is_dir() else (source,)
             for path in files:
-                file_count += 1
-                if file_count > 1024:
-                    return unqualified("trace metadata exceeds the bounded 1024-path inspection limit")
                 if path.is_symlink():
                     return unqualified("trace symlinks have no stable resource identity")
                 if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
                     continue
-                total_bytes += path.stat().st_size
-                if file_count > 1024 or total_bytes > 16 * MIB:
-                    return unqualified("trace metadata exceeds the bounded 16 MiB / 1024-file inspection limit")
-                with path.open(encoding="utf-8") as stream:
-                    if format_name == "weka" and path.suffix.lower() == ".json":
-                        document = stream.read(256 * 1024 + 1)
-                        if len(document) > 256 * 1024:
-                            return unqualified("trace JSON document exceeds the bounded 256 KiB inspection limit")
-                        scanned_bytes += len(document.encode("utf-8"))
-                        if scanned_bytes > 16 * MIB:
-                            return unqualified("trace grew beyond the bounded inspection limit")
-                        visit(json.loads(document))
-                    else:
-                        while line := stream.readline(256 * 1024 + 1):
-                            if len(line) > 256 * 1024:
-                                return unqualified("trace JSON record exceeds the bounded 256 KiB inspection limit")
-                            scanned_bytes += len(line.encode("utf-8"))
-                            if scanned_bytes > 16 * MIB:
-                                return unqualified("trace grew beyond the bounded inspection limit")
-                            if line.strip():
-                                visit(json.loads(line))
-    except (OSError, ValueError, RecursionError) as exc:
+                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
+                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
+                    return ResourceEstimate(
+                        "trace-json-metadata-v1",
+                        None,
+                        0,
+                        0,
+                        storage_estimate,
+                        "trace storage estimate exceeds live headroom before metadata parsing",
+                    )
+                # Stream documents and arrays. A parser scalar still occupies
+                # memory, so reject oversized storage estimates before reading.
+                # Runtime supervision also covers files growing after stat().
+                maps: list[bool] = []
+                with path.open("rb") as stream:
+                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+                        if event == "start_map":
+                            maps.append(False)
+                        elif event == "end_map":
+                            records += int(maps.pop())
+                        elif event == "map_key" and value in length_keys | token_keys:
+                            maps[-1] = True
+                        else:
+                            parts = prefix.rsplit(".", 2)
+                            key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
+                            if key in length_keys and event not in {"start_array", "end_array"}:
+                                if event != "number" or type(value) is not int or value < 0:
+                                    raise ValueError("trace token lengths must be nonnegative integers")
+                                tokens += value
+                            elif key in token_keys and parts[-1] == "item" and event == "number":
+                                tokens += 1
+                            elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
+                                hashes += 1
+                            elif key in {"block_size", "trace_block_size"} and event == "number":
+                                block_size = max(block_size, int(value))
+                            elif key == "num_turns" and event == "number":
+                                turns += int(value) + 1
+                    total_bytes += stream.tell()
+    except (OSError, ValueError, ijson.JSONError) as exc:
         return unqualified(f"cannot inspect trace metadata: {exc}")
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
-    total_bytes = max(total_bytes, scanned_bytes)
     tokens += hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
@@ -347,13 +336,24 @@ def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstim
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
     return ResourceEstimate(
-        "trace-json-metadata-v1", None, 0, 0, peak, "bounded metadata estimate; runtime trace validation still required"
+        "trace-json-metadata-v1",
+        None,
+        0,
+        0,
+        peak,
+        "streamed metadata estimate; runtime trace validation still required",
     )
 
 
-def estimate_workload(workload: Mapping[str, Any], *, stack: str, concurrency: int | None = None) -> ResourceEstimate:
+def estimate_workload(
+    workload: Mapping[str, Any],
+    *,
+    stack: str,
+    concurrency: int | None = None,
+    inspection_budget_bytes: int | None = None,
+) -> ResourceEstimate:
     if workload.get("trace_paths") or workload.get("trace_path"):
-        return _estimate_trace(workload, stack=stack)
+        return _estimate_trace(workload, stack=stack, inspection_budget_bytes=inspection_budget_bytes)
     load = concurrency or workload.get("concurrency") or workload.get("request_rate")
     count = workload.get("request_count")
     if count is None:
@@ -396,11 +396,18 @@ def build_plan(
     policy = policy or _POLICY.get() or ResourceConfig()
     host = host or discover_host()
     budget = resolve_budget(policy, host)
+    free = max(
+        0,
+        min(
+            budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"],
+            host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
+        ),
+    )
     estimator = getattr(factory, "estimate_host_resources", None)
     estimate = (
         estimator(workload, concurrency=concurrency)
         if callable(estimator)
-        else estimate_workload(workload, stack=stack, concurrency=concurrency)
+        else estimate_workload(workload, stack=stack, concurrency=concurrency, inspection_budget_bytes=free)
     )
     if not isinstance(estimate, ResourceEstimate) or type(estimate.api_version) is not int or estimate.api_version != 1:
         raise ResourceLimitError("runner returned an incompatible host resource estimate")
@@ -411,8 +418,13 @@ def build_plan(
         raise ResourceLimitError("runner returned an invalid host resource estimate")
     if peak is not None and (type(peak) is not int or peak <= 0 or peak < estimate.lower_bound_bytes):
         raise ResourceLimitError("runner returned an invalid host resource estimate")
-    free = max(0, budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"])
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
+    if (
+        peak is None
+        and os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
+        and free >= max(WORKER_BASELINE_BYTES, estimate.lower_bound_bytes)
+    ):
+        workers = 1  # Unqualified estimates require serial, continuously monitored execution.
     return {
         "schema_version": 1,
         "status": "admitted" if workers else "resource_limited",
@@ -431,8 +443,8 @@ def require_plan(plan: dict[str, Any]) -> None:
         estimate = plan["estimate"]
         raise ResourceLimitError(
             f"resource_limited: {plan['reason']}; allocation model={estimate['allocation_model']}, "
-            f"requests={estimate['request_count']}, lower bound={estimate['lower_bound_bytes'] / GIB:.2f} GiB, "
-            f"host budget={plan['budget']['memory_limit_bytes'] / GIB:.2f} GiB. "
+            f"requests={estimate['request_count']}, lower bound={estimate['lower_bound_bytes'] / GB:.2f} GB, "
+            f"host budget={plan['budget']['memory_limit_bytes'] / GB:.2f} GB. "
             "Choose an explicit smaller workload or an execution host with sufficient resources.",
             plan=plan,
         )
@@ -471,6 +483,20 @@ class GuardedRunner:
         self.runner.close()
 
 
+def _child_memory_bytes() -> int:
+    try:
+        children = psutil.Process().children(recursive=True)
+        total = 0
+        for child in children:
+            try:
+                total += child.memory_info().rss
+            except psutil.NoSuchProcess:
+                continue
+        return total
+    except psutil.Error as exc:
+        raise ResourceLimitError(f"cannot inspect owned execution processes: {exc}") from exc
+
+
 @dataclass(frozen=True)
 class GuardedRunnerFactory:
     factory: Any
@@ -483,53 +509,61 @@ class GuardedRunnerFactory:
     def create(self, worker_id):
         return GuardedRunner(self.factory.create(worker_id), self.stack, self.policy, self.factory)
 
-    def admit_wave(self, specs) -> dict[str, Any]:
-        """Reserve the whole wave against current coordinator and host headroom."""
+    def admit_wave(self, specs: list[Any]) -> dict[str, Any]:
+        """Reserve the sum of a whole wave before creating any of its workers."""
         host = discover_host()
-        budget = resolve_budget(self.policy, host)
-        try:
-            descendant_rss = 0
-            for process in psutil.Process().children(recursive=True):
-                try:
-                    descendant_rss += process.memory_info().rss
-                except psutil.NoSuchProcess:
-                    pass
-        except psutil.Error as exc:
-            raise ResourceLimitError(f"cannot inspect workers before admission: {exc}") from exc
         plans = [
             build_plan(
                 spec.workload,
                 stack=self.stack,
-                concurrency=spec.concurrency,
                 policy=self.policy,
                 host=host,
                 factory=self.factory,
+                concurrency=spec.concurrency,
             )
             for spec in specs
         ]
         for plan in plans:
             require_plan(plan)
-        required = sum(plan["estimate"]["estimated_peak_bytes"] for plan in plans)
+        budget = resolve_budget(self.policy, host)
+        budget["coordinator_memory_bytes"] += _child_memory_bytes()
         available = max(
             0,
             min(
-                budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"] - descendant_rss,
+                budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"],
                 host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
             ),
         )
+        peaks = [plan["estimate"]["estimated_peak_bytes"] for plan in plans]
+        required = sum(peak or WORKER_BASELINE_BYTES for peak in peaks)
+        admitted = (
+            required <= available
+            and len(specs) <= budget["cpu_limit"]
+            and (all(peak is not None for peak in peaks) or len(specs) == 1)
+        )
         plan = {
-            "schema_version": 1,
-            "status": "admitted" if required <= available else "resource_limited",
-            "reason": "" if required <= available else "candidate wave exceeds current host headroom",
+            "status": "admitted" if admitted else "resource_limited",
             "required_bytes": required,
             "available_bytes": available,
-            "owned_descendant_rss_bytes": descendant_rss,
-            "candidate_estimates": [plan["estimate"] for plan in plans],
-            "budget": budget,
+            "workers": len(specs),
+            "candidates": plans,
         }
-        from .supervision import checkpoint
-
-        checkpoint("wave_resource_plan", plan)
-        if plan["status"] == "resource_limited":
-            raise ResourceLimitError(plan["reason"], plan=plan)
+        if not admitted:
+            raise ResourceLimitError("candidate wave exceeds current host headroom", plan=plan)
         return plan
+
+    def live_pressure(self) -> dict[str, Any] | None:
+        host = discover_host()
+        budget = resolve_budget(self.policy, host)
+        worker_rss = _child_memory_bytes()
+        used = budget["coordinator_memory_bytes"] - COORDINATOR_RESERVE_BYTES + worker_rss
+        if used >= budget["memory_limit_bytes"] * 0.9 or host.available_memory_bytes < (
+            budget["reserved_host_memory_bytes"] + COORDINATOR_RESERVE_BYTES
+        ):
+            return {
+                "status": "resource_limited",
+                "reason": "live memory pressure",
+                "observed_rss_bytes": used,
+                "memory_limit_bytes": budget["memory_limit_bytes"],
+            }
+        return None

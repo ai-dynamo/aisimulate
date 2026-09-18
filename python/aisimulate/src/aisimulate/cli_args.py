@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-"""Lightweight CLI parsing shared with the execution supervisor."""
+"""Lightweight argument parsing before supervised runtime imports."""
 
 from __future__ import annotations
 
@@ -16,6 +15,13 @@ from .detail import parse_detail_sections
 
 class _CliConfigError(ValueError):
     pass
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,9 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--output-dir", default="./aisimulate-output")
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
-        child.add_argument(
-            "--dry-run", action="store_true", help="validate core configuration and plan host resources without replay"
-        )
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].epilog = (
         "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
@@ -53,7 +56,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_detail_sections,
         default=(),
         metavar="SECTIONS",
-        help="comma-separated summary,memory,time, or all; unavailable evidence is skipped",
+        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
+    )
+    subparsers.choices["predict"].add_argument(
+        "--diagnostics-top-n",
+        type=_positive_int,
+        default=12,
+        metavar="N",
+        help="maximum operations per phase in energy detail tables (default: 12)",
     )
     subparsers.choices["predict"].add_argument(
         "--online",
@@ -66,11 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _load_mapping(path: str) -> dict[str, Any]:
     source = Path(path)
     try:
-        with source.open(encoding="utf-8") as stream:
-            text = stream.read(1024 * 1024 + 1)
-        if len(text) > 1024 * 1024:
-            raise _CliConfigError("configuration exceeds the 1 MiB supervisor parsing limit")
-        value = yaml.safe_load(text)
+        value = yaml.safe_load(source.read_text(encoding="utf-8"))
     except OSError as exc:
         raise _CliConfigError(f"could not read configuration {source}: {exc}") from exc
     except yaml.YAMLError as exc:

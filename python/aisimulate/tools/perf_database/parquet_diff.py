@@ -21,6 +21,12 @@ import pyarrow as pa
 import pyarrow.csv as pc
 import pyarrow.parquet as pq
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+from power_data import power_metric_issues as _power_metric_issues
+
 PERF_DATA_PREFIX = "aic-core/src/aiconfigurator_core/systems/data"
 COMMENT_MARKER = "<!-- perf-parquet-diff-comment -->"
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
@@ -110,29 +116,6 @@ class Comparison:
     head_hash: str | None
     row_diff: RowDiff | None
     power_issues: list[str] = field(default_factory=list)
-
-
-def _power_metric_issues(table: pa.Table) -> list[str]:
-    """Return committed-data contract violations for optional power metrics."""
-    issues: list[str] = []
-    for name in ("power", "power_limit"):
-        if name not in table.column_names:
-            continue
-
-        field = table.schema.field(name)
-        column = table.column(name)
-        if not pa.types.is_float64(field.type):
-            issues.append(f"{name} must be double, found {field.type}")
-            continue
-        if column.null_count:
-            issues.append(f"{name} contains {column.null_count} null cells")
-
-        invalid = [
-            value for value in column.to_pylist() if value is not None and (not math.isfinite(value) or value < 0)
-        ]
-        if invalid:
-            issues.append(f"{name} contains {len(invalid)} non-finite or negative values")
-    return issues
 
 
 def _git(args: list[str], *, input_data: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess:

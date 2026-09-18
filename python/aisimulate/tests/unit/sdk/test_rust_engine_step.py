@@ -425,6 +425,8 @@ def test_mixed_and_decode_helpers_pass_raw_step_args(monkeypatch) -> None:
         "component_latency_ms": {"shared_non_attention": 5.0, "context_attention": 2.0, "decode_attention": 1.5},
         "component_energy_wms": {"shared_non_attention": 50.0, "context_attention": 20.0, "decode_attention": 15.0},
         "per_op_latency_ms": {"context_mlp": 5.0, "context_attention (scaled)": 2.0, "generation_attention": 1.5},
+        "per_op_energy_wms": {"context_mlp": 50.0, "context_attention (scaled)": 20.0, "generation_attention": 15.0},
+        "covered_latency_ms": 8.5,
         "per_op_source": {
             "context_mlp": "estimated",
             "context_attention (scaled)": "silicon",
@@ -780,6 +782,9 @@ def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
             calls["diag"] += 1
             return json.dumps({"source": "fallback_regression", "readiness": "insufficient_data"})
 
+        def regression_store_diagnostics(self):
+            return json.dumps([{"workload_kind": "pure_prefill", "ready": False, "retained_observations": 0}])
+
         def min_correction_factor(self):
             return None
 
@@ -803,7 +808,58 @@ def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
     assert calls["tune"][1] == [[single_fpm, single_fpm]]
 
     assert model.diagnostics()["source"] == "fallback_regression"
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": "pure_prefill", "ready": False, "retained_observations": 0}
+    ]
     assert model.get_min_correction_factor() is None
+
+
+@pytest.mark.integration
+def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
+    """The public compiled API keeps each full-rank workload fit independent."""
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    model = RustForwardPassPerfModel.from_regression("aggregated")
+    kinds = ["pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill"]
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": kind, "ready": False, "retained_observations": 0} for kind in kinds
+    ]
+
+    def iteration(kind: str, scale: int) -> list[dict[str, object]]:
+        prefill = {"num_prefill_requests": 1, "sum_prefill_tokens": scale}
+        decode = {"num_decode_requests": scale, "sum_decode_kv_tokens": 100 * scale}
+        scheduled = {
+            "pure_decode": [decode],
+            "contains_locally_mixed": [prefill | decode],
+            "cross_rank_aggregated": [decode, prefill],
+            "pure_prefill": [prefill],
+        }[kind]
+        # Latency is affine in the existing attention feature for each kind,
+        # with deliberately different intercepts to expose accidental pooling.
+        attention = scale * (scale + 1) / 2 if kind == "pure_prefill" else 100 * scale
+        if kind == "contains_locally_mixed":
+            attention += scale * (scale + 1) / 2
+        latency_ms = 10 * (kinds.index(kind) + 1) + attention / 100
+        return [
+            {"worker_id": "worker", "dp_rank": rank, "scheduled_requests": fields, "wall_time": latency_ms / 1000}
+            for rank, fields in enumerate(scheduled)
+        ]
+
+    for trained_count, kind in enumerate(kinds, 1):
+        query = iteration(kind, 3)
+        assert model.estimate_forward_pass_time_ms(query) is None
+        for scale in range(1, 6):
+            sample = iteration(kind, scale)
+            assert model.estimate_forward_pass_time_ms(sample) is None
+            model.tune_with_fpms(sample)
+        assert model.estimate_forward_pass_time_ms(query) == pytest.approx(query[0]["wall_time"] * 1000, rel=1e-5)
+        stores = model.regression_store_diagnostics()
+        assert sum(store["retained_observations"] for store in stores) == 5 * trained_count
+        assert model.diagnostics()["retained_observations"] == 5 * trained_count
+        assert model.diagnostics()["readiness"] == "ready"
+        assert [store["ready"] for store in stores] == [index < trained_count for index in range(4)]
+        for cold_kind in kinds[trained_count:]:
+            assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
 def test_forward_pass_perf_model_constructors_forward_exact_worker_type(monkeypatch) -> None:
@@ -2030,3 +2086,66 @@ def test_default_config_wideep_mla_spec_survives_the_real_bincode_decode():
     # The JSON -> bincode conversion is NOT schema-gated (the version check lives
     # in `from_bincode`), so this exercises field validation on today's tree.
     assert len(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)) > 0
+
+
+def test_mixed_energy_coverage_keeps_missing_contributions_with_repeated_names(monkeypatch):
+    class Handle:
+        def _mixed_step_breakdown_per_op_with_metadata(self, *args, **kwargs):
+            return ([("draft", 3.0, 30.0, "silicon")], [("draft", 7.0, 0.0, "missing")], [])
+
+        def last_provenance(self):
+            return None
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *_: Handle())
+    values = rust_engine_step.estimate_mixed_step_breakdown_with_rust(
+        _dense_model(),
+        SimpleNamespace(),
+        ctx_tokens=128,
+        gen_tokens=0,
+        isl=128,
+        osl=4,
+        prefix=0,
+    )
+    assert values["per_op_latency_ms"]["draft"] == 10.0
+    assert values["per_op_energy_wms"]["draft"] == 30.0
+    assert values["covered_latency_ms"] == 3.0
+
+
+def test_decode_estimate_retains_energy_and_partial_coverage(monkeypatch):
+    class Handle:
+        def _decode_step_per_op_with_metadata(self, *args, **kwargs):
+            return [("covered", 3.0, 30.0, "silicon"), ("missing", 7.0, 0.0, "empirical")]
+
+        def last_provenance(self):
+            return None
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *_: Handle())
+    value = rust_engine_step._estimate_decode_step_with_rust(
+        _dense_model(),
+        SimpleNamespace(),
+        gen_tokens=4,
+        isl=128,
+        osl=4,
+    )
+    assert value.latency_ms == 10.0
+    assert value.energy_wms == 30.0
+    assert value.covered_latency_ms == 3.0
+    assert value.per_op_energy_wms == {"covered": 30.0, "missing": 0.0}
+
+
+@pytest.mark.parametrize("entrypoint", ["_estimate_decode_step_with_rust", "estimate_decode_step_breakdown_with_rust"])
+@pytest.mark.parametrize("perf_miss", [True, False])
+def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, perf_miss):
+    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+
+    error = ValueError("perf database error: missing data" if perf_miss else "invalid engine configuration")
+
+    class FailingHandle:
+        def _decode_step_per_op_with_metadata(self, *args, **kwargs):
+            raise error
+
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda *args: FailingHandle())
+    expected = PerfDataNotAvailableError if perf_miss else ValueError
+    with pytest.raises(expected, match=str(error)) as caught:
+        getattr(rust_engine_step, entrypoint)(None, None, gen_tokens=1, isl=8, osl=4)
+    assert (caught.value.__cause__ if perf_miss else caught.value) is error

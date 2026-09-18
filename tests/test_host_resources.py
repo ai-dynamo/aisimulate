@@ -15,7 +15,7 @@ import aisimulate.resources as resources
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import ResourceConfig, split_config_sections
 from aisimulate.resources import (
-    GIB,
+    GB,
     HostResources,
     ResourceEstimate,
     ResourceLimitError,
@@ -30,7 +30,7 @@ from aisimulate.resources import (
 
 @pytest.fixture
 def host():
-    return HostResources(32 * GIB, 16 * GIB, 8)
+    return HostResources(32 * GB, 16 * GB, 8)
 
 
 def _config():
@@ -60,101 +60,52 @@ def test_reported_dynamo_allocation_is_rejected_without_materialization(host):
     plan = build_plan(bounds, stack="dynamo", host=host, requested_parallelism=8)
     assert plan["estimate"]["request_count"] == 6_451_200
     assert plan["estimate"]["input_token_bytes"] == 264_241_152_000
-    assert plan["estimate"]["lower_bound_bytes"] / GIB == 246.09375
+    assert plan["estimate"]["lower_bound_bytes"] / GB == 264.241152
     assert plan["effective_parallelism"] == 0
-    with pytest.raises(ResourceLimitError, match="246.09 GiB"):
+    with pytest.raises(ResourceLimitError, match="264.24 GB"):
         require_plan(plan)
     assert raw == original
 
 
 def test_budget_reserves_headroom_and_leaves_cpu(host):
     budget = resolve_budget(ResourceConfig(), host)
-    assert budget["memory_limit_bytes"] == 16 * GIB - int(3.2 * GIB)
-    assert budget["reserved_host_memory_bytes"] == int(3.2 * GIB)
+    assert budget["memory_limit_bytes"] == 14_400_000_000
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
     assert budget["cpu_limit"] == 7
-    assert resolve_budget(ResourceConfig(), HostResources(32 * GIB, 16 * GIB, 0.5))["cpu_limit"] == 1
+    assert resolve_budget(ResourceConfig(), HostResources(32 * GB, 16 * GB, 0.5))["cpu_limit"] == 1
 
 
-def test_wave_admission_sums_candidates_and_refreshes_host_headroom(monkeypatch):
-    from types import SimpleNamespace
-
-    import aisimulate.supervision as supervision
-
-    current = HostResources(32 * GIB, 16 * GIB, 8, GIB)
-    monkeypatch.setattr(resources, "discover_host", lambda: current)
-    monkeypatch.setattr(supervision, "checkpoint", lambda *args: None)
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": 123,
-                "memory_limit_bytes": 8 * GIB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": 3 * GIB,
-            }
-        ),
-    )
-
-    class Process:
-        def __init__(self, *args):
-            pass
-
-        def memory_info(self):
-            return SimpleNamespace(rss=GIB)
-
-        def children(self, **kwargs):
-            return [Process()]
-
-    class Factory:
-        def estimate_host_resources(self, workload, **kwargs):
-            return ResourceEstimate("fixture-v1", 1, 0, 0, workload["peak"])
-
-    monkeypatch.setattr(resources.psutil, "Process", Process)
-    factory = resources.GuardedRunnerFactory(Factory(), "fixture", ResourceConfig())
-    specs = [SimpleNamespace(workload={"peak": value * GIB}, concurrency=1) for value in (1, 2)]
-    plan = factory.admit_wave(specs)
-    assert plan["status"] == "admitted"
-    assert plan["required_bytes"] == 3 * GIB
-    assert plan["owned_descendant_rss_bytes"] == GIB
-    # Each candidate fits individually, but their combined reservations do not.
-    with pytest.raises(ResourceLimitError, match="candidate wave"):
-        factory.admit_wave(specs * 2)
-    # The fixed budget remains unchanged when another application consumes RAM.
-    current = HostResources(32 * GIB, 4 * GIB, 8, GIB)
-    with pytest.raises(ResourceLimitError, match="candidate wave"):
-        factory.admit_wave(specs)
+@pytest.mark.parametrize(
+    ("available", "expected_budget"),
+    [
+        (900_000_000, 0),
+        (1_000_000_000, 0),
+        (1_000_000_001, 1),
+        (4_000_000_000, 3_000_000_000),
+        (16_000_000_000, 14_400_000_000),
+    ],
+)
+def test_default_reserve_is_one_decimal_gb_on_large_hosts(available, expected_budget):
+    budget = resolve_budget(ResourceConfig(), HostResources(512 * GB, available, 8))
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
+    assert budget["memory_limit_bytes"] == expected_budget
 
 
-def test_refused_wave_never_submits_a_replay(monkeypatch):
-    from pathlib import Path
-
-    from aisimulate.recommend import _run_recommendation
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.search import ProcessPoolExecutor
-
-    def refuse(*args):
-        raise ResourceLimitError("wave admission refused")
-
-    def unexpected_submit(*args, **kwargs):
-        pytest.fail("refused wave reached worker submission")
-
-    monkeypatch.setattr(resources.GuardedRunnerFactory, "admit_wave", refuse)
-    monkeypatch.setattr(ProcessPoolExecutor, "submit", unexpected_submit)
-    raw = yaml.safe_load(
-        Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml").read_text()
-    )
-    raw["optimizer"].update(max_trials=1, parallelism=1)
-    with pytest.raises(ResourceLimitError, match="wave admission refused"):
-        _run_recommendation(
-            CoreRecommendationConfig.model_validate(raw),
-            stack="engine",
-            runner_factory=EngineReplayRunnerFactory(),
-            show_progress=False,
-        )
+@pytest.mark.parametrize(
+    ("settings", "expected_reserve", "expected_budget"),
+    [
+        ({"reserve_memory_gb": 1.5}, 1_500_000_000, 2_500_000_000),
+        ({"reserve_memory_fraction": 0.1}, 3_200_000_000, 800_000_000),
+    ],
+)
+def test_explicit_reserve_overrides(settings, expected_reserve, expected_budget):
+    budget = resolve_budget(ResourceConfig(**settings), HostResources(32 * GB, 4 * GB, 8))
+    assert budget["reserved_host_memory_bytes"] == expected_reserve
+    assert budget["memory_limit_bytes"] == expected_budget
 
 
 def test_low_memory_never_falls_back_to_one_worker():
-    host = HostResources(8 * GIB, GIB, 4)
+    host = HostResources(8 * GB, GB, 4)
     plan = build_plan({"isl": 8, "osl": 2, "request_count": 1}, stack="engine", host=host)
     assert plan["effective_parallelism"] == 0
     with pytest.raises(ResourceLimitError):
@@ -162,19 +113,19 @@ def test_low_memory_never_falls_back_to_one_worker():
 
 
 def test_explicit_budgets_are_validated_against_live_limits(host):
-    with pytest.raises(ResourceLimitError, match="headroom"):
-        resolve_budget(ResourceConfig(memory_limit_gib=20.0), host)
+    with pytest.raises(ResourceLimitError, match="20.00 GB exceeds available headroom 15.00 GB"):
+        resolve_budget(ResourceConfig(memory_limit_gb=20.0), host)
     with pytest.raises(ResourceLimitError, match="CPU allowance"):
         resolve_budget(ResourceConfig(cpu_limit=16), host)
-    assert resolve_budget(ResourceConfig(memory_limit_gib=4.0, cpu_limit=2), host)["memory_limit_bytes"] == 4 * GIB
+    assert resolve_budget(ResourceConfig(memory_limit_gb=4.0, cpu_limit=2), host)["memory_limit_bytes"] == 4_000_000_000
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("memory_limit_gib", True),
-        ("memory_limit_gib", 0),
-        ("memory_limit_gib", float("inf")),
+        ("memory_limit_gb", True),
+        ("memory_limit_gb", 0),
+        ("memory_limit_gb", float("inf")),
         ("cpu_limit", True),
         ("reserve_memory_fraction", 1.0),
     ],
@@ -193,16 +144,16 @@ def test_cgroup_limits_use_ancestors_and_current_usage(tmp_path, host):
     child = base / "parent/child"
     child.mkdir(parents=True)
     for directory, limit, usage, cpu in [
-        (base, 32 * GIB, 4 * GIB, "max 100000"),
-        (child.parent, 8 * GIB, 7 * GIB, "150000 100000"),
-        (child, 6 * GIB, GIB, "max 100000"),
+        (base, 32 * GB, 4 * GB, "max 100000"),
+        (child.parent, 8 * GB, 7 * GB, "150000 100000"),
+        (child, 6 * GB, GB, "max 100000"),
     ]:
         (directory / "memory.max").write_text(str(limit))
         (directory / "memory.current").write_text(str(usage))
         (directory / "cpu.max").write_text(cpu)
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 6 * GIB
-    assert actual.available_memory_bytes == GIB
+    assert actual.total_memory_bytes == 6 * GB
+    assert actual.available_memory_bytes == GB
     assert actual.cpu_count == 1.5
     (child / "memory.current").unlink()
     assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 0
@@ -234,17 +185,16 @@ def test_plugin_estimate_is_versioned(host):
 
 def test_execution_section_is_core_and_roundtrips():
     raw = _config()
-    raw["execution"] = {"resources": {"memory_limit_gib": 4.0}}
+    raw["execution"] = {"resources": {"memory_limit_gb": 4.0}}
     core, adapters = split_config_sections(raw, command="recommend")
     assert not adapters
     config = CoreRecommendationConfig.model_validate(core)
     roundtrip = CoreRecommendationConfig.model_validate(config.model_dump(mode="json"))
-    assert roundtrip.execution.resources.memory_limit_gib == 4.0
+    assert roundtrip.execution.resources.memory_limit_gb == 4.0
 
 
-@pytest.mark.parametrize("command", ["predict", "recommend"])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command, dry_run):
+@pytest.mark.parametrize("command", ["predict"])
+def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command):
     class NeverExecute:
         def create(self, worker_id):
             pytest.fail("oversized workload must not create a runner")
@@ -264,7 +214,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command,
     config.write_text(yaml.safe_dump(raw))
     out = tmp_path / "result"
     args = [command, "--stack", "dynamo", "--config", str(config), "--output-dir", str(out)]
-    assert cli._main(args + (["--dry-run"] if dry_run else [])) == 3
+    assert cli.main(args) == 3
     report = json.loads((out / "resource-plan.json").read_text())
     assert report["status"] == "resource_limited"
     assert report["estimate"]["input_token_bytes"] == 264_241_152_000
@@ -277,9 +227,7 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
     config = CoreRecommendationConfig.model_validate(raw)
-    monkeypatch.setattr(
-        recommendation, "build_plan", lambda *a, **kw: {"status": "admitted", "effective_parallelism": 2}
-    )
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
     seen = []
 
     class CaptureSweeper:
@@ -321,13 +269,13 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     cpu = tmp_path / "sys/fs/cgroup/cpu"
     memory.mkdir(parents=True)
     cpu.mkdir(parents=True)
-    (memory / "memory.limit_in_bytes").write_text(str(4 * GIB))
-    (memory / "memory.usage_in_bytes").write_text(str(GIB))
+    (memory / "memory.limit_in_bytes").write_text(str(4 * GB))
+    (memory / "memory.usage_in_bytes").write_text(str(GB))
     (cpu / "cpu.cfs_quota_us").write_text("50000")
     (cpu / "cpu.cfs_period_us").write_text("100000")
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 4 * GIB
-    assert actual.available_memory_bytes == 3 * GIB
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
     assert actual.cpu_count == 0.5
 
 
@@ -335,12 +283,16 @@ def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     config = tmp_path / "case.yaml"
-    config.write_text(yaml.safe_dump(_config()))
+    raw = _config()
+    raw.pop("optimizer")
+    raw.pop("optimization")
+    raw["traffic"]["load"]["concurrency"] = 64512
+    config.write_text(yaml.safe_dump(raw))
     output = tmp_path / "output"
     output.mkdir()
     evidence = output / "resource-plan.json"
     evidence.write_text("existing evidence")
-    assert cli._main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
+    assert cli.main(["predict", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
     assert evidence.read_text() == "existing evidence"
 
 
@@ -368,11 +320,11 @@ def test_namespace_relative_descendant_keeps_ancestor_limits(tmp_path, host):
     (proc / "self/mountinfo").write_text("42 30 0:27 /container /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
     root = tmp_path / "sys/fs/cgroup"
     (root / "child").mkdir(parents=True)
-    (root / "memory.max").write_text(str(4 * GIB))
-    (root / "memory.current").write_text(str(GIB))
+    (root / "memory.max").write_text(str(4 * GB))
+    (root / "memory.current").write_text(str(GB))
     actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.total_memory_bytes == 4 * GIB
-    assert actual.available_memory_bytes == 3 * GIB
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
 
 
 def test_missing_container_mount_probe_fails_closed(tmp_path, host):
@@ -391,13 +343,17 @@ def test_trace_scalar_lengths_are_counted_before_token_expansion(tmp_path, host)
     assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
 
 
-def test_trace_inspection_refuses_oversized_record_before_json_parse(tmp_path, host, monkeypatch):
+def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
     trace = tmp_path / "large.jsonl"
-    trace.write_text(" " * (256 * 1024 + 1))
-    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("record must be bounded before JSON parsing"))
+    # Each valid record exceeds the old 256 KiB limit, total exceeds 16 MiB.
+    record = '{"input_length": 2, "output_length": 1, "ignored": [' + "0," * 150_000 + "0]}\n"
+    with trace.open("w") as stream:
+        for _ in range(60):
+            stream.write(record)
+    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("must not materialize entire JSON records"))
     plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
-    assert plan["estimate"]["estimated_peak_bytes"] is None
-    assert "256 KiB" in plan["reason"]
+    assert plan["status"] == "admitted"
+    assert plan["estimate"]["estimated_peak_bytes"] > trace.stat().st_size
 
 
 def test_delta_trace_accounts_for_cumulative_prompts(tmp_path):
@@ -428,3 +384,36 @@ def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
     (proc / "self/mountinfo").write_text("42 30 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
     with pytest.raises(ResourceLimitError, match="outside its visible namespace"):
         constrain_to_cgroups(host, proc=proc, root=tmp_path)
+
+
+def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypatch, host):
+    import os
+
+    workload = {"source_type": "synthetic-session", "request_count": 4, "turns_per_session": 2}
+    assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 8 * GB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+    plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
+    assert plan["status"] == "admitted"
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+
+
+def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch):
+    trace = tmp_path / "oversized.jsonl"
+    with trace.open("wb") as stream:
+        stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
+    monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
+    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
+    assert "before metadata parsing" in plan["estimate"]["reason"]

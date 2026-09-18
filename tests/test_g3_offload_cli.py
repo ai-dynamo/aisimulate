@@ -85,7 +85,7 @@ def test_g3_rejects_unsupported_configuration(tmp_path, mutation) -> None:
 
 
 @pytest.mark.parametrize("scope", ["worker_local", "cluster_shared"])
-def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capfd, scope) -> None:
+def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capsys, scope) -> None:
     engine = _prediction_engine()
     g3 = {**_g3_offload(), "scope": scope}
     engine["workers"]["aggregated"]["kv_cache"].update(bytes_per_token=256, host_offload=_host_offload(), g3_offload=g3)
@@ -98,7 +98,7 @@ def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capfd, scope) -
         lambda _stack: EngineReplayRunnerFactory(runtime=runtime),
     )
     assert (
-        cli._main(
+        cli.main(
             [
                 "predict",
                 "--stack",
@@ -113,7 +113,7 @@ def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capfd, scope) -
         )
         == 0
     )
-    assert json.loads(capfd.readouterr().out)["completed_requests"] == 1
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     assert rank["g3_offload"] == g3
     assert rank["native_host_offload"] == _host_offload()
@@ -123,7 +123,7 @@ def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capfd, scope) -
 
 @pytest.mark.parametrize("scope", ["worker_local", "cluster_shared"])
 @pytest.mark.parametrize("capacity", [1, 2, 4096])
-def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capfd, scope, capacity) -> None:
+def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope, capacity) -> None:
     from aisimulate import _runtime
 
     assert callable(_runtime.run_replay_json)
@@ -150,9 +150,12 @@ def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capfd, scope, c
         )
         == 0
     )
-    stdout = json.loads(capfd.readouterr().out)
+    stdout = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "prediction.json").read_text())
-    assert stdout == saved
+    assert stdout == {key: value for key, value in saved.items() if key != "power_diagnostics"}
+    assert saved["power_diagnostics"]["publication_status"] == "unsupported"
+    assert saved["power_diagnostics"]["power_w"] is None
+    assert saved["power_diagnostics"]["power_coverage"] is None
     assert stdout["completed_requests"] == 1
     # The 33-token prompt stores two full 16-token blocks. Even a one-block
     # G3 must retain its leading block instead of discarding the whole cohort.

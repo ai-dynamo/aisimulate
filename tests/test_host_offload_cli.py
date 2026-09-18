@@ -138,7 +138,7 @@ def test_predict_cli_reaches_native_rank_host_offload(tmp_path, monkeypatch, cap
     )
 
     assert (
-        cli._main(
+        cli.main(
             [
                 "predict",
                 "--stack",

@@ -5,10 +5,11 @@
 //!
 //! Each request lease owns its physical-copy IDs and visibility state. The
 //! manager owns KV-event metadata, while the pool owns occupancy, duplicate
-//! copies, prefix pins, and LRU eviction.
+//! copies, prefix pins, and eviction.
 
 use uuid::Uuid;
 
+use crate::engine::belady::BeladyOracle;
 pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, ReserveOutcome, VllmBlockPool,
@@ -241,6 +242,10 @@ pub(crate) struct VllmKvManager {
 }
 
 impl VllmKvManager {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        self.pool.set_belady_oracle(oracle);
+    }
+
     pub(crate) fn new_with_event_sink(
         max_capacity: usize,
         block_size: usize,

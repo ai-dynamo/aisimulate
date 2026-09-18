@@ -27,13 +27,42 @@ Pinned upstream collection and preserved-file SHA-256:
 `5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
 
 AISimulate-modified root overlay SHA-256:
-`70960b92994caaad52f806bd5c618353670c9e754a4d61525962f561360d9d48`
+`a70a21425533b419feaafcec67b176b3048a0893c4833bb802f46dc6e9a8f57e`
 
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
+
+The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
+`src/aiconfigurator_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+power measurements derived from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Sixteen tables are
+unmodified, byte-identical copies. The context-attention and
+generation-attention tables are modified derivatives: AISimulate preserves
+newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
+to those local-only identities. Source paths, row counts, measured coverage,
+and merge details are recorded in
+`src/aiconfigurator_core/systems/data/b200_sxm/README.md`. The two unmodified
+upstream attention copies under
+`src/aiconfigurator_core/systems/data/b200_sxm/power_upstream/` support focused
+import regression tests, which pin source and packaged SHA-256 digests.
+
+The corresponding energy expectations in the repository-root file
+`crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
+derivatives of those measurements. AISimulate's native pinning workflow at
+commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;
+the adjacent parity README records the reviewed energy-only delta.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
 
 ## NVIDIA AIConfigurator speculative decoding
 
@@ -75,6 +104,23 @@ cross-repository provenance for NVIDIA-authored predecessor code; it is not a
 claim that AIConfigurator is owned by an unaffiliated third party.
 
 ## vLLM
+
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
 
 The independently written Rust deferred-queue and post-lookup-touch behavior in
 `crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
@@ -820,3 +866,17 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## AISim FPM Gym
+
+- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
+- Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
+  `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
+- Derived files: `scripts/fpm_accuracy/`, `pages/fpm-accuracy/`, and
+  `tests/fpm_accuracy/test_hf_dataset.py`.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
+  publish this code under Apache-2.0.
+- Modified: development-only two-predictor evaluation, public overview export,
+  GitHub Pages presentation, and local import paths. No Plotly assets included.

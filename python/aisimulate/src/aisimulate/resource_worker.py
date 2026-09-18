@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from .resources import ResourceLimitError
-from .supervision import runtime_budget
+from .supervision import mark_shutdown, runtime_budget
 
 
 def main() -> int:
@@ -27,7 +27,7 @@ def main() -> int:
         os.nice(5)
     command = sys.argv[1]
     if command == "cli":
-        from .main import _main
+        from .main import main as _main
 
         return _main(sys.argv[2:])
     if command != "recommend":
@@ -57,4 +57,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        mark_shutdown()

@@ -19,7 +19,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
-from .resources import GuardedRunnerFactory, build_plan, require_plan, workload_bounds
+from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
@@ -37,10 +37,8 @@ def run_recommendation(
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
-    """Run recommendation in a supervised process, including preparation.
+    """Run a public recommendation through the existing Sweeper core."""
 
-    Injected factories and providers must be pickleable, as for spawned sweeps.
-    """
     from .supervision import in_supervised_process, supervised_recommendation
 
     kwargs = dict(
@@ -51,9 +49,9 @@ def run_recommendation(
         afd_performance_model=afd_performance_model,
         show_progress=show_progress,
     )
-    if in_supervised_process():
-        return _run_recommendation(config, **kwargs)
-    return supervised_recommendation(config, kwargs)
+    if not in_supervised_process():
+        return supervised_recommendation(config, kwargs)
+    return _run_recommendation(config, **kwargs)
 
 
 def _run_recommendation(
@@ -66,27 +64,17 @@ def _run_recommendation(
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
-    """Run a public recommendation through the existing Sweeper core."""
-
     from .supervision import checkpoint
 
     checkpoint("requested_config", config.model_dump(mode="json"))
-    plan = build_plan(
-        workload_bounds(config),
-        stack=stack,
-        policy=config.execution.resources,
-        requested_parallelism=config.optimizer.suggestion_batch_size,
-        factory=runner_factory,
-    )
-    require_plan(plan)
-    checkpoint("resource_plan", plan)
+    budget = resolve_budget(config.execution.resources, discover_host())
     from .sweeper.search import Sweeper
 
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
-    smart.sweep.parallel_evals = plan["effective_parallelism"]
+    smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
         workload=smart.workload.model_dump(mode="json"),
@@ -228,7 +216,7 @@ def recommendation_to_sweeper(
         for section, search_spec in (adapter_configs or {}).items()
     }
 
-    parallelism = config.optimizer.suggestion_batch_size
+    parallelism = config.optimizer.parallelism
     # New exact-global controls are carried alongside the legacy fields. The
     # Sweeper consumes them directly; max_rounds remains one for old callers.
     sweep = {
