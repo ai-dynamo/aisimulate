@@ -7,10 +7,12 @@ import copy
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from scripts import check_prediction_numerics
 from scripts.check_prediction_numerics import check_results, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,66 @@ def test_valid_baseline_commit_is_accepted(case):
     assert validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]}) == [case]
 
 
+@pytest.fixture
+def missing_baseline(tmp_path, monkeypatch):
+    origin = tmp_path / "origin"
+    checkout = tmp_path / "checkout"
+    origin.mkdir()
+
+    def git(*args, cwd=origin):
+        return subprocess.check_output(
+            ["git", "-c", "commit.gpgsign=false", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+            cwd=cwd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+
+    git("init", "--initial-branch=main")
+    git("commit", "--allow-empty", "-m", "main")
+    git("clone", "--no-local", "--single-branch", "--branch", "main", str(origin), str(checkout))
+    git("checkout", "-b", "reviewed-baseline")
+    git("commit", "--allow-empty", "-m", "reviewed baseline")
+    baseline = git("rev-parse", "HEAD")
+    git("checkout", "main")
+    git("branch", "-D", "reviewed-baseline")
+    monkeypatch.setattr(check_prediction_numerics, "ROOT", checkout)
+    return checkout, baseline
+
+
+def test_missing_baseline_requires_explicit_fetch_and_is_reusable_offline(case, missing_baseline):
+    checkout, baseline = missing_baseline
+    manifest = {"schema_version": 1, "baseline_source_sha": baseline, "cases": [case]}
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+    with pytest.raises(ValueError, match="does not resolve"):
+        validate_cases(manifest)
+    assert validate_cases(manifest, fetch_baseline=True) == [case]
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout) == head
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=checkout, check=True)
+    assert validate_cases(manifest, fetch_baseline=True) == [case]
+
+
+def test_unavailable_baseline_fetch_fails_closed(case, missing_baseline):
+    with pytest.raises(subprocess.CalledProcessError):
+        validate_cases({"schema_version": 1, "baseline_source_sha": "0" * 40, "cases": [case]}, fetch_baseline=True)
+
+
+def test_validate_only_fetches_without_loading_runtime(case, missing_baseline, tmp_path, monkeypatch):
+    _, baseline = missing_baseline
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "baseline_source_sha": baseline, "cases": [case]}))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_prediction_numerics.py", "--manifest", str(manifest), "--fetch-baseline", "--validate-only"],
+    )
+
+    def unexpected_collect(_):
+        pytest.fail("manifest validation must not load the native runtime")
+
+    monkeypatch.setattr(check_prediction_numerics, "collect", unexpected_collect)
+    assert check_prediction_numerics.main() == 0
+
+
 @pytest.mark.parametrize("base", ["", "runner:latest", "runner:2.0", "runner@sha256:abc", "runner@sha256:" + "x" * 64])
 def test_image_builder_rejects_unpinned_base_before_docker(tmp_path, base):
     result, log = _build_image(tmp_path, base)
@@ -103,10 +165,17 @@ def _build_image(tmp_path, base):
 def test_manifest_retains_dense_moe_prefill_and_decode():
     manifest = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())
     cases = validate_cases(manifest)
-    assert len(cases) == 8
-    assert {(c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases} == {
-        (model, method, isl)
-        for model in ("Qwen/Qwen3-32B", "MiniMaxAI/MiniMax-M2.5")
+    assert len(cases) == 16
+    assert {
+        (c["compile"]["backend"], c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases
+    } == {
+        (backend, model, method, isl)
+        for backend, model in (
+            ("vllm", "Qwen/Qwen3-32B"),
+            ("vllm", "MiniMaxAI/MiniMax-M2.5"),
+            ("trtllm", "Qwen/Qwen3-32B"),
+            ("sglang", "Qwen/Qwen3-32B"),
+        )
         for method in ("predict_prefill_latency", "predict_decode_latency")
         for isl in (1024, 8192)
     }

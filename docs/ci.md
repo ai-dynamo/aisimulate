@@ -259,10 +259,21 @@ marked it N/A.
 ### Numerical and installed-package evidence
 
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
-eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
-short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
-are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
+16 frozen queries on B200: eight vLLM 0.24.0 queries for dense Qwen3-32B and
+MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
+SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
+The [manifest](../.github/prediction-numerical-sentinels.json)
+records a full baseline commit that must resolve in the checkout. Fast CI and
+the numerical-check job explicitly fetch that SHA from `origin` if missing;
+full branch history alone can omit a baseline from a squashed PR. Fetch or
+commit-validation failures remain errors. Manifest-only validation does not
+load the AISimulate runtime. To prepare a checkout locally, run:
+
+```sh
+python scripts/check_prediction_numerics.py --fetch-baseline --validate-only
+```
+
+Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
 
@@ -275,6 +286,14 @@ exactly. With corrected data, the prefill baselines change from
 39.364559 / 7396.437641 ms to 6.956580 / 2192.966039 ms (short/long cases).
 The four Qwen baselines and all tolerances remain unchanged. These are
 prediction-stability values, not measured whole-model accuracy.
+
+The 16-case manifest was reproduced from runtime and packaged data at
+`d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
+were reproduced exactly and retained unchanged. The eight added backend values
+use the same four dense-model query shapes and SILICON mode, without shared
+layer reuse. These operator-level queries complement the engine integration
+tests for context limits; they do not measure E2E gym MAPE or incorporate the
+separate TRT-LLM data collection in PR #264.
 
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks

@@ -19,17 +19,24 @@ import re
 import subprocess
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
 
-def validate_cases(manifest: dict) -> list[dict]:
+
+def validate_cases(manifest: dict, *, fetch_baseline: bool = False) -> list[dict]:
     baseline = manifest.get("baseline_source_sha")
     if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
         raise ValueError("baseline_source_sha must be a full commit SHA")
-    resolved = subprocess.run(
-        ["git", "cat-file", "-e", f"{baseline}^{{commit}}"],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        timeout=10,
-    )
+    verify = ["git", "cat-file", "-e", f"{baseline}^{{commit}}"]
+    resolved = subprocess.run(verify, cwd=ROOT, capture_output=True, timeout=10)
+    if resolved.returncode and fetch_baseline:
+        # Full branch history need not contain a baseline from a squashed PR.
+        subprocess.run(
+            ["git", "fetch", "--no-tags", "origin", baseline],
+            cwd=ROOT,
+            check=True,
+            timeout=60,
+        )
+        resolved = subprocess.run(verify, cwd=ROOT, capture_output=True, timeout=10)
     if resolved.returncode:
         raise ValueError(f"baseline_source_sha does not resolve to a commit: {baseline}")
     cases = manifest["cases"]
@@ -104,10 +111,19 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parents[1] / ".github/prediction-numerical-sentinels.json",
     )
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--fetch-baseline", action="store_true", help="Fetch a missing baseline commit from origin")
+    parser.add_argument(
+        "--validate-only", action="store_true", help="Validate the manifest without loading the runtime"
+    )
     args = parser.parse_args()
+    if not args.validate_only and args.output is None:
+        parser.error("--output is required unless --validate-only is set")
     manifest = json.loads(args.manifest.read_text())
-    cases = validate_cases(manifest)
+    cases = validate_cases(manifest, fetch_baseline=args.fetch_baseline)
+    if args.validate_only:
+        print(f"Native prediction manifest: {len(cases)} valid cases")
+        return 0
     rows = collect(cases)
     failures = check_results(cases, rows)
     result = {

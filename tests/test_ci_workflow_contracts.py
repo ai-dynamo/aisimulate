@@ -642,6 +642,10 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
     assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
+    assert "check_prediction_numerics.py --fetch-baseline --output" in regression_commands
+    policy_commands = _run_commands(_workflow("fast-ci.yml")["jobs"]["policy"])
+    fetch = "check_prediction_numerics.py --fetch-baseline --validate-only"
+    assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
     assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
