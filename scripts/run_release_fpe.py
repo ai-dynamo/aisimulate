@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("aisimulate/", "aisimulate_core/", "aiconfigurator/", "aisimulate_core/")
+PACKAGES = ("aisimulate/", "aisimulate_core/")
 PROBES = Path("python/aisimulate/tools/support_matrix")
 DATA = Path("python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix")
 

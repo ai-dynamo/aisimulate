@@ -128,7 +128,7 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
         "aisimulate/__init__.py",
         "aisimulate/_runtime.so",
         "aisimulate_core/__init__.py",
-        "aisimulate_core/__init__.py",
+        "aisimulate_core/_native.py",
     ]
     wheel = tmp_path / "aisimulate-test.whl"
     site = tmp_path / "site"
