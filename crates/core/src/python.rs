@@ -1573,6 +1573,36 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn replay_python_error_preserves_contextual_resource_failure() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::Error::new(crate::replay::ReplayError::ResourceLimited(
+            "create exact report sample file: No space left on device".to_string(),
+        ))
+        .context("collecting replay report")
+        .context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
+    #[test]
+    fn replay_python_error_keeps_other_failures_as_runtime_errors() {
+        pyo3::prepare_freethreaded_python();
+        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
     struct PowerTiming(TimingEvidenceSummary);
 
     impl TimingModel for PowerTiming {
