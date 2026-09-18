@@ -361,6 +361,7 @@ class EngineReplayRunnerFactory:
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
+            supports_state_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",

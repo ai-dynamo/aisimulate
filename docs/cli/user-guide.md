@@ -1014,7 +1014,7 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
 | `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1163,7 +1163,8 @@ This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded
 addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
 does not infer state size or adjust block size automatically.
 
-State caching currently supports `predict` with aggregated vLLM and fixed G1 capacity.
+State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
+Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
 It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
 `recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
 must be a positive integer, not `auto`.

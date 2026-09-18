@@ -4,11 +4,12 @@
 """Manual G1 state-cache geometry reaches replay without AIC estimation."""
 
 import json
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
 
-from aisimulate import aic, compiler, runner
+from aisimulate import capacity, compiler, runner
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig
@@ -62,7 +63,7 @@ def forbid_estimators(monkeypatch):
         pytest.fail("manual state_cache must not invoke a KV estimator")
 
     for module, names in (
-        (aic, ("estimate_num_gpu_blocks", "estimate_kv_bytes_per_token", "materialize_aic_num_gpu_blocks")),
+        (capacity, ("estimate_num_gpu_blocks", "estimate_kv_bytes_per_token", "materialize_aic_num_gpu_blocks")),
         (compiler, ("estimate_kv_bytes_per_token", "materialize_aic_num_gpu_blocks")),
         (runner, ("materialize_aic_num_gpu_blocks",)),
     ):
@@ -237,3 +238,56 @@ def test_manual_state_reports_unavailable_memory_without_estimating(forbid_estim
     assert engine["rank"]["num_gpu_blocks"] == 8
     assert diagnostics["aggregated"]["status"] == "unavailable"
     assert "total_gpu_capacity_bytes" not in diagnostics["aggregated"]
+
+
+@pytest.mark.parametrize("role", ["agg_engine_args", "prefill_engine_args", "decode_engine_args"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_state_cache_requires_runner_capability(role, nested):
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public()))
+    args = {"rank": dict(RANK)} if nested else dict(RANK)
+    deployment = replace(
+        spec.backend_deployment, agg_engine_args=None, prefill_engine_args=None, decode_engine_args=None
+    )
+    spec = replace(spec, backend_deployment=replace(deployment, **{role: args}))
+    capabilities = RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+    with pytest.raises(ValueError, match="runner does not support state_cache"):
+        capabilities.require_compatible(spec)
+    replace(capabilities, supports_state_cache=True).require_compatible(spec)
+    rank = args["rank"] if nested else args
+    rank["state_cache"] = None
+    capabilities.require_compatible(spec)
+    del rank["state_cache"]
+    capabilities.require_compatible(spec)
+
+
+def test_native_engine_advertises_state_cache_support():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public()))
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_state_cache
+    capabilities.require_compatible(spec)
+
+
+def test_cli_rejects_state_cache_before_creating_unsupported_runner(tmp_path, monkeypatch, capsys):
+    import yaml
+
+    import aisimulate.main as cli
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    class UnsupportedFactory:
+        def capabilities(self):
+            return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+
+        def create(self, worker_id):
+            pytest.fail("unsupported runner must not be created")
+
+    config = tmp_path / "state.yaml"
+    config.write_text(yaml.safe_dump(_public()), encoding="utf-8")
+    output = tmp_path / "output"
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: UnsupportedFactory())
+    with pytest.raises(SystemExit) as error:
+        cli.main(["predict", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)])
+    assert error.value.code == 2
+    assert "runner does not support state_cache" in capsys.readouterr().err
+    assert not output.exists()
