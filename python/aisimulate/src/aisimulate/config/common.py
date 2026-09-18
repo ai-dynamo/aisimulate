@@ -225,12 +225,21 @@ ENGINE_MODEL_CONTROL_FIELDS = (
 )
 
 
+def is_active_engine_model_control(name: str, value: Any) -> bool:
+    """Distinguish inactive defaults without treating invalid numeric zero as False."""
+    if value is None:
+        return False
+    if name == "enable_eplb":
+        return value is not False
+    if name == "moe_backend":
+        return value != "default"
+    return True
+
+
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "wideep_num_slots"):
-        if result.get(name) is None:
+    for name in ("moe_backend", "wideep_num_slots", "enable_eplb"):
+        if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
-    if result.get("enable_eplb") is False:
-        result.pop("enable_eplb")
     return result

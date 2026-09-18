@@ -27,7 +27,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..config.engine import NgramSpeculationConfig
 
 
@@ -904,7 +904,9 @@ class SearchSpace(BaseModel):
             raise ValueError("aic_nextn requires explicit nextn_accepted")
         if self.nextn_accepted is not None and (not self.aic_nextn or self.nextn_accepted > self.aic_nextn):
             raise ValueError("nextn_accepted requires aic_nextn > 0 and must be within [0, aic_nextn]")
-        active = self.aic_nextn or any(getattr(self, name) not in (None, False) for name in ENGINE_MODEL_CONTROL_FIELDS)
+        active = self.aic_nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
         if active and (
             self.encoder is not None
             or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode)

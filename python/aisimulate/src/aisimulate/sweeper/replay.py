@@ -15,7 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
@@ -319,12 +319,16 @@ class RunnerCapabilities:
             timing = rank.get("timing_model")
             identity = timing.get("config", {}) if isinstance(timing, Mapping) else {}
             if not isinstance(identity, Mapping):
-                continue  # The timing descriptor validator reports malformed configs.
+                # The timing validator handles malformed identities; still inspect flat controls.
+                identity = {}
             unsupported_controls = [
                 name
                 for name in ENGINE_MODEL_CONTROL_FIELDS
                 if name not in self.supported_engine_model_controls
-                and identity.get(name, rank.get(f"aic_{name}")) not in (None, False)
+                and any(
+                    is_active_engine_model_control(name, value)
+                    for value in (identity.get(name), rank.get(name), rank.get(f"aic_{name}"))
+                )
             ]
             if unsupported_controls:
                 raise ValueError(

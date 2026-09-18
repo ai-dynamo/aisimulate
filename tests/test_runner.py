@@ -1397,3 +1397,93 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("inferred_capacity", [False, True])
+def test_flat_engine_controls_reach_native_timing_identity(inferred_capacity, monkeypatch):
+    controls = {"enable_eplb": True, "wideep_num_slots": 128, "moe_backend": "deepep_moe", "attention_backend": "fa3"}
+    seen = {}
+
+    def estimate(**kwargs):
+        seen.update(kwargs)
+        return 16
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    args = _engine_args()
+    args.pop("timing_model")
+    if inferred_capacity:
+        args.pop("num_gpu_blocks")
+    args.update({"aic_" + name: value for name, value in controls.items()})
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=BackendDeploymentSpec(
+                deployment_mode="agg",
+                backend="vllm",
+                backend_version="test",
+                agg_engine_args=args,
+                num_workers=1,
+            )
+        )
+    )
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert {name: rank["timing_model"]["config"][name] for name in controls} == controls
+    assert not {"aic_" + name for name in controls} & rank.keys()
+    if inferred_capacity:
+        assert {name: seen[name] for name in controls} == controls
+
+
+@pytest.mark.parametrize(
+    "name,value", [("enable_eplb", 1), ("wideep_num_slots", 0), ("wideep_num_slots", True), ("moe_backend", False)]
+)
+def test_flat_engine_controls_validate_types(name, value):
+    args = _engine_args()
+    args.pop("timing_model")
+    args["aic_" + name] = value
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match=name):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+    assert runtime.execution_spec is None
+
+
+def test_flat_controls_cannot_override_inactive_nested_identity():
+    args = _engine_args(timing={"type": "external", "provider": "aic", "config": {"enable_eplb": False}})
+    args["aic_enable_eplb"] = True
+    with pytest.raises(ValueError, match="configured both"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+
+
+def test_flat_active_controls_reject_fixed_timing():
+    args = {**_engine_args(), "aic_enable_eplb": True}
+    with pytest.raises(ValueError, match="require an AIC timing"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )

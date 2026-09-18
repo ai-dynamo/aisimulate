@@ -554,7 +554,7 @@ selection and fallback policy.
 | Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
 | EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
 | MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
-| Quantization overrides | `engine.gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` |
+| Quantization overrides | `engine.gemm_quant_mode`, `engine.moe_quant_mode`, `engine.kvcache_quant_mode`, `engine.fmha_quant_mode`, `engine.comm_quant_mode` |
 | Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
 | Maximum sequence length | Existing `engine.context_length` |
 | GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
@@ -607,6 +607,8 @@ For MTP-capable models, specify both `engine.nextn: 2` and
 replay uses one guaranteed accepted draft token and a 25% chance of a second.
 Saved candidate YAML retains these values and all engine model controls.
 A shared prefix does not mean a prewarmed cache; the first request remains cold.
+Only complete cache blocks can be reused, so a shared prefix shorter than the
+engine cache block size can produce zero hits.
 
 <a id="predict-and-search-analytical-epd"></a>
 

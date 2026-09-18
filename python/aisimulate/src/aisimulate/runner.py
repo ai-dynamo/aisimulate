@@ -17,7 +17,7 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .capacity import materialize_aic_num_gpu_blocks
-from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -91,6 +91,10 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "moe_backend": ("aic_moe_backend",),
+    "attention_backend": ("aic_attention_backend",),
+    "enable_eplb": ("aic_enable_eplb",),
+    "wideep_num_slots": ("aic_wideep_num_slots",),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -1318,8 +1322,11 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "enable_eplb":
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
@@ -1393,6 +1400,10 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
+        if any(
+            is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        ):
+            raise ValueError("engine model controls require an AIC timing model")
         aic_timing_overrides.clear()
         if capacity_materialized:
             memory_fraction_overrides.clear()

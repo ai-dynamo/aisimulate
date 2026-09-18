@@ -10,7 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
 from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
@@ -61,7 +61,7 @@ def _engine_args_payload(
     forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
 ) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
-    if any(sample.get(name) not in (None, False) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
+    if any(is_active_engine_model_control(name, sample.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
         forward_pass_estimator is None or sample.get(f"{role}_timing_model") is not None
     ):
         raise ValueError("engine model controls require a resolved canonical forward-pass estimator for every role")

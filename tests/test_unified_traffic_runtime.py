@@ -772,7 +772,8 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
 
 
-def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
+@pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic(prefix, reused) -> None:
     engine = _engine()
     engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
     report = _run(
@@ -782,7 +783,7 @@ def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
                     "type": "synthetic",
                     "input_tokens": 8,
                     "output_tokens": 2,
-                    "cached_prefix_tokens": 4,
+                    "cached_prefix_tokens": prefix,
                 },
                 "load": {"type": "concurrency", "concurrency": 1},
                 "stop": {"requests": 2},
@@ -792,4 +793,4 @@ def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
     )
 
     records = report.metadata["native_report"]["per_request"]
-    assert [row["reused_input_tokens"] for row in records] == [0, 4]
+    assert [row["reused_input_tokens"] for row in records] == [0, reused]

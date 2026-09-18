@@ -9,7 +9,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from .common import ENGINE_MODEL_CONTROL_FIELDS, Choices, IntegerRange, NumericRange, StrictModel
+from .common import (
+    ENGINE_MODEL_CONTROL_FIELDS,
+    Choices,
+    IntegerRange,
+    NumericRange,
+    StrictModel,
+    is_active_engine_model_control,
+)
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
@@ -273,7 +280,9 @@ class EstimatorPolicyConfig(StrictModel):
             raise ValueError("nextn requires explicit nextn_accepted")
         if self.nextn_accepted is not None and (not self.nextn or self.nextn_accepted > self.nextn):
             raise ValueError("nextn_accepted requires nextn > 0 and must be within [0, nextn]")
-        active = self.nextn or any(getattr(self, name) not in (None, False) for name in ENGINE_MODEL_CONTROL_FIELDS)
+        active = self.nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
         mode = getattr(self, "mode", "aggregated")
         modes = mode.choices if hasattr(mode, "choices") else [mode]
         if "afd" in modes and self.enable_chunked_prefill is not None:
