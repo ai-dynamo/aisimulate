@@ -1419,3 +1419,148 @@ def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
     assert len(details["sections"]["time"]["diagnostics"]["phases"][0]["operations"]) == 20
     assert len(details["sections"]["source"]["phases"][0]["operations"]) == 20
     assert native == original
+
+
+@pytest.fixture
+def performance_record():
+    return {
+        "status": "available",
+        "scope": "accumulated_active_forward_pass_per_gpu",
+        "latency_unit": "ms",
+        "phases": [
+            {
+                "name": "prefill",
+                "latency_ms": 2.0,
+                "sol": None,
+                "sol_unavailable_reason": "unsupported",
+                "operations": [
+                    {
+                        "name": "dispatch",
+                        "latency_ms": 2.0,
+                        "source": "estimated",
+                        "sol": None,
+                        "sol_unavailable_reason": "unsupported",
+                        "latency_to_sol_ratio": None,
+                        "fallbacks": [
+                            {
+                                "inference_phase": "context",
+                                "comm_backend": "deepep_ll",
+                                "requested_ep_size": 16,
+                                "requested_node_num": 2,
+                                "measurement_ep_size": 8,
+                                "measurement_node_num": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("status",), "invented"),
+        (("scope",), "seconds"),
+        (("latency_unit",), "s"),
+        (("phases",), {}),
+        (("phases", 0), None),
+        (("phases", 0, "operations"), "invalid"),
+        (("phases", 0, "latency_ms"), float("inf")),
+        (("phases", 0, "latency_ms"), float("nan")),
+        (("phases", 0, "operations", 0, "name"), ""),
+        (("phases", 0, "operations", 0, "source"), 1),
+        (("phases", 0, "operations", 0, "latency_ms"), True),
+        (("phases", 0, "operations", 0, "sol"), {}),
+        (("phases", 0, "operations", 0, "sol_unavailable_reason"), None),
+        (("phases", 0, "operations", 0, "latency_to_sol_ratio"), -1),
+        (("phases", 0, "operations", 0, "fallbacks"), "bad"),
+        (("phases", 0, "operations", 0, "fallbacks", 0, "requested_ep_size"), 0),
+        (("phases", 0, "operations", 0, "fallbacks", 0, "measurement_node_num"), True),
+    ],
+)
+def test_performance_detail_rejects_malformed_nested_records(performance_record, path, value):
+    from aisimulate.detail import build_prediction_details
+
+    record = performance_record
+    for key in path[:-1]:
+        record = record[key]
+    record[path[-1]] = value
+    expected_path = "performance_diagnostics" + "".join(
+        f"[{key}]" if isinstance(key, int) else f".{key}" for key in path
+    )
+    with pytest.raises(ValueError) as error:
+        build_prediction_details({"performance_diagnostics": performance_record}, ("source",))
+    assert expected_path in str(error.value)
+
+
+def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(performance_record):
+    from copy import deepcopy
+
+    from jsonschema import validate
+
+    from aisimulate.detail import performance_diagnostics
+
+    for path in [(), ("phases", 0), ("phases", 0, "operations", 0), ("phases", 0, "operations", 0, "fallbacks", 0)]:
+        record = performance_record
+        for key in path:
+            record = record[key]
+        for field in record:
+            invalid = deepcopy(performance_record)
+            target = invalid
+            for key in path:
+                target = target[key]
+            del target[field]
+            with pytest.raises(ValueError, match=field):
+                performance_diagnostics({"performance_diagnostics": invalid})
+    result = performance_diagnostics({"performance_diagnostics": performance_record})
+    schema = _detail_schema()
+    validate(result, {"$defs": schema["$defs"], "$ref": "#/$defs/performanceDiagnostics"})
+    assert result == performance_record
+    result["phases"][0]["operations"].clear()
+    assert performance_record["phases"][0]["operations"]
+
+
+@pytest.mark.parametrize(
+    "sol,reason,ratio,valid",
+    [
+        (None, None, None, False),
+        (None, "  ", None, False),
+        (None, "unsupported", 1.0, False),
+        ({"latency_ms": 1, "math_ms": 0, "memory_ms": 1}, "unsupported", 2.0, False),
+        ({"latency_ms": 1, "math_ms": 0, "memory_ms": 1}, None, 2.0, True),
+        ({"latency_ms": 0, "math_ms": 0, "memory_ms": 0}, None, None, True),
+        ({"latency_ms": 0, "math_ms": 0, "memory_ms": 0}, None, 2.0, False),
+    ],
+)
+def test_performance_sol_states_match_schema(performance_record, sol, reason, ratio, valid):
+    from jsonschema import Draft202012Validator
+
+    from aisimulate.detail import performance_diagnostics
+
+    operation = performance_record["phases"][0]["operations"][0]
+    operation.update(sol=sol, sol_unavailable_reason=reason, latency_to_sol_ratio=ratio)
+    schema = _detail_schema()
+    validator = Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/performanceDiagnostics"})
+    assert validator.is_valid(performance_record) is valid
+    if valid:
+        assert performance_diagnostics({"performance_diagnostics": performance_record}) == performance_record
+    else:
+        with pytest.raises(ValueError, match="performance_diagnostics.phases"):
+            performance_diagnostics({"performance_diagnostics": performance_record})
+
+
+def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, capsys):
+    class InvalidDiagnosticsRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["performance_diagnostics"] = {"status": "available"}
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(InvalidDiagnosticsRunner()))
+    result = cli.main(
+        ["predict", "-c", str(_detail_config(tmp_path)), "--detail", "source", "--output-dir", str(tmp_path / "out")]
+    )
+    assert result != 0
+    assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err

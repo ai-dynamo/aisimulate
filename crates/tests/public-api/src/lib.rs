@@ -220,6 +220,6 @@ mod tests {
 }
 
 /// Detailed phase evidence is reachable through the canonical model.
-pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aiconfigurator_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
+pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
     model.static_phase_diagnostics(1, 128, 0, true)
 }

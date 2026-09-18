@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from sys import float_info
 from typing import Any
 
 from .power import normalize_power_summary
@@ -87,11 +88,103 @@ def energy_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
+    """Check the runner's diagnostic contract before indexing or formatting it."""
+
+    def require(valid: bool, path: str, expected: str) -> None:
+        if not valid:
+            raise ValueError(f"{path} must be {expected}")
+
+    def fields(value: Any, path: str, required: set[str], optional: frozenset[str] | set[str] = frozenset()) -> None:
+        require(isinstance(value, dict), path, "a mapping")
+        for key in sorted(required - value.keys()):
+            require(False, f"{path}.{key}", "present")
+        for key in sorted(value.keys() - required - optional, key=str):
+            require(False, f"{path}.{key}", "a supported field")
+
+    def string(value: Any, path: str) -> None:
+        require(isinstance(value, str) and bool(value.strip()), path, "a nonempty string")
+
+    def number(value: Any, path: str) -> None:
+        require(
+            type(value) in (int, float) and value >= 0 and value <= float_info.max,
+            path,
+            "a finite nonnegative number",
+        )
+
+    def array(value: Any, path: str) -> None:
+        require(isinstance(value, list), path, "a list")
+
+    def sol(value: dict[str, Any], path: str) -> None:
+        if value["sol"] is None:
+            string(value["sol_unavailable_reason"], f"{path}.sol_unavailable_reason")
+        else:
+            fields(value["sol"], f"{path}.sol", {"latency_ms", "math_ms", "memory_ms"})
+            for key, duration in value["sol"].items():
+                number(duration, f"{path}.sol.{key}")
+            require(value["sol_unavailable_reason"] is None, f"{path}.sol_unavailable_reason", "null with SOL data")
+
+    path = "performance_diagnostics"
+    fields(record, path, {"status", "scope", "latency_unit", "phases"}, {"unavailable_reason"})
+    require(record["status"] in ("available", "unavailable", "not_observed"), f"{path}.status", "a supported state")
+    require(record["scope"] == "accumulated_active_forward_pass_per_gpu", f"{path}.scope", "the native timing scope")
+    require(record["latency_unit"] == "ms", f"{path}.latency_unit", "ms")
+    array(record["phases"], f"{path}.phases")
+    if "unavailable_reason" in record:
+        string(record["unavailable_reason"], f"{path}.unavailable_reason")
+    if record["status"] == "unavailable":
+        string(record.get("unavailable_reason"), f"{path}.unavailable_reason")
+        require(not record["phases"], f"{path}.phases", "empty when unavailable")
+    if record["status"] == "available":
+        require(bool(record["phases"]), f"{path}.phases", "nonempty when available")
+    for i, phase in enumerate(record["phases"]):
+        pp = f"{path}.phases[{i}]"
+        fields(phase, pp, {"name", "latency_ms", "sol", "sol_unavailable_reason", "operations"})
+        string(phase["name"], f"{pp}.name")
+        number(phase["latency_ms"], f"{pp}.latency_ms")
+        sol(phase, pp)
+        array(phase["operations"], f"{pp}.operations")
+        for j, operation in enumerate(phase["operations"]):
+            op = f"{pp}.operations[{j}]"
+            fields(
+                operation,
+                op,
+                {"name", "latency_ms", "source", "fallbacks", "sol", "sol_unavailable_reason", "latency_to_sol_ratio"},
+            )
+            string(operation["name"], f"{op}.name")
+            string(operation["source"], f"{op}.source")
+            number(operation["latency_ms"], f"{op}.latency_ms")
+            sol(operation, op)
+            if operation["latency_to_sol_ratio"] is not None:
+                number(operation["latency_to_sol_ratio"], f"{op}.latency_to_sol_ratio")
+                require(
+                    operation["sol"] is not None and operation["sol"]["latency_ms"] > 0,
+                    f"{op}.latency_to_sol_ratio",
+                    "null without a positive SOL latency",
+                )
+            if operation["fallbacks"] is None:
+                continue
+            array(operation["fallbacks"], f"{op}.fallbacks")
+            for k, fallback in enumerate(operation["fallbacks"]):
+                fp = f"{op}.fallbacks[{k}]"
+                sizes = {"requested_ep_size", "requested_node_num", "measurement_ep_size", "measurement_node_num"}
+                fields(fallback, fp, {"inference_phase", "comm_backend"} | sizes)
+                require(
+                    fallback["inference_phase"] in ("context", "generation"),
+                    f"{fp}.inference_phase",
+                    "context or generation",
+                )
+                string(fallback["comm_backend"], f"{fp}.comm_backend")
+                for key in sizes:
+                    require(type(fallback[key]) is int and fallback[key] > 0, f"{fp}.{key}", "a positive integer")
+
+
 def performance_diagnostics(native: dict[str, Any]) -> dict[str, Any]:
     diagnostics = native.get("performance_diagnostics")
     if diagnostics is not None:
         if not isinstance(diagnostics, dict):
             raise ValueError("performance_diagnostics must be a mapping")
+        _validate_performance_diagnostics(diagnostics)
         return deepcopy(diagnostics)
     return {
         "status": "unavailable",

@@ -460,8 +460,12 @@ impl AicTimingModel {
             return Ok(phase);
         }
         if let Some(model) = &self.diagnostic_model {
-            let operations = model
-                .static_phase_diagnostics(batch_size, isl, prefix, prefill)?
+            let entries = model.static_phase_diagnostics(batch_size, isl, prefix, prefill)?;
+            ensure!(
+                !entries.is_empty(),
+                "AIC {mode} returned empty operation diagnostics for nonzero work"
+            );
+            let operations = entries
                 .into_iter()
                 .map(|entry| {
                     let mut operation = TimingOperationEvidence::new(
@@ -2792,6 +2796,63 @@ mod tests {
                 2
             )
         });
+    }
+
+    #[test]
+    fn empty_native_diagnostics_reject_nonzero_work() {
+        use crate::perfmodel::engine::{Engine, spec::EngineSpec};
+        use crate::perfmodel::fpm::ForwardPassPerfOptions;
+        pyo3::prepare_freethreaded_python();
+        let db = crate::perf_database::PerfDatabase::load(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+            "h200_sxm",
+            "sglang",
+            "0.5.6.post2",
+        )
+        .unwrap();
+        let config = serde_json::from_value(serde_json::json!({
+            "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+            "model_name": "empty-fixture", "system_name": "h200_sxm",
+            "backend": "sglang", "backend_version": "0.5.6.post2",
+            "tp_size": 1, "pp_size": 1
+        }))
+        .unwrap();
+        let native = Engine::build(EngineSpec::new(config, vec![], vec![]), Arc::new(db)).unwrap();
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let mut timing = timing_model(engine, false);
+        timing.diagnostic_model = Some(ForwardPassPerfModel::from_engine(
+            Arc::new(native),
+            ForwardPassPerfOptions::default(),
+        ));
+        for mode in ["static_ctx", "static_gen"] {
+            let error = timing
+                .predict_phase_evidence(1, 128, 2, 0, mode)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("AIC {mode} returned empty operation diagnostics"))
+            );
+            assert_eq!(
+                timing
+                    .predict_phase_evidence(0, 128, 2, 0, mode)
+                    .unwrap()
+                    .latency_ms,
+                0.0
+            );
+        }
+        assert_eq!(
+            timing
+                .predict_phase_evidence(1, 128, 2, 128, "static_ctx")
+                .unwrap()
+                .latency_ms,
+            0.0
+        );
     }
 
     #[test]

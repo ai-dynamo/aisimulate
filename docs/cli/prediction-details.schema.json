@@ -1099,7 +1099,61 @@
         "sol_unavailable_reason",
         "latency_to_sol_ratio"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "sol": {
+              "type": "null"
+            },
+            "sol_unavailable_reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "properties": {
+            "sol": {
+              "$ref": "#/$defs/sol"
+            },
+            "sol_unavailable_reason": {
+              "type": "null"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sol": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "latency_ms": {
+                        "const": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "latency_to_sol_ratio": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "timePhase": {
       "type": "object",
@@ -1143,7 +1197,31 @@
         "sol_unavailable_reason",
         "operations"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "sol": {
+              "type": "null"
+            },
+            "sol_unavailable_reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "properties": {
+            "sol": {
+              "$ref": "#/$defs/sol"
+            },
+            "sol_unavailable_reason": {
+              "type": "null"
+            }
+          }
+        }
+      ]
     },
     "sourcePhase": {
       "type": "object",
