@@ -920,6 +920,9 @@ impl VllmCore {
                     RequestStatus::WaitingForRemoteKv,
                     waiting_order,
                 );
+                if policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len) {
+                    anyhow::bail!("destination prompt must be shorter than max_model_len");
+                }
                 if let Some(message) = policy::destination_capacity_error(
                     self.args.scheduling_policy(),
                     &request.sequence,

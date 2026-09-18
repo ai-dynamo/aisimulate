@@ -87,6 +87,8 @@ limit for vLLM, TRT-LLM, and SGLang. Recipe adapters can map TRT-LLM
 `max_seq_len` and SGLang `context_length` to this field.
 
 - A prompt at or above the limit is rejected before prefill computation.
+- A decode destination rejects such a prompt before queuing the handoff or
+  reserving KV blocks, even when destination admission is deferred.
 - Generation stops when prompt plus output reaches the limit, including
   speculative bursts and requests with explicit output token IDs. Reports
   retain the requested output length and count only tokens actually generated.
