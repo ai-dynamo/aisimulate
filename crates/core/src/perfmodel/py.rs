@@ -1039,6 +1039,8 @@ struct EngineBuildRequest {
     tp_size: u32,
     pp_size: u32,
     attention_dp_size: u32,
+    dcp_size: Option<u32>,
+    fpm_options: crate::FpmInterpolationConfig,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
     gemm_quant_mode: Option<String>,
@@ -1084,6 +1086,8 @@ impl AicEngineBuilder {
                 tp_size: 1,
                 pp_size: 1,
                 attention_dp_size: 1,
+                dcp_size: None,
+                fpm_options: crate::FpmInterpolationConfig::default(),
                 moe_tp_size: None,
                 moe_ep_size: None,
                 gemm_quant_mode: None,
@@ -1372,6 +1376,15 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("tp_size", request.tp_size)?;
         kwargs.set_item("pp_size", request.pp_size)?;
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
+        if let Some(dcp) = request.dcp_size {
+            kwargs.set_item("dcp_size", dcp)?;
+        }
+        if request.fpm_options != crate::FpmInterpolationConfig::default() {
+            let encoded = serde_json::to_string(&request.fpm_options)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let options = PyModule::import(py, "json")?.call_method1("loads", (encoded,))?;
+            kwargs.set_item("fpm_options", options)?;
+        }
         kwargs.set_item("moe_tp_size", request.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", request.moe_ep_size)?;
         kwargs.set_item("gemm_quant_mode", request.gemm_quant_mode.as_deref())?;
@@ -1458,6 +1471,8 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         tp_size: config.tp,
         pp_size: config.pp,
         attention_dp_size: config.attention_dp,
+        dcp_size: config.dcp,
+        fpm_options: config.estimator_config.fpm_interpolation.clone(),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
         gemm_quant_mode: config.gemm_quant_mode.clone(),
@@ -1510,6 +1525,8 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         tp_size: config.parallel.tp_size,
         pp_size: config.parallel.pp_size,
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
+        dcp_size: config.parallel.dcp_size,
+        fpm_options: crate::FpmInterpolationConfig::default(),
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
         gemm_quant_mode: gemm_quant_name(config.quantization.weight_dtype.as_ref())
@@ -1700,6 +1717,7 @@ impl PyForwardPassPerfModel {
             tp: request.tp_size,
             pp: request.pp_size,
             attention_dp: request.attention_dp_size,
+            dcp: request.dcp_size,
             moe_tp_size: request.moe_tp_size,
             moe_ep_size: request.moe_ep_size,
             gemm_quant_mode: request.gemm_quant_mode,
@@ -1932,6 +1950,7 @@ mod tests {
             forward_model: None,
             kv_block_size: None,
             parallel: ParallelMapping {
+                dcp_size: None,
                 tp_size: 8,
                 pp_size: 1,
                 attention_dp_size: Some(1),

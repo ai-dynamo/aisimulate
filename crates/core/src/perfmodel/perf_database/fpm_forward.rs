@@ -54,9 +54,9 @@ pub const FPM_FORWARD_SCHEMA_NAME: &str = "aic_fpm_forward_perf";
 pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 6;
 pub const FPM_FORWARD_COORDINATE_SYSTEM: &str = "iteration_totals_balanced_v1";
 pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
-/// The only measurement policy the collector publishes; pinned in the
-/// sidecar gate (a pair measured under a different regime is structural).
+/// Legacy collector policy; self-benchmark repeats use a per-row contract.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
+const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 /// `kv_seed_regime` marker for rows whose KV state the collector could not
 /// reach through the real kvwarm chain and fabricated instead. Such rows
 /// are measurements of the wrong regime (observed 2-3.7x inflated on 4-GPU
@@ -85,6 +85,7 @@ pub const FPM_FAKE_FALLBACK_RAW_ENV: &str = "AIC_FPM_FAKE_FALLBACK_RAW";
 
 /// Identity columns that select a cell, in row-column order (`model_path` is
 /// handled separately; `weight_quantization` is deliberately excluded).
+/// Recorded DCP is appended separately; legacy identities retain this base arity.
 /// The last four are the schema-v6 explicit backend identity: "auto" = the
 /// engine decided; the `enable_*` columns are real parquet booleans,
 /// normalized to "True"/"False" (Python `str(bool)`) for comparison.
@@ -284,6 +285,7 @@ impl FpmForwardTable {
             available.truncate(8);
             let identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
                 .iter()
+                .chain(std::iter::once(&"dcp"))
                 .zip(match_identity)
                 .map(|(c, v)| format!("{c}={v:?}"))
                 .collect();
@@ -326,15 +328,18 @@ fn sha256_file(path: &Path) -> Result<String, AicError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Sidecar validation, mirroring `_validate_sidecar` check-for-check. Returns
-/// the sidecar's `row_count` for the post-read cross-check.
+struct SidecarContract {
+    row_count: Option<u64>,
+    per_row_policy: bool,
+    selector_dcp: Option<Option<u32>>,
+}
 fn validate_sidecar(
     metadata_path: &Path,
     parquet_path: &Path,
     system: &str,
     backend: &str,
     version: &str,
-) -> Result<Option<u64>, AicError> {
+) -> Result<SidecarContract, AicError> {
     if !metadata_path.exists() {
         return Err(structural(format!(
             "FPM database is missing its metadata sidecar: {}. \
@@ -381,11 +386,13 @@ fn validate_sidecar(
             metadata_path.display()
         )));
     }
-    if metadata.get("measurement_policy").and_then(|v| v.as_str())
-        != Some(FPM_FORWARD_MEASUREMENT_POLICY)
-    {
+    let measurement_policy = metadata.get("measurement_policy").and_then(|v| v.as_str());
+    if !matches!(
+        measurement_policy,
+        Some(FPM_FORWARD_MEASUREMENT_POLICY | FPM_ROW_MEASUREMENT_POLICY)
+    ) {
         return Err(structural(format!(
-            "unsupported FPM measurement_policy={:?} (expected {FPM_FORWARD_MEASUREMENT_POLICY:?}): {}",
+            "unsupported FPM measurement_policy={:?} (expected {FPM_FORWARD_MEASUREMENT_POLICY:?} or {FPM_ROW_MEASUREMENT_POLICY:?}): {}",
             metadata.get("measurement_policy"),
             metadata_path.display()
         )));
@@ -415,7 +422,31 @@ fn validate_sidecar(
             parquet_path.parent().unwrap_or(parquet_path).display()
         )));
     }
-    Ok(json_uint(metadata.get("row_count")))
+    let selector_dcp = metadata
+        .get("configuration_selector")
+        .map(|selector| {
+            let selector = selector
+                .as_object()
+                .ok_or_else(|| structural("FPM configuration_selector must be an object".into()))?;
+            selector
+                .get("dcp")
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .filter(|v| *v > 0)
+                        .ok_or_else(|| {
+                            structural("FPM selector dcp must be a positive integer".into())
+                        })
+                })
+                .transpose()
+        })
+        .transpose()?;
+    Ok(SidecarContract {
+        row_count: json_uint(metadata.get("row_count")),
+        per_row_policy: measurement_policy == Some(FPM_ROW_MEASUREMENT_POLICY),
+        selector_dcp,
+    })
 }
 
 /// Python `metadata.get(k) != n` compares by VALUE: a JSON `5.0` equals the
@@ -473,8 +504,7 @@ fn load_pair(
         return Ok(None);
     }
     let metadata_path = parquet_path.with_extension("metadata.json");
-    let sidecar_row_count =
-        validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
+    let sidecar = validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
 
     let reader = PerfReader::open(parquet_path)?;
     // Physical row-key columns (collector contract), in order.
@@ -523,13 +553,19 @@ fn load_pair(
     // KV-seed provenance column (additive; absent in pairs that predate it).
     // Resolved once here; per-row reads treat null the same as absence.
     let kv_seed_col = reader.col_optional("kv_seed_regime");
+    let dcp_col = reader.col_optional("dcp");
+    let row_policy_col = reader.col_optional("measurement_policy");
+    let repeats_col = reader.col_optional("measurement_repeats");
+    if sidecar.per_row_policy && (row_policy_col.is_none() || repeats_col.is_none()) {
+        return Err(structural("FPM per-row measurement policy requires measurement_policy and measurement_repeats columns".into()));
+    }
 
     // Python checks the sidecar row_count against the FULL row list before any
     // per-row validation (`load_fpm_forward_data`: read_table -> row_count ->
     // empty -> per-row loop); mirror that error precedence with a cheap count
     // pass so a wrong-count pair reports the count, not the first bad row.
     let actual_row_count = reader.rows()?.count() as u64;
-    match sidecar_row_count {
+    match sidecar.row_count {
         Some(expected) if expected == actual_row_count => {}
         other => {
             return Err(structural(format!(
@@ -648,7 +684,7 @@ fn load_pair(
             )));
         }
 
-        let match_identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
+        let mut match_identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
             .iter()
             .map(|name| {
                 if str_idx.contains_key(name) {
@@ -660,6 +696,34 @@ fn load_pair(
                 }
             })
             .collect::<Result<_, _>>()?;
+        let dcp = dcp_col.map(|col| row.u32(col)).transpose()?;
+        if let Some(dcp) = dcp {
+            let tp = get_int("tp")?;
+            if dcp == 0 || tp == 0 || tp % dcp != 0 {
+                return Err(structural(format!(
+                    "FPM row {index} dcp must be positive and divide tp"
+                )));
+            }
+            match_identity.push(dcp.to_string());
+        }
+        if sidecar.selector_dcp.is_some_and(|declared| declared != dcp) {
+            return Err(structural(format!(
+                "FPM row {index} dcp disagrees with the sidecar selector"
+            )));
+        }
+        if sidecar.per_row_policy {
+            let policy = row.str_optional(row_policy_col)?;
+            let repeats = row.u32_optional(repeats_col)?;
+            if !matches!(
+                (policy, repeats),
+                (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
+                    | (Some("kvwarm_median_of_3"), Some(3))
+            ) {
+                return Err(structural(format!(
+                    "FPM row {index} measurement policy/repeats are inconsistent"
+                )));
+            }
+        }
         // The string backend knobs must be present: "auto" or a pinned name.
         for (offset, name) in [(11usize, "moe_backend"), (12usize, "attention_backend")] {
             if match_identity[offset].is_empty() {
@@ -670,7 +734,7 @@ fn load_pair(
         }
         // Full physical row key (collector contract) for duplicate detection,
         // in Python's _ROW_KEY_COLUMNS order.
-        let row_key: Vec<String> = vec![
+        let mut row_key: Vec<String> = vec![
             get_str("cell_id")?,
             get_str("model_path")?,
             get_str("system")?,
@@ -698,6 +762,8 @@ fn load_pair(
             total_kv_read_tokens.to_string(),
             partition_policy,
         ];
+
+        row_key.push(dcp.map(|value| value.to_string()).unwrap_or_default());
 
         // Seed provenance: fake-fallback rows stay in the row set (their
         // coordinates, the grid, and the domain gate are untouched); only
@@ -1104,6 +1170,8 @@ pub(crate) mod tests {
         /// fixture sets it, omits the column entirely — the pre-column
         /// legacy layout).
         pub kv_seed_regime: Option<&'static str>,
+        pub dcp: Option<u32>,
+        pub measurement: Option<(&'static str, u32)>,
     }
 
     impl Default for RowSpec {
@@ -1126,6 +1194,8 @@ pub(crate) mod tests {
                 system: "b200_sxm",
                 backend: "vllm",
                 kv_seed_regime: None,
+                dcp: None,
+                measurement: None,
             }
         }
     }
@@ -1186,6 +1256,8 @@ pub(crate) mod tests {
         // The provenance column is written only when a fixture row sets it,
         // so default fixtures exercise the pre-column legacy layout.
         let has_kv_seed = rows.iter().any(|r| r.kv_seed_regime.is_some());
+        let has_dcp = rows.iter().any(|r| r.dcp.is_some());
+        let has_measurement = rows.iter().any(|r| r.measurement.is_some());
         let schema = "message schema {
             REQUIRED BINARY cell_id (UTF8);
             REQUIRED BINARY model_path (UTF8);
@@ -1223,6 +1295,16 @@ pub(crate) mod tests {
         } else {
             schema.to_string()
         };
+        let mut schema = schema;
+        if has_dcp {
+            schema.insert_str(schema.rfind('}').unwrap(), "REQUIRED INT64 dcp;\n");
+        }
+        if has_measurement {
+            schema.insert_str(
+                schema.rfind('}').unwrap(),
+                "REQUIRED BINARY measurement_policy (UTF8);\nREQUIRED INT64 measurement_repeats;\n",
+            );
+        }
         let schema = Arc::new(parse_message_type(&schema).expect("schema must parse"));
         let file = std::fs::File::create(&parquet_path).expect("create parquet");
         let mut writer =
@@ -1358,6 +1440,31 @@ pub(crate) mod tests {
                 .expect("write");
             col.close().expect("close");
         }
+        if has_dcp {
+            let values: Vec<i64> = rows.iter().map(|r| i64::from(r.dcp.unwrap_or(0))).collect();
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+        }
+        if has_measurement {
+            let values = str_col(&|r| r.measurement.map(|m| m.0).unwrap_or("").to_owned());
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<ByteArrayType>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+            let values: Vec<i64> = rows
+                .iter()
+                .map(|r| i64::from(r.measurement.map(|m| m.1).unwrap_or(0)))
+                .collect();
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+        }
         rg.close().expect("close row group");
         writer.close().expect("close writer");
 
@@ -1409,6 +1516,94 @@ pub(crate) mod tests {
             "0.25.1",
             false,
         )
+    }
+
+    #[test]
+    fn dcp_cells_do_not_match_plain_tp_or_each_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Same coordinates and cell ID; recorded DCP must distinguish the cells.
+        let rows = [
+            RowSpec {
+                dcp: Some(1),
+                latency_ms: 7.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                dcp: Some(4),
+                latency_ms: 3.0,
+                ..RowSpec::default()
+            },
+        ];
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        assert_eq!(table.cells().unwrap().len(), 2);
+        assert!(
+            table
+                .select_cell(&default_identity(4), "org/model-a")
+                .is_err()
+        );
+        for dcp in [1, 4] {
+            let mut identity = default_identity(4);
+            identity.push(dcp.to_string());
+            assert!(table.select_cell(&identity, "org/model-a").is_ok());
+        }
+        write_pair_with(tmp.path(), &rows[..1], |meta| {
+            meta.insert(
+                "configuration_selector".into(),
+                serde_json::json!({"dcp": 4}),
+            );
+        });
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("sidecar selector")
+        );
+    }
+
+    #[test]
+    fn mixed_measurement_policy_validates_each_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            RowSpec {
+                measurement: Some((FPM_FORWARD_MEASUREMENT_POLICY, 1)),
+                ..RowSpec::default()
+            },
+            RowSpec {
+                total_kv_read_tokens: 8192,
+                measurement: Some(("kvwarm_median_of_3", 3)),
+                ..RowSpec::default()
+            },
+        ];
+        let mixed_policy = |meta: &mut serde_json::Map<String, serde_json::Value>| {
+            meta.insert(
+                "measurement_policy".into(),
+                FPM_ROW_MEASUREMENT_POLICY.into(),
+            );
+        };
+        write_pair_with(tmp.path(), &rows, mixed_policy);
+        assert_eq!(loaded_table(tmp.path()).cells().unwrap().len(), 1);
+        let invalid = [RowSpec {
+            measurement: Some(("kvwarm_median_of_3", 1)),
+            ..RowSpec::default()
+        }];
+        write_pair_with(tmp.path(), &invalid, mixed_policy);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("policy/repeats")
+        );
+        write_pair_with(tmp.path(), &default_rows(), mixed_policy);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("requires measurement_policy")
+        );
     }
 
     #[test]

@@ -94,6 +94,9 @@ pub struct ForwardPassPerfModelConfig {
     pub pp: u32,
     #[serde(default = "one", alias = "attention_dp_size")]
     pub attention_dp: u32,
+    /// Recorded decode context parallelism within the TP group.
+    #[serde(default)]
+    pub dcp: Option<u32>,
     #[serde(default)]
     pub moe_tp_size: Option<u32>,
     #[serde(default)]
@@ -155,6 +158,7 @@ impl ForwardPassPerfModelConfig {
             tp: 1,
             pp: 1,
             attention_dp: 1,
+            dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
             gemm_quant_mode: None,
@@ -216,6 +220,24 @@ impl ForwardPassPerfModelConfig {
         }
         if self.tp == 0 || self.pp == 0 || self.attention_dp == 0 {
             return Err(invalid_config("tp, pp, and attention_dp must be positive"));
+        }
+        if self.dcp.is_some_and(|dcp| dcp == 0 || self.tp % dcp != 0) {
+            return Err(invalid_config("dcp must be positive and divide tp"));
+        }
+        for mode in &self
+            .estimator_config
+            .fpm_interpolation
+            .unrecorded_quant_modes
+        {
+            let explicit = match mode {
+                super::UnrecordedFpmQuantMode::Fmha => &self.fmha_quant_mode,
+                super::UnrecordedFpmQuantMode::Comm => &self.comm_quant_mode,
+            };
+            if explicit.is_some() {
+                return Err(invalid_config(
+                    "an unrecorded FPM quant mode cannot have an explicit quantization override",
+                ));
+            }
         }
         if self.moe_tp_size.is_some() != self.moe_ep_size.is_some() {
             return Err(invalid_config(
@@ -409,5 +431,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn recorded_dcp_is_validated_and_survives_round_trip() {
+        let cfg =
+            config(serde_json::json!({"tp": 8, "dcp": 8, "moe_tp_size": 8, "moe_ep_size": 1}));
+        cfg.validate().unwrap();
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(restored.dcp, Some(8));
+        assert_eq!(config(serde_json::json!({})).dcp, None);
+        for value in [0, 3, 16] {
+            assert!(
+                config(serde_json::json!({"tp": 8, "dcp": value}))
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn unrecorded_profile_quantization_rejects_explicit_overrides() {
+        let mut cfg = config(serde_json::json!({"estimation_mode": "fpm_interpolation",
+            "estimator_config": {"fpm_interpolation": {"text_only": true, "unrecorded_quant_modes": ["fmha", "comm"]}}}));
+        cfg.validate().unwrap();
+        cfg.fmha_quant_mode = Some("bfloat16".into());
+        assert!(cfg.validate().is_err());
     }
 }

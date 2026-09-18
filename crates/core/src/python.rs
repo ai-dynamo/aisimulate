@@ -160,6 +160,8 @@ struct AicTimingConfig {
     #[serde(default = "one")]
     attention_dp: u32,
     #[serde(default)]
+    dcp: Option<u32>,
+    #[serde(default)]
     moe_tp_size: Option<u32>,
     #[serde(default)]
     moe_ep_size: Option<u32>,
@@ -261,6 +263,7 @@ impl AicTimingConfig {
             tp: self.tp,
             pp: self.pp,
             attention_dp: self.attention_dp,
+            dcp: self.dcp,
             moe_tp_size: self.moe_tp_size,
             moe_ep_size: self.moe_ep_size,
             gemm_quant_mode: self.gemm_dtype.clone(),
@@ -672,6 +675,10 @@ fn materialize_aic_capacity(
     if capacity_is_explicit {
         return Ok(());
     }
+    ensure!(
+        config.dcp.is_none_or(|dcp| dcp == 1),
+        "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+    );
     let blocks = estimate(config, role)?;
     ensure!(blocks > 0, "AIC estimated zero KV-cache blocks");
     role.rank.num_gpu_blocks = blocks;
@@ -2042,6 +2049,7 @@ mod tests {
             backend_version: None,
             pp: 1,
             attention_dp: 1,
+            dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
             gemm_dtype: None,
@@ -2123,6 +2131,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+    }
+
+    #[test]
+    fn dcp_capacity_requires_explicit_blocks() {
+        let mut config = aic_config();
+        config.tp = 4;
+        config.dcp = Some(4);
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.tensor_parallel_size = 4;
+        role.rank.num_gpu_blocks = 17;
+
+        let error = materialize_aic_capacity(&config, &mut role, false, |_, _| {
+            panic!("DCP must be rejected before estimating capacity")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit KV block capacity"));
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        materialize_aic_capacity(&config, &mut role, true, |_, _| {
+            panic!("explicit DCP capacity must not invoke the estimator")
+        })
+        .unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        config.dcp = Some(1);
+        materialize_aic_capacity(&config, &mut role, false, |_, _| Ok(321)).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 321);
     }
 
     #[test]

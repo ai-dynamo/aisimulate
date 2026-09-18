@@ -63,13 +63,17 @@ class AFDSearchRecommendationConfig(StrictModel):
     max_candidates: PositiveInt = 10_000
 
 
-class ParallelismPredictionConfig(StrictModel):
+class ParallelismPresetConfig(StrictModel):
     replicas: PositiveInt = 1
     tensor: PositiveInt = 1
     pipeline: PositiveInt = 1
     attention_data: PositiveInt = 1
     moe_tensor: PositiveInt = 1
     moe_expert: PositiveInt = 1
+
+
+class ParallelismPredictionConfig(ParallelismPresetConfig):
+    decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
 class SchedulerPredictionConfig(StrictModel):
@@ -157,6 +161,12 @@ class NgramSpeculationConfig(StrictModel):
 
 
 class TimingConfig(StrictModel):
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    attention_backend: str | None = None
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
@@ -187,6 +197,18 @@ class TimingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.type != "default" and any(
+            getattr(self, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError("quantization and backend identity require default timing")
         if self.estimation_mode == "fpm_interpolation":
             self.forward_model = "fpm"
         elif self.estimation_mode == "op_level":
@@ -379,7 +401,7 @@ ParallelDomain = PositiveInt | Choices[PositiveInt] | IntegerRange
 
 
 class ParallelismRecommendationConfig(StrictModel):
-    preset: Literal["default", False] | list[ParallelismPredictionConfig] | dict[str, Any] = "default"
+    preset: Literal["default", False] | list[ParallelismPresetConfig] | dict[str, Any] = "default"
     replicas: ParallelDomain | None = None
     tensor: ParallelDomain | None = None
     pipeline: ParallelDomain | None = None
@@ -481,6 +503,25 @@ class WorkerRecommendationConfig(StrictModel):
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _reject_timing_identity_overrides(self):
+        if any(
+            getattr(self.timing, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError(
+                "explicit timing quantization/backend identity is prediction-only; "
+                "recommendation preflight does not support these overrides"
+            )
+        return self
 
 
 class EncoderRecommendationConfig(StrictModel):

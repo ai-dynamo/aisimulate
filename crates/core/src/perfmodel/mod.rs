@@ -54,7 +54,7 @@ pub use fpm::{
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind,
+    RegressionFitConfig, RegressionFitKind, UnrecordedFpmQuantMode,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

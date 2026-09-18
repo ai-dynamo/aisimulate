@@ -204,8 +204,13 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
-- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
-  additional knobs yet; unknown fields are rejected.
+- `op_level`: reserved typed namespace with no additional knobs yet.
+- `fpm_interpolation`: `text_only` (false) permits text prefill/decode profiles
+  for multimodal architectures while retaining encoder weights. It does not
+  supply encoder timing. `unrecorded_quant_modes` (empty) may contain `fmha`
+  and/or `comm` to match an explicitly unrecorded precision field in a profile.
+  The corresponding top-level quant mode must remain unset. This selects null
+  profile values exactly; it does not make precision matching a wildcard.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
@@ -224,6 +229,75 @@ readiness means at least one store is ready; another cold store can still
 return `None`. `tune_with_fpms()` preserves the established FPM observation
 contract. Native construction still uses Python model compilation; estimator
 selection, regression, correction, and latency computation are owned by Rust.
+
+### DCP self-benchmark profiles
+
+`dcp` is an optional recorded decode-context-parallel dimension within TP.
+It must be positive and divide `tp`; it does not multiply GPU or MoE group
+counts. Missing DCP and explicit DCP1 remain distinct FPM identities. An
+explicit DCP8 request cannot consume ordinary TP8 or unrecorded-DCP data.
+DCP greater than one currently supports measured vLLM `fpm_interpolation`
+timing; op-level DCP and SOL-dependent transfer paths report unsupported.
+
+FPM v6 accepts optional `dcp` in the Parquet identity and sidecar selector.
+The loader also accepts `per_row_single_sample_or_median_of_3` sidecars when
+every row declares a consistent `measurement_policy`/`measurement_repeats`
+pair: `dynamo_native_single_sample_v1`/1 or `kvwarm_median_of_3`/3. Values are
+already aggregated by the producer; the loader preserves their latency.
+
+For a Kimi K3 text profile, an explicit configuration can be:
+
+```python
+config = ForwardPassPerfModelConfig(
+    model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
+    backend_version="0.29.0", worker_type="aggregated",
+    tp=8, pp=1, attention_dp=1, moe_tp_size=8, moe_ep_size=1, dcp=8,
+    gemm_quant_mode="bfloat16", moe_quant_mode="w4a16_mxfp4",
+    kvcache_quant_mode="fp8", attention_backend="FLASHINFER_MLA",
+    estimation_mode="fpm_interpolation", fallback_policy="deny",
+    systems_paths=("/absolute/profile/systems",),
+    estimator_config={
+        "fpm_interpolation": {
+            "text_only": True,
+            "unrecorded_quant_modes": ["fmha", "comm"],
+        },
+        "correction": {"enabled": False},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+Only use `unrecorded_quant_modes` for fields that the selected profile actually
+leaves unrecorded. The runtime `FLASHINFER_MLA` label is retained for exact FPM
+matching while the compiler uses its internal FlashInfer backend description.
+The model architecture remains registered once; adding a parallel configuration
+does not require another model class.
+
+Place the reviewed primary pair at
+`systems/data/gb300/vllm/0.29.0/fpm_forward_perf.{parquet,metadata.json}` and copy
+the matching hardware YAML into the systems root. Keep source hashes and the
+pinned dataset revision with the profile. Do not combine synthetic-attention
+boundary points or nonuniform layouts with a balanced primary profile.
+
+Replay YAML passes recorded DCP through
+`engine.workers.<role>.parallelism.decode_context`. Per-worker `timing` accepts
+the canonical quant-mode fields and `attention_backend`, alongside estimator
+selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
+automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
+transfer also requires explicit KV bytes per token with DCP.
+`decode_context` is currently supported by AISimulate's `--stack engine` only.
+Dynamo Replay and Planner do not yet support this field; their configuration
+propagation, cache identity, and dependency version need a downstream update.
+These timing precision/backend overrides are prediction-only; recommendation
+rejects them until its feasibility preflight supports the same identity.
+Supplying a fixed pool does not add KDA checkpoint, eviction, or chunk-alignment
+fidelity to the generic Replay cache/scheduler. This API change enables timing
+consumption, not full hybrid-cache simulation or multimodal prediction from
+text-only measurements.
+
+The positional engine-spec wire version remains unchanged: the engine identity
+is JSON-encoded and the FPM match identity is already variable-length. Legacy
+configuration and profiles without DCP remain accepted as unrecorded DCP.
 
 ### Migrating saved configuration
 

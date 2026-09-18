@@ -125,11 +125,12 @@ class FPMForwardOp(PythonOperation):
         self._phase = phase
         self._model_path = str(model_path)
         self._weight_bytes = float(weight_bytes)
+        self._resident_weight_bytes = self._weight_bytes
         self._match_identity = (
             _norm_identity(model_config.gemm_quant_mode),
             _norm_identity(model_config.moe_quant_mode),
-            _norm_identity(model_config.fmha_quant_mode),
-            _norm_identity(model_config.comm_quant_mode),
+            "" if "fmha" in model_config.fpm_unrecorded_quant_modes else _norm_identity(model_config.fmha_quant_mode),
+            "" if "comm" in model_config.fpm_unrecorded_quant_modes else _norm_identity(model_config.comm_quant_mode),
             _norm_identity(model_config.kvcache_quant_mode),
             _norm_identity(model_config.tp_size),
             _norm_identity(model_config.pp_size),
@@ -140,10 +141,14 @@ class FPMForwardOp(PythonOperation):
             _norm_backend_request(getattr(model_config, "moe_backend", None)),
             # ModelConfig spells the engine default out ("flashinfer"); the
             # collector records engine-decided knobs as "auto".
-            _norm_backend_request(getattr(model_config, "attention_backend", None), engine_default="flashinfer"),
+            _norm_backend_request(
+                model_config.fpm_attention_backend or model_config.attention_backend, engine_default="flashinfer"
+            ),
             _norm_identity(bool(getattr(model_config, "enable_wideep", False))),
             _norm_identity(bool(getattr(model_config, "enable_eplb", False))),
         )
+        if model_config.dcp_size is not None:
+            self._match_identity += (str(model_config.dcp_size),)
         self._sol_ops = list(sol_ops)
         # Speculative verify width for the equivalent-AR decode mapping
         # (1 = plain AR). Set post-construction by the fpm model rewrite for

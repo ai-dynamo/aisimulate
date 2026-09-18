@@ -146,6 +146,10 @@ def materialize_aic_num_gpu_blocks(
 
     if lowered.get("num_gpu_blocks") is not None:
         return finish_lowering(lowered)
+    if canonical_result is not None and (resolved.get("dcp") or 1) > 1:
+        raise ValueError(
+            "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+        )
     backend = lowered.get("aic_backend")
     if backend is None:
         return finish_lowering(lowered)
@@ -285,6 +289,7 @@ def estimate_kv_bytes_per_token(
     pp_size: int,
     moe_tp_size: int = 1,
     moe_ep_size: int = 1,
+    kvcache_quant_mode: str | None = None,
 ) -> int:
     """Derive per-rank KV bytes/token from the resolved Hugging Face config."""
 
@@ -298,6 +303,12 @@ def estimate_kv_bytes_per_token(
         moe_ep_size=moe_ep_size,
         allow_hf_config_download=True,
     )
+    quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
+    if quant_mode is not None:
+        from aiconfigurator_core.sdk.common import KVCacheQuantMode
+
+        # This instance estimates KV geometry only, never model weights.
+        estimator.dtype_bytes = KVCacheQuantMode[quant_mode].value.memory
     value = estimator.kv_bytes_per_token()
     if value is None or value <= 0:
         raise ValueError(f"could not derive KV bytes per token for model {model_name!r}")

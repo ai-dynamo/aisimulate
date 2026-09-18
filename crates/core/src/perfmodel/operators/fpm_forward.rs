@@ -102,6 +102,20 @@ fn data_err(msg: String) -> AicError {
 }
 
 impl FpmForwardOp {
+    fn sol_at(&self, db: &PerfDatabase, coords: &[f64]) -> Result<f64, AicError> {
+        if self
+            .match_identity
+            .get(crate::perf_database::fpm_forward::FPM_CELL_MATCH_COLUMNS.len())
+            .and_then(|v| v.parse::<u32>().ok())
+            .is_some_and(|dcp| dcp > 1)
+        {
+            return Err(AicError::UnsupportedModel(
+                "DCP FPM supports measured interpolation, not op-level SOL transfer".into(),
+            ));
+        }
+        sol_total(&self.sol_ops, self.phase, db, coords)
+    }
+
     /// Mirror of Python `FPMForwardOp.query`: validate kwargs, map to
     /// iteration-total coordinates, resolve against the selected cell.
     pub fn query(
@@ -341,8 +355,8 @@ impl FpmForwardOp {
                     let candidate: Vec<f64> = std::iter::once(max as f64)
                         .chain(coords[1..].iter().copied())
                         .collect();
-                    let true_sol = sol_total(&self.sol_ops, self.phase, db, coords);
-                    let ceiling_sol = sol_total(&self.sol_ops, self.phase, db, &candidate);
+                    let true_sol = self.sol_at(db, coords);
+                    let ceiling_sol = self.sol_at(db, &candidate);
                     if let (Ok(t), Ok(c)) = (true_sol, ceiling_sol) {
                         if t.is_finite() && c.is_finite() && t > 0.0 && c > 0.0 {
                             // True shape is never costlier than the clamped
@@ -403,7 +417,7 @@ impl FpmForwardOp {
         // and the error names the op.
         let sol_failure: std::cell::RefCell<Option<AicError>> = std::cell::RefCell::new(None);
         let sol = |sol_coords: &[f64]| -> f64 {
-            match sol_total(&self.sol_ops, self.phase, db, sol_coords) {
+            match self.sol_at(db, sol_coords) {
                 Ok(v) => v,
                 Err(err) => {
                     let mut slot = sol_failure.borrow_mut();
@@ -663,6 +677,17 @@ mod tests {
             // Empty sol_ops: exact hits and in-curve lerps never call SOL.
             sol_ops: vec![],
         }
+    }
+
+    #[test]
+    fn recorded_dcp_disables_unmodeled_sol_transfer() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        let mut measured = op(FpmPhase::Prefill);
+        measured.match_identity.push("4".into());
+        let error = measured.sol_at(&db, &[1.0, 1024.0, 0.0]).unwrap_err();
+        assert!(error.to_string().contains("not op-level SOL transfer"));
     }
 
     fn ctx(batch_size: u32, s: u32, prefix: u32) -> RuntimeContext {
