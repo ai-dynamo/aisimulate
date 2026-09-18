@@ -573,6 +573,8 @@ def _traffic(
                 workload["agentic_lanes"] = load.agentic_lanes
             if load.agentic_snapshot is not None:
                 workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
+            if load.agentic_warmup:
+                workload["agentic_warmup"] = True
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None

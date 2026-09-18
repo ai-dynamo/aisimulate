@@ -75,6 +75,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "max_sim_time_ms",
         "agentic_lanes",
         "agentic_snapshot",
+        "agentic_warmup",
     }
 )
 
@@ -281,7 +282,8 @@ class EngineReplayRunnerFactory:
             ),
             supports_agentic_lanes=True,
             supports_agentic_snapshots=True,
-            supported_agentic_topologies=("agg",),
+            supports_agentic_warmup=True,
+            supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=False,
             supports_agentic_speculative_decoding=False,
@@ -967,6 +969,24 @@ def _materialize_engine_execution_spec(
         trace_format = traffic.get("trace_format")
         if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
             requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if deployment_mode == "disagg":
+                prefill_model = _execution_target_model(deployment, "prefill", raw_prefill)
+                decode_model = _execution_target_model(deployment, "decode", raw_decode)
+                if requires_agentic_model and prefill_model != decode_model:
+                    raise ValueError("agentic prefill and decode must use the same configured target model")
+                if prefill_model == decode_model:
+                    execution_model = prefill_model
+                if requires_agentic_model:
+                    for role, descriptor in (("prefill", prefill), ("decode", decode)):
+                        timing = descriptor["rank"].get("timing_model")
+                        if (
+                            isinstance(timing, Mapping)
+                            and timing.get("type") == "external"
+                            and timing.get("provider") == "aic"
+                            and isinstance(timing.get("config"), Mapping)
+                            and timing["config"].get("model") != execution_model
+                        ):
+                            raise ValueError(f"agentic {role} AIC timing model must match the configured target model")
             if requires_agentic_model and execution_model is None:
                 raise ValueError("agentic execution requires a configured target model")
             # Dynamo may contain standard or agentic requests; native validates the loaded kind.
@@ -1655,6 +1675,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_input_format",
             "agentic_lanes",
             "agentic_snapshots",
+            "agentic_phases",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
         )
